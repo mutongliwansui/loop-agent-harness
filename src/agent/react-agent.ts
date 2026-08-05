@@ -2,9 +2,9 @@
 // 使用流式 LLM 调用 + 事件监听器（events）扩展
 import { llm } from '../llm/client.js';
 import { registry, runner } from '../tools/index.js';
-import { config } from '../config.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
+import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import type {
   AgentEvents,
   AgentResult,
@@ -15,31 +15,11 @@ import type {
   ToolCall,
 } from '../types.js';
 
-/**
- * ReAct Agent
- *
- * 核心循环（流式版本）：
- * 1. 构造 messages（system + user，或复用历史）
- * 2. 流式调用 LLM（chatStream），实时通过 events.onLLMStream 输出 Thought
- * 3. 流结束后（done chunk）拿到完整 LLMResponse
- * 4. 检查 tool_calls：
- *    - 无 → 返回 content 作为 Final Answer
- *    - 有 → 并发执行工具，触发 events.onToolStart/onToolEnd
- * 5. 拼接 assistant.tool_calls 与 tool 角色消息，回到 2
- *
- * 事件机制：
- * - 默认挂载 ConsoleLogger（彩色日志）
- * - options.events 可传入额外监听器（如 Web UI、文件记录、飞书推送等）
- * - 所有钩子异常被捕获，不中断主循环
- *
- * 多轮对话：
- * - 跨 run() 调用自动持久化 messages 历史到 this._chatHistory
- * - 下一轮 run 若未传 resetHistory / options.messages，自动复用历史
- * - 可用 resetSession() 清空会话，或 run(..., { resetHistory: true }) 本轮清空重开
- */
 export class ReActAgent {
   /** 跨 run() 调用持久化的对话历史，用于 CLI 多轮会话 */
   private _chatHistory: ChatMessage[] = [];
+
+  constructor(private _configLoader: ConfigLoader = configLoader) {}
 
   /** 手动清空持久化的对话历史（不影响正在进行中的 run 调用） */
   resetSession(): void {
@@ -52,10 +32,22 @@ export class ReActAgent {
   }
 
   async run(userInput: string, options: AgentOptions = {}): Promise<AgentResult> {
-    const maxIterations = options.maxIterations ?? config.maxIterations;
-    const model = options.model ?? config.modelName;
-    const temperature = options.temperature ?? 0;
-    const verbose = options.verbose ?? true;
+    // 构建 CLI override：从 AgentOptions 提取能映射的字段
+    const cliOverride: PartialAgentConfig = {};
+    if (options.model !== undefined) cliOverride.model = { name: options.model };
+    if (options.maxIterations !== undefined) cliOverride.model = { ...cliOverride.model, maxIterations: options.maxIterations };
+    if (options.temperature !== undefined) cliOverride.model = { ...cliOverride.model, temperature: options.temperature };
+    if (options.verbose !== undefined) cliOverride.agent = { verbose: options.verbose };
+
+    const { config: cfg } = this._configLoader.load(cliOverride);
+
+    const maxIterations = cfg.model.maxIterations;
+    const model = cfg.model.name;
+    const temperature = cfg.model.temperature;
+    const verbose = cfg.agent.verbose;
+
+    // 自定义 system prompt 覆盖
+    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt();
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义
     const events = this.composeEvents([
@@ -64,7 +56,6 @@ export class ReActAgent {
     ]);
 
     // 构造 messages：优先 resetHistory → 其次 options.messages → 再次实例 _chatHistory → 最后新建
-    const systemPrompt = buildSystemPrompt();
     let messages: ChatMessage[];
     if (options.resetHistory) {
       messages = [

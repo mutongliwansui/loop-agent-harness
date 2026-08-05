@@ -108,7 +108,10 @@ Task-01 ──▶ Task-02 ──┬──▶ Task-03 ──┐
 
 > 状态说明：未开始 / 进行中 / 已完成。每个任务完成时同步更新本表与对应任务文档。
 
-> **项目整体状态：✅ 全部任务已完成（Task-01 ~ Task-09，含 Task-05-1 MCP 接入）**
+> **Task-01 ~ Task-09 全部完成。以下为新增扩展任务。**
+
+| Task-10 配置存储管理 | 未开始 | - |
+| Task-11 会话持久化存储 | 未开始 | - |
 
 ## 八、快速开始
 
@@ -163,7 +166,7 @@ npm run build
 | `MODEL_NAME` | 模型名称 | `gpt-4o-mini` |
 | `MAX_ITERATIONS` | Agent 最大迭代次数 | `10` |
 
-MCP 工具配置（可选）：复制 `.mcp.json.example` 为 `.mcp.json`，配置外部 MCP server。
+MCP 工具配置（可选）：在工作空间 `.agent-config.json` 或全局 `~/.loop-agent/config.json` 的 `tools.mcpServers` 中配置外部 MCP server（详见 Task-10）。
 
 ## 十、工具扩展指南
 

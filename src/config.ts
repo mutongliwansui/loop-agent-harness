@@ -1,39 +1,31 @@
-// 全局配置：从 .env 读取
-import 'dotenv/config';
+// 环境变量配置（向后兼容 deprecated）
+// 新代码请使用 src/config/index.ts 的 ConfigLoader
+import { configLoader } from './config/index.js';
 
 /**
- * 读取必填环境变量，缺失时抛出明确错误
+ * 动态配置对象：每次访问属性时都会从 ConfigLoader 重新加载最新配置
+ * 支持运行时修改全局/工作空间配置后立即生效
+ * @deprecated 请改为 configLoader.load()
  */
-function required(key: string): string {
-  const v = process.env[key];
-  if (!v) {
-    throw new Error(`环境变量 ${key} 未设置，请检查 .env 文件`);
-  }
-  return v;
-}
-
-/**
- * 读取数字型环境变量，支持默认值
- */
-function number(key: string, defaultValue: number): number {
-  const v = process.env[key];
-  if (v === undefined || v === '') return defaultValue;
-  const n = Number(v);
-  if (Number.isNaN(n)) {
-    throw new Error(`环境变量 ${key} 不是合法数字: ${v}`);
-  }
-  return n;
-}
-
 export const config = {
-  /** OpenAI API Key */
-  openaiApiKey: required('OPENAI_API_KEY'),
-  /** OpenAI 协议 Base URL，默认官方地址 */
-  openaiBaseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
-  /** 默认模型名 */
-  modelName: process.env.MODEL_NAME ?? 'gpt-4o-mini',
-  /** Agent 最大迭代次数，默认 10 */
-  maxIterations: number('MAX_ITERATIONS', 10),
-} as const;
+  get openaiApiKey(): string {
+    return configLoader.load().config.model.apiKey;
+  },
+  get openaiBaseUrl(): string {
+    return configLoader.load().config.model.baseUrl;
+  },
+  get modelName(): string {
+    return configLoader.load().config.model.name;
+  },
+  get maxIterations(): number {
+    return configLoader.load().config.model.maxIterations;
+  },
+  get temperature(): number {
+    return configLoader.load().config.model.temperature;
+  },
+  get verbose(): boolean {
+    return configLoader.load().config.agent.verbose;
+  },
+};
 
-export type Config = typeof config;
+export default config;

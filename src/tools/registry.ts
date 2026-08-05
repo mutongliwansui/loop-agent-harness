@@ -42,6 +42,40 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  /** 注销工具（MCP 卸载或禁用内置工具时使用） */
+  unregister(name: string): void {
+    if (!this.tools.has(name)) {
+      throw new Error(`工具 ${name} 未注册，无法注销`);
+    }
+    this.tools.delete(name);
+  }
+
+  /** 清空所有工具（慎用，用于 reload） */
+  clear(): void {
+    this.tools.clear();
+  }
+
+  /** 断开指定 MCP server 连接并移除工具 */
+  async disconnectMCPServer(serverName: string): Promise<void> {
+    const client = this.mcpClients.get(serverName);
+    if (!client) return;
+
+    // 移除前缀匹配的工具
+    const prefix = `${serverName}__`;
+    for (const t of this.list()) {
+      if (t.name.startsWith(prefix)) {
+        this.tools.delete(t.name);
+      }
+    }
+
+    try {
+      await client.disconnect();
+    } catch {
+      // 忽略断开错误
+    }
+    this.mcpClients.delete(serverName);
+  }
+
   /**
    * 转换为 OpenAI function calling 的 tools 参数格式
    * 输出可直接传入 chat() 的 tools 参数

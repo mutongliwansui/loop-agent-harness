@@ -16,20 +16,34 @@ export interface ChatOptions {
  * LLM 客户端
  *
  * 设计要点：
- * - 从 config 读取 apiKey / baseURL，构造时即创建 SDK 实例
+ * - 从 config 动态读取 apiKey / baseURL，支持运行时配置变更
  * - chat() 统一返回 LLMResponse，屏蔽 SDK 内部结构差异
  * - chatStream() 流式输出，完整支持 content 与 tool_calls 分片拼接
  * - 对网络错误与 429 速率限制自动重试（指数退避）
  * - 对 401/404 等 4xx 错误抛出明确中文提示，不重试
  */
 export class LLMClient {
-  private client: OpenAI;
+  private client: OpenAI | null = null;
+  private _lastApiKey = '';
+  private _lastBaseUrl = '';
 
-  constructor() {
-    this.client = new OpenAI({
-      apiKey: config.openaiApiKey,
-      baseURL: config.openaiBaseUrl,
-    });
+  constructor() {}
+
+  /**
+   * 获取当前配置对应的 OpenAI 客户端
+   * 如果配置（apiKey/baseUrl）发生变化，自动重新创建客户端
+   */
+  private getClient(): OpenAI {
+    const apiKey = config.openaiApiKey;
+    const baseURL = config.openaiBaseUrl;
+
+    if (!this.client || apiKey !== this._lastApiKey || baseURL !== this._lastBaseUrl) {
+      this.client = new OpenAI({ apiKey, baseURL });
+      this._lastApiKey = apiKey;
+      this._lastBaseUrl = baseURL;
+    }
+
+    return this.client;
   }
 
   /**
@@ -47,6 +61,7 @@ export class LLMClient {
     const temperature = options.temperature ?? 0;
 
     return this.retry(async () => {
+      const client = this.getClient();
       const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
         model,
         messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
@@ -60,7 +75,7 @@ export class LLMClient {
         params.max_tokens = options.maxTokens;
       }
 
-      const resp = await this.client.chat.completions.create(params);
+      const resp = await client.chat.completions.create(params);
       const choice = resp.choices[0];
       if (!choice) {
         throw new Error('LLM 返回为空：choices 为空数组');
@@ -118,7 +133,8 @@ export class LLMClient {
       params.max_tokens = options.maxTokens;
     }
 
-    const stream = await this.client.chat.completions.create(params);
+    const client = this.getClient();
+    const stream = await client.chat.completions.create(params);
 
     // 累积器：按 index 聚合 tool_calls，最后组装成完整 LLMResponse
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
