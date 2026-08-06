@@ -4,6 +4,7 @@ import { llm } from '../llm/client.js';
 import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
+import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import { type SessionStore } from '../session/store.js';
 import type {
@@ -102,6 +103,8 @@ export class ReActAgent {
     const steps: AgentStep[] = [];
     const openaiTools = registry.toOpenAITools();
 
+    debug.session(messages.length, openaiTools.length, this._currentSessionId);
+
     let result: AgentResult | null = null;
     const safeEvents = events as Required<AgentEvents>;
     try {
@@ -118,6 +121,7 @@ export class ReActAgent {
         // 2. 无 tool_calls → 最终答案
         if (!resp.tool_calls?.length) {
           const answer = resp.content ?? '';
+          debug.log(`最终回答生成完毕，共 ${i + 1} 轮迭代`);
           // 把最终 assistant 回复写入 messages，便于多轮续接
           messages.push({ role: 'assistant', content: answer });
           result = { answer, steps, iterations: i + 1, messages: [...messages] };
@@ -143,14 +147,24 @@ export class ReActAgent {
 
         // 触发 onToolStart
         for (const c of callItems) {
-          await safeEvents.onToolStart(c.toolName, c.args);
+          await safeEvents.onToolStart(c.toolName, c.args ?? {});
         }
 
         // 执行工具：存在则 runner.run，不存在则返回错误
         const observations = await Promise.all(
           callItems.map(async (c) => {
             if (!c.tool) return `工具 ${c.toolName} 未注册，无法执行`;
-            return runner.run(c.tool, c.args);
+            if (!c.args) return `工具 ${c.toolName} 参数无效：参数为空或解析失败，请重新调用并提供正确的参数`;
+            // 校验必需参数
+            const required = (c.tool.parameters?.required as string[] | undefined) ?? [];
+            const missing = required.filter((k) => !(k in c.args!));
+            if (missing.length > 0) {
+              return `工具 ${c.toolName} 缺少必需参数: ${missing.join(', ')}，请补充后重试`;
+            }
+            const toolStart = Date.now();
+            const result = runner.run(c.tool, c.args);
+            void result.then((r) => debug.toolCall(c.toolName, c.args ?? {}, r, Date.now() - toolStart));
+            return result;
           }),
         );
 
@@ -159,7 +173,7 @@ export class ReActAgent {
           const observation = observations[idx];
           steps.push({
             thought: resp.content ?? undefined,
-            action: { tool: c.toolName, args: c.args },
+            action: { tool: c.toolName, args: c.args ?? {} },
             observation,
           });
           // 异步触发，不 await（避免日志拖延主循环）
@@ -170,6 +184,13 @@ export class ReActAgent {
             content: observation,
           });
         });
+
+        debug.iteration(
+          i + 1,
+          resp.content,
+          callItems.map((c) => c.toolName).join(', '),
+          observations.join(' | '),
+        );
         // 回到循环顶部继续推理
       }
 

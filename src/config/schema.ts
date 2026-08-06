@@ -26,6 +26,7 @@ export interface ToolsConfig {
 
 export interface AgentBehaviorConfig {
   verbose: boolean;
+  debug: boolean;
   systemPrompt: string | null;
 }
 
@@ -62,6 +63,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   },
   agent: {
     verbose: true,
+    debug: false,
     systemPrompt: null,
   },
   session: {

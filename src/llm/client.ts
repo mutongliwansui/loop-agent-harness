@@ -1,6 +1,7 @@
 // LLM 客户端封装：基于 OpenAI SDK，兼容任意 OpenAI 协议服务商
 import OpenAI from 'openai';
 import { config } from '../config.js';
+import { debug } from '../debug.js';
 import type { ChatMessage, LLMResponse, OpenAIToolDef, StreamChunk, ToolCall } from '../types.js';
 
 export interface ChatOptions {
@@ -60,6 +61,9 @@ export class LLMClient {
     const model = options.model ?? config.modelName;
     const temperature = options.temperature ?? 0;
 
+    debug.llmRequest(model, messages.length, tools?.length ?? 0);
+
+    const startMs = Date.now();
     return this.retry(async () => {
       const client = this.getClient();
       const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
@@ -91,11 +95,19 @@ export class LLMClient {
         },
       }));
 
-      return {
+      const response: LLMResponse = {
         content: msg.content ?? null,
         tool_calls: toolCalls,
         finish_reason: choice.finish_reason ?? 'stop',
-      } satisfies LLMResponse;
+      };
+
+      debug.llmResponse(
+        response.content,
+        response.tool_calls?.map((tc) => ({ name: tc.function.name, arguments: tc.function.arguments })),
+        Date.now() - startMs,
+      );
+
+      return response;
     });
   }
 
@@ -118,6 +130,10 @@ export class LLMClient {
   ): AsyncGenerator<StreamChunk> {
     const model = options.model ?? config.modelName;
     const temperature = options.temperature ?? 0;
+
+    debug.llmRequest(model, messages.length, tools?.length ?? 0);
+
+    const streamStartMs = Date.now();
 
     const params: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
       model,
@@ -200,6 +216,12 @@ export class LLMClient {
       finish_reason: toolCalls ? 'tool_calls' : finishReason,
     };
 
+    debug.llmResponse(
+      response.content,
+      response.tool_calls?.map((tc) => ({ name: tc.function.name, arguments: tc.function.arguments })),
+      Date.now() - streamStartMs,
+    );
+
     yield { type: 'done', response };
   }
 
@@ -210,18 +232,26 @@ export class LLMClient {
   private async retry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      const startMs = Date.now();
       try {
-        return await fn();
+        const result = await fn();
+        if (attempt > 0) {
+          debug.log(`重试成功 (第 ${attempt + 1} 次), 耗时 ${Date.now() - startMs}ms`);
+        }
+        return result;
       } catch (e) {
         lastErr = e;
         const shouldRetry = this.isRetryable(e);
         if (!shouldRetry || attempt === retries) {
+          debug.llmError(e, Date.now() - startMs);
           throw this.wrapError(e);
         }
+        debug.log(`LLM 调用失败 (第 ${attempt + 1} 次), 重试中: ${e instanceof Error ? e.message : String(e)}`);
         // 指数退避：1s, 2s
         await this.sleep(1000 * (attempt + 1));
       }
     }
+    debug.llmError(lastErr, 0);
     throw this.wrapError(lastErr);
   }
 

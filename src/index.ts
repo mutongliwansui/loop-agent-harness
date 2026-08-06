@@ -2,11 +2,18 @@
 // 运行：npm run dev 或 npm start
 import readline from 'node:readline';
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { agent } from './agent/react-agent.js';
 import {
   registerBuiltinTools,
   registry,
   mcpManager,
+  commandRun,
+  fileRead,
+  fileWrite,
+  grep,
 } from './tools/index.js';
 import {
   configLoader,
@@ -108,6 +115,9 @@ function printBanner(): void {
   console.log(`${C.cyan}内置工具:${C.reset} [${builtTools.map((n) => `${C.green}${n.name}${C.reset}`).join(', ')}]`);
   if (mcpCount > 0) {
     console.log(`${C.cyan}MCP 工具:${C.reset} ${mcpCount} 个, Servers: ${registry.listMCPServers().join(', ')} (${C.magenta}{serverName}__toolName${C.reset})`);
+  }
+  if (cfg.agent.debug) {
+    console.log(`${C.yellow}⚠ 调试模式已开启，日志输出到: ${join(homedir(), '.loop-agent', 'logs')}${C.reset}`);
   }
   console.log('');
   console.log(`${C.gray}使用说明:${C.reset}`);
@@ -232,7 +242,6 @@ async function handleConfig(input: string, rl: readline.Interface): Promise<void
     console.log('');
     const wp = configLoader.workspaceConfigPath;
     const gp = configLoader.globalConfigPath;
-    const { existsSync } = require('node:fs');
     console.log(`  ${C.bold}工作空间:${C.reset} ${wp} ${existsSync(wp) ? `${C.green}[存在]${C.reset}` : `${C.gray}[不存在]${C.reset}`}`);
     console.log(`  ${C.bold}全局:${C.reset}     ${gp} ${existsSync(gp) ? `${C.green}[存在]${C.reset}` : `${C.gray}[不存在]${C.reset}`}`);
     console.log('');
@@ -487,13 +496,7 @@ async function handleTools(input: string, rl: readline.Interface): Promise<void>
       await configWriter.updateScope(scope, partial);
       // 立即 registry 同步
       if (sub === 'enable') {
-        // 从 tools/ 直接 import 内置工具注册表
-        const toolMap: Record<string, unknown> = {};
-        const { commandRun, fileRead, fileWrite, grep } = require('./tools/index.js');
-        toolMap.commandRun = commandRun;
-        toolMap.fileRead = fileRead;
-        toolMap.fileWrite = fileWrite;
-        toolMap.grep = grep;
+        const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, grep };
         const t = toolMap[toolName];
         if (t && !registry.has(toolName)) registry.register(t as never);
       } else {

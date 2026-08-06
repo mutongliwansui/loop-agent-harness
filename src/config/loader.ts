@@ -164,6 +164,11 @@ export class ConfigLoader {
       cfg.agent = { verbose: ['1', 'true', 'TRUE', 'yes'].includes(env.VERBOSE) };
     }
 
+    if (env.DEBUG !== undefined) {
+      if (!cfg.agent) cfg.agent = { verbose: true, debug: false, systemPrompt: null };
+      cfg.agent.debug = ['1', 'true', 'TRUE', 'yes'].includes(env.DEBUG);
+    }
+
     return cfg;
   }
 

@@ -26,6 +26,9 @@ export const config = {
   get verbose(): boolean {
     return configLoader.load().config.agent.verbose;
   },
+  get debug(): boolean {
+    return configLoader.load().config.agent.debug;
+  },
 };
 
 export default config;

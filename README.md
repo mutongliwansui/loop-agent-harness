@@ -21,6 +21,8 @@
 [⚙️ 配置管理](#️-配置管理)
 [🎧 事件监听器](#-事件监听器)
 [💬 多轮对话](#-多轮对话)
+[💾 会话持久化](#-会话持久化)
+[📝 调试日志](#-调试日志)
 [📁 项目结构](#-项目结构)
 [🛠️ 技术栈](#️-技术栈)
 [🔍 故障排查](#-故障排查)
@@ -40,6 +42,8 @@
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools` 命令，支持热修改 |
+| 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
+| 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
 | 🎯 **事件监听** | 参考 LangChain callbacks 设计，9 个生命周期钩子便于扩展 |
 | 💬 **多轮对话** | 跨 `run()` 调用持久化消息历史，支持上下文续接 |
 | ⚡ **同轮多工具** | 支持 LLM 单轮返回多个 `tool_calls`，`Promise.all` 并发执行 |
@@ -84,6 +88,9 @@ MODEL_NAME=gpt-4o-mini
 
 # Agent 最大迭代次数（可选，默认 10）
 MAX_ITERATIONS=10
+
+# 调试日志（可选，默认关闭，开启后输出到 ~/.loop-agent/logs）
+DEBUG=true
 ```
 
 ### 3. 运行
@@ -124,9 +131,13 @@ npm start
 BaseURL: https://api.openai.com/v1 (env)
 最大迭代: 10
 内置工具: [commandRun, fileRead, fileWrite, grep]
+MCP 工具: 3 个, Servers: atlasGraphMcp (atlasGraphMcp__toolName)
+⚠ 调试模式已开启，日志输出到: ~/.loop-agent/logs
 
 Agent> 帮我读取 package.json 的版本号
 ```
+
+> 若配置中开启了 `agent.debug`，启动时会额外提示调试日志输出目录（见 [📝 调试日志](#-调试日志)）。
 
 ### 内置命令
 
@@ -139,6 +150,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/tools` | 工具管理（list / enable / disable / reload） |
 | `/config` | 配置管理（get / set / delete / list / path） |
 | `/mcp` | MCP 管理（list / add / remove / reload / test） |
+| `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
 
 ### 输出示例
@@ -198,6 +210,28 @@ Agent> 帮我读取 package.json 的版本号
 /tools reload                   # 重新加载所有工具
 ```
 
+#### `/session` — 会话管理
+
+```
+/session list                   # 列出当前工作空间所有会话（ID / 标题 / 消息数 / 时间）
+/session current                # 查看当前会话详情
+/session load <id>              # 加载指定会话，恢复历史对话
+/session save                   # 手动保存当前会话
+/session new                    # 新建会话（旧会话自动保存）
+/session delete <id>            # 删除指定会话
+/session delete-all             # 删除当前工作空间的所有会话（需二次确认）
+```
+
+会话列表输出示例：
+
+```
+当前工作空间会话 (2 个):
+  sess_20260806_143022 [当前] 2026/08/06 14:30:22 [5条] 帮我读取 package.json 的版本号
+  sess_20260805_210011        2026/08/05 21:00:11 [3条] 搜索 src 目录中的 config
+```
+
+会话数据以 AES-256-GCM 加密存储在 `~/.loop-agent/sessions/` 目录（按工作空间隔离），详见 [💾 会话持久化](#-会话持久化)。
+
 ---
 
 ## 💻 编程式调用
@@ -235,6 +269,28 @@ console.log(r1.answer);
 const r2 = await agent.run('那它的版本号是多少？');
 // Agent 已经知道 package.json 的内容，可以直接回答，无需再次调用工具
 console.log(r2.answer);
+```
+
+### 会话持久化
+
+```typescript
+import { agent } from './src/agent/react-agent.js';
+import { SessionStore } from './src/session/index.js';
+import { registerBuiltinTools } from './src/tools/index.js';
+
+registerBuiltinTools();
+
+// 初始化会话存储（按当前工作空间路径隔离）
+const sessionStore = new SessionStore(process.cwd());
+await sessionStore.init();
+agent.setSessionStore(sessionStore);
+
+// run() 结束后若配置 session.autoSave=true，会自动创建/更新会话
+const result = await agent.run('帮我读取 package.json', {
+  resetHistory: true,
+  verbose: true,
+});
+console.log(`会话 ID: ${agent.currentSessionId}`);
 ```
 
 ### 自定义事件监听
@@ -294,8 +350,14 @@ const result = await agent.run('搜索 src 目录中的 config', {
 │  │  (分层加载)  │  │  (持久化写入)│  │  (生命周期管理)  │  │
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────┤
+│                   Session System                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │ SessionStore │  │   Keychain   │  │  Crypto (AES-GCM)│  │
+│  │ (会话读写)   │  │ (密钥管理)   │  │  (加密/解密)     │  │
+│  └──────────────┘  └──────────────┘  └──────────────────┘  │
+├──────────────────────────────────────────────────────────────┤
 │                   Built-in Tools                             │
-│  commandRun │ fileRead │ fileWrite │ grep                   │
+│ commandRun │ fileRead │ fileWrite │ grep                    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -343,6 +405,8 @@ const result = await agent.run('搜索 src 目录中的 config', {
           │  → 抛出错误，优雅退出   │
           └─────────────────────────┘
 ```
+
+> `run()` 结束后，若启用了会话存储（`session.autoSave=true`），当前 messages 与 steps 会自动加密保存到磁盘。
 
 ### 配置分层加载
 
@@ -511,10 +575,27 @@ await registry.registerMCPServer('my-server', {
   },
   "agent": {
     "verbose": true,
+    "debug": false,
     "systemPrompt": null
+  },
+  "session": {
+    "autoSave": true,
+    "autoRestore": true,
+    "encryptionEnabled": true
   }
 }
 ```
+
+| 配置段 | 字段 | 说明 | 默认值 |
+|---|---|---|---|
+| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM 模型配置 | `gpt-4o-mini` 等 |
+| `tools` | `enabled` / `disabled` / `mcpServers` | 内置工具开关与 MCP server 配置 | 全部启用 |
+| `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
+| `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
+| `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |
+| `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
+| `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
+| `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
 
 ### 环境变量（向后兼容）
 
@@ -524,6 +605,8 @@ await registry.registerMCPServer('my-server', {
 | `OPENAI_BASE_URL` | ❌ | 模型服务地址 | `https://api.openai.com/v1` |
 | `MODEL_NAME` | ❌ | 模型名称 | `gpt-4o-mini` |
 | `MAX_ITERATIONS` | ❌ | Agent 最大迭代次数 | `10` |
+| `VERBOSE` | ❌ | 是否输出 Thought/Action/Observation 日志（`true`/`false`） | `true` |
+| `DEBUG` | ❌ | 是否开启文件调试日志（`true`/`false`，输出到 `~/.loop-agent/logs`） | `false` |
 
 ### 支持的 Base URL 示例
 
@@ -554,6 +637,12 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 
 # 修改最大迭代次数
 /config set model.maxIterations 20
+
+# 开启调试日志
+/config set agent.debug true
+
+# 关闭会话自动保存
+/config set session.autoSave false
 
 # 写入全局配置（跨项目共享）
 /config set model.name gpt-4 --global
@@ -645,6 +734,106 @@ const r2 = await agent.run('这个项目的版本号是多少？');
 // 此时 Agent 已知道 package.json 内容，可直接回答
 ```
 
+> **进程内**多轮由 `_chatHistory` 保证；**跨进程**恢复请使用 `SessionStore` 持久化（见下节）。
+
+---
+
+## 💾 会话持久化
+
+Agent 内置了基于文件系统的会话持久化能力：对话历史（messages + steps）加密存储到本地磁盘，重启 CLI 后可通过 `/session load <id>` 恢复上下文继续对话。
+
+### 存储结构
+
+```
+~/.loop-agent/
+├── .keyfile                      # 🔑 主密钥文件（首次自动生成，权限 0600）
+├── config.json                   # 全局配置（可选）
+├── logs/
+│   └── debug-YYYY-MM-DD.log      # 📝 调试日志（见下节）
+└── sessions/
+    └── {workspaceId}/            # 按工作空间路径隔离（路径 SHA-256 前 16 位）
+        ├── meta.json             # 工作空间元信息
+        ├── sessions.json         # 会话索引（仅元信息，不含消息内容）
+        └── sess_YYYYMMDD_HHMMSS.enc   # 加密的会话数据文件
+```
+
+### 加密机制
+
+- **主密钥**：首次使用时自动生成 256-bit 随机密钥，保存于 `~/.loop-agent/.keyfile`（`0600` 权限），无需用户输入密码
+- **数据加密**：会话消息通过 **PBKDF2（100,000 次迭代）派生** + **AES-256-GCM** 加密，附带认证标签保证完整性
+- **密钥校验**：密钥文件包含校验 token，读取时会验证密钥完整性，损坏则报错
+- **索引明文**：`sessions.json` 仅存储会话元信息（ID、标题、消息数、时间），消息内容全部加密
+
+### 自动保存 / 恢复
+
+- **自动保存**：`run()` 结束后，若 `session.autoSave=true` 且已设置 SessionStore，自动创建新会话或更新当前会话
+- **自动恢复**：`session.autoRestore=true` 时，CLI 启动会自动加载最近一次会话，无缝续接上次对话
+- **手动控制**：可通过 `/session` 子命令随时 list / load / save / new / delete
+
+### 密钥管理（Keychain）
+
+`src/session/keychain.ts` 提供密钥生命周期管理：
+
+| 方法 | 说明 |
+|---|---|
+| `keychain.ensureUnlocked()` | 确保密钥已加载（首次自动生成密钥文件） |
+| `keychain.exportKey()` | 导出主密钥（base64，用于备份） |
+| `keychain.importKey(base64)` | 从备份导入主密钥（用于迁移/恢复） |
+| `keychain.reset()` | 删除密钥文件（⚠️ 会导致所有加密会话无法解密） |
+
+> ⚠️ **重要**：`.keyfile` 是解密会话的唯一凭证。丢失该文件将导致所有加密会话无法恢复，建议定期 `exportKey()` 备份。
+
+---
+
+## 📝 调试日志
+
+Agent 内置了文件型调试日志系统（`src/debug.ts`），可将 LLM 请求/响应、工具调用、Agent 迭代过程完整记录到本地文件，便于问题排查。
+
+### 开启方式
+
+```bash
+# 方式一：环境变量
+DEBUG=true npm start
+
+# 方式二：运行时配置
+/config set agent.debug true
+```
+
+开启后 CLI 启动会提示：
+
+```
+⚠ 调试模式已开启，日志输出到: C:\Users\xxx\.loop-agent\logs
+```
+
+### 日志位置与轮转
+
+- **位置**：`~/.loop-agent/logs/debug-YYYY-MM-DD.log`（按日期分文件）
+- **轮转**：单文件最大 **10MB**，超出后自动轮转，最多保留 **5** 个历史文件
+- **脱敏**：日志中的 API Key 自动脱敏（仅显示首尾各 4 位）
+
+### 日志内容
+
+| 类型 | 触发时机 | 记录内容 |
+|---|---|---|
+| `llmRequest` | 每次 LLM 请求 | 模型、消息数、工具数、脱敏后的参数 |
+| `llmResponse` | LLM 响应返回 | 内容（截断 300 字符）、工具调用、耗时 |
+| `llmError` | LLM 调用报错 | 错误信息、耗时 |
+| `toolCall` | 每次工具调用 | 工具名、参数、结果（均截断）、耗时 |
+| `iteration` | 每轮 Agent 迭代 | Thought / Action / Observation |
+| `session` | 每次 `run()` 开始 | 消息数、工具数、会话 ID |
+
+### 编程式读取
+
+```typescript
+import { debug } from './src/debug.js';
+
+// 当前日志文件路径
+const logPath = debug.getLogPath();
+
+// 读取最近日志内容（默认最多 10000 字符）
+const content = debug.readLog(10000);
+```
+
 ---
 
 ## 📁 项目结构
@@ -653,10 +842,11 @@ const r2 = await agent.run('这个项目的版本号是多少？');
 loop-agent-command/
 ├── src/
 │   ├── index.ts                      # 🚪 CLI 入口（交互式 REPL + 多命令支持）
-│   ├── config.ts                     # ⚙️ 环境变量配置加载（遗留）
+│   ├── config.ts                     # ⚙️ 环境变量配置（deprecated，兼容旧代码，请改用 config/index.ts）
+│   ├── debug.ts                      # 📝 调试日志（文件输出，LLM/工具/迭代日志）
 │   ├── types.ts                      # 📐 核心类型定义（Tool, ChatMessage, AgentEvents 等）
 │   ├── agent/
-│   │   ├── react-agent.ts            # 🔄 ReAct 主循环（流式版本）
+│   │   ├── react-agent.ts            # 🔄 ReAct 主循环（流式版本 + 会话自动保存）
 │   │   ├── prompt.ts                 # 📝 System Prompt 构造器
 │   │   └── logger.ts                 # 🎨 ConsoleLogger（彩色日志输出，实现 AgentEvents）
 │   ├── llm/
@@ -668,6 +858,12 @@ loop-agent-command/
 │   │   ├── writer.ts                 # 配置写入器（持久化）
 │   │   ├── merge.ts                  # 深度合并工具
 │   │   └── mcp-manager.ts            # MCP 生命周期管理器
+│   ├── session/                      # 💾 会话持久化（加密存储）
+│   │   ├── index.ts                  # 统一导出
+│   │   ├── store.ts                  # SessionStore（会话读写/索引/工作空间隔离）
+│   │   ├── keychain.ts               # Keychain（主密钥自动生成/加载/备份）
+│   │   ├── crypto.ts                 # 加密原语（PBKDF2 + AES-256-GCM）
+│   │   └── types.ts                  # 会话类型定义 + 默认配置
 │   └── tools/
 │       ├── index.ts                  # 🛠️ 工具系统聚合入口
 │       ├── registry.ts               # 📋 工具注册表（注册/查询/转 OpenAI 格式/MCP 管理）
@@ -693,7 +889,7 @@ loop-agent-command/
 │       └── g-parallel-tools.test.ts  # 同轮并行工具
 ├── docs/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
-│   └── tasks/                        # 📂 逐任务文档（11 个任务）
+│   └── tasks/                        # 📂 逐任务文档（11 个任务，含配置存储与会话持久化）
 ├── .env                              # 🔒 环境变量（需从 .env.example 复制创建）
 ├── .env.example                      # 📄 环境变量模板
 ├── .agent-config.json                # 📋 工作空间配置（可选，运行时生成）
@@ -715,10 +911,11 @@ loop-agent-command/
 | **运行时** | Node.js 18+ | 原生 ESM 模块 |
 | **LLM SDK** | `openai` v4.x | 兼容任意 OpenAI 协议服务商 |
 | **MCP SDK** | `@modelcontextprotocol/sdk` v1.x | 外部工具接入协议 |
+| **加密** | Node.js `crypto` | PBKDF2 + AES-256-GCM 会话加密 |
 | **测试框架** | vitest | 集成测试，串行执行 |
 | **构建工具** | tsup | 输出 ESM 格式 |
 | **开发工具** | tsx | 开发时直接运行 TypeScript |
-| **环境变量** | dotenv | 从 `.env` 加载配置 |
+| **环境变量** | 内置 .env 解析器 | 启动时自动读取 `.env` 到 `process.env`（兼容 dotenv 行为） |
 
 ---
 
@@ -804,6 +1001,22 @@ npm run test:watch
 ```
 
 **解决**：检查 MCP 配置是否正确，可执行 `/mcp test <name>` 测试连接。使用 `/mcp remove <name>` 移除后重新 `/mcp add <name>` 添加。
+
+### 会话无法加载 / 解密失败
+
+```
+错误：密钥文件损坏，验证失败
+错误：密钥未加载，无法读取会话
+```
+
+**解决**：
+- 检查 `~/.loop-agent/.keyfile` 是否存在且未损坏
+- 若误删/损坏，可通过备份的 `exportKey()` 导出的 base64 调用 `keychain.importKey()` 恢复
+- 若无法恢复，可删除损坏的会话文件（`/session delete <id>`）后重新开始
+
+### 调试日志未生成
+
+**解决**：确认已通过 `DEBUG=true` 环境变量或 `/config set agent.debug true` 开启调试模式，日志输出到 `~/.loop-agent/logs/debug-YYYY-MM-DD.log`。开启后 CLI 启动 banner 会显示调试日志目录提示。
 
 ### 配置来源追踪
 
