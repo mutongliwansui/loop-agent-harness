@@ -18,7 +18,9 @@ import {
   type ConfigSource,
   type ToolsConfig,
 } from './config/index.js';
-import type { MCPServerConfig } from './tools/mcp/client.js';
+import { type MCPServerConfig } from './tools/mcp/client.js';
+import { SessionStore, keychain, type SessionMeta } from './session/index.js';
+import type { ChatMessage } from './types.js';
 
 // Windows 终端默认代码页为 GBK(936)，切换到 UTF-8(65001) 避免中文乱码
 if (process.platform === 'win32') {
@@ -114,6 +116,7 @@ function printBanner(): void {
   console.log(`  ${C.bold}/config${C.reset}       → 配置管理（get/set/delete/list/path）`);
   console.log(`  ${C.bold}/mcp${C.reset}          → MCP 管理（list/add/remove/reload/test）`);
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
+  console.log(`  ${C.bold}/session${C.reset}      → 会话管理（list/load/save/new/delete）`);
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 同样有效）`);
@@ -507,14 +510,235 @@ async function handleTools(input: string, rl: readline.Interface): Promise<void>
   void rl;
 }
 
+/**
+ * /session 命令处理器
+ * 支持: list, load <id>, save, new, current, delete <id>, delete-all
+ */
+/** 渲染消息历史到终端 */
+function renderMessages(messages: { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }[]): void {
+  console.log('');
+  console.log(`${C.cyan}╔════════ 会话历史 ${'═'.repeat(42)}╗${C.reset}`);
+  for (const msg of messages) {
+    switch (msg.role) {
+      case 'user':
+        console.log(`${C.cyan}║${C.reset} ${C.bold}${C.cyan}🧑 用户${C.reset}`);
+        console.log(`${C.cyan}║${C.reset} ${msg.content}`);
+        break;
+      case 'assistant':
+        if (msg.content) {
+          console.log(`${C.cyan}║${C.reset} ${C.bold}${C.green}🤖 助手${C.reset}`);
+          console.log(`${C.cyan}║${C.reset} ${msg.content}`);
+        }
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            const fn = (tc as { function?: { name: string; arguments: string } }).function;
+            if (fn) {
+              console.log(`${C.cyan}║${C.reset} ${C.gray}🔧 调用工具: ${fn.name}(${fn.arguments})${C.reset}`);
+            }
+          }
+        }
+        break;
+      case 'tool':
+        console.log(`${C.cyan}║${C.reset} ${C.gray}📋 工具结果: ${(msg.tool_call_id ?? '').slice(-8)}${C.reset}`);
+        console.log(`${C.cyan}║${C.reset} ${C.gray}${String(msg.content).slice(0, 200)}${C.reset}`);
+        break;
+      case 'system':
+        break;
+    }
+  }
+  console.log(`${C.cyan}╚════════ 历史结束，继续对话 ${'═'.repeat(32)}╝${C.reset}\n`);
+}
+
+async function handleSession(
+  input: string,
+  rl: readline.Interface,
+  sessionStore: SessionStore | null,
+): Promise<void> {
+  if (!sessionStore || !keychain.isUnlocked()) {
+    console.log(`${C.red}会话系统未启用或未解锁${C.reset}\n`);
+    return;
+  }
+
+  const parts = input.split(/\s+/);
+  const sub = parts[1] ?? 'list';
+  const args = parts.slice(2);
+
+  if (sub === 'list') {
+    const sessions = await sessionStore.listSessions();
+    console.log('');
+    console.log(`${C.bold}当前工作空间会话 (${sessions.length} 个):${C.reset}`);
+    if (sessions.length === 0) {
+      console.log(`  ${C.gray}（暂无会话）${C.reset}`);
+    }
+    for (const s of sessions) {
+      const isCurrent = s.id === agent.currentSessionId;
+      const mark = isCurrent ? ` ${C.green}[当前]${C.reset}` : '';
+      const date = new Date(s.updatedAt).toLocaleString('zh-CN', { hour12: false });
+      console.log(`  ${C.bold}${s.id}${C.reset}${mark} ${C.gray}${date}${C.reset} [${s.messageCount}条] ${s.title}`);
+    }
+    console.log('');
+    return;
+  }
+
+  if (sub === 'current') {
+    const id = agent.currentSessionId;
+    if (!id) {
+      console.log(`${C.gray}当前无活跃会话${C.reset}\n`);
+      return;
+    }
+    const sessions = await sessionStore.listSessions();
+    const meta = sessions.find((s) => s.id === id);
+    if (meta) {
+      console.log('');
+      console.log(`${C.bold}当前会话:${C.reset}`);
+      console.log(`  ID: ${C.bold}${meta.id}${C.reset}`);
+      console.log(`  标题: ${meta.title}`);
+      console.log(`  消息数: ${meta.messageCount}`);
+      console.log(`  创建时间: ${new Date(meta.createdAt).toLocaleString('zh-CN')}`);
+      console.log(`  更新时间: ${new Date(meta.updatedAt).toLocaleString('zh-CN')}`);
+      console.log('');
+    }
+    return;
+  }
+
+  if (sub === 'load') {
+    if (args.length === 0) {
+      console.log(`${C.red}用法: /session load <id>${C.reset}\n`);
+      return;
+    }
+    const id = args[0];
+    try {
+      const data = await sessionStore.loadSession(id);
+      agent.setCurrentSessionId(id);
+      agent['_chatHistory'] = [...data.messages];
+      renderMessages(data.messages);
+    } catch (e) {
+      console.error(`${C.red}✗ 加载失败: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
+    }
+    return;
+  }
+
+  if (sub === 'save') {
+    const msgs = agent.getSessionMessages();
+    if (msgs.length === 0) {
+      console.log(`${C.yellow}无消息可保存${C.reset}\n`);
+      return;
+    }
+    try {
+      if (agent.currentSessionId) {
+        // 更新现有会话
+        await sessionStore.updateSession(agent.currentSessionId, msgs, []);
+        console.log(`${C.green}✓ 会话已更新: ${agent.currentSessionId}${C.reset}\n`);
+      } else {
+        // 创建新会话
+        const userMsg = msgs.find((m) => m.role === 'user')?.content ?? '新会话';
+        const meta = await sessionStore.createSession(
+          typeof userMsg === 'string' ? userMsg : '新会话',
+          msgs,
+          [],
+        );
+        agent.setCurrentSessionId(meta.id);
+        console.log(`${C.green}✓ 会话已保存: ${meta.id}${C.reset}\n`);
+      }
+    } catch (e) {
+      console.error(`${C.red}✗ 保存失败: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
+    }
+    return;
+  }
+
+  if (sub === 'new') {
+    agent.resetSession();
+    console.log(`${C.green}✓ 已创建新会话（旧会话已自动保存）${C.reset}\n`);
+    return;
+  }
+
+  if (sub === 'delete') {
+    if (args.length === 0) {
+      console.log(`${C.red}用法: /session delete <id>${C.reset}\n`);
+      return;
+    }
+    const id = args[0];
+    try {
+      await sessionStore.deleteSession(id);
+      if (agent.currentSessionId === id) {
+        agent.setCurrentSessionId(null);
+      }
+      console.log(`${C.green}✓ 会话已删除: ${id}${C.reset}\n`);
+    } catch (e) {
+      console.error(`${C.red}✗ 删除失败: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
+    }
+    return;
+  }
+
+  if (sub === 'delete-all') {
+    const q = await new Promise<string>((resolve) => {
+      const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      tempRl.question(`${C.red}确认删除当前工作空间的所有会话？(y/N):${C.reset} `, (a) => {
+        tempRl.close();
+        resolve(a);
+      });
+    });
+    if (q.trim().toLowerCase() !== 'y') {
+      console.log(`${C.gray}已取消${C.reset}\n`);
+      return;
+    }
+    try {
+      await sessionStore.deleteAllSessions();
+      agent.resetSession();
+      console.log(`${C.green}✓ 所有会话已删除${C.reset}\n`);
+    } catch (e) {
+      console.error(`${C.red}✗ 删除失败: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
+    }
+    return;
+  }
+
+  console.log(`${C.red}未知 /session 子命令: ${sub}。支持 list / load / save / new / current / delete / delete-all${C.reset}\n`);
+  void rl;
+}
+
 async function main() {
   // 0. 加载合并配置
   const { config: cfg } = configLoader.load();
 
-  // 1. 注册内置工具（根据配置的 enabled/disabled 过滤）
+  // 1. 初始化会话系统（自动生成/加载密钥，用户无感）
+  let sessionStore: SessionStore | null = null;
+  let restoredMessages: ChatMessage[] | null = null;
+  try {
+    if (cfg.session.encryptionEnabled) {
+      sessionStore = new SessionStore();
+      await sessionStore.init();
+
+      const isNewKey = !keychain.exists();
+      if (isNewKey) {
+        console.log(`${C.green}✓ 加密密钥已自动生成，会话数据将加密存储${C.reset}`);
+      }
+
+      // 自动恢复最近会话（仅加载数据，渲染延后到 Banner 之后）
+      if (cfg.session.autoRestore) {
+        const latest = await sessionStore.getLatestSession();
+        if (latest) {
+          const data = await sessionStore.loadSession(latest.id);
+          agent.setCurrentSessionId(latest.id);
+          const userMsgs = data.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+          if (userMsgs.length > 0) {
+            agent['_chatHistory'] = [...data.messages];
+            restoredMessages = data.messages;
+          }
+        }
+      }
+
+      // 注入 SessionStore 到 Agent
+      agent.setSessionStore(sessionStore);
+    }
+  } catch (e) {
+    console.error(`${C.yellow}会话系统初始化失败（继续启动）: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
+    sessionStore = null;
+  }
+
+  // 2. 注册内置工具（根据配置的 enabled/disabled 过滤）
   registerBuiltinTools(cfg.tools);
 
-  // 2. 加载 MCP 配置
+  // 3. 加载 MCP 配置
   try {
     const mcp = await mcpManager.loadFromConfig();
     if (mcp.failures.length) {
@@ -529,10 +753,15 @@ async function main() {
     console.error(`${C.yellow}MCP 加载异常 (继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
   }
 
-  // 3. 启动横幅
+  // 4. 启动横幅
   printBanner();
 
-  // 4. 创建 readline 接口
+  // 5. 渲染恢复的会话历史（在 Banner 之后显示）
+  if (restoredMessages && restoredMessages.length > 0) {
+    renderMessages(restoredMessages);
+  }
+
+  // 6. 创建 readline 接口
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -542,7 +771,7 @@ async function main() {
   /** 是否有正在执行的 Agent 任务 */
   let running = false;
 
-  // 5. REPL 主循环
+  // 7. REPL 主循环
   rl.prompt();
 
   rl.on('line', async (raw: string) => {
@@ -622,6 +851,20 @@ async function main() {
         await handleTools(input, rl);
       } catch (e) {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /tools 异常: ${e instanceof Error ? e.message : String(e)}\n`);
+      } finally {
+        running = false;
+        rl.prompt();
+      }
+      return;
+    }
+
+    if (lower.startsWith('/session')) {
+      running = true;
+      try {
+        // sessionStore 通过闭包传递（在 main() 中定义）
+        await handleSession(input, rl, sessionStore);
+      } catch (e) {
+        console.error(`${C.bold}${C.red}[Error]${C.reset} /session 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
         rl.prompt();

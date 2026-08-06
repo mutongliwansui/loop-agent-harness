@@ -1,11 +1,13 @@
 // 配置 Schema 定义与类型
 import type { MCPServerConfig } from '../tools/mcp/client.js';
+import type { SessionConfig } from '../session/types.js';
 
 /** Agent 完整配置结构 */
 export interface AgentConfig {
   model: ModelConfig;
   tools: ToolsConfig;
   agent: AgentBehaviorConfig;
+  session: SessionConfig;
 }
 
 export interface ModelConfig {
@@ -41,6 +43,7 @@ export type PartialAgentConfig = {
   model?: Partial<ModelConfig>;
   tools?: Partial<ToolsConfig>;
   agent?: Partial<AgentBehaviorConfig>;
+  session?: Partial<SessionConfig>;
 };
 
 /** 默认配置值 */
@@ -60,5 +63,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
   agent: {
     verbose: true,
     systemPrompt: null,
+  },
+  session: {
+    autoSave: true,
+    autoRestore: true,
+    encryptionEnabled: true,
   },
 };

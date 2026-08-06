@@ -5,6 +5,7 @@ import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
+import { type SessionStore } from '../session/store.js';
 import type {
   AgentEvents,
   AgentResult,
@@ -18,12 +19,32 @@ import type {
 export class ReActAgent {
   /** 跨 run() 调用持久化的对话历史，用于 CLI 多轮会话 */
   private _chatHistory: ChatMessage[] = [];
+  /** 会话存储（可选，用于持久化） */
+  private _sessionStore: SessionStore | null = null;
+  /** 当前会话 ID */
+  private _currentSessionId: string | null = null;
 
   constructor(private _configLoader: ConfigLoader = configLoader) {}
+
+  /** 设置会话存储 */
+  setSessionStore(store: SessionStore): void {
+    this._sessionStore = store;
+  }
+
+  /** 获取当前会话 ID */
+  get currentSessionId(): string | null {
+    return this._currentSessionId;
+  }
+
+  /** 设置当前会话 ID（由外部 /session load 调用） */
+  setCurrentSessionId(id: string | null): void {
+    this._currentSessionId = id;
+  }
 
   /** 手动清空持久化的对话历史（不影响正在进行中的 run 调用） */
   resetSession(): void {
     this._chatHistory = [];
+    this._currentSessionId = null;
   }
 
   /** 获取当前持久化的对话历史（只读拷贝） */
@@ -163,6 +184,32 @@ export class ReActAgent {
 
       // 持久化到实例，供下一轮多轮对话复用
       this._chatHistory = [...result.messages];
+
+      // 自动保存会话（如果配置启用且 SessionStore 可用）
+      if (this._sessionStore && cfg.session.autoSave) {
+        try {
+          if (this._currentSessionId) {
+            // 更新现有会话
+            await this._sessionStore.updateSession(
+              this._currentSessionId,
+              result.messages,
+              steps,
+            );
+          } else {
+            // 创建新会话
+            const userMsg = userInput;
+            const meta = await this._sessionStore.createSession(
+              userMsg,
+              result.messages,
+              steps,
+            );
+            this._currentSessionId = meta.id;
+          }
+        } catch (e) {
+          // 自动保存失败不影响主流程
+          console.error('[session] 自动保存失败:', e instanceof Error ? e.message : String(e));
+        }
+      }
     } finally {
       await safeEvents.onEnd(result);
     }
