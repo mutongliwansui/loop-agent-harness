@@ -1,4 +1,0 @@
-OPENAI_API_KEY=sk-skjkwerwu2i3u4i23u4uiu
-OPENAI_BASE_URL=http://192.168.1.155:23620/v1
-MODEL_NAME=deepseek-v4-flash
-MAX_ITERATIONS=100
