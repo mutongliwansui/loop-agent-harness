@@ -156,46 +156,53 @@ export class LLMClient {
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
     let contentBuf = '';
     let finishReason: LLMResponse['finish_reason'] = 'stop';
+    let streamError: Error | null = null;
 
-    for await (const chunk of stream) {
-      const choice = chunk.choices[0];
-      if (!choice) continue;
-      const delta = choice.delta;
+    try {
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+        const delta = choice.delta;
 
-      // 1. 文本片段
-      if (delta.content) {
-        contentBuf += delta.content;
-        yield { type: 'delta', content: delta.content };
-      }
+        // 1. 文本片段
+        if (delta.content) {
+          contentBuf += delta.content;
+          yield { type: 'delta', content: delta.content };
+        }
 
-      // 2. tool_calls 分片：按 index 累积
-      if (delta.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const idx = tc.index;
-          const existing = toolCallMap.get(idx);
-          if (!existing) {
-            // 新 tool_call 首次出现
-            const id = tc.id ?? `call_${idx}`;
-            const name = tc.function?.name ?? '';
-            toolCallMap.set(idx, { id, name, arguments: tc.function?.arguments ?? '' });
-            yield { type: 'toolCallStart', index: idx, toolCallId: id, name };
-          } else {
-            // 已存在 index，累加 arguments 片段
-            if (tc.function?.arguments) {
-              existing.arguments += tc.function.arguments;
-              yield { type: 'toolCallDelta', index: idx, argumentsDelta: tc.function.arguments };
+        // 2. tool_calls 分片：按 index 累积
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index;
+            const existing = toolCallMap.get(idx);
+            if (!existing) {
+              // 新 tool_call 首次出现
+              const id = tc.id ?? `call_${idx}`;
+              const name = tc.function?.name ?? '';
+              toolCallMap.set(idx, { id, name, arguments: tc.function?.arguments ?? '' });
+              yield { type: 'toolCallStart', index: idx, toolCallId: id, name };
+            } else {
+              // 已存在 index，累加 arguments 片段
+              if (tc.function?.arguments) {
+                existing.arguments += tc.function.arguments;
+                yield { type: 'toolCallDelta', index: idx, argumentsDelta: tc.function.arguments };
+              }
+              // id/name 可能在后续 chunk 补全（部分服务商会分片返回）
+              if (tc.id && !existing.id) existing.id = tc.id;
+              if (tc.function?.name && !existing.name) existing.name = tc.function.name;
             }
-            // id/name 可能在后续 chunk 补全（部分服务商会分片返回）
-            if (tc.id && !existing.id) existing.id = tc.id;
-            if (tc.function?.name && !existing.name) existing.name = tc.function.name;
           }
         }
-      }
 
-      // 3. finish_reason
-      if (choice.finish_reason) {
-        finishReason = choice.finish_reason;
+        // 3. finish_reason
+        if (choice.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
       }
+    } catch (e) {
+      // 流连接过早关闭（Premature close 等），保存错误但不丢失已累积的内容
+      streamError = e instanceof Error ? e : new Error(String(e));
+      debug.log(`流式流连接异常关闭: ${streamError.message}，将返回已累积的内容`);
     }
 
     // 组装最终 LLMResponse
@@ -215,6 +222,16 @@ export class LLMClient {
       tool_calls: toolCalls,
       finish_reason: toolCalls ? 'tool_calls' : finishReason,
     };
+
+    if (streamError) {
+      // 流异常关闭但有部分内容时，记录警告并返回已累积的内容
+      if (contentBuf || toolCallMap.size > 0) {
+        debug.log(`流连接异常关闭，但已累积 ${contentBuf.length} 字符和 ${toolCallMap.size} 个工具调用，继续处理`);
+      } else {
+        // 没有任何内容，抛出原始错误
+        throw streamError;
+      }
+    }
 
     debug.llmResponse(
       response.content,
