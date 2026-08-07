@@ -6,6 +6,7 @@ import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
+import { skillLoader } from '../skill/loader.js';
 import { type SessionStore } from '../session/store.js';
 import type {
   AgentEvents,
@@ -69,7 +70,8 @@ export class ReActAgent {
     const verbose = cfg.agent.verbose;
 
     // 自定义 system prompt 覆盖
-    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt();
+    const skills = cfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
+    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills);
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义
     const events = this.composeEvents([

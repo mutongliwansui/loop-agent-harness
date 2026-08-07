@@ -1,6 +1,9 @@
 // 配置 Schema 定义与类型
 import type { MCPServerConfig } from '../tools/mcp/client.js';
 import type { SessionConfig } from '../session/types.js';
+import type { SkillConfig } from '../skill/types.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 /** Agent 完整配置结构 */
 export interface AgentConfig {
@@ -8,6 +11,7 @@ export interface AgentConfig {
   tools: ToolsConfig;
   agent: AgentBehaviorConfig;
   session: SessionConfig;
+  skill: SkillConfig;
 }
 
 export interface ModelConfig {
@@ -45,6 +49,7 @@ export type PartialAgentConfig = {
   tools?: Partial<ToolsConfig>;
   agent?: Partial<AgentBehaviorConfig>;
   session?: Partial<SessionConfig>;
+  skill?: Partial<SkillConfig>;
 };
 
 /** 默认配置值 */
@@ -70,5 +75,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
     autoSave: true,
     autoRestore: true,
     encryptionEnabled: true,
+  },
+  skill: {
+    enabled: true,
+    globalDir: join(homedir(), '.loop-agent', 'skills'),
+    workspaceDir: 'skills',
+    autoLoad: true,
   },
 };

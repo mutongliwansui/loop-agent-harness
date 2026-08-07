@@ -14,6 +14,7 @@ import {
   fileRead,
   fileWrite,
   grep,
+  activateSkill,
 } from './tools/index.js';
 import {
   configLoader,
@@ -25,6 +26,7 @@ import {
   type ConfigSource,
   type ToolsConfig,
 } from './config/index.js';
+import { skillLoader, formatSkillList } from './skill/index.js';
 import { type MCPServerConfig } from './tools/mcp/client.js';
 import { SessionStore, keychain, type SessionMeta } from './session/index.js';
 import type { ChatMessage } from './types.js';
@@ -102,6 +104,7 @@ function printBanner(): void {
   const { config: cfg, sources } = configLoader.load();
   const builtTools = registry.list().filter((t) => !t.name.includes('__'));
   const mcpCount = registry.list().length - builtTools.length;
+  const skills = cfg.skill.enabled ? skillLoader.list() : [];
 
   console.log(`${C.bold}${C.yellow}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${C.reset}`);
   console.log(`${C.bold}${C.yellow}┃            ReAct Agent 交互式控制台                     ┃${C.reset}`);
@@ -116,6 +119,9 @@ function printBanner(): void {
   if (mcpCount > 0) {
     console.log(`${C.cyan}MCP 工具:${C.reset} ${mcpCount} 个, Servers: ${registry.listMCPServers().join(', ')} (${C.magenta}{serverName}__toolName${C.reset})`);
   }
+  if (cfg.skill.enabled && skills.length > 0) {
+    console.log(`${C.cyan}Skills:${C.reset} ${skills.length} 个 (${skills.map((s) => s.name).join(', ')})`);
+  }
   if (cfg.agent.debug) {
     console.log(`${C.yellow}⚠ 调试模式已开启，日志输出到: ${join(homedir(), '.loop-agent', 'logs')}${C.reset}`);
   }
@@ -126,6 +132,7 @@ function printBanner(): void {
   console.log(`  ${C.bold}/config${C.reset}       → 配置管理（get/set/delete/list/path）`);
   console.log(`  ${C.bold}/mcp${C.reset}          → MCP 管理（list/add/remove/reload/test）`);
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
+  console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show）`);
   console.log(`  ${C.bold}/session${C.reset}      → 会话管理（list/load/save/new/delete）`);
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
@@ -141,6 +148,8 @@ function printStatus(): void {
   const builtin = allTools.filter((t) => !t.name.includes('__'));
   const mcp = allTools.filter((t) => t.name.includes('__'));
   const mcpServers = registry.listMCPServers();
+  const { config: cfg } = configLoader.load();
+  const skills = cfg.skill.enabled ? skillLoader.list() : [];
   console.log('');
   console.log(`  ${C.bold}消息历史:${C.reset} ${msgs.length} 条`);
   console.log(`  ${C.bold}内置工具:${C.reset} ${builtin.length} 个 (${builtin.map((t) => t.name).join(', ')})`);
@@ -149,6 +158,9 @@ function printStatus(): void {
     console.log(`  ${C.bold}MCP 工具:${C.reset} ${mcp.length} 个`);
   } else {
     console.log(`  ${C.bold}MCP 工具:${C.reset} 未加载（可用 /mcp add 或写入配置后 /mcp reload）`);
+  }
+  if (skills.length > 0) {
+    console.log(`  ${C.bold}Skills:${C.reset} ${skills.length} 个 (${skills.map((s) => s.name).join(', ')})`);
   }
   console.log('');
 }
@@ -468,7 +480,7 @@ async function handleTools(input: string, rl: readline.Interface): Promise<void>
     const { scope, rest } = parseScope(args);
     const toolName = rest[0];
     // 检查是否为内置工具（内置工具才用 enable/disable 配置，MCP 用 /mcp remove）
-    const builtinNames = ['commandRun', 'fileRead', 'fileWrite', 'grep'];
+    const builtinNames = ['commandRun', 'fileRead', 'fileWrite', 'grep', 'activateSkill'];
     if (!builtinNames.includes(toolName)) {
       console.log(`${C.yellow}⚠️  /tools enable/disable 仅用于内置工具（commandRun/fileRead/fileWrite/grep），MCP 工具使用 /mcp remove${C.reset}\n`);
       return;
@@ -496,7 +508,7 @@ async function handleTools(input: string, rl: readline.Interface): Promise<void>
       await configWriter.updateScope(scope, partial);
       // 立即 registry 同步
       if (sub === 'enable') {
-        const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, grep };
+        const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, grep, activateSkill };
         const t = toolMap[toolName];
         if (t && !registry.has(toolName)) registry.register(t as never);
       } else {
@@ -510,6 +522,72 @@ async function handleTools(input: string, rl: readline.Interface): Promise<void>
   }
 
   console.log(`${C.red}未知 /tools 子命令: ${sub}。支持 list / enable / disable / reload${C.reset}\n`);
+  void rl;
+}
+
+/**
+ * /skill 命令处理器
+ * 支持: list, reload, show <name>
+ */
+async function handleSkill(input: string, rl: readline.Interface): Promise<void> {
+  const parts = input.split(/\s+/);
+  const sub = parts[1] ?? 'list';
+  const args = parts.slice(2);
+
+  if (sub === 'list') {
+    const { config: cfg } = configLoader.load();
+    if (!cfg.skill.enabled) {
+      console.log(`${C.gray}Skill 功能未启用${C.reset}\n`);
+      return;
+    }
+    const skills = skillLoader.list();
+    console.log('');
+    console.log(`${C.bold}可用 Skill 列表 (${skills.length} 个):${C.reset}`);
+    if (skills.length === 0) {
+      console.log(`  ${C.gray}（暂无 Skill，可在 ~/.loop-agent/skills/ 或 <cwd>/skills/ 下创建）${C.reset}`);
+    } else {
+      for (const s of skills) {
+        const scopeTag = s.scope === 'workspace' ? `${C.green}[工作空间]${C.reset}` : `${C.magenta}[全局]${C.reset}`;
+        console.log(`  ${C.bold}${s.name}${C.reset} ${scopeTag}`);
+        console.log(`    ${C.gray}${s.description}${C.reset}`);
+      }
+    }
+    console.log('');
+    return;
+  }
+
+  if (sub === 'reload') {
+    console.log('');
+    console.log(`${C.gray}重新扫描 Skill...${C.reset}`);
+    const skills = skillLoader.reload(process.cwd());
+    console.log(`${C.green}✓${C.reset} 已发现 ${skills.length} 个 Skill`);
+    console.log(formatSkillList(skills));
+    console.log('');
+    return;
+  }
+
+  if (sub === 'show') {
+    if (args.length === 0) {
+      console.log(`${C.red}用法: /skill show <name>${C.reset}\n`);
+      return;
+    }
+    const name = args[0];
+    const content = skillLoader.load(name);
+    if (!content) {
+      console.log(`${C.red}Skill "${name}" 未找到${C.reset}\n`);
+      return;
+    }
+    console.log('');
+    console.log(`${C.bold}${content.metadata.name}${C.reset} ${C.gray}(${content.metadata.scope === 'workspace' ? '工作空间' : '全局'})${C.reset}`);
+    console.log(`${C.gray}描述:${C.reset} ${content.metadata.description}`);
+    console.log(`${C.gray}路径:${C.reset} ${content.metadata.path}`);
+    console.log(`${C.gray}内容:${C.reset}`);
+    console.log(content.fullContent);
+    console.log('');
+    return;
+  }
+
+  console.log(`${C.red}未知 /skill 子命令: ${sub}。支持 list / reload / show${C.reset}\n`);
   void rl;
 }
 
@@ -756,15 +834,28 @@ async function main() {
     console.error(`${C.yellow}MCP 加载异常 (继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
   }
 
-  // 4. 启动横幅
+  // 4. 扫描 Skill
+  if (cfg.skill.enabled && cfg.skill.autoLoad) {
+    try {
+      const skills = skillLoader.scan(process.cwd());
+      if (skills.length > 0) {
+        console.log(`${C.green}Skill 加载成功:${C.reset} ${skills.length} 个`);
+        for (const s of skills) console.log(`  ✓ ${s.name} (${s.scope === 'workspace' ? '工作空间' : '全局'})`);
+      }
+    } catch (e) {
+      console.error(`${C.yellow}Skill 扫描异常 (继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+    }
+  }
+
+  // 5. 启动横幅
   printBanner();
 
-  // 5. 渲染恢复的会话历史（在 Banner 之后显示）
+  // 6. 渲染恢复的会话历史（在 Banner 之后显示）
   if (restoredMessages && restoredMessages.length > 0) {
     renderMessages(restoredMessages);
   }
 
-  // 6. 创建 readline 接口
+  // 7. 创建 readline 接口
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -774,7 +865,7 @@ async function main() {
   /** 是否有正在执行的 Agent 任务 */
   let running = false;
 
-  // 7. REPL 主循环
+  // 8. REPL 主循环
   rl.prompt();
 
   rl.on('line', async (raw: string) => {
@@ -854,6 +945,19 @@ async function main() {
         await handleTools(input, rl);
       } catch (e) {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /tools 异常: ${e instanceof Error ? e.message : String(e)}\n`);
+      } finally {
+        running = false;
+        rl.prompt();
+      }
+      return;
+    }
+
+    if (lower.startsWith('/skill')) {
+      running = true;
+      try {
+        await handleSkill(input, rl);
+      } catch (e) {
+        console.error(`${C.bold}${C.red}[Error]${C.reset} /skill 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
         rl.prompt();

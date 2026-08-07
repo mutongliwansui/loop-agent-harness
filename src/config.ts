@@ -29,6 +29,9 @@ export const config = {
   get debug(): boolean {
     return configLoader.load().config.agent.debug;
   },
+  get skill() {
+    return configLoader.load().config.skill;
+  },
 };
 
 export default config;

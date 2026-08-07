@@ -1,5 +1,6 @@
 // System Prompt 构造器：仅含行为指导，不重复工具列表
 // 工具 schema 由 OpenAI function calling 的 tools 参数暴露，避免冗余
+import type { SkillMetadata } from '../skill/types.js';
 
 /**
  * 构造 ReAct Agent 的 System Prompt
@@ -8,8 +9,16 @@
  * - 工具列表不在 prompt 中重复（由 tools 参数负责）
  * - 仅提供角色定义、工作模式、规则约束
  * - 保留工具使用指导（如 MCP 前缀说明）
+ * - 注入 Skill 元信息，供 LLM 判断何时激活 Skill
  */
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(skills: SkillMetadata[] = []): string {
+  const skillSection = skills.length > 0
+    ? `\n## 可用 Skill（技能包）
+当用户的需求与以下 Skill 的描述匹配时，使用 activate_skill 工具激活对应 Skill，获取详细的执行指令。
+${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace' ? '(工作空间)' : '(全局)'}`).join('\n')}
+`
+    : '';
+
   return `你是一个能够使用工具的 ReAct（Reasoning + Acting）Agent。通过 Thought → Action → Observation 的循环解决用户问题。
 
 ## 工作模式
@@ -29,5 +38,5 @@ export function buildSystemPrompt(): string {
 
 ## 工具使用指导
 - 工具的参数 schema 通过 function calling 协议暴露，按需调用即可
-- 工具名前缀 \`{serverName}__\` 表示来自 MCP server 的工具，可正常使用`;
+- 工具名前缀 \`{serverName}__\` 表示来自 MCP server 的工具，可正常使用${skillSection}`;
 }

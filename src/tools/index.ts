@@ -8,6 +8,7 @@ export { commandRun } from './commandRun.js';
 export { fileRead } from './fileRead.js';
 export { fileWrite } from './fileWrite.js';
 export { grep } from './grep.js';
+export { activateSkill } from './activateSkill.js';
 
 // MCP 接入
 export { MCPClient } from './mcp/client.js';
@@ -24,6 +25,7 @@ import { commandRun } from './commandRun.js';
 import { fileRead } from './fileRead.js';
 import { fileWrite } from './fileWrite.js';
 import { grep } from './grep.js';
+import { activateSkill } from './activateSkill.js';
 import type { ToolsConfig } from '../config/schema.js';
 
 /**
@@ -32,7 +34,7 @@ import type { ToolsConfig } from '../config/schema.js';
  * @returns 已注册的工具名数组
  */
 export function registerBuiltinTools(toolsConfig?: ToolsConfig): string[] {
-  const allTools = [commandRun, fileRead, fileWrite, grep];
+  const allTools = [commandRun, fileRead, fileWrite, grep, activateSkill];
 
   // 根据配置过滤
   let active = allTools;
