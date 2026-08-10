@@ -16,13 +16,31 @@ export interface SessionMeta {
   file: string;
 }
 
-/** 完整会话数据（加密存储的内容） */
+/** 完整会话数据（加密存储的内容） - 改造后支持分层存储 */
 export interface SessionData {
   id: string;
-  messages: ChatMessage[];
-  steps: AgentStep[];
+  /** 创建时间 ISO */
   createdAt: string;
+  /** 更新时间 ISO */
   updatedAt: string;
+  
+  // 原有字段（兼容旧格式，逐步迁移到分层结构）
+  /** @deprecated 使用 recentMessages 替代 */
+  messages?: ChatMessage[];
+  /** @deprecated 保留兼容 */
+  steps?: AgentStep[];
+  
+  // 分层存储字段（新格式）
+  /** L1 压缩产物：上次会话摘要，注入系统提示词 */
+  lastSummary?: string;
+  /** 最近 N 轮对话（L1 工作集），恢复时加载到 _chatHistory */
+  recentMessages?: ChatMessage[];
+  /** 归档消息（可选，不参与上下文） */
+  archivedMessages?: ChatMessage[];
+  /** 归档消息数（用于显示） */
+  archivedCount?: number;
+  /** 保存时的最近轮数配置 */
+  recentTurns?: number;
 }
 
 /** 工作空间元信息 */

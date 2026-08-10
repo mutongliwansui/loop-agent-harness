@@ -2,6 +2,8 @@
 import type { MCPServerConfig } from '../tools/mcp/client.js';
 import type { SessionConfig } from '../session/types.js';
 import type { SkillConfig } from '../skill/types.js';
+import type { MemoryConfig } from '../memory/types.js';
+import { DEFAULT_MEMORY_CONFIG } from '../memory/types.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +14,7 @@ export interface AgentConfig {
   agent: AgentBehaviorConfig;
   session: SessionConfig;
   skill: SkillConfig;
+  memory: MemoryConfig;
 }
 
 export interface ModelConfig {
@@ -50,6 +53,7 @@ export type PartialAgentConfig = {
   agent?: Partial<AgentBehaviorConfig>;
   session?: Partial<SessionConfig>;
   skill?: Partial<SkillConfig>;
+  memory?: Partial<MemoryConfig>;
 };
 
 /** 默认配置值 */
@@ -81,5 +85,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     globalDir: join(homedir(), '.loop-agent', 'skills'),
     workspaceDir: 'skills',
     autoLoad: true,
+  },
+  memory: {
+    ...DEFAULT_MEMORY_CONFIG,
   },
 };

@@ -40,10 +40,13 @@ export class SessionStore {
   private workspaceId: string;
   private workspaceDir: string;
   private currentSessionId: string | null = null;
+  /** 保存最近 N 轮对话（每轮 = user + assistant + tool） */
+  private readonly recentTurns: number;
 
-  constructor(workspacePath: string = process.cwd()) {
+  constructor(workspacePath: string = process.cwd(), recentTurns = 3) {
     this.workspaceId = workspaceId(workspacePath);
     this.workspaceDir = join(homedir(), '.loop-agent', 'sessions', this.workspaceId);
+    this.recentTurns = recentTurns;
   }
 
   /** 当前会话 ID */
@@ -66,7 +69,7 @@ export class SessionStore {
   }
 
   /**
-   * 创建新会话
+   * 创建新会话（支持分层存储）
    */
   async createSession(
     firstMessage: string,
@@ -75,13 +78,20 @@ export class SessionStore {
   ): Promise<SessionMeta> {
     const id = `sess_${formatDate(new Date())}`;
     const now = new Date().toISOString();
+    
+    // 分层存储：首次创建时 recentMessages = messages（因为消息很少）
     const data: SessionData = {
       id,
-      messages,
-      steps,
       createdAt: now,
       updatedAt: now,
+      recentMessages: messages,
+      archivedCount: 0,
+      recentTurns: this.recentTurns,
+      // 兼容旧格式
+      messages,
+      steps,
     };
+    
     await this.writeSession(data);
     const meta = this.toMeta(data, firstMessage);
     await this.appendIndex(meta);
@@ -90,7 +100,10 @@ export class SessionStore {
   }
 
   /**
-   * 更新会话（追加新消息）
+   * 更新会话（追加新消息，自动分层存储）
+   * - recentMessages 只保留最近 N 轮（N = recentTurns）
+   * - 超出部分迁移到 archivedMessages
+   * - 当 archivedMessages 超过阈值时，生成摘要到 lastSummary
    */
   async updateSession(
     id: string,
@@ -98,9 +111,64 @@ export class SessionStore {
     steps: AgentStep[],
   ): Promise<void> {
     const data = await this.readSession(id);
+
+    // 保存原始全量消息用于兼容
     data.messages = messages;
     data.steps = steps;
     data.updatedAt = new Date().toISOString();
+
+    // === 分层存储逻辑 ===
+    const recentTurns = data.recentTurns ?? this.recentTurns;
+    const turnSize = 4; // 每轮约 4 条：system + user + assistant + tool
+    const maxRecentMessages = recentTurns * turnSize;
+
+    // 当前 recentMessages（不含 system）
+    let currentRecent = data.recentMessages ?? [];
+    // 新的非 system 消息
+    const nonSystemMessages = messages.filter((m) => m.role !== 'system');
+
+    // 合并当前 recent + 新消息
+    let mergedRecent = [...currentRecent];
+    for (const msg of nonSystemMessages) {
+      // 避免重复（按 role + content 简单去重）
+      const exists = mergedRecent.some(
+        (m) => m.role === msg.role && m.content === msg.content,
+      );
+      if (!exists) {
+        mergedRecent.push(msg);
+      }
+    }
+
+    // 如果 recentMessages 超过阈值，将最旧的迁移到 archived
+    let archived = [...(data.archivedMessages ?? [])];
+    if (mergedRecent.length > maxRecentMessages) {
+      const overflow = mergedRecent.slice(0, mergedRecent.length - maxRecentMessages);
+      mergedRecent = mergedRecent.slice(-maxRecentMessages);
+      archived = [...archived, ...overflow];
+    }
+
+    // 如果 archived 超过一定数量，生成摘要
+    const MAX_ARCHIVED_BEFORE_COMPACT = 30;
+    if (archived.length > MAX_ARCHIVED_BEFORE_COMPACT) {
+      const summaryParts: string[] = [];
+      for (const msg of archived) {
+        const roleLabel = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role;
+        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        summaryParts.push(`${roleLabel}: ${content.slice(0, 100)}`);
+      }
+      const archiveSummary = `[历史摘要] ${summaryParts.join(' | ')}`;
+      data.lastSummary = data.lastSummary
+        ? `${data.lastSummary}\n${archiveSummary}`
+        : archiveSummary;
+      // 保留最近 10 条 archived，其余丢弃
+      archived = archived.slice(-10);
+    }
+
+    data.recentMessages = mergedRecent;
+    data.archivedMessages = archived;
+    data.archivedCount = archived.length + (data.archivedCount ?? 0) - (archived.length > 10 ? archived.length - 10 : 0);
+    data.recentTurns = recentTurns;
+
     await this.writeSession(data);
     await this.updateIndex(id, {
       messageCount: messages.length,
@@ -114,7 +182,63 @@ export class SessionStore {
   async loadSession(id: string): Promise<SessionData> {
     const data = await this.readSession(id);
     this.currentSessionId = id;
+
+    // 如果是旧格式（无 recentMessages），转换为分层格式
+    if (!data.recentMessages && data.messages && data.messages.length > 0) {
+      const nonSystemMessages = data.messages.filter((m) => m.role !== 'system');
+      data.recentMessages = nonSystemMessages.slice(-this.recentTurns * 4);
+      data.archivedMessages = nonSystemMessages.slice(0, Math.max(0, nonSystemMessages.length - this.recentTurns * 4));
+      data.archivedCount = data.archivedMessages.length;
+      data.recentTurns = this.recentTurns;
+
+      // 如果历史过长，生成摘要
+      if (data.archivedMessages.length > 30) {
+        const summaryParts: string[] = [];
+        for (const msg of data.archivedMessages) {
+          const roleLabel = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role;
+          const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+          summaryParts.push(`${roleLabel}: ${content.slice(0, 100)}`);
+        }
+        data.lastSummary = `[历史摘要] ${summaryParts.join(' | ')}`;
+        data.archivedMessages = data.archivedMessages.slice(-10);
+      }
+
+      // 保存转换后的数据
+      await this.writeSession(data);
+    }
+
     return data;
+  }
+
+  /**
+   * 获取用于恢复对话的消息（仅 recentMessages + system 提示）
+   * 不含 archivedMessages，控制上下文大小
+   */
+  static getRestoreMessages(data: SessionData, systemPrompt?: string): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+
+    // 1. 添加 system 提示（可选）
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+
+    // 2. 添加 lastSummary 作为历史上下文
+    if (data.lastSummary) {
+      messages.push({
+        role: 'user',
+        content: `[会话历史摘要] ${data.lastSummary}`,
+      });
+    }
+
+    // 3. 添加 recentMessages（恢复最近对话）
+    if (data.recentMessages && data.recentMessages.length > 0) {
+      messages.push(...data.recentMessages);
+    } else if (data.messages) {
+      // 兼容旧格式
+      messages.push(...data.messages);
+    }
+
+    return messages;
   }
 
   /**
@@ -219,12 +343,16 @@ export class SessionStore {
 
   private toMeta(data: SessionData, firstMessage: string): SessionMeta {
     const title = firstMessage.slice(0, 50);
+    // 优先使用 recentMessages 数量 + archivedCount，兼容旧格式
+    const count = data.recentMessages
+      ? data.recentMessages.length + (data.archivedCount ?? 0)
+      : (data.messages?.length ?? 0);
     return {
       id: data.id,
       title,
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
-      messageCount: data.messages.length,
+      messageCount: count,
       file: `${data.id}.enc`,
     };
   }

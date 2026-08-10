@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { agent } from './agent/react-agent.js';
+import { buildSystemPrompt } from './agent/prompt.js';
 import {
   registerBuiltinTools,
   registry,
@@ -29,6 +30,7 @@ import {
 import { skillLoader, formatSkillList } from './skill/index.js';
 import { type MCPServerConfig } from './tools/mcp/client.js';
 import { SessionStore, keychain, type SessionMeta } from './session/index.js';
+import { EpisodicMemory, CuratedMemory, type CuratedFileKey } from './memory/index.js';
 import type { ChatMessage } from './types.js';
 
 // Windows 终端默认代码页为 GBK(936)，切换到 UTF-8(65001) 避免中文乱码
@@ -134,6 +136,7 @@ function printBanner(): void {
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
   console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show）`);
   console.log(`  ${C.bold}/session${C.reset}      → 会话管理（list/load/save/new/delete）`);
+  console.log(`  ${C.bold}/memory${C.reset}       → 记忆管理（curated/episodic/status/search）`);
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 同样有效）`);
@@ -690,9 +693,18 @@ async function handleSession(
     const id = args[0];
     try {
       const data = await sessionStore.loadSession(id);
-      agent.setCurrentSessionId(id);
-      agent['_chatHistory'] = [...data.messages];
-      renderMessages(data.messages);
+
+      // 构建 system prompt
+      const { config: loadCfg } = configLoader.load();
+      const skills = loadCfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
+      const systemPrompt = loadCfg.agent.systemPrompt ?? buildSystemPrompt(skills);
+
+      // 使用 restoreSession 方法（支持分层存储）
+      agent.restoreSession(data, systemPrompt);
+
+      // 显示恢复的会话历史（recentMessages，不含 system）
+      const restoreMessages = SessionStore.getRestoreMessages(data);
+      renderMessages(restoreMessages);
     } catch (e) {
       console.error(`${C.red}✗ 加载失败: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
     }
@@ -777,6 +789,191 @@ async function handleSession(
   void rl;
 }
 
+/**
+ * /memory 命令处理器
+ * 支持: status, curated (list/read/append), episodic (list/read), search
+ */
+async function handleMemory(input: string, rl: readline.Interface): Promise<void> {
+  const parts = input.split(/\s+/);
+  const sub = parts[1] ?? 'status';
+  const args = parts.slice(2);
+
+  const epiMemory = agent.episodicMemory;
+  const curMemory = agent.curatedMemory;
+
+  // status 命令 - 不需要 memory 启用
+  if (sub === 'status') {
+    const enabled = agent.memoryEnabled;
+    console.log('');
+    console.log(`${C.bold}记忆系统状态:${C.reset}`);
+    console.log(`  ${C.cyan}启用状态:${C.reset} ${enabled ? `${C.green}✓ 已启用${C.reset}` : `${C.gray}✗ 未启用${C.reset}`}`);
+    
+    if (enabled) {
+      if (epiMemory) {
+        const dir = epiMemory.getMemoryDir();
+        const days = await epiMemory.listDays();
+        console.log(`  ${C.cyan}L2 情景记忆:${C.reset} ${days.length} 天 (路径: ${dir})`);
+      }
+      if (curMemory) {
+        const paths = curMemory.getFilePaths();
+        console.log(`  ${C.cyan}L3 核心记忆:${C.reset} ${Object.values(paths).length} 个文件`);
+        for (const [key, path] of Object.entries(paths)) {
+          console.log(`    - ${C.bold}${key}${C.reset}: ${path}`);
+        }
+      }
+      const { config: cfg } = configLoader.load();
+      console.log(`  ${C.cyan}工作记忆 L1:${C.reset} maxTokens=${cfg.memory.working.maxTokens}, threshold=${cfg.memory.working.compactionThreshold}`);
+    }
+    console.log('');
+    return;
+  }
+
+  if (!agent.memoryEnabled) {
+    console.log(`${C.yellow}⚠ 记忆系统未启用，请在配置中设置 memory.enabled=true${C.reset}\n`);
+    return;
+  }
+
+  // curated 子命令
+  if (sub === 'curated') {
+    if (!curMemory) {
+      console.log(`${C.red}L3 Curated Memory 未初始化${C.reset}\n`);
+      return;
+    }
+    const curSub = args[0] ?? 'list';
+    const curArgs = args.slice(1);
+
+    if (curSub === 'list') {
+      console.log('');
+      console.log(`${C.bold}L3 Curated 核心记忆文件:${C.reset}`);
+      const paths = curMemory.getFilePaths();
+      for (const [key, path] of Object.entries(paths)) {
+        const content = await curMemory.read(key as CuratedFileKey);
+        const lineCount = content.split('\n').length;
+        const charCount = content.length;
+        console.log(`  ${C.bold}${key}${C.reset} — ${path} (${lineCount} 行, ${charCount} 字符)`);
+      }
+      console.log('');
+      return;
+    }
+
+    if (curSub === 'read') {
+      if (curArgs.length === 0) {
+        console.log(`${C.red}用法: /memory curated read <soul|user|memory>${C.reset}\n`);
+        return;
+      }
+      const fileKey = curArgs[0] as CuratedFileKey;
+      const validKeys: CuratedFileKey[] = ['soul', 'user', 'memory'];
+      if (!validKeys.includes(fileKey)) {
+        console.log(`${C.red}无效的文件键: ${fileKey}，可选: ${validKeys.join(', ')}${C.reset}\n`);
+        return;
+      }
+      const content = await curMemory.read(fileKey);
+      console.log('');
+      console.log(`${C.bold}📖 ${fileKey.toUpperCase()}.md${C.reset}`);
+      console.log('─'.repeat(50));
+      console.log(content || `${C.gray}(空)${C.reset}`);
+      console.log('─'.repeat(50));
+      console.log('');
+      return;
+    }
+
+    if (curSub === 'append') {
+      if (curArgs.length < 2) {
+        console.log(`${C.red}用法: /memory curated append <soul|user|memory> <内容>${C.reset}\n`);
+        return;
+      }
+      const fileKey = curArgs[0] as CuratedFileKey;
+      const validKeys: CuratedFileKey[] = ['soul', 'user', 'memory'];
+      if (!validKeys.includes(fileKey)) {
+        console.log(`${C.red}无效的文件键: ${fileKey}，可选: ${validKeys.join(', ')}${C.reset}\n`);
+        return;
+      }
+      const fact = curArgs.slice(1).join(' ');
+      await curMemory.append(fileKey, fact);
+      console.log(`${C.green}✓ 已追加到 ${fileKey.toUpperCase()}.md: ${fact}${C.reset}\n`);
+      return;
+    }
+
+    console.log(`${C.red}未知 curated 子命令: ${curSub}。支持 list / read / append${C.reset}\n`);
+    return;
+  }
+
+  // episodic 子命令
+  if (sub === 'episodic') {
+    if (!epiMemory) {
+      console.log(`${C.red}L2 Episodic Memory 未初始化${C.reset}\n`);
+      return;
+    }
+    const epiSub = args[0] ?? 'list';
+    const epiArgs = args.slice(1);
+
+    if (epiSub === 'list') {
+      const summaries = await epiMemory.listDaySummaries();
+      console.log('');
+      console.log(`${C.bold}L2 情景记忆日志 (${summaries.length} 天):${C.reset}`);
+      if (summaries.length === 0) {
+        console.log(`  ${C.gray}（暂无记录）${C.reset}`);
+      }
+      for (const s of summaries) {
+        console.log(`  ${C.bold}${s.day}${C.reset} — ${s.entryCount} 条记录, ${s.size} 字符`);
+      }
+      console.log('');
+      return;
+    }
+
+    if (epiSub === 'read') {
+      if (epiArgs.length === 0) {
+        console.log(`${C.red}用法: /memory episodic read <YYYY-MM-DD>${C.reset}\n`);
+        return;
+      }
+      const day = epiArgs[0];
+      const content = await epiMemory.readDay(day);
+      if (!content) {
+        console.log(`${C.gray}日期 ${day} 无记录${C.reset}\n`);
+        return;
+      }
+      console.log('');
+      console.log(`${C.bold}📅 ${day} 日志${C.reset}`);
+      console.log('─'.repeat(50));
+      console.log(content);
+      console.log('─'.repeat(50));
+      console.log('');
+      return;
+    }
+
+    console.log(`${C.red}未知 episodic 子命令: ${epiSub}。支持 list / read${C.reset}\n`);
+    return;
+  }
+
+  // search 命令
+  if (sub === 'search') {
+    if (!epiMemory) {
+      console.log(`${C.red}L2 Episodic Memory 未初始化，无法搜索${C.reset}\n`);
+      return;
+    }
+    if (args.length === 0) {
+      console.log(`${C.red}用法: /memory search <关键词>${C.reset}\n`);
+      return;
+    }
+    const query = args.join(' ');
+    const results = await epiMemory.search(query, 5);
+    console.log('');
+    console.log(`${C.bold}搜索结果 "${query}" (${results.length} 条):${C.reset}`);
+    if (results.length === 0) {
+      console.log(`  ${C.gray}（未找到相关记忆）${C.reset}`);
+    }
+    for (const r of results) {
+      console.log(`  ${C.cyan}📅 ${r.day}${C.reset} (score: ${r.score})`);
+      console.log(`  ${C.gray}${r.content.slice(0, 200)}${r.content.length > 200 ? '...' : ''}${C.reset}`);
+      console.log('');
+    }
+    return;
+  }
+
+  console.log(`${C.red}未知 /memory 子命令: ${sub}。支持 status / curated / episodic / search${C.reset}\n`);
+  void rl;
+}
+
 async function main() {
   // 0. 加载合并配置
   const { config: cfg } = configLoader.load();
@@ -799,12 +996,16 @@ async function main() {
         const latest = await sessionStore.getLatestSession();
         if (latest) {
           const data = await sessionStore.loadSession(latest.id);
-          agent.setCurrentSessionId(latest.id);
-          const userMsgs = data.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
-          if (userMsgs.length > 0) {
-            agent['_chatHistory'] = [...data.messages];
-            restoredMessages = data.messages;
-          }
+
+          // 构建 system prompt
+          const skills = cfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
+          const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills);
+
+          // 使用 restoreSession 方法（支持分层存储）
+          agent.restoreSession(data, systemPrompt);
+
+          // 获取恢复消息用于后续渲染
+          restoredMessages = SessionStore.getRestoreMessages(data);
         }
       }
 
@@ -847,15 +1048,25 @@ async function main() {
     }
   }
 
-  // 5. 启动横幅
+  // 5. 初始化记忆系统
+  try {
+    await agent.initMemory(process.cwd());
+    if (agent.memoryEnabled) {
+      console.log(`${C.green}✓ 记忆系统已启用:${C.reset} L1(Working) + L2(Episodic) + L3(Curated)`);
+    }
+  } catch (e) {
+    console.error(`${C.yellow}记忆系统初始化失败（继续启动）: ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+  }
+
+  // 6. 启动横幅
   printBanner();
 
-  // 6. 渲染恢复的会话历史（在 Banner 之后显示）
+  // 7. 渲染恢复的会话历史（在 Banner 之后显示）
   if (restoredMessages && restoredMessages.length > 0) {
     renderMessages(restoredMessages);
   }
 
-  // 7. 创建 readline 接口
+  // 8. 创建 readline 接口
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -865,7 +1076,7 @@ async function main() {
   /** 是否有正在执行的 Agent 任务 */
   let running = false;
 
-  // 8. REPL 主循环
+  // 9. REPL 主循环
   rl.prompt();
 
   rl.on('line', async (raw: string) => {
@@ -972,6 +1183,19 @@ async function main() {
         await handleSession(input, rl, sessionStore);
       } catch (e) {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /session 异常: ${e instanceof Error ? e.message : String(e)}\n`);
+      } finally {
+        running = false;
+        rl.prompt();
+      }
+      return;
+    }
+
+    if (lower.startsWith('/memory')) {
+      running = true;
+      try {
+        await handleMemory(input, rl);
+      } catch (e) {
+        console.error(`${C.bold}${C.red}[Error]${C.reset} /memory 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
         rl.prompt();

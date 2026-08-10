@@ -18,10 +18,12 @@
 [🏗️ 架构设计](#️-架构设计)
 [🔧 内置工具](#-内置工具)
 [🧩 工具扩展](#-工具扩展)
+[🎯 Skill 技能包](#-skill-技能包)
 [⚙️ 配置管理](#️-配置管理)
 [🎧 事件监听器](#-事件监听器)
 [💬 多轮对话](#-多轮对话)
 [💾 会话持久化](#-会话持久化)
+[🧠 记忆管理](#-记忆管理)
 [📝 调试日志](#-调试日志)
 [📁 项目结构](#-项目结构)
 [🛠️ 技术栈](#️-技术栈)
@@ -38,10 +40,12 @@
 | 🔄 **ReAct 循环** | Thought → Action → Observation 逐步推理，直到得出最终答案 |
 | 📡 **流式输出** | LLM 推理过程实时流式输出，支持 `content` 与 `tool_calls` 分片拼接 |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
-| 🛠️ **内置工具** | 命令执行、文件读取（支持行范围）、文件写入、内容检索（grep） |
+| 🛠️ **内置工具** | 命令执行、文件读取（支持行范围）、文件写入、内容检索（grep）、Skill 激活 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
+| 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
+| 🧠 **三层记忆管理** | L1 Working（token 压缩）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入） |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
-| 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools` 命令，支持热修改 |
+| 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory` 命令，支持热修改 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
 | 🎯 **事件监听** | 参考 LangChain callbacks 设计，9 个生命周期钩子便于扩展 |
@@ -130,8 +134,9 @@ npm start
 模型: gpt-4o-mini (workspace)
 BaseURL: https://api.openai.com/v1 (env)
 最大迭代: 10
-内置工具: [commandRun, fileRead, fileWrite, grep]
+内置工具: [commandRun, fileRead, fileWrite, grep, activate_skill]
 MCP 工具: 3 个, Servers: atlasGraphMcp (atlasGraphMcp__toolName)
+Skills: 1 个 (example-skill)
 ⚠ 调试模式已开启，日志输出到: ~/.loop-agent/logs
 
 Agent> 帮我读取 package.json 的版本号
@@ -146,11 +151,13 @@ Agent> 帮我读取 package.json 的版本号
 | `输入问题` | Agent 流式输出 Thought / Action / Observation / Final |
 | `/help` | 查看帮助信息 |
 | `/reset` `/clear` | 清空多轮对话历史，开始新会话 |
-| `/status` | 查看当前会话状态（消息数 / 工具数 / MCP 工具数） |
+| `/status` | 查看当前会话状态（消息数 / 工具数 / MCP 工具数 / Skills） |
 | `/tools` | 工具管理（list / enable / disable / reload） |
 | `/config` | 配置管理（get / set / delete / list / path） |
 | `/mcp` | MCP 管理（list / add / remove / reload / test） |
 | `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
+| `/skill` | Skill 管理（list / reload / show） |
+| `/memory` | 记忆管理（status / curated / episodic / search） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
 
 ### 输出示例
@@ -231,6 +238,30 @@ Agent> 帮我读取 package.json 的版本号
 ```
 
 会话数据以 AES-256-GCM 加密存储在 `~/.loop-agent/sessions/` 目录（按工作空间隔离），详见 [💾 会话持久化](#-会话持久化)。
+
+#### `/skill` — Skill 管理
+
+```
+/skill list                     # 列出所有可用 Skill（全局 + 工作空间，含来源标记）
+/skill reload                   # 重新扫描 Skill 目录
+/skill show <name>              # 显示指定 Skill 的 SKILL.md 完整内容
+```
+
+Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](#-skill-技能包)。
+
+#### `/memory` — 记忆管理
+
+```
+/memory status                          # 查看记忆系统状态（L1/L2/L3 各层统计）
+/memory curated list                    # 列出 L3 核心记忆文件（SOUL / USER / MEMORY）
+/memory curated read <soul|user|memory> # 读取指定核心记忆文件内容
+/memory curated append <key> <内容>      # 向核心记忆文件追加一条事实
+/memory episodic list                   # 列出 L2 情景记忆日志（按天）
+/memory episodic read <YYYY-MM-DD>      # 读取指定日期的情景记忆
+/memory search <关键词>                  # 搜索 L2 情景记忆（返回相关片段）
+```
+
+详见 [🧠 记忆管理](#-记忆管理)。
 
 ---
 
@@ -344,11 +375,17 @@ const result = await agent.run('搜索 src 目录中的 config', {
 │  │  (注册/查询) │  │  (执行/超时) │  │  (外部工具适配)  │  │
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────┤
-│                   Configuration System                       │
+│                  Configuration System                       │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │  ConfigLoader│  │  ConfigWriter│  │  MCPManager      │  │
 │  │  (分层加载)  │  │  (持久化写入)│  │  (生命周期管理)  │  │
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
+├──────────────────────────────────────────────────────────────┤
+│                     Skill System                            │
+│    scanner (扫描) │ loader (加载) │ activate_skill 工具     │
+├──────────────────────────────────────────────────────────────┤
+│                     Memory System                           │
+│    Working(L1) │ Episodic(L2) │ Curated(L3) │ Callback     │
 ├──────────────────────────────────────────────────────────────┤
 │                   Session System                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
@@ -357,7 +394,7 @@ const result = await agent.run('搜索 src 目录中的 config', {
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────┤
 │                   Built-in Tools                             │
-│ commandRun │ fileRead │ fileWrite │ grep                    │
+│ commandRun │ fileRead │ fileWrite │ grep │ activateSkill    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -428,6 +465,7 @@ const result = await agent.run('搜索 src 目录中的 config', {
 | 📄 **文件读取** | `fileRead` | 读取文件内容，支持按行范围部分读取 | `path`（必填）, `startLine`（可选）, `endLine`（可选）, `encoding`（可选） |
 | ✏️ **文件写入** | `fileWrite` | 写入文件，支持覆盖与追加，自动创建父目录 | `path`（必填）, `content`（必填）, `mode`（可选，`overwrite` / `append`） |
 | 🔍 **内容检索** | `grep` | 在文件或目录中检索内容，支持正则、忽略大小写、递归搜索 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选）, `recursive`（可选）, `maxResults`（可选，默认 50） |
+| 🎯 **Skill 激活** | `activate_skill` | 激活指定 Skill（技能包），返回 SKILL.md 完整指令供 Agent 参考执行 | `name`（必填） |
 
 ### 工具使用示例
 
@@ -446,6 +484,9 @@ fileWrite({ "path": "output.txt", "content": "Hello World", "mode": "overwrite" 
 
 # 内容检索
 grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 })
+
+# Skill 激活（渐进式加载，返回 SKILL.md 完整内容）
+activate_skill({ "name": "example-skill" })
 ```
 
 ---
@@ -537,6 +578,71 @@ await registry.registerMCPServer('my-server', {
 
 ---
 
+## 🎯 Skill 技能包
+
+Skill（技能包）是一组针对特定领域任务的**可复用指令集**，采用 `SKILL.md` 标准格式（YAML frontmatter + Markdown 正文）。Agent 根据用户意图**渐进式加载** Skill 的完整指令，用于处理复杂领域任务。
+
+### Skill 目录结构
+
+```
+~/.loop-agent/skills/           # 全局 Skill（所有项目可用）
+└── example-skill/
+    └── SKILL.md
+
+<workspace>/skills/             # 工作空间 Skill（仅当前项目可用，优先级更高）
+└── my-skill/
+    ├── SKILL.md
+    ├── scripts/                # 可选：可执行脚本
+    ├── references/             # 可选：参考文档
+    └── assets/                 # 可选：模板/资源
+```
+
+### SKILL.md 格式规范
+
+```markdown
+---
+name: example-skill
+description: 示例技能包，演示 Skill 的创建和使用方式
+---
+
+# Example Skill
+
+## When to use this skill
+...
+
+## How to ...
+1. ...
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | ✅ | Skill 唯一标识，用于 LLM 匹配与 `activate_skill` 调用 |
+| `description` | ✅ | 简短描述，LLM 据此判断何时使用该 Skill |
+
+> **优先级**：同名 Skill 同时存在时，工作空间版本覆盖全局版本。
+
+### 工作流程
+
+1. **启动时**：自动扫描全局 + 工作空间 Skill，元信息（name + description）注入 System Prompt
+2. **运行时**：LLM 判断用户意图匹配某个 Skill → 调用 `activate_skill` 工具
+3. **加载后**：工具返回 SKILL.md 完整内容，Agent 据此继续推理执行
+4. **手动管理**：可通过 `/skill` 命令查看、刷新
+
+### 编程式激活
+
+```typescript
+import { skillLoader } from './src/skill/index.js';
+
+// 扫描（全局 + 工作空间）
+const skills = skillLoader.scan(process.cwd());
+
+// 渐进式加载完整内容
+const content = skillLoader.load('example-skill');
+console.log(content?.fullContent);
+```
+
+---
+
 ## ⚙️ 配置管理
 
 支持多层配置系统，优先级从高到低为：**CLI 参数 > 工作空间配置 > 全局配置 > 环境变量 > 默认值**。
@@ -563,7 +669,7 @@ await registry.registerMCPServer('my-server', {
     "maxIterations": 10
   },
   "tools": {
-    "enabled": ["commandRun", "fileRead", "fileWrite", "grep"],
+    "enabled": ["commandRun", "fileRead", "fileWrite", "grep", "activate_skill"],
     "disabled": [],
     "mcpServers": {
       "filesystem": {
@@ -582,6 +688,33 @@ await registry.registerMCPServer('my-server', {
     "autoSave": true,
     "autoRestore": true,
     "encryptionEnabled": true
+  },
+  "skill": {
+    "enabled": true,
+    "globalDir": "~/.loop-agent/skills",
+    "workspaceDir": "skills",
+    "autoLoad": true
+  },
+  "memory": {
+    "enabled": true,
+    "working": {
+      "maxTokens": 8000,
+      "compactionThreshold": 0.8,
+      "keepRecentTurns": 3
+    },
+    "episodic": {
+      "dir": "memory",
+      "searchTopK": 3,
+      "searchTimeoutMs": 500
+    },
+    "curated": {
+      "files": ["SOUL.md", "USER.md", "MEMORY.md"]
+    },
+    "dreaming": {
+      "enabled": true,
+      "daysBack": 3,
+      "onExit": true
+    }
   }
 }
 ```
@@ -596,6 +729,8 @@ await registry.registerMCPServer('my-server', {
 | `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
 | `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
+| `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill 技能包开关与扫描目录 | 全部启用 |
+| `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` | 三层记忆系统配置 | 全部启用 |
 
 ### 环境变量（向后兼容）
 
@@ -785,6 +920,87 @@ Agent 内置了基于文件系统的会话持久化能力：对话历史（messa
 
 ---
 
+## 🧠 记忆管理
+
+基于 OpenClaw 风格的三层记忆架构（Tier Model），核心思想：**文件是真相源，索引只做加速；写读路径分离；晋升有闸门。** 记忆系统与会话持久化（Task-11）互补：会话持久化解决"恢复上次对话"，记忆管理解决"跨会话知识积累"。
+
+### 三层架构
+
+| 层级 | 存储形态 | 生命周期 | 自动进 context | 说明 |
+|---|---|---|---|---|
+| **L1 Working** | 内存 `_chatHistory` | 单次会话 | ✅ 始终在 | 超阈值自动压缩（默认 8000 token / 80% 阈值，保留最近 3 轮） |
+| **L2 Episodic** | `{cwd}/memory/YYYY-MM-DD.md` | 永久存档 | ❌ 按需检索 | 按天分文件，工具调用结果自动记录，支持 `/memory search` 召回 |
+| **L3 Curated** | `{cwd}/SOUL.md` / `USER.md` / `MEMORY.md` | 永久常驻 | ✅ 启动注入 | Agent 人格 / 用户画像 / 精炼事实，常驻 System Prompt |
+
+### 目录结构
+
+```
+<workspace>/
+├── SOUL.md                     # L3：Agent 人格与行为准则（系统生成，人工编辑）
+├── USER.md                     # L3：用户画像（稳定偏好、沟通风格、约束）
+├── MEMORY.md                   # L3：精炼事实（项目知识、关键决策、已知问题）
+└── memory/                     # L2：情景记忆（按天分文件）
+    ├── 2026-08-08.md
+    ├── 2026-08-09.md
+    └── ...
+```
+
+### L3 文件模板
+
+```markdown
+# SOUL - Agent 人格
+## 核心身份 / 行为准则 / 沟通风格
+
+# USER - 用户画像
+## 基本信息 / 偏好 / 约束
+
+# MEMORY - 精炼事实
+## 项目知识 / 关键决策 / 已知问题
+```
+
+首次启动或执行 `/memory curated list` 时自动创建；L3 内容会在每次 LLM 调用时注入 System Prompt，作为"长期记忆"常驻参考。
+
+### CLI 示例
+
+```
+/memory status                          # 查看记忆系统状态（各层统计）
+/memory curated list                    # 列出 L3 核心记忆文件（行数/字符数）
+/memory curated read user               # 读取 USER.md
+/memory curated append memory "决策：默认使用 DeepSeek 模型"  # 追加核心记忆
+/memory episodic list                   # 列出 L2 情景记忆日志
+/memory episodic read 2026-08-09        # 读取指定日期日志
+/memory search 华锐                      # 搜索历史记忆
+```
+
+### 编程式使用
+
+```typescript
+import { EpisodicMemory, CuratedMemory, WorkingMemory } from './src/memory/index.js';
+
+// L2 情景记忆：按天写入/读取
+const episodic = new EpisodicMemory(process.cwd());
+await episodic.init();
+await episodic.appendToday('- 用户询问了华锐的报价');
+
+// L3 核心记忆：读写 SOUL / USER / MEMORY
+const curated = new CuratedMemory(process.cwd());
+await curated.init();
+await curated.append('user', '用户偏好邮件沟通');
+
+// L1 工作记忆：token 估算与压缩
+const working = new WorkingMemory();
+const needs = working.needsCompaction(messages);
+```
+
+### 设计原则
+
+- **文件即真相源**：Markdown 明文可读、可 diff、可版本管理（SQLite 索引在后续阶段引入）
+- **写读分离**：回复路径只做检索，不抽取记忆；抽取走后台 Dreaming 流水线（规划中）
+- **晋升有闸门**：不同来源（用户直述 / 工具输出 / 网页搜索）需不同确认次数才能晋升 L3（规划中）
+- **失败降级**：记忆子系统异常不影响主回复路径
+
+---
+
 ## 📝 调试日志
 
 Agent 内置了文件型调试日志系统（`src/debug.ts`），可将 LLM 请求/响应、工具调用、Agent 迭代过程完整记录到本地文件，便于问题排查。
@@ -847,17 +1063,30 @@ loop-agent-command/
 │   ├── types.ts                      # 📐 核心类型定义（Tool, ChatMessage, AgentEvents 等）
 │   ├── agent/
 │   │   ├── react-agent.ts            # 🔄 ReAct 主循环（流式版本 + 会话自动保存）
-│   │   ├── prompt.ts                 # 📝 System Prompt 构造器
+│   │   ├── prompt.ts                 # 📝 System Prompt 构造器（含 Skill 元信息注入）
 │   │   └── logger.ts                 # 🎨 ConsoleLogger（彩色日志输出，实现 AgentEvents）
 │   ├── llm/
 │   │   └── client.ts                 # 🤖 LLM 客户端（chat + chatStream + 自动重试）
 │   ├── config/                       # ⚙️ 分层配置系统
 │   │   ├── index.ts                  # 统一导出
-│   │   ├── schema.ts                 # 配置类型定义 + 默认值
+│   │   ├── schema.ts                 # 配置类型定义 + 默认值（含 skill / memory 段）
 │   │   ├── loader.ts                 # 配置加载器（分层合并）
 │   │   ├── writer.ts                 # 配置写入器（持久化）
 │   │   ├── merge.ts                  # 深度合并工具
 │   │   └── mcp-manager.ts            # MCP 生命周期管理器
+│   ├── skill/                        # 🎯 Skill 技能包
+│   │   ├── index.ts                  # 统一导出
+│   │   ├── types.ts                  # Skill 类型定义（SkillMetadata / SkillContent）
+│   │   ├── scanner.ts                # 目录扫描 + SKILL.md YAML frontmatter 解析
+│   │   └── loader.ts                 # SkillLoader（扫描 / 渐进式加载）
+│   ├── memory/                       # 🧠 三层记忆管理
+│   │   ├── index.ts                  # 统一导出
+│   │   ├── types.ts                  # 记忆类型定义 + 默认配置
+│   │   ├── working.ts                # L1 WorkingMemory（token 估算 + 压缩）
+│   │   ├── episodic.ts               # L2 EpisodicMemory（按天 Markdown 日记 + 检索）
+│   │   ├── curated.ts                # L3 CuratedMemory（SOUL/USER/MEMORY 读写）
+│   │   ├── context.ts                # ContextAssembler（L3 注入 + L2 检索组装）
+│   │   └── callback.ts               # ToolMemoryCallback（工具结果自动写入 L2）
 │   ├── session/                      # 💾 会话持久化（加密存储）
 │   │   ├── index.ts                  # 统一导出
 │   │   ├── store.ts                  # SessionStore（会话读写/索引/工作空间隔离）
@@ -872,6 +1101,7 @@ loop-agent-command/
 │       ├── fileRead.ts               # 📄 内置工具：文件读取
 │       ├── fileWrite.ts              # ✏️ 内置工具：文件写入
 │       ├── grep.ts                   # 🔍 内置工具：内容检索
+│       ├── activateSkill.ts          # 🎯 内置工具：Skill 激活（渐进式加载）
 │       └── mcp/                      # 🌐 MCP 工具接入
 │           ├── index.ts              # 入口
 │           ├── client.ts             # MCP 客户端（stdio / SSE 传输）
@@ -889,7 +1119,14 @@ loop-agent-command/
 │       └── g-parallel-tools.test.ts  # 同轮并行工具
 ├── docs/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
-│   └── tasks/                        # 📂 逐任务文档（11 个任务，含配置存储与会话持久化）
+│   └── tasks/                        # 📂 逐任务文档（14 个任务，含 Skill 与记忆管理）
+├── skills/                           # 🎯 工作空间 Skill（示例：example-skill）
+│   └── example-skill/
+│       └── SKILL.md
+├── memory/                           # 🧠 L2 情景记忆（运行时生成，按天分文件）
+├── SOUL.md                           # 🧠 L3：Agent 人格
+├── USER.md                           # 🧠 L3：用户画像
+├── MEMORY.md                         # 🧠 L3：精炼事实
 ├── .env                              # 🔒 环境变量（需从 .env.example 复制创建）
 ├── .env.example                      # 📄 环境变量模板
 ├── .agent-config.json                # 📋 工作空间配置（可选，运行时生成）
@@ -1001,6 +1238,22 @@ npm run test:watch
 ```
 
 **解决**：检查 MCP 配置是否正确，可执行 `/mcp test <name>` 测试连接。使用 `/mcp remove <name>` 移除后重新 `/mcp add <name>` 添加。
+
+### Skill 未找到
+
+```
+错误：Skill "xxx" 未找到。可用的 Skill: ...
+```
+
+**解决**：确认 Skill 已放入 `~/.loop-agent/skills/`（全局）或 `<cwd>/skills/`（工作空间），且 `SKILL.md` 包含合法的 `name` 和 `description` frontmatter。通过 `/skill list` 查看扫描结果，`/skill reload` 重新扫描。
+
+### 记忆系统未启用
+
+```
+⚠ 记忆系统未启用，请在配置中设置 memory.enabled=true
+```
+
+**解决**：通过 `/config set memory.enabled true` 开启，或直接编辑 `.agent-config.json`。`/memory status` 可查看当前启用状态与各层统计。
 
 ### 会话无法加载 / 解密失败
 
