@@ -1,0 +1,45 @@
+"""布局层：Flexbox 布局引擎（T1.2）。"""
+
+from .engine import (
+    CANVAS_HEIGHT,
+    CANVAS_RECT,
+    CANVAS_WIDTH,
+    CONTENT_BOTTOM,
+    CONTENT_PAD_X,
+    CONTENT_TOP,
+    SLIDE_CONTENT_RECT,
+    LayoutNode,
+    LayoutResult,
+    Rect,
+    ResolvedStyle,
+    arrange,
+    build_tree,
+    flatten,
+    layout_node,
+    layout_slide,
+    measure,
+)
+from .text_measure import TextMeasure, measure_text, text_width
+
+__all__ = [
+    "Rect",
+    "LayoutNode",
+    "LayoutResult",
+    "ResolvedStyle",
+    "build_tree",
+    "flatten",
+    "measure",
+    "arrange",
+    "layout_slide",
+    "layout_node",
+    "measure_text",
+    "text_width",
+    "TextMeasure",
+    "CANVAS_WIDTH",
+    "CANVAS_HEIGHT",
+    "CANVAS_RECT",
+    "CONTENT_TOP",
+    "CONTENT_BOTTOM",
+    "CONTENT_PAD_X",
+    "SLIDE_CONTENT_RECT",
+]

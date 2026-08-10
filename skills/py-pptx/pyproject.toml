@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slidep"
+version = "0.1.0"
+description = "Python PPT generation ecosystem: declarative DSL -> OOXML renderer -> validated .pptx"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "SlideP Team" }]
+readme = "README.md"
+
+# ---- 运行时依赖（联网安装，pip install . 自动解析下载）----
+dependencies = [
+    "typer>=0.12,<1.0",
+    "pydantic>=2.5,<3.0",
+    "python-pptx>=1.0.0",
+    "lxml>=5.0",
+    "Pillow>=10.0",
+    "qrcode>=7.4",
+]
+
+# ---- 分组依赖 ----
+# optional: matplotlib 可选组件（FAIcon/SVG/CodeBlock/Math 的 PNG 渲染 + 图表预览）
+# serve: 预览服务（fastapi 等）
+# material: 素材解析（docx/pdf 解析）
+# dev: 开发测试
+[project.optional-dependencies]
+optional = ["matplotlib>=3.8"]
+serve = ["fastapi>=0.110", "uvicorn>=0.27", "watchdog>=4.0"]
+material = ["python-docx>=1.1", "pymupdf>=1.24"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+]
+
+[project.scripts]
+slidep = "slidep.cli.main:app"
+
+[tool.setuptools]
+package-dir = { "" = "scripts" }
+packages = ["slidep", "slidep.dsl", "slidep.layout", "slidep.render", "slidep.components", "slidep.validate", "slidep.cli", "slidep.extract", "slidep.daemon", "slidep.preview", "slidep.designs"]
+
+[tool.setuptools.package-data]
+"slidep.validate" = ["rules.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["scripts"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]

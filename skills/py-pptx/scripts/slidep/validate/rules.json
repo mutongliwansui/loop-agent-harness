@@ -1,0 +1,251 @@
+{
+  "$schema": "slidep-rules/v1",
+  "schema_version": 1,
+  "description": "SlideP 设计规范单一数据源：全部量化参数集中在此，方法论文档与 T3.1 lint 共享同一文件，杜绝文档与代码不一致。",
+  "canvas": {
+    "width": 1280,
+    "height": 720,
+    "unit": "px"
+  },
+  "regions": {
+    "title_band": { "top": 0, "height": 120, "note": "A 区·标题块" },
+    "content": { "top": 120, "bottom": 660, "note": "B 区·内容区（高 540px）" },
+    "footer": { "top": 660, "height": 60, "note": "C 区·页脚条（项目名 + 页码 NN/TOTAL）" }
+  },
+  "typography": {
+    "max_font_families": 2,
+    "title_size": { "min": 32, "max": 40 },
+    "hero_title_size": { "min": 56, "max": 72 },
+    "body_size": { "min": 18, "max": 24 },
+    "caption_size": { "min": 12, "max": 16 },
+    "line_height_multiplier": 1.3,
+    "min_body_chars": 180,
+    "anchor_min_font_size": 44
+  },
+  "color": {
+    "max_theme_colors": 4,
+    "primary_ratio": 0.6,
+    "secondary_ratio": 0.3,
+    "accent_ratio": 0.1,
+    "accent_ratio_hero": 0.2
+  },
+  "layout": {
+    "asymmetric_min_ratio": 0.4,
+    "card_row_max_pages": 2,
+    "hero_page_ratio_min": 0.2,
+    "hero_page_ratio_max": 0.3,
+    "max_whitespace_ratio": 0.35,
+    "card_fill_min_ratio": 0.85
+  },
+  "anchor": {
+    "min_font_size": 44,
+    "min_image_area_ratio": 0.4
+  },
+  "image_tiers": {
+    "l1": { "name": "主视觉", "min_area_ratio": 0.4, "note": "占 B 区面积下限" },
+    "l2": { "name": "支撑图", "min_size": { "width": 280, "height": 180 } },
+    "l3": { "name": "角标", "max_size": 64 }
+  },
+  "roles": {
+    "page_roles": ["hero", "supporting", "transition"],
+    "rhythms": ["peak", "valley", "transition"],
+    "page_types": ["cover", "toc", "content", "section", "ending"],
+    "toc_max_entries": 8
+  },
+  "rules": [
+    {
+      "id": "typography.max_font_families",
+      "name": "字体家族上限",
+      "level": "error",
+      "applies_to": ["all"],
+      "params": { "max": 2 },
+      "lint": "validate_font_families",
+      "description": "全篇字体家族不超过 2 个，超过即视觉杂乱"
+    },
+    {
+      "id": "typography.size_ladder",
+      "name": "字号阶梯合法",
+      "level": "error",
+      "applies_to": ["all"],
+      "params": {
+        "title": [32, 40],
+        "hero_title": [56, 72],
+        "body": [18, 24],
+        "caption": [12, 16]
+      },
+      "lint": "validate_font_sizes",
+      "description": "字号必须落在分级阶梯内，禁止出现无层级关系的随意字号"
+    },
+    {
+      "id": "typography.min_body_chars",
+      "name": "内容页字数下限",
+      "level": "error",
+      "applies_to": ["content"],
+      "params": { "min": 180 },
+      "lint": "validate_density",
+      "description": "常规内容页正文字数不少于 180 字，防止信息空洞"
+    },
+    {
+      "id": "typography.anchor_min_size",
+      "name": "文字锚点最小字号",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "min": 44 },
+      "lint": "validate_anchor",
+      "description": "作为视觉锚点的文字至少 44px，否则不构成锚点"
+    },
+    {
+      "id": "color.max_theme_colors",
+      "name": "主题色数量上限",
+      "level": "error",
+      "applies_to": ["all"],
+      "params": { "max": 4 },
+      "lint": "validate_color_palette",
+      "description": "全篇主题色不超过 4 个 hex，超出即色彩失控"
+    },
+    {
+      "id": "color.primary_ratio",
+      "name": "主色面积占比上限",
+      "level": "error",
+      "applies_to": ["all"],
+      "params": { "max": 0.6 },
+      "lint": "validate_color_ratio",
+      "description": "主色不超过内容区面积 60%"
+    },
+    {
+      "id": "color.secondary_ratio",
+      "name": "辅色面积占比上限",
+      "level": "error",
+      "applies_to": ["all"],
+      "params": { "max": 0.3 },
+      "lint": "validate_color_ratio",
+      "description": "辅色不超过内容区面积 30%"
+    },
+    {
+      "id": "color.accent_ratio",
+      "name": "强调色面积占比上限",
+      "level": "error",
+      "applies_to": ["content", "transition"],
+      "params": { "max": 0.1 },
+      "lint": "validate_color_ratio",
+      "description": "强调色不超过内容区面积 10%"
+    },
+    {
+      "id": "color.accent_ratio_hero",
+      "name": "强调色占比上限（Hero 页放宽）",
+      "level": "warning",
+      "applies_to": ["hero"],
+      "params": { "max": 0.2 },
+      "lint": "validate_color_ratio",
+      "description": "Hero 页强调色可放宽至 20%，但仍是硬上限"
+    },
+    {
+      "id": "layout.asymmetric_min_ratio",
+      "name": "非对称版式占比下限",
+      "level": "error",
+      "applies_to": ["deck"],
+      "params": { "min": 0.4 },
+      "lint": "validate_layout_diversity",
+      "description": "全篇非对称版式页占比不低于 40%，防止千篇一律居中"
+    },
+    {
+      "id": "layout.card_row_max_pages",
+      "name": "N 卡片横排页数上限",
+      "level": "error",
+      "applies_to": ["deck"],
+      "params": { "max": 2 },
+      "lint": "validate_layout_diversity",
+      "description": "N 卡片均分横排的版式全篇最多 2 页，超限即流水线感"
+    },
+    {
+      "id": "layout.hero_page_ratio",
+      "name": "Hero 页配额区间",
+      "level": "warning",
+      "applies_to": ["deck"],
+      "params": { "min": 0.2, "max": 0.3 },
+      "lint": "validate_hero_quota",
+      "description": "Hero 页（高峰页）占全篇 20%-30%，过多节奏失效、过少平淡"
+    },
+    {
+      "id": "layout.max_whitespace_ratio",
+      "name": "内容页留白上限",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "max": 0.35 },
+      "lint": "validate_density",
+      "description": "常规内容页留白不超过 35%，超过即信息空洞"
+    },
+    {
+      "id": "layout.card_fill_min_ratio",
+      "name": "卡片填充率下限",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "min": 0.85 },
+      "lint": "validate_density",
+      "description": "卡片内部内容填充率不低于 85%，防止大卡片小内容"
+    },
+    {
+      "id": "anchor.per_page_required",
+      "name": "每页视觉锚点",
+      "level": "error",
+      "applies_to": ["content"],
+      "params": {},
+      "lint": "validate_anchor",
+      "description": "每页至少 1 个视觉锚点：≥44px 文字或 ≥40% B 区面积的主视觉"
+    },
+    {
+      "id": "anchor.min_image_area_ratio",
+      "name": "图片锚点面积下限",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "min": 0.4 },
+      "lint": "validate_anchor",
+      "description": "作为锚点的图片须占 B 区面积 40% 以上"
+    },
+    {
+      "id": "image.l1_area",
+      "name": "L1 主视觉面积下限",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "min": 0.4 },
+      "lint": "validate_image_tiers",
+      "description": "L1 主视觉占 B 区面积不低于 40%"
+    },
+    {
+      "id": "image.l2_min_size",
+      "name": "L2 支撑图最小尺寸",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "min": { "width": 280, "height": 180 } },
+      "lint": "validate_image_tiers",
+      "description": "L2 支撑图不小于 280x180px"
+    },
+    {
+      "id": "image.l3_max_size",
+      "name": "L3 角标最大尺寸",
+      "level": "warning",
+      "applies_to": ["content"],
+      "params": { "max": 64 },
+      "lint": "validate_image_tiers",
+      "description": "L3 角标不超过 64x64px，且全篇位置一致"
+    },
+    {
+      "id": "toc.max_entries",
+      "name": "目录条目上限",
+      "level": "warning",
+      "applies_to": ["toc"],
+      "params": { "max": 8 },
+      "lint": "validate_toc",
+      "description": "目录页条目不超过 8 条，过多则说明叙事未收敛"
+    },
+    {
+      "id": "structure.max_nesting_depth",
+      "name": "容器嵌套深度上限",
+      "level": "warning",
+      "applies_to": ["all"],
+      "params": { "max": 5 },
+      "lint": "validate_nesting_depth",
+      "description": "Box 容器嵌套深度不超过 5 层，过深难以维护；优先用 flex 分配而非层层嵌套"
+    }
+  ]
+}

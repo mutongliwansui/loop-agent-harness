@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# 运行时产物
+*.pptx
+.preview/
+slidep-daemon.pid
+
+# 环境
+.venv/
+venv/
+
+# 离线 wheel 缓存（保留 .gitkeep，wheel 文件按需由脚本生成）
+vendor/wheels/*.whl
+!vendor/wheels/.gitkeep
