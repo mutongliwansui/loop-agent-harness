@@ -138,17 +138,30 @@ export class ContextAssembler {
       // 检索失败不影响主流程
     }
 
-    const memorySection = memoryBlock
-      ? `\n\n## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n${memoryBlock}`
-      : '';
-
     // 3. 组装完整 messages + 修复损坏的 tool-assistant 配对
-    const finalSystemPrompt = basePrompt + curatedSection + memorySection;
+    // L2 检索结果不注入 system prompt：system 前缀必须保持稳定才能命中 DeepSeek 前缀缓存。
+    // 检索结果改为附加到最后一条 user 消息之前（通常即本次用户输入），避免污染 system 前缀。
+    const finalSystemPrompt = basePrompt + curatedSection;
 
     const rawMessages: ChatMessage[] = [
       { role: 'system', content: finalSystemPrompt },
       ...currentMessages.filter((m) => m.role !== 'system'),
     ];
+
+    if (memoryBlock) {
+      const memorySection = `## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n${memoryBlock}\n\n`;
+      const lastUserIdx = rawMessages.reduceRight(
+        (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
+        -1,
+      );
+      if (lastUserIdx >= 0) {
+        const lastUser = rawMessages[lastUserIdx];
+        rawMessages[lastUserIdx] = {
+          ...lastUser,
+          content: `${memorySection}${lastUser.content}`,
+        };
+      }
+    }
 
     return repairMessageSequence(rawMessages);
   }

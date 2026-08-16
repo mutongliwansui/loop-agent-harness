@@ -2,6 +2,7 @@
 // 使用流式 LLM 调用 + 事件监听器（events）扩展
 // 集成三层记忆管理：L1 压缩 + L2 情景记忆 + L3 Curated
 import { llm } from '../llm/client.js';
+import { copyFile, writeFile } from 'node:fs/promises';
 import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
@@ -11,6 +12,8 @@ import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../con
 import { skillLoader } from '../skill/loader.js';
 import { type SessionStore } from '../session/store.js';
 import type { SessionData } from '../session/types.js';
+import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
+import type { CuratedFileKey } from '../memory/types.js';
 import {
   WorkingMemory,
   EpisodicMemory,
@@ -23,6 +26,7 @@ import {
   type ILLMClient,
   type WorkingMemoryConfig,
   type DreamingResult,
+  type DreamingProgress,
 } from '../memory/index.js';
 import type {
   AgentEvents,
@@ -99,7 +103,7 @@ export class ReActAgent {
   /**
    * 从 SessionData 恢复对话（使用分层存储）
    * - recentMessages → 加载到 _chatHistory
-   * - lastSummary → 注入 system prompt（作为历史摘要）
+   * - lastSummary → 作为首条 user 消息注入（不污染 system prompt，保持前缀缓存可命中）
    * - archivedMessages → 不加载，由 L2 检索覆盖
    */
   restoreSession(data: SessionData, systemPrompt: string): void {
@@ -112,14 +116,18 @@ export class ReActAgent {
 
     const restored: ChatMessage[] = [];
 
-    // 1. 构建增强的 system prompt（注入 lastSummary）
-    let enhancedSystem = systemPrompt;
-    if (data.lastSummary) {
-      enhancedSystem += `\n\n## 会话历史摘要\n以下是你之前与用户的对话摘要，请在回答时参考上下文：\n${data.lastSummary}`;
-    }
-    restored.push({ role: 'system', content: enhancedSystem });
+    // 1. system prompt 保持原样（摘要不注入，避免破坏前缀缓存）
+    restored.push({ role: 'system', content: systemPrompt });
 
-    // 2. 添加 recentMessages + 修复损坏的 tool-assistant 配对
+    // 2. 会话摘要作为首条 user 消息注入
+    if (data.lastSummary) {
+      restored.push({
+        role: 'user',
+        content: `【会话历史摘要】以下是你之前与用户的对话摘要，请在回答时参考上下文：\n${data.lastSummary}`,
+      });
+    }
+
+    // 3. 添加 recentMessages + 修复损坏的 tool-assistant 配对
     let restoredMessages: ChatMessage[];
     if (data.recentMessages && data.recentMessages.length > 0) {
       restoredMessages = [...data.recentMessages];
@@ -140,6 +148,20 @@ export class ReActAgent {
   /** 获取当前持久化的对话历史（只读拷贝） */
   getSessionMessages(): ChatMessage[] {
     return [...this._chatHistory];
+  }
+
+  /** 当前上下文消耗情况（供 /status 展示） */
+  getContextUsage(): {
+    contextTokens: number;
+    maxTokens: number;
+    threshold: number;
+  } {
+    const messages = this.getSessionMessages();
+    const { config: cfg } = this._configLoader.load();
+    const maxTokens = cfg.memory.working.maxTokens;
+    const threshold = Math.round(maxTokens * cfg.memory.working.compactionThreshold);
+    const contextTokens = this._workingMemory?.estimateTokens(messages) ?? 0;
+    return { contextTokens, maxTokens, threshold };
   }
 
   /**
@@ -167,8 +189,16 @@ export class ReActAgent {
     this._episodicMemory = new EpisodicMemory(episodicDir, cfg.memory.episodic.vectorSearch);
     await this._episodicMemory.init();
 
-    // L3 Curated Memory
-    this._curatedMemory = new CuratedMemory(curatedDir);
+    // L3 Curated Memory（行数超限时自动 LLM 精简）
+    this._curatedMemory = new CuratedMemory(curatedDir, {
+      maxLines: cfg.memory.curated.maxLines,
+      compress: async (content, key) => {
+        const { config: curCfg } = this._configLoader.load();
+        if (!curCfg.memory.curated.dedupe.enabled) return null;
+        const adapter = createLLMAdapter(curCfg.model.name, curCfg.model.temperature);
+        return dedupeCuratedFile(adapter, content);
+      },
+    });
     await this._curatedMemory.init();
 
     // Promotion Gate（恢复持久化状态）
@@ -228,10 +258,46 @@ export class ReActAgent {
    * 运行 Dreaming 晋升巡检
    * 供 CLI `/memory dream` 与退出时自动触发使用
    */
-  async runDreaming(daysBack?: number): Promise<DreamingResult | null> {
+  async runDreaming(daysBack?: number, onProgress?: DreamingProgress): Promise<DreamingResult | null> {
     if (!this._dreamingPipeline) return null;
     const { config: cfg } = this._configLoader.load();
-    return this._dreamingPipeline.run(daysBack ?? cfg.memory.dreaming.daysBack);
+    return this._dreamingPipeline.run(daysBack ?? cfg.memory.dreaming.daysBack, onProgress, {
+      dedupeEnabled: cfg.memory.curated.dedupe.enabled,
+      batchByDay: cfg.memory.dreaming.batchByDay,
+      incremental: cfg.memory.dreaming.incremental,
+    });
+  }
+
+  /**
+   * 对指定 Curated 文件执行 LLM 存量去重（/memory curated dedupe 使用）
+   * 返回前后行数与备份路径；失败或 LLM 输出异常时返回 null 且不修改文件
+   */
+  async dedupeCuratedMemory(
+    key: CuratedFileKey,
+  ): Promise<{ before: number; after: number; backup: string } | null> {
+    if (!this._curatedMemory) return null;
+    const { config: cfg } = this._configLoader.load();
+    const filepath = this._curatedMemory.getFilePaths()[key];
+    const content = await this._curatedMemory.read(key);
+    if (!content.trim()) return null;
+
+    // 备份原文件，防止 LLM 输出异常导致数据丢失
+    const backup = `${filepath}.dedupe.bak`;
+    await copyFile(filepath, backup);
+
+    const llmAdapter = createLLMAdapter(cfg.model.name, cfg.model.temperature);
+    const deduped = await dedupeCuratedFile(llmAdapter, content);
+    if (!deduped) return null;
+
+    // 防线：去重后行数不得多于原文件（防止 LLM 编造/新增内容）
+    if (deduped.split('\n').length > content.split('\n').length) return null;
+
+    await writeFile(filepath, deduped, 'utf-8');
+    return {
+      before: content.split('\n').length,
+      after: deduped.split('\n').length,
+      backup,
+    };
   }
 
   async run(userInput: string, options: AgentOptions = {}): Promise<AgentResult> {

@@ -704,7 +704,7 @@ console.log(content?.fullContent);
   "memory": {
     "enabled": true,
     "working": {
-      "maxTokens": 8000,
+      "maxTokens": 102400,
       "compactionThreshold": 0.8,
       "keepRecentTurns": 3
     },

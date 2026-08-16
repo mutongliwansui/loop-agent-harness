@@ -37,6 +37,8 @@ export interface AgentBehaviorConfig {
   systemPrompt: string | null;
   /** Task-15：是否打印每轮 token/缓存/上下文统计（默认 true，独立于 verbose） */
   showTokenStats: boolean;
+  /** 是否记录每次模型调用的输入参数与响应到独立日志文件（~/.loop-agent/logs/llm-*.log） */
+  llmLogEnabled: boolean;
 }
 
 /** 配置来源标记 */
@@ -77,6 +79,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     debug: false,
     systemPrompt: null,
     showTokenStats: true,
+    llmLogEnabled: true,
   },
   session: {
     autoSave: true,

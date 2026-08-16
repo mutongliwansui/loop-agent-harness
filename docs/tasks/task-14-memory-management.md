@@ -264,7 +264,7 @@ export interface WorkingMemoryConfig {
 }
 
 export const DEFAULT_WORKING_CONFIG: WorkingMemoryConfig = {
-  maxTokens: 8000,
+  maxTokens: 102400,
   compactionThreshold: 0.8,
   keepRecentTurns: 3,
 };
@@ -1226,7 +1226,7 @@ export interface AgentConfig {
 export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   enabled: true,
   working: {
-    maxTokens: 8000,
+    maxTokens: 102400,
     compactionThreshold: 0.8,
     keepRecentTurns: 3,
   },
@@ -1794,7 +1794,7 @@ Agent> 你好
   "memory": {
     "enabled": true,
     "working": {
-      "maxTokens": 8000,
+      "maxTokens": 102400,
       "compactionThreshold": 0.8,
       "keepRecentTurns": 3
     },

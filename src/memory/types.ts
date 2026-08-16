@@ -14,7 +14,7 @@ export interface WorkingMemoryConfig {
 }
 
 export const DEFAULT_WORKING_CONFIG: WorkingMemoryConfig = {
-  maxTokens: 8000,
+  maxTokens: 102400,
   compactionThreshold: 0.8,
   keepRecentTurns: 3,
 };
@@ -128,18 +128,28 @@ export interface MemoryConfig {
   };
   curated: {
     files: string[];
+    /** 单文件行数上限，append 超限时自动触发 LLM 精简（0 表示不限制） */
+    maxLines: number;
+    /** LLM 写入前去重/归并（Dreaming 晋升时对候选事实与现有内容做语义合并） */
+    dedupe: {
+      enabled: boolean;
+    };
   };
   dreaming: {
     enabled: boolean;
     daysBack: number;
     onExit: boolean;
+    /** Task-16：按天分批提取（默认 true；false 恢复一次性合并所有天） */
+    batchByDay: boolean;
+    /** Task-16：增量处理，跳过上次已处理的天（默认 true；依赖 .dreaming-state.json） */
+    incremental: boolean;
   };
 }
 
 export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   enabled: true,
   working: {
-    maxTokens: 8000,
+    maxTokens: 102400,
     compactionThreshold: 0.8,
     keepRecentTurns: 3,
   },
@@ -151,11 +161,17 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   },
   curated: {
     files: ['SOUL.md', 'USER.md', 'MEMORY.md'],
+    maxLines: 100,
+    dedupe: {
+      enabled: true,
+    },
   },
   dreaming: {
     enabled: true,
     daysBack: 3,
     onExit: true,
+    batchByDay: true,
+    incremental: true,
   },
 };
 

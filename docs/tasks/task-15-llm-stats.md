@@ -35,8 +35,8 @@
 | 输出 token | `usage.completion_tokens` | 本轮模型输出 token 数 |
 | 总 token | `usage.total_tokens` | 本轮总 token 数 |
 | **上下文占用** | 优先 `usage.prompt_tokens`（模型实际输入，最准确）；缺失时 fallback `WorkingMemory.estimateTokens(messages)` | 当前上下文体积 |
-| 上下文上限 | `cfg.memory.working.maxTokens`（默认 8000） | L1 压缩上限 |
-| 压缩阈值 | `maxTokens * compactionThreshold`（默认 6400） | 超过后触发 pre-compaction flush |
+| 上下文上限 | `cfg.memory.working.maxTokens`（默认 102400，即 100k） | L1 压缩上限 |
+| 压缩阈值 | `maxTokens * compactionThreshold`（默认 81920） | 超过后触发 pre-compaction flush |
 
 **缓存命中率** = `prompt_cache_hit_tokens / prompt_tokens`（`prompt_tokens` 为 0 或缓存字段缺失时显示 `N/A`）。
 
@@ -214,4 +214,4 @@ await safeEvents.onLLMStats(stats);
 [统计汇总] 3 轮 | 总输入 5706 | 总输出 825 | 总 token 6531 | 平均缓存命中 83.0% | 上下文峰值 2475
 ```
 
-> 注：集成测试未初始化记忆系统（`maxTokens=0`），故上下文只显示绝对值；启用记忆后显示 `X/8000 (Y%)` 比例，达到压缩阈值（6400）时黄色 ⚠ 警示。
+> 注：集成测试未初始化记忆系统（`maxTokens=0`），故上下文只显示绝对值；启用记忆后显示 `X/102400 (Y%)` 比例，达到压缩阈值（81920）时黄色 ⚠ 警示。

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase 3 验收测试：DreamingPipeline（后台晋升流水线）
  *
  * 覆盖验收项：
@@ -69,7 +69,7 @@ describe('DreamingPipeline', () => {
     );
 
     const pipeline = new DreamingPipeline(episodic, gate, curated, fakeLLM);
-    const result = await pipeline.run(1);
+    const result = await pipeline.run(1, undefined, { incremental: false });
 
     // LLM 被调用，提取出候选事实
     expect(result.errors.length).toBe(0);
@@ -97,7 +97,7 @@ describe('DreamingPipeline', () => {
       ]),
     );
     const pipeline = new DreamingPipeline(episodic, gate, curated, fakeLLM);
-    const result = await pipeline.run(1);
+    const result = await pipeline.run(1, undefined, { incremental: false });
 
     // 第二次出现：达阈值晋升
     expect(result.promoted.length).toBe(1);
@@ -112,7 +112,7 @@ describe('DreamingPipeline', () => {
       },
     };
     const pipeline = new DreamingPipeline(episodic, gate, curated, emptyLLM);
-    const result = await pipeline.run(1);
+    const result = await pipeline.run(1, undefined, { incremental: false });
     expect(result.promoted.length).toBe(0);
     expect(result.skipped.length).toBe(0);
   });
@@ -122,7 +122,7 @@ describe('DreamingPipeline', () => {
       '```json\n[{"fact": "项目使用 TypeScript", "confidence": 9, "category": "fact", "targetFile": "MEMORY.md"}]\n```',
     );
     const pipeline = new DreamingPipeline(episodic, gate, curated, wrappedLLM);
-    const result = await pipeline.run(1);
+    const result = await pipeline.run(1, undefined, { incremental: false });
     expect(result.promoted.length).toBe(1);
     expect(result.promoted[0].fact).toBe('项目使用 TypeScript');
   });
@@ -134,7 +134,7 @@ describe('DreamingPipeline', () => {
       },
     };
     const pipeline = new DreamingPipeline(episodic, gate, curated, failingLLM);
-    const result = await pipeline.run(1);
+    const result = await pipeline.run(1, undefined, { incremental: false });
     expect(result.errors.length).toBe(1);
     expect(result.errors[0]).toContain('LLM 不可用');
   });

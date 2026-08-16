@@ -2,6 +2,7 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import { debug } from '../debug.js';
+import { llmLogger, beginLLMCall } from '../llm-logger.js';
 import type { ChatMessage, LLMResponse, OpenAIToolDef, StreamChunk, ToolCall } from '../types.js';
 
 export interface ChatOptions {
@@ -61,6 +62,17 @@ export class LLMClient {
     const model = options.model ?? config.modelName;
     const temperature = options.temperature ?? 0;
 
+    // 独立 LLM 调用日志（输入参数 + 消息列表，用于排查缓存命中率等）
+    const callId = beginLLMCall();
+    llmLogger.request({
+      id: callId,
+      model,
+      temperature,
+      toolsCount: tools?.length ?? 0,
+      maxTokens: options.maxTokens,
+      messages,
+    });
+
     debug.llmRequest(model, messages.length, tools?.length ?? 0);
 
     const startMs = Date.now();
@@ -114,6 +126,7 @@ export class LLMClient {
         Date.now() - startMs,
         response.usage,
       );
+      llmLogger.response({ id: callId, response, elapsedMs: Date.now() - startMs });
 
       return response;
     });
@@ -138,6 +151,17 @@ export class LLMClient {
   ): AsyncGenerator<StreamChunk> {
     const model = options.model ?? config.modelName;
     const temperature = options.temperature ?? 0;
+
+    // 独立 LLM 调用日志（输入参数 + 消息列表）
+    const callId = beginLLMCall();
+    llmLogger.request({
+      id: callId,
+      model,
+      temperature,
+      toolsCount: tools?.length ?? 0,
+      maxTokens: options.maxTokens,
+      messages,
+    });
 
     debug.llmRequest(model, messages.length, tools?.length ?? 0);
 
@@ -260,6 +284,7 @@ export class LLMClient {
       Date.now() - streamStartMs,
       response.usage,
     );
+    llmLogger.response({ id: callId, response, elapsedMs: Date.now() - streamStartMs });
 
     yield { type: 'done', response };
   }

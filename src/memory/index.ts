@@ -5,7 +5,7 @@ export { CuratedMemory } from './curated.js';
 export { ContextAssembler, repairMessageSequence } from './context.js';
 export { ToolMemoryCallback } from './callback.js';
 export { PromotionGate } from './gate.js';
-export { DreamingPipeline } from './dreaming.js';
+export { DreamingPipeline, type DreamingProgress } from './dreaming.js';
 export { MemoryIndex, tokenizeForFts, tokenizeQuery } from './fts.js';
 export { EmbeddingClient } from './embedding.js';
 export { VectorMemory, cosine } from './vector.js';

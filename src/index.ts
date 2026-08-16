@@ -1,4 +1,4 @@
-// ReAct Agent CLI 入口：交互式 REPL
+﻿// ReAct Agent CLI 入口：交互式 REPL
 // 运行：npm run dev 或 npm start
 import readline from 'node:readline';
 import { execSync } from 'node:child_process';
@@ -153,8 +153,16 @@ function printStatus(): void {
   const mcpServers = registry.listMCPServers();
   const { config: cfg } = configLoader.load();
   const skills = cfg.skill.enabled ? skillLoader.list() : [];
+  const context = agent.getContextUsage();
   console.log('');
   console.log(`  ${C.bold}消息历史:${C.reset} ${msgs.length} 条`);
+  if (context.maxTokens > 0) {
+    const pct = Math.round((context.contextTokens / context.maxTokens) * 100);
+    const warn = context.contextTokens >= context.threshold ? `${C.yellow} ⚠ 接近压缩阈值${C.reset}` : '';
+    console.log(`  ${C.bold}上下文消耗:${C.reset} ${context.contextTokens} / ${context.maxTokens} tokens (${pct}%)${warn}`);
+  } else {
+    console.log(`  ${C.bold}上下文消耗:${C.reset} ${context.contextTokens} tokens（记忆未启用，仅估算）`);
+  }
   console.log(`  ${C.bold}内置工具:${C.reset} ${builtin.length} 个 (${builtin.map((t) => t.name).join(', ')})`);
   if (mcp.length > 0) {
     console.log(`  ${C.bold}MCP Server:${C.reset} ${mcpServers.join(', ') || '无'}`);
@@ -791,7 +799,7 @@ async function handleSession(
 
 /**
  * /memory 命令处理器
- * 支持: status, curated (list/read/append), episodic (list/read), search
+ * 支持: status, curated (list/read/append/dedupe), episodic (list/read), search
  */
 async function handleMemory(input: string, rl: readline.Interface): Promise<void> {
   const parts = input.split(/\s+/);
@@ -894,7 +902,27 @@ async function handleMemory(input: string, rl: readline.Interface): Promise<void
       return;
     }
 
-    console.log(`${C.red}未知 curated 子命令: ${curSub}。支持 list / read / append${C.reset}\n`);
+    if (curSub === 'dedupe') {
+      const fileKey = (curArgs[0] ?? 'memory') as CuratedFileKey;
+      const validKeys: CuratedFileKey[] = ['soul', 'user', 'memory'];
+      if (!validKeys.includes(fileKey)) {
+        console.log(`${C.red}无效的文件键: ${fileKey}，可选: ${validKeys.join(', ')}${C.reset}\n`);
+        return;
+      }
+      console.log(`${C.gray}正在使用 LLM 去重整理 ${fileKey.toUpperCase()}.md ...${C.reset}`);
+      const result = await agent.dedupeCuratedMemory(fileKey);
+      if (!result) {
+        const paths = curMemory.getFilePaths();
+        console.log(`${C.yellow}✗ 去重失败或 LLM 输出异常，文件保持原样${C.reset}`);
+        console.log(`${C.gray}  （备份文件可能存在: ${paths[fileKey]}.dedupe.bak）${C.reset}\n`);
+        return;
+      }
+      console.log(`${C.green}✓ 去重完成: ${result.before} 行 → ${result.after} 行${C.reset}`);
+      console.log(`${C.gray}  原文件备份: ${result.backup}${C.reset}\n`);
+      return;
+    }
+
+    console.log(`${C.red}未知 curated 子命令: ${curSub}。支持 list / read / append / dedupe${C.reset}\n`);
     return;
   }
 
@@ -1000,7 +1028,9 @@ async function handleMemory(input: string, rl: readline.Interface): Promise<void
     }
     console.log(`${C.cyan}⏳ Dreaming 巡检开始（最近 ${daysBack ?? cfg.memory.dreaming.daysBack} 天）...${C.reset}`);
     try {
-      const result = await agent.runDreaming(daysBack);
+      const result = await agent.runDreaming(daysBack, (msg) => {
+        console.log(`  ${C.gray}↳ ${msg}${C.reset}`);
+      });
       if (!result) {
         console.log(`${C.red}Dreaming 未初始化（请检查记忆系统状态）${C.reset}\n`);
         return;
@@ -1164,22 +1194,29 @@ async function main() {
 
   /** 是否有正在执行的 Agent 任务 */
   let running = false;
+  /** readline 是否已关闭（管道输入期间异步命令未完成就退出时为 true） */
+  let rlClosed = false;
+
+  /** 安全 prompt：rl 已关闭时跳过，避免 ERR_USE_AFTER_CLOSE */
+  const safePrompt = (): void => {
+    if (!rlClosed) rl.prompt();
+  };
 
   // 9. REPL 主循环
-  rl.prompt();
+  safePrompt();
 
   rl.on('line', async (raw: string) => {
     const input = raw.trim();
 
     // 空输入直接继续
     if (!input) {
-      rl.prompt();
+      safePrompt();
       return;
     }
 
     if (running) {
       console.log(`${C.yellow}⚠️  Agent 正在处理上一个请求，请稍候...${C.reset}`);
-      rl.prompt();
+      safePrompt();
       return;
     }
 
@@ -1195,20 +1232,20 @@ async function main() {
     // 帮助
     if (lower === '/help' || lower === 'help') {
       printBanner();
-      rl.prompt();
+      safePrompt();
       return;
     }
 
     if (lower === '/reset' || lower === '/clear') {
       agent.resetSession();
       console.log(`${C.bold}${C.green}✓ 会话历史已清空，开始新对话${C.reset}\n`);
-      rl.prompt();
+      safePrompt();
       return;
     }
 
     if (lower === '/status') {
       printStatus();
-      rl.prompt();
+      safePrompt();
       return;
     }
 
@@ -1221,7 +1258,7 @@ async function main() {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /config 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
-        rl.prompt();
+        safePrompt();
       }
       return;
     }
@@ -1234,7 +1271,7 @@ async function main() {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /mcp 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
-        rl.prompt();
+        safePrompt();
       }
       return;
     }
@@ -1247,7 +1284,7 @@ async function main() {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /tools 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
-        rl.prompt();
+        safePrompt();
       }
       return;
     }
@@ -1260,7 +1297,7 @@ async function main() {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /skill 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
-        rl.prompt();
+        safePrompt();
       }
       return;
     }
@@ -1274,7 +1311,7 @@ async function main() {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /session 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
-        rl.prompt();
+        safePrompt();
       }
       return;
     }
@@ -1287,7 +1324,7 @@ async function main() {
         console.error(`${C.bold}${C.red}[Error]${C.reset} /memory 异常: ${e instanceof Error ? e.message : String(e)}\n`);
       } finally {
         running = false;
-        rl.prompt();
+        safePrompt();
       }
       return;
     }
@@ -1304,7 +1341,7 @@ async function main() {
       console.error(`\n${C.bold}${C.red}[Error]${C.reset} ${C.red}${msg}${C.reset}\n`);
     } finally {
       running = false;
-      rl.prompt();
+      safePrompt();
     }
   });
 
@@ -1315,11 +1352,15 @@ async function main() {
   });
 
   rl.on('close', async () => {
+    rlClosed = true;
     // 会话结束：自动触发 Dreaming（等待完成后再退出）
     const { config: exitCfg } = configLoader.load();
     if (exitCfg.memory.enabled && exitCfg.memory.dreaming.enabled && exitCfg.memory.dreaming.onExit) {
+      console.log(`${C.gray}正在整理记忆（Dreaming）…${C.reset}`);
       try {
-        const result = await agent.runDreaming();
+        const result = await agent.runDreaming(undefined, (msg) => {
+          console.log(`  ${C.gray}↳ ${msg}${C.reset}`);
+        });
         if (result && result.promoted.length > 0) {
           console.log(`\n[Dreaming] 晋升 ${result.promoted.length} 条事实到 L3`);
         }

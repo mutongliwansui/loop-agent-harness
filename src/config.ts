@@ -29,6 +29,9 @@ export const config = {
   get debug(): boolean {
     return configLoader.load().config.agent.debug;
   },
+  get llmLogEnabled(): boolean {
+    return configLoader.load().config.agent.llmLogEnabled;
+  },
   get skill() {
     return configLoader.load().config.skill;
   },
