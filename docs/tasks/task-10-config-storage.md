@@ -6,7 +6,7 @@
 
 ### 目标清单
 1. 设计分层配置结构（工作空间配置 > 全局配置 > .env 环境变量）
-2. 工作空间配置存储在当前打开目录（`./.agent-config.json`）
+2. 工作空间配置存储在当前打开目录（`./.loop-agent/.agent-config.json`）
 3. 全局配置存储在用户目录（`~/.loop-agent/config.json`）
 4. 提供统一的配置读写 API（含合并优先级逻辑）
 5. CLI 命令支持配置的查看、设置、删除
@@ -21,7 +21,7 @@
 ```
 优先级（高 → 低）：
   1. CLI 运行时参数（--model, --max-iterations 等）
-  2. 工作空间配置（./.agent-config.json）
+  2. 工作空间配置（./.loop-agent/.agent-config.json）
   3. 全局配置（~/.loop-agent/config.json）
   4. .env 环境变量（向后兼容）
   5. 代码内置默认值
@@ -29,7 +29,7 @@
 
 ### 2. 配置文件结构
 
-#### 工作空间配置 `./.agent-config.json`
+#### 工作空间配置 `./.loop-agent/.agent-config.json`
 
 ```jsonc
 {
@@ -165,7 +165,7 @@ export class ConfigLoader {
     };
   }
 
-  private loadWorkspace(): Partial<AgentConfig> { /* 读 ./.agent-config.json */ }
+  private loadWorkspace(): Partial<AgentConfig> { /* 读 ./.loop-agent/.agent-config.json */ }
   private loadGlobal(): Partial<AgentConfig> { /* 读 ~/.loop-agent/config.json */ }
   private loadFromEnv(): Partial<AgentConfig> { /* 读 process.env（向后兼容） */ }
   private getDefaults(): AgentConfig { /* 内置默认值 */ }
@@ -180,7 +180,7 @@ export class ConfigLoader {
 export class ConfigWriter {
   /** 写入工作空间配置 */
   async writeWorkspace(config: Partial<AgentConfig>): Promise<void> {
-    const path = join(process.cwd(), '.agent-config.json');
+    const path = join(process.cwd(), '.loop-agent', '.agent-config.json');
     await this.writeJson(path, config);
   }
 
@@ -288,7 +288,7 @@ export class ReActAgent {
 
 ```
 MCP 配置来源（仅两层）：
-  1. 工作空间 .agent-config.json → tools.mcpServers
+  1. 工作空间 .loop-agent/.agent-config.json → tools.mcpServers
   2. 全局 config.json → tools.mcpServers
 ```
 
@@ -311,7 +311,7 @@ export class ConfigLoader {
   }
 
   // 不再读取 .mcp.json
-  private loadWorkspace(): Partial<AgentConfig> { /* 读 ./.agent-config.json */ }
+  private loadWorkspace(): Partial<AgentConfig> { /* 读 ./.loop-agent/.agent-config.json */ }
   private loadGlobal(): Partial<AgentConfig> { /* 读 ~/.loop-agent/config.json */ }
   private loadFromEnv(): Partial<AgentConfig> { /* 读 process.env（向后兼容） */ }
   private getDefaults(): AgentConfig { /* 内置默认值 */ }
@@ -551,7 +551,7 @@ export class ToolRegistry {
 1. ConfigLoader.load()
    ├── 读取 .env → env 层（向后兼容）
    ├── 读取 ~/.loop-agent/config.json → global 层
-   ├── 读取 ./.agent-config.json → workspace 层
+   ├── 读取 ./.loop-agent/.agent-config.json → workspace 层
    └── 深合并 + 来源标记 → ResolvedConfig
 
 2. registerBuiltinTools(resolvedConfig.tools)
@@ -572,14 +572,14 @@ export class ToolRegistry {
 - [x] 项2：工作空间配置文件不存在时，回退到全局配置（loader 逻辑已实现，优先级链正确）
 - [x] 项3：工作空间配置优先级高于全局配置（同名字段被覆盖）（deepMerge 顺序 workspace>global>env>default 已实现）
 - [x] 项4：CLI 参数优先级最高（覆盖工作空间配置）（ConfigLoader.load(cliOverrides) 末位合并已实现）
-- [x] 项5：`/config set model.name xxx --workspace` 写入 `./.agent-config.json`（CLI 子命令已实现）
+- [x] 项5：`/config set model.name xxx --workspace` 写入 `./.loop-agent/.agent-config.json`（CLI 子命令已实现）
 - [x] 项6：`/config set model.name xxx --global` 写入 `~/.loop-agent/config.json`（CLI 子命令已实现）
 - [x] 项7：`/config get model.name` 显示值与来源标注（CLI 子命令已实现）
 - [x] 项8：`/config delete model.name --workspace` 删除后回退到全局值（CLI 子命令已实现）
 - [x] 项9：`/config path` 显示两个配置文件路径与是否存在（CLI 子命令已实现）
 - [x] 项10：`/config` 或 `/config list` 显示完整配置（含来源标注）（CLI 子命令已实现）
 - [x] 项11：深合并正确：嵌套对象逐层合并，数组直接替换（deepMerge 已实现，已用脚本验证 mcpServers 合并）
-- [x] 项12：`.agent-config.json` 加入 `.gitignore`（可能含 apiKey）（已更新 `.gitignore`）
+- [x] 项12：`.loop-agent/.agent-config.json` 加入 `.gitignore`（可能含 apiKey）（已更新 `.gitignore`）
 - [x] 项13：`npm run typecheck` 通过（执行 tsc --noEmit，exit code 0）
 - [ ] 项14：`npm test` 全部通过（含新增配置测试）（项目暂无 jest 测试套件，手动验证通过）
 - [x] **项15：MCP 配置整合**：MCP 配置通过 `tools.mcpServers` 统一管理，不再读取 `.mcp.json`（删除 loader.ts，MCPManager 从配置读取）
@@ -609,6 +609,6 @@ export class ToolRegistry {
   - **内置工具管理重点**：
     - enabled/disabled 规则：enabled 非空白名单优先，再排除 disabled
     - 支持运行时热加载（无需重启 Agent）
-  - 需要在 `.gitignore` 中添加 `.agent-config.json`
+  - 需要在 `.gitignore` 中添加 `.loop-agent/.agent-config.json`
   - 全局配置目录 `~/.loop-agent/` 需要自动创建
   - `.env` 向后兼容，不破坏现有功能

@@ -167,7 +167,7 @@ npm run build
 | `MODEL_NAME` | 模型名称 | `gpt-4o-mini` |
 | `MAX_ITERATIONS` | Agent 最大迭代次数 | `10` |
 
-MCP 工具配置（可选）：在工作空间 `.agent-config.json` 或全局 `~/.loop-agent/config.json` 的 `tools.mcpServers` 中配置外部 MCP server（详见 Task-10）。
+MCP 工具配置（可选）：在工作空间 `.loop-agent/.agent-config.json` 或全局 `~/.loop-agent/config.json` 的 `tools.mcpServers` 中配置外部 MCP server（详见 Task-10）。
 
 ## 十、工具扩展指南
 

@@ -2,7 +2,7 @@
 
 ## 需求目标
 
-实现 Agent Skill 技能包能力，支持从全局 `~/.loop-agent/skills/` 和工作空间 `<cwd>/skills/` 两个目录自动扫描 Skill，将 Skill 元信息注入系统提示词，并支持按需渐进式加载 Skill 详细内容。
+实现 Agent Skill 技能包能力，支持从全局 `~/.loop-agent/skills/` 和工作空间 `<cwd>/.loop-agent/skills/` 两个目录自动扫描 Skill，将 Skill 元信息注入系统提示词，并支持按需渐进式加载 Skill 详细内容。
 
 ### 目标清单
 1. 实现 Skill 扫描器，自动发现全局和工作空间的 Skill
@@ -26,7 +26,7 @@
 │       └── SKILL.md
 │
 <current-workspace>/              # 当前项目
-├── skills/                       # 工作空间 Skill（仅当前项目可用，优先）
+├── .loop-agent/skills/           # 工作空间 Skill（仅当前项目可用，优先）
 │   └── custom-deploy/
 │       ├── SKILL.md
 │       ├── scripts/              # 可选：执行脚本
@@ -96,7 +96,7 @@ export interface SkillLoader {
 ```
 启动时：
   1. 扫描 ~/.loop-agent/skills/  → 全局 Skill 元信息
-  2. 扫描 <cwd>/skills/         → 工作空间 Skill 元信息
+  2. 扫描 <cwd>/.loop-agent/skills/   → 工作空间 Skill 元信息
   3. 合并去重（工作空间优先）
   4. 将所有 SkillMetadata 注入 System Prompt
 
@@ -190,7 +190,7 @@ export class SkillLoader {
   /** 扫描并加载所有 Skill 元信息 */
   scan(cwd: string): SkillMetadata[] {
     const globalDir = join(homedir(), '.loop-agent', 'skills');
-    const workspaceDir = join(cwd, 'skills');
+    const workspaceDir = join(cwd, '.loop-agent', 'skills');
 
     // 先加载全局，再加载工作空间（后者覆盖前者）
     const globalSkills = scanSkillsDir(globalDir, 'global');
@@ -296,7 +296,7 @@ private async handleSkillActivation(resp: LLMResponse): Promise<void> {
 export interface SkillConfig {
   enabled: boolean;
   globalDir: string;      // 默认 ~/.loop-agent/skills
-  workspaceDir: string;   // 默认 <cwd>/skills
+  workspaceDir: string;   // 默认 <cwd>/.loop-agent/skills
   autoLoad: boolean;      // 启动时是否自动扫描
 }
 

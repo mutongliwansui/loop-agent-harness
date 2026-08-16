@@ -324,6 +324,7 @@ async run(userInput: string, options: AgentOptions = {}): Promise<AgentResult> {
 ```
 # 会话数据含敏感信息，不提交
 .agent-config.json
+.loop-agent/.agent-config.json
 ```
 
 > 会话数据存储在 `~/.loop-agent/sessions/`，不在项目目录中，无需加 `.gitignore`。

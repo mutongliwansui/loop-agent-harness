@@ -36,6 +36,49 @@ function formatDate(d: Date): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
+/** 归档消息超过该数量时生成 lastSummary */
+const MAX_ARCHIVED_BEFORE_COMPACT = 30;
+/** 生成摘要时最多拼接的归档消息条数（防止超大 Session 摘要无限膨胀） */
+const MAX_SUMMARY_ENTRIES = 20;
+/** lastSummary 的最大字符长度（超出截断，控制恢复后首轮上下文体积） */
+const MAX_SUMMARY_CHARS = 2000;
+
+/** 将归档消息列表生成精炼摘要（限制条数与长度，避免膨胀） */
+function buildSummary(messages: ChatMessage[]): string {
+  // 只取最近 MAX_SUMMARY_ENTRIES 条参与拼接
+  const toSummarize = messages.slice(-MAX_SUMMARY_ENTRIES);
+  const parts: string[] = [];
+  for (const msg of toSummarize) {
+    const roleLabel = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role;
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    parts.push(`${roleLabel}: ${content.slice(0, 80)}`);
+  }
+  let summary = `[历史摘要] ${parts.join(' | ')}`;
+  if (summary.length > MAX_SUMMARY_CHARS) {
+    summary = summary.slice(0, MAX_SUMMARY_CHARS) + '...';
+  }
+  return summary;
+}
+
+// 检查两条消息是否重复（考虑所有关键字段）
+function isSameMessage(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== b.role) return false;
+  if (a.content !== b.content) return false;
+  if (a.role === 'assistant' && b.role === 'assistant') {
+    const aCalls = a.tool_calls ?? [];
+    const bCalls = b.tool_calls ?? [];
+    if (aCalls.length !== bCalls.length) return false;
+    return aCalls.every((ac, i) => {
+      const bc = bCalls[i];
+      return ac.id === bc.id && ac.function.name === bc.function.name && ac.function.arguments === bc.function.arguments;
+    });
+  }
+  if (a.role === 'tool' && b.role === 'tool') {
+    return a.tool_call_id === b.tool_call_id;
+  }
+  return true;
+}
+
 export class SessionStore {
   private workspaceId: string;
   private workspaceDir: string;
@@ -130,10 +173,8 @@ export class SessionStore {
     // 合并当前 recent + 新消息
     let mergedRecent = [...currentRecent];
     for (const msg of nonSystemMessages) {
-      // 避免重复（按 role + content 简单去重）
-      const exists = mergedRecent.some(
-        (m) => m.role === msg.role && m.content === msg.content,
-      );
+      // 避免重复（基于 role + content + tool_calls/tool_call_id 的完整比较）
+      const exists = mergedRecent.some((m) => isSameMessage(m, msg));
       if (!exists) {
         mergedRecent.push(msg);
       }
@@ -148,18 +189,15 @@ export class SessionStore {
     }
 
     // 如果 archived 超过一定数量，生成摘要
-    const MAX_ARCHIVED_BEFORE_COMPACT = 30;
     if (archived.length > MAX_ARCHIVED_BEFORE_COMPACT) {
-      const summaryParts: string[] = [];
-      for (const msg of archived) {
-        const roleLabel = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role;
-        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        summaryParts.push(`${roleLabel}: ${content.slice(0, 100)}`);
-      }
-      const archiveSummary = `[历史摘要] ${summaryParts.join(' | ')}`;
+      const archiveSummary = buildSummary(archived);
       data.lastSummary = data.lastSummary
-        ? `${data.lastSummary}\n${archiveSummary}`
+        ? `${data.lastSummary}\n${archiveSummary}`.slice(-MAX_SUMMARY_CHARS * 2)
         : archiveSummary;
+      // 限制 lastSummary 总长度（防止跨轮次累积膨胀）
+      if (data.lastSummary.length > MAX_SUMMARY_CHARS) {
+        data.lastSummary = data.lastSummary.slice(-MAX_SUMMARY_CHARS);
+      }
       // 保留最近 10 条 archived，其余丢弃
       archived = archived.slice(-10);
     }
@@ -192,14 +230,8 @@ export class SessionStore {
       data.recentTurns = this.recentTurns;
 
       // 如果历史过长，生成摘要
-      if (data.archivedMessages.length > 30) {
-        const summaryParts: string[] = [];
-        for (const msg of data.archivedMessages) {
-          const roleLabel = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role;
-          const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-          summaryParts.push(`${roleLabel}: ${content.slice(0, 100)}`);
-        }
-        data.lastSummary = `[历史摘要] ${summaryParts.join(' | ')}`;
+      if (data.archivedMessages.length > MAX_ARCHIVED_BEFORE_COMPACT) {
+        data.lastSummary = buildSummary(data.archivedMessages);
         data.archivedMessages = data.archivedMessages.slice(-10);
       }
 

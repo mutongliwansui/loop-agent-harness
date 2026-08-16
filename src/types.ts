@@ -51,12 +51,68 @@ export type ChatMessage =
   | { role: 'tool'; tool_call_id: string; content: string };
 
 /**
+ * LLM 调用返回的 Token 使用情况（含缓存命中统计）
+ *
+ * 各字段含义：
+ * - prompt_tokens: 总输入 token 数
+ * - prompt_cache_hit_tokens: 命中前缀缓存的 token 数（DeepSeek V4 等模型支持）
+ * - prompt_cache_miss_tokens: 未命中缓存、需重新计算的 token 数
+ * - completion_tokens: 输出 token 数
+ * - total_tokens: 总 token 数
+ *
+ * 缓存命中率 = prompt_cache_hit_tokens / prompt_tokens
+ */
+export interface LLMUsage {
+  prompt_tokens: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/**
  * LLM 调用返回的统一结构
  */
 export interface LLMResponse {
   content: string | null;
   tool_calls?: ToolCall[];
   finish_reason: 'stop' | 'tool_calls' | 'length' | string;
+  /** Token 使用情况（含缓存命中统计） */
+  usage?: LLMUsage;
+}
+
+/**
+ * 单轮 LLM 调用统计（Task-15：每轮迭代后打印）
+ *
+ * 字段说明：
+ * - contextTokens: 本轮上下文 token 数（优先 usage.prompt_tokens，缺失时 fallback 估算）
+ * - contextMaxTokens / contextThreshold: L1 压缩上限与压缩阈值（用于展示占用比例与警示）
+ * - cacheHitRate: 缓存命中率 0-1（= prompt_cache_hit_tokens / prompt_tokens，无法计算时为 undefined）
+ */
+export interface LLMStats {
+  iteration: number;
+  maxIterations: number;
+  contextTokens: number;
+  contextMaxTokens: number;
+  contextThreshold: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheHitTokens?: number;
+  cacheHitRate?: number;
+  elapsedMs: number;
+}
+
+/** 会话累积统计汇总（Task-15：会话结束打印） */
+export interface LLMStatsSummary {
+  iterations: number;
+  totalPrompt: number;
+  totalCompletion: number;
+  totalTokens: number;
+  totalCacheHit: number;
+  avgCacheHitRate?: number;
+  peakContextTokens: number;
+  peakContextMaxTokens: number;
 }
 
 // ===== Agent 相关 =====
@@ -125,6 +181,10 @@ export interface AgentEvents {
   onLLMStream?(delta: string): void | Promise<void>;
   /** LLM 单轮调用结束，拿到完整响应 */
   onLLMEnd?(response: LLMResponse, iteration: number): void | Promise<void>;
+  /** LLM 单轮统计（Task-15：每轮迭代完成后调用） */
+  onLLMStats?(stats: LLMStats): void | Promise<void>;
+  /** 会话统计汇总（Task-15：整个 ReAct 会话结束后调用） */
+  onLLMStatsSummary?(summary: LLMStatsSummary): void | Promise<void>;
   /** 工具调用开始（同轮多工具时每个触发一次） */
   onToolStart?(tool: string, args: Record<string, unknown>): void | Promise<void>;
   /** 工具调用结束，拿到 Observation */

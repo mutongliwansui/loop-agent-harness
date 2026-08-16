@@ -18,8 +18,8 @@
 ### 1.2 设计约束
 
 - **与现有架构兼容**：不破坏 Task-11 会话持久化（加密存储用于会话恢复），新记忆系统是对它的补充
-- **零外部依赖**：不引入向量数据库，使用 SQLite FTS5（Node 内置 `node:sqlite` 或 `better-sqlite3`），Phase 1 可用纯文件检索
-- **渐进式实现**：Phase 1 最小闭环 → Phase 2 智能压缩 → Phase 3 晋升流水线 → Phase 4 向量检索
+- **零向量数据库依赖**：不引入向量数据库。Phase 4 用 Node 内置 `node:sqlite` 实现 FTS5；Phase 5 向量检索同样用 SQLite 表存向量（Float32 BLOB）+ 自算余弦，零外部依赖
+- **渐进式实现**：Phase 1 最小闭环 → Phase 2 智能压缩 → Phase 3 晋升流水线 → Phase 4 索引与降级 → Phase 5 可配置向量检索（**全部已完成**）
 - **失败降级**：记忆子系统挂了不影响主回复路径
 
 ### 1.3 与 Task-11 会话持久化的关系（改造后）
@@ -41,13 +41,15 @@ Session 文件结构（改造后）:
     {"role": "user", "content": "..."},
     {"role": "assistant", "content": "..."}
   ],
+  "archivedMessages": [...],                   // 新增：归档消息（可选，不参与上下文）
   "archivedCount": 45,                         // 新增：归档消息数
+  "recentTurns": 3,                            // 新增：保存时的最近轮数配置
   "updatedAt": "2026-08-10T10:00:00Z"
 }
 
 恢复策略：
-  1. 只加载 recentMessages 到 _chatHistory
-  2. lastSummary 注入到 L3 或系统提示词
+  1. 只加载 recentMessages 到 _chatHistory（由 ReActAgent.restoreSession() 执行）
+  2. lastSummary 注入到系统提示词（restoreSession() 内拼接）
   3. archivedCount 仅用于显示，不加载到上下文
 ```
 
@@ -78,8 +80,10 @@ Session 文件结构（改造后）:
 
 **方案 2：L2 增加 Session 标签与过滤**
 
+> 注：以下为早期设计示意，最终实现见 §4.4（`MemoryScope`/`AppendOptions`/`SearchOptions` 定义于 `src/memory/episodic.ts`，`EpisodicEntry` 未单独落地，隔离逻辑内联在 `search()`/`isSectionVisible()` 中）。
+
 ```typescript
-// L2 存储结构（改造后）
+// L2 存储结构（改造后，设计示意）
 interface EpisodicEntry {
   sessionId: string;                    // 来源 Session ID
   scope: 'session' | 'global';          // 作用域隔离
@@ -87,16 +91,15 @@ interface EpisodicEntry {
   timestamp: string;
 }
 
-// 写入时打标签
+// 写入时打标签（实际实现见 §4.4）
 await episodicMemory.appendToday(content, {
   sessionId: 'abc123',
   scope: 'session',  // 默认会话隔离
 });
 
-// 检索时过滤
-const results = await episodicMemory.search(query, {
+// 检索时过滤（实际实现：sessionId + scope 过滤，见 §4.4）
+const results = await episodicMemory.search(query, topK, {
   sessionId: 'abc123',  // 只检索当前会话的记忆
-  includeGlobal: true,  // 可选：包含全局记忆
 });
 ```
 
@@ -112,7 +115,7 @@ const results = await episodicMemory.search(query, {
 
 Session 恢复:
   ├── recentMessages → 加载到 _chatHistory (L1)
-  ├── lastSummary → 注入到 L3 MEMORY.md 或系统提示词
+  ├── lastSummary → 注入到系统提示词（restoreSession() 拼接）
   └── archivedMessages → 不参与上下文
 
 L2 检索:
@@ -210,14 +213,14 @@ Context 组装:
 loop-agent-command/
 ├── src/
 │   ├── memory/                           # 新增：记忆管理模块
-│   │   ├── types.ts                      # 记忆相关类型定义
+│   │   ├── types.ts                      # 记忆配置与通用类型（Working/Curated/Gate/Dreaming）
 │   │   ├── working.ts                    # L1 WorkingMemory
-│   │   ├── episodic.ts                   # L2 EpisodicMemory + SQLite 索引
+│   │   ├── episodic.ts                   # L2 EpisodicMemory（含 MemoryScope/AppendOptions/SearchOptions 类型，Phase 4 加 SQLite 索引）
 │   │   ├── curated.ts                    # L3 Curated Core 读写
-│   │   ├── gate.ts                       # PromotionGate 晋升闸门
-│   │   ├── dreaming.ts                   # DreamingPipeline 后台巡检
+│   │   ├── gate.ts                       # PromotionGate 晋升闸门（Phase 3）
+│   │   ├── dreaming.ts                   # DreamingPipeline 后台巡检（Phase 3）
 │   │   ├── callback.ts                   # ToolMemoryCallback 工具记忆回调
-│   │   ├── context.ts                    # buildContext 上下文组装
+│   │   ├── context.ts                    # ContextAssembler 上下文组装 + repairMessageSequence
 │   │   └── index.ts                      # 模块聚合入口
 │   ├── agent/
 │   │   ├── react-agent.ts               # 改造：集成记忆管理
@@ -355,7 +358,12 @@ export class WorkingMemory {
 if (workingMemory.needsCompaction(messages)) {
   debug.log('L1 超阈值，触发 pre-compaction flush');
   const extracted = await workingMemory.preCompactionFlush(messages, llm);
-  await episodicMemory.appendToday(extracted);
+  // flush 产物标记为 global（跨会话知识）写入 L2
+  await episodicMemory.appendToday(extracted, {
+    sessionId: currentSessionId ?? undefined,
+    scope: 'global',
+    tag: 'compaction',
+  });
   messages = workingMemory.compact(messages);
   debug.log(`压缩完成，保留 ${messages.length} 条消息`);
 }
@@ -379,25 +387,23 @@ if (workingMemory.needsCompaction(messages)) {
 #### 隔离标签
 
 ```typescript
-// src/memory/types.ts 新增
+// src/memory/episodic.ts（实际实现，MemoryScope/AppendOptions/SearchOptions 定义于此）
 export type MemoryScope = 'session' | 'global';
 
-export interface EpisodicEntry {
-  sessionId: string;          // 来源 Session ID
-  scope: MemoryScope;         // 作用域
-  content: string;
-  timestamp: string;
-}
-
 export interface AppendOptions {
+  /** 会话 ID（用于隔离） */
   sessionId?: string;
-  scope?: MemoryScope;        // 默认 'session'
+  /** 作用域：session=仅当前会话可见, global=所有会话可见 */
+  scope?: MemoryScope;
+  /** 类别标签 */
+  tag?: string;
 }
 
 export interface SearchOptions {
-  sessionId?: string;         // 过滤当前会话
-  includeGlobal?: boolean;    // 是否包含全局记忆（默认 true）
-  topK?: number;
+  /** 当前会话 ID（用于过滤 session 级条目） */
+  sessionId?: string;
+  /** 作用域过滤：只返回指定 scope 的条目 */
+  scope?: MemoryScope;
 }
 ```
 
@@ -554,44 +560,40 @@ export class EpisodicMemory {
 }
 ```
 
-### 4.4 SQLite 索引层
+### 4.5 SQLite 索引层
+
+Phase 4 实现为独立模块 `src/memory/fts.ts`（`MemoryIndex` 类 + bigram 分词工具），而非 episodic.ts 内部类。核心要点：
+
+- **零外部依赖**：使用 Node 内置 `node:sqlite`（Node 22.5+ 的 `DatabaseSync`），无需安装 `better-sqlite3`
+- **中文 bigram 预分词**：FTS5 的 `unicode61`/`trigram` 对中文短词支持差，索引写入前用 `tokenizeForFts()` 将连续中文字符按 2-gram 拆分为空格分隔 token；查询时用 `tokenizeQuery()` 给每个 token 加引号保证精确短语匹配
+- **文件是真相源，索引只做加速**（ADR-1）：写入路径先追加 Markdown 文件再同步 `add()` 索引；读取路径优先 FTS5（BM25 排序），失败/无结果回退文件关键词匹配
+- **索引损坏**：`rebuildFromFiles()` 从 Markdown 逐条重建；`init()`/`add()`/`search()` 任一失败即 `markBroken()` 释放句柄并降级，不阻塞主流程
 
 ```typescript
-// src/memory/episodic.ts (MemoryIndex 内部类)
+// src/memory/fts.ts（Phase 4 实际实现，独立模块）
 
-class MemoryIndex {
-  private dbPath: string;
+export function tokenizeForFts(content: string): string {
+  // 连续中文按 2-gram 拆分，英文/数字原样保留
+}
 
-  constructor(dbPath: string) {
-    this.dbPath = dbPath;
-  }
+export function tokenizeQuery(query: string): string {
+  // 每个 token 加引号，保证精确短语匹配
+}
 
-  async init(): Promise<void> {
-    // 使用 better-sqlite3（同步）或 node:sqlite
-    // CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
-    // USING fts5(day, content, tokenize='unicode61')
-  }
-
-  async add(day: string, content: string): Promise<void> {
-    // INSERT INTO memory_fts (day, content) VALUES (?, ?)
-  }
-
-  async search(query: string, topK: number): Promise<MemorySearchResult[]> {
-    // SELECT day, content, bm25(memory_fts) as score
-    // FROM memory_fts WHERE memory_fts MATCH ?
-    // ORDER BY score LIMIT ?
-  }
-
-  /** 从 Markdown 文件重建索引（索引损坏时使用） */
-  async rebuildFromFiles(memoryDir: string): Promise<void> {
-    // 扫描所有 .md 文件，逐条重新索引
-  }
+export class MemoryIndex {
+  init(): boolean            // 打开 DatabaseSync + CREATE VIRTUAL TABLE memory_fts
+  add(day, content): void    // INSERT INTO memory_fts (day, content, content_fts)
+  search(query, topK)        // SELECT ... WHERE memory_fts MATCH ? ORDER BY bm25(...)
+  clear(): void              // 重建前清空
+  rebuildFromFiles(memoryDir): Promise<number>  // 从 .md 文件按 ## 段落重建
+  isReady(): boolean         // 索引可用性（false 时调用方降级）
+  close(): void              // 关闭连接释放句柄
 }
 ```
 
-### 4.5 依赖说明
+### 4.6 依赖说明
 
-Phase 1 可使用 `node:sqlite`（Node.js 22.11+ 内置）或 `better-sqlite3`。如果不想引入新依赖，Phase 1 可先用简单的文件内容检索（遍历日期文件做关键词匹配），后续再升级到 SQLite FTS5。
+Phase 4 使用 Node.js 内置 `node:sqlite`（Node 22.5+ 的 `DatabaseSync`，零外部依赖），未引入 `better-sqlite3`。索引不可用时（无 `node:sqlite`、文件损坏、查询报错）自动静默降级为文件关键词匹配，不阻塞主流程。
 
 ---
 
@@ -720,21 +722,19 @@ export class CuratedMemory {
 
 ### 5.4 常驻注入策略
 
-在 `buildSystemPrompt()` 中，L3 Curated 内容作为 system prompt 的一部分注入：
+L3 Curated 内容作为 system prompt 的一部分注入，由 `ContextAssembler` 在每次 LLM 调用前组装（`src/memory/context.ts`），无需改动 `src/agent/prompt.ts`：
 
 ```typescript
-// src/agent/prompt.ts 改造
+// src/memory/context.ts（实际实现）
 
-export async function buildFullSystemPrompt(
-  skills: SkillMetadata[] = [],
-  curatedContent?: string,  // L3 Curated 注入
-): Promise<string> {
-  const basePrompt = buildSystemPrompt(skills);
-  const curatedSection = curatedContent
-    ? `\n\n## 你的长期记忆（Curated Memory）\n以下是关于你服务的用户和积累的知识，请在回答时参考：\n${curatedContent}`
-    : '';
-  return basePrompt + curatedSection;
-}
+// 1. L3 常驻：Curated 内容拼接到基础 system prompt 之后
+const basePrompt = buildSystemPrompt(skills);
+const curatedSection = curatedContent
+  ? `\n\n## 你的长期记忆（Curated Memory）\n以下是关于你服务的用户和积累的知识，请在回答时参考：\n${curatedContent}`
+  : '';
+
+// 2. L2 按需检索结果同样拼接（ADR-4 说明见附录 A）
+const finalSystemPrompt = basePrompt + curatedSection + memorySection;
 ```
 
 ---
@@ -1052,16 +1052,26 @@ export class ToolMemoryCallback {
   }
 
   /** 工具错误也记录 */
-  async logError(toolName: string, error: string): Promise<void> { /* ... */ }
+  async logError(toolName: string, error: string): Promise<void> {
+    const entry = `- [tool:${toolName}] ERROR: ${this.truncate(error, 200)}`;
+    try {
+      const options: AppendOptions = { tag: 'error' };
+      if (this._sessionId) {
+        options.sessionId = this._sessionId;
+        options.scope = 'session';
+      }
+      await this.episodic.appendToday(entry, options);
+    } catch { /* 静默丢弃 */ }
+  }
 
   /** 记录全局级别的记忆（跨会话可见） */
   async logGlobal(content: string, tag?: string): Promise<void> {
     try {
-      await this.episodic.appendToday(content, {
-        scope: 'global',
-        tag,
-        sessionId: this._sessionId ?? undefined,
-      });
+      const options: AppendOptions = { scope: 'global', tag };
+      if (this._sessionId) {
+        options.sessionId = this._sessionId;
+      }
+      await this.episodic.appendToday(content, options);
     } catch { /* 静默丢弃 */ }
   }
 
@@ -1093,7 +1103,7 @@ for (let i = 0; i < callItems.length; i++) {
 ### 9.1 组装流程
 
 ```typescript
-// src/memory/context.ts
+// src/memory/context.ts（实际实现）
 
 export class ContextAssembler {
   private curated: CuratedMemory;
@@ -1106,22 +1116,32 @@ export class ContextAssembler {
 
   /**
    * 组装完整 context：L3 常驻 + L2 检索 + L1 当前
-   * 每次 LLM 调用前执行
+   * 每次 LLM 调用前执行（由 ReActAgent 调用）
    */
   async assemble(
     userMessage: string,
     currentMessages: ChatMessage[],
     skills: SkillMetadata[] = [],
-    maxRetrievedTokens = 1000,
+    options: {
+      searchTopK?: number;
+      searchTimeoutMs?: number;
+      sessionId?: string;   // 当前会话 ID，用于 L2 检索隔离
+    } = {},
   ): Promise<ChatMessage[]> {
-    // 1. L3 常驻：system prompt（含 SOUL/USER/MEMORY）
-    const curatedContent = await this.curated.buildSystemPrompt();
-    const systemPrompt = buildSystemPrompt(skills) + '\n' + curatedContent;
+    const searchTopK = options.searchTopK ?? 3;
+    const searchTimeoutMs = options.searchTimeoutMs ?? 500;
 
-    // 2. L2 检索：召回相关历史片段
+    // 1. L3 常驻：Curated 内容拼接到基础 system prompt 之后
+    const curatedContent = await this.curated.buildSystemPrompt();
+    const basePrompt = buildSystemPrompt(skills);
+    const curatedSection = curatedContent
+      ? `\n\n## 你的长期记忆（Curated Memory）\n以下是关于你服务的用户和积累的知识，请在回答时参考：\n${curatedContent}`
+      : '';
+
+    // 2. L2 检索：按当前消息召回相关片段（带 sessionId 隔离 + timeout 降级）
     let memoryBlock = '';
     try {
-      const retrieved = await this.safeSearch(userMessage, 3);
+      const retrieved = await this.safeSearch(userMessage, searchTopK, searchTimeoutMs, options.sessionId);
       if (retrieved.length > 0) {
         memoryBlock = retrieved.map((r) => r.content).join('\n');
       }
@@ -1129,29 +1149,35 @@ export class ContextAssembler {
       // 检索失败不影响主流程
     }
 
-    const finalSystemPrompt = memoryBlock
-      ? `${systemPrompt}\n\n## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n${memoryBlock}`
-      : systemPrompt;
+    const memorySection = memoryBlock
+      ? `\n\n## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n${memoryBlock}`
+      : '';
+    const finalSystemPrompt = basePrompt + curatedSection + memorySection;
 
-    // 3. 组装完整 messages
-    const messages: ChatMessage[] = [
+    // 3. 组装完整 messages + 修复损坏的 tool-assistant 配对
+    const rawMessages: ChatMessage[] = [
       { role: 'system', content: finalSystemPrompt },
       ...currentMessages.filter((m) => m.role !== 'system'),
     ];
-
-    return messages;
+    return repairMessageSequence(rawMessages);
   }
 
-  /** 带超时的安全检索 */
-  private async safeSearch(query: string, topK: number, timeoutMs = 500): Promise<MemorySearchResult[]> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  /** 带超时的安全检索（支持 sessionId 隔离） */
+  private async safeSearch(
+    query: string,
+    topK: number,
+    timeoutMs: number,
+    sessionId?: string,
+  ): Promise<MemorySearchResult[]> {
     try {
-      return await this.episodic.search(query, topK);
+      return await Promise.race([
+        this.episodic.search(query, topK, { sessionId }),
+        new Promise<MemorySearchResult[]>((resolve) =>
+          setTimeout(() => resolve([]), timeoutMs),
+        ),
+      ]);
     } catch {
       return [];
-    } finally {
-      clearTimeout(timeout);
     }
   }
 }
@@ -1228,48 +1254,41 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
 
 | 命令 | 说明 |
 |------|------|
-| `/memory list` | 列出 L2 情景记忆的日期文件 |
-| `/memory read <date>` | 读取指定日期的记忆（如 2026-08-08） |
-| `/memory search <query>` | 搜索 L2 记忆 |
-| `/memory dream` | 手动触发 Dreaming 晋升 |
 | `/memory status` | 查看记忆系统状态（各层统计） |
-| `/memory init` | 初始化 L3 Curated 文件 |
-| `/memory gate` | 查看 Promotion Gate 待处理事实 |
+| `/memory curated list` | 列出 L3 Curated 文件（SOUL / USER / MEMORY） |
+| `/memory curated read <soul\|user\|memory>` | 读取指定 Curated 文件内容 |
+| `/memory curated append <soul\|user\|memory> <内容>` | 向指定 Curated 文件追加一条事实 |
+| `/memory episodic list` | 列出 L2 情景记忆的日期文件 |
+| `/memory episodic read <YYYY-MM-DD>` | 读取指定日期的记忆 |
+| `/memory search <query>` | 搜索 L2 记忆（带 Session 过滤） |
+
+> Phase 3 待实现：`/memory dream`（手动触发 Dreaming）、`/memory gate`（查看 Gate 待处理事实）、`/memory init`（初始化 L3）。
 
 ### 11.2 `/memory` 命令处理器框架
 
 ```typescript
-// index.ts 中新增
+// index.ts 中已实现
 
 async function handleMemory(input: string): Promise<void> {
   const parts = input.split(/\s+/);
-  const sub = parts[1] ?? 'list';
+  const sub = parts[1] ?? 'status';
   const args = parts.slice(2);
 
   switch (sub) {
-    case 'list':
-      // 列出 memory/ 目录下所有日期文件
+    case 'status':
+      // 查看记忆系统状态（各层统计）
       break;
-    case 'read':
-      // 读取指定日期的记忆
+    case 'curated':
+      // curated list / read <key> / append <key> <content>
+      break;
+    case 'episodic':
+      // episodic list / read <YYYY-MM-DD>
       break;
     case 'search':
-      // 搜索 L2 记忆
-      break;
-    case 'dream':
-      // 手动触发 Dreaming
-      break;
-    case 'status':
-      // 查看记忆系统状态
-      break;
-    case 'init':
-      // 初始化 L3 Curated 文件
-      break;
-    case 'gate':
-      // 查看 Gate 待处理事实
+      // 带 Session 过滤的关键词检索
       break;
     default:
-      console.log('支持: list / read / search / dream / status / init / gate');
+      console.log('支持: status / curated (list|read|append) / episodic (list|read) / search');
   }
 }
 ```
@@ -1328,11 +1347,11 @@ async function safeMemoryOp<T>(
 | **1.6** | 实现 `ContextAssembler` 上下文组装（含 Session 隔离的 L2 检索） | `src/memory/context.ts` | ✅ |
 | **1.7** | 配置扩展：`MemoryConfig` 加入 `AgentConfig` | `src/config/schema.ts` | ✅ |
 | **1.8** | **改造 Session 存储**：`src/session/store.ts` 增加分层存储（`lastSummary`、`recentMessages`、`archivedMessages`） | `src/session/store.ts` | ✅ |
-| **1.9** | **改造 Session 恢复**：只加载 `recentMessages` 到 `_chatHistory`，`lastSummary` 注入系统提示词 | `src/session/store.ts` + `src/index.ts` | ✅ |
+| **1.9** | **改造 Session 恢复**：只加载 `recentMessages` 到 `_chatHistory`，`lastSummary` 注入系统提示词 | `src/agent/react-agent.ts`（`restoreSession()`） | ✅ |
 | **1.10** | 改造 `ReActAgent`：集成 L1 压缩 + L2 flush（带 sessionId）+ L3 注入 + Session 分层保存 | `src/agent/react-agent.ts` | ✅ |
-| **1.11** | 改造 `buildSystemPrompt()`：支持注入 `lastSummary` | `src/agent/prompt.ts` | ✅ |
+| **1.11** | 恢复时注入 `lastSummary` 到 system prompt | `src/agent/react-agent.ts`（`restoreSession()`） | ✅ |
 | **1.12** | CLI 命令：`/memory status` / `/memory curated` / `/memory episodic` / `/memory search` | `src/index.ts` | ✅ |
-| **1.13** | 集成测试：验证 Session 分层恢复 + L2 隔离检索 | `tests/` | ⬜ |
+| **1.13** | 集成测试：验证 Session 分层恢复 + L2 隔离检索（含 500 条消息超大 Session） | `tests/session-isolation.test.ts` | ✅ |
 
 #### 1.8-1.9 Session 分层改造详情（已实现）
 
@@ -1439,40 +1458,63 @@ renderMessages(restoreMessages);
 
 ### Phase 2：智能压缩（预计 4h）
 
-| 步骤 | 工作内容 | 产出文件 |
-|------|----------|----------|
-| 2.1 | 实现 `preCompactionFlush()`：LLM 提取关键信息再压缩 | `src/memory/working.ts` |
-| 2.2 | 工具结果自动写入 L2（`ToolMemoryCallback`） | `src/memory/callback.ts` |
-| 2.3 | CLI 命令：`/memory search` | `src/index.ts` |
-| 2.4 | 压缩质量验证：测试压缩前后关键信息保留率 | `tests/` |
+| 步骤 | 工作内容 | 产出文件 | 状态 |
+|------|----------|----------|------|
+| 2.1 | 实现 `preCompactionFlush()`：LLM 提取关键信息再压缩 | `src/memory/working.ts` | ✅ |
+| 2.2 | 工具结果自动写入 L2（`ToolMemoryCallback`） | `src/memory/callback.ts` | ✅ |
+| 2.3 | CLI 命令：`/memory search` | `src/index.ts` | ✅ |
+| 2.4 | 压缩质量验证：测试压缩前后关键信息保留率 | `tests/memory-working.test.ts` / `tests/memory-flush.test.ts` / `tests/memory-callback.test.ts` | ✅ |
 
 ### Phase 3：晋升流水线（预计 6h）
 
-| 步骤 | 工作内容 | 产出文件 |
-|------|----------|----------|
-| 3.1 | 实现 `PromotionGate`：来源可信度评分 + 状态持久化 | `src/memory/gate.ts` |
-| 3.2 | 实现 `DreamingPipeline`：后台巡检 + LLM 提取 + Gate 评估 | `src/memory/dreaming.ts` |
-| 3.3 | 会话结束自动触发 Dreaming | `src/index.ts` |
-| 3.4 | CLI 命令：`/memory dream` / `/memory gate` / `/memory init` | `src/index.ts` |
-| 3.5 | 集成测试：验证完整晋升链路 | `tests/` |
+| 步骤 | 工作内容 | 产出文件 | 状态 |
+|------|----------|----------|------|
+| 3.1 | 实现 `PromotionGate`：来源可信度评分 + 状态持久化 | `src/memory/gate.ts` | ✅ |
+| 3.2 | 实现 `DreamingPipeline`：后台巡检 + LLM 提取 + Gate 评估 | `src/memory/dreaming.ts` | ✅ |
+| 3.3 | 会话结束自动触发 Dreaming | `src/index.ts`（`rl.on('close')`） | ✅ |
+| 3.4 | CLI 命令：`/memory dream` / `/memory gate` / `/memory init` | `src/index.ts` | ✅ |
+| 3.5 | 集成测试：验证完整晋升链路 | `tests/memory-gate.test.ts` / `tests/memory-dreaming.test.ts` | ✅ |
 
 ### Phase 4：SQLite 索引 + 安全降级（预计 4h）
 
-| 步骤 | 工作内容 | 产出文件 |
-|------|----------|----------|
-| 4.1 | 引入 `better-sqlite3`（或使用 `node:sqlite`） | `package.json` |
-| 4.2 | 实现 `MemoryIndex`：FTS5 全文搜索 | `src/memory/episodic.ts` |
-| 4.3 | 索引重建工具：`rebuildFromFiles()` | `src/memory/episodic.ts` |
-| 4.4 | 实现所有 memory 操作的 timeout/fallback 包装 | `src/memory/context.ts` |
-| 4.5 | 降级策略测试 | `tests/` |
+| 步骤 | 工作内容 | 产出文件 | 状态 |
+|------|----------|----------|------|
+| 4.1 | 引入 `node:sqlite`（Node 内置，零外部依赖，未用 better-sqlite3） | `src/memory/fts.ts` | ✅ |
+| 4.2 | 实现 `MemoryIndex`：FTS5 全文搜索（bigram 预分词 + BM25 排序） | `src/memory/fts.ts` | ✅ |
+| 4.3 | 索引重建工具：`rebuildFromFiles()` | `src/memory/fts.ts` | ✅ |
+| 4.4 | 实现所有 memory 操作的 timeout/fallback 包装 | `src/memory/context.ts`（`safeSearch`） | ✅ |
+| 4.5 | 降级策略测试（索引损坏/写入失败/读取失败/超时） | `tests/memory-phase4.test.ts` | ✅ |
 
-### Phase 5：向量检索（可选，预计 6h）
+### Phase 5：可配置向量检索（已完成）
 
-| 步骤 | 工作内容 | 产出文件 |
-|------|----------|----------|
-| 5.1 | 接入 embedding 模型（可配置） | `src/memory/embedding.ts` |
-| 5.2 | 实现混合检索：BM25 + 向量 RRF 融合 | `src/memory/episodic.ts` |
-| 5.3 | 语义相似度排序 | `src/memory/episodic.ts` |
+**设计**：向量检索为可选能力，默认禁用；未配置/配置后调用失败/超时/维度不匹配均自动静默降级为 BM25 → 文件检索，不阻塞主流程。
+
+```jsonc
+// .loop-agent/.agent-config.json 配置示例（用户实测环境）
+{
+  "memory": {
+    "episodic": {
+      "vectorSearch": {
+        "enabled": true,
+        "provider": "openai-compatible",
+        "model": "bge-large-zh-vllm",
+        "dimension": 1024,
+        "endpoint": "http://192.168.1.155:23620/v1/embeddings",
+        "apiKey": "",
+        "timeoutMs": 10000,
+        "batchSize": 16
+      }
+    }
+  }
+}
+```
+
+| 步骤 | 工作内容 | 产出文件 | 状态 |
+|------|----------|----------|------|
+| 5.1 | `vectorSearch` 配置块（默认禁用，可选即降级）+ OpenAI 兼容 embedding 客户端（超时控制） | `src/memory/types.ts` / `src/memory/embedding.ts` | ✅ |
+| 5.2 | 向量索引：SQLite 表存 Float32 BLOB + 余弦检索 + 全量重建/增量嵌入 | `src/memory/vector.ts` | ✅ |
+| 5.3 | 混合检索：BM25 + 向量 RRF 融合（k=60） | `src/memory/hybrid.ts` / `src/memory/episodic.ts` | ✅ |
+| 5.4 | 集成测试：未配置兼容/服务不可用降级/混合检索/Session 隔离/维度校验 | `tests/memory-phase5.test.ts` | ✅ |
 
 ---
 
@@ -1495,7 +1537,7 @@ renderMessages(restoreMessages);
 | 1.11 | Session 分层存储 | Session 保存时分离 `recentMessages`、`lastSummary`、`archivedMessages` | ✅ |
 | 1.12 | Session 分层恢复 | 恢复 Session 时只加载 `recentMessages` 到 `_chatHistory` | ✅ |
 | 1.13 | Session summary 注入 | `lastSummary` 在恢复后注入系统提示词 | ✅ |
-| 1.14 | Session 超大恢复 | 恢复包含 500 条消息的 Session，首轮不触发 L1 压缩 | ⬜ |
+| 1.14 | Session 超大恢复 | 恢复包含 500 条消息的 Session，首轮不触发 L1 压缩 | ✅ |
 | 1.15 | `/memory status` | 显示记忆系统各层统计（含 Session 数） | ✅ |
 | 1.16 | `/memory curated list/read/append` | L3 Curated 文件管理命令正常 | ✅ |
 | 1.17 | `/memory episodic list/read` | L2 情景记忆查看命令正常 | ✅ |
@@ -1516,25 +1558,36 @@ renderMessages(restoreMessages);
 
 | # | 测试项 | 预期结果 | 状态 |
 |---|--------|----------|------|
-| 3.1 | Gate 状态持久化 | 重启后 pending 计数不丢失 | ⬜ |
-| 3.2 | 低可信度不晋升 | owner_derived 需 2 次确认才晋升 | ⬜ |
-| 3.3 | 高可信度快速晋升 | owner_direct 1 次即晋升 | ⬜ |
-| 3.4 | Dreaming 巡检 | 能从 L2 提取候选事实 | ⬜ |
-| 3.5 | 晋升写入 L3 | 确认事实写入 USER.md / MEMORY.md | ⬜ |
-| 3.6 | 退出自动 Dreaming | 会话退出时自动执行巡检 | ⬜ |
-| 3.7 | `/memory dream` | 手动触发 Dreaming | ⬜ |
-| 3.8 | `/memory gate` | 查看待处理事实列表 | ⬜ |
+| 3.1 | Gate 状态持久化 | 重启后 pending 计数不丢失 | ✅ |
+| 3.2 | 低可信度不晋升 | owner_derived 需 2 次确认才晋升 | ✅ |
+| 3.3 | 高可信度快速晋升 | owner_direct 1 次即晋升 | ✅ |
+| 3.4 | Dreaming 巡检 | 能从 L2 提取候选事实 | ✅ |
+| 3.5 | 晋升写入 L3 | 确认事实写入 USER.md / MEMORY.md | ✅ |
+| 3.6 | 退出自动 Dreaming | 会话退出时自动执行巡检 | ✅ |
+| 3.7 | `/memory dream` | 手动触发 Dreaming | ✅ |
+| 3.8 | `/memory gate` | 查看待处理事实列表 | ✅ |
 
 ### Phase 4 验收
 
 | # | 测试项 | 预期结果 | 状态 |
 |---|--------|----------|------|
-| 4.1 | SQLite FTS5 索引 | 全文搜索返回准确结果 | ⬜ |
-| 4.2 | Session 过滤 + SQLite | FTS5 检索支持 Session 过滤 | ⬜ |
-| 4.3 | 索引重建 | 索引损坏后可从 Markdown 重建 | ⬜ |
-| 4.4 | 检索超时降级 | 检索超时时返回空，不阻塞对话 | ⬜ |
-| 4.5 | 写入失败降级 | L2 写入失败时静默丢弃 | ⬜ |
-| 4.6 | L2 读取失败降级 | L2 读取失败时返回空内容 | ⬜ |
+| 4.1 | SQLite FTS5 索引 | 全文搜索返回准确结果 | ✅ |
+| 4.2 | Session 过滤 + SQLite | FTS5 检索支持 Session 过滤 | ✅ |
+| 4.3 | 索引重建 | 索引损坏后可从 Markdown 重建 | ✅ |
+| 4.4 | 检索超时降级 | 检索超时时返回空，不阻塞对话 | ✅ |
+| 4.5 | 写入失败降级 | L2 写入失败时静默丢弃 | ✅ |
+| 4.6 | L2 读取失败降级 | L2 读取失败时返回空内容 | ✅ |
+
+### Phase 5 验收
+
+| # | 测试项 | 预期结果 | 状态 |
+|---|--------|----------|------|
+| 5.1 | 向量可配置 | 不配置时行为与 Phase 4 完全一致；配置后启用 | ✅ |
+| 5.2 | 服务不可用降级 | embedding 调用失败/超时自动回退 BM25/文件检索，不抛错 | ✅ |
+| 5.3 | 混合检索 | 向量召回语义相关条目（无关键词也命中）+ BM25 RRF 融合排序 | ✅ |
+| 5.4 | Session 隔离 | 混合检索结果仍按 session/scope 过滤 | ✅ |
+| 5.5 | 向量索引重建 | `rebuildVectorIndex()` 从 Markdown 全量重建 | ✅ |
+| 5.6 | 维度校验 | 向量维度不匹配时静默降级 | ✅ |
 
 ---
 
@@ -1550,6 +1603,10 @@ renderMessages(restoreMessages);
 | `src/memory/curated.ts` | L3 CuratedMemory |
 | `src/memory/gate.ts` | PromotionGate（Phase 3） |
 | `src/memory/dreaming.ts` | DreamingPipeline（Phase 3） |
+| `src/memory/fts.ts` | MemoryIndex：SQLite FTS5 索引 + bigram 分词（Phase 4） |
+| `src/memory/embedding.ts` | EmbeddingClient：OpenAI 兼容 /v1/embeddings 客户端（Phase 5） |
+| `src/memory/vector.ts` | VectorMemory：SQLite 向量表 + 余弦检索 + 重建/增量（Phase 5） |
+| `src/memory/hybrid.ts` | rrfMerge：BM25 + 向量 RRF 融合（Phase 5） |
 | `src/memory/callback.ts` | ToolMemoryCallback（带 sessionId） |
 | `src/memory/context.ts` | ContextAssembler（含 Session 隔离检索） |
 | `src/memory/index.ts` | 模块聚合入口 |
@@ -1562,11 +1619,13 @@ renderMessages(restoreMessages);
 | `src/config/index.ts` | `ConfigLoader` 支持 memory 配置加载 |
 | **`src/session/types.ts`** | **SessionData 增加 `lastSummary`、`recentMessages`、`archivedMessages`、`archivedCount` 字段** |
 | **`src/session/store.ts`** | **Session 保存/加载逻辑改造：分层存储 + 分层恢复** |
-| **`src/session/store.ts`** | **增加 `extractRecentTurns()` 和 `generateSummary()` 方法** |
-| `src/agent/react-agent.ts` | 集成记忆管理：L1 压缩、L2 flush（带 sessionId）、工具回调、Context 组装 + Session 分层保存 |
-| `src/agent/prompt.ts` | `buildSystemPrompt()` 支持 L3 Curated 注入 + `lastSummary` 注入 |
-| `src/index.ts` | 新增 `/memory` 命令、Session 分层恢复逻辑、会话退出触发 Dreaming |
-| `package.json` | Phase 4 新增 `better-sqlite3` 依赖 |
+| **`src/session/store.ts`** | **增加 `buildSummary()`（限制条数与长度的摘要生成）** |
+| `src/agent/react-agent.ts` | 集成记忆管理：L1 压缩、L2 flush（带 sessionId）、工具回调、Context 组装 + Session 分层保存 + `restoreSession()` 注入 lastSummary + `vectorSearch` 配置透传（Phase 5） |
+| `src/memory/episodic.ts` | L2 EpisodicMemory：Phase 4 集成 FTS 索引；Phase 5 集成向量索引（search 降级链 混合→FTS→文件、append 增量嵌入、`initVector`/`rebuildVectorIndex`） |
+| `src/memory/types.ts` | 新增 `VectorSearchConfig` + `DEFAULT_VECTOR_CONFIG`（Phase 5） |
+| `src/memory/context.ts` | `ContextAssembler`：L3 Curated 注入 + L2 按需检索（带 timeout/降级） |
+| `src/index.ts` | 新增 `/memory` 命令（status/curated/episodic/search/dream/gate/init）、Session 分层恢复逻辑、退出时自动触发 Dreaming |
+| `package.json` | `@types/node` 升级到 `^22`（为 `node:sqlite` 提供类型声明）；未新增运行时依赖 |
 
 ### 15.3 不需要改动
 
@@ -1577,27 +1636,25 @@ renderMessages(restoreMessages);
 
 ### 15.4 数据迁移（Session 格式变更）
 
-由于 SessionData 格式变更，需要处理旧数据兼容：
+由于 SessionData 格式变更，需要处理旧数据兼容。实际实现中迁移逻辑内联在 `loadSession()` 中，无独立迁移函数：
 
 ```typescript
-// src/session/store.ts 迁移逻辑
-function migrateSessionData(oldData: unknown): SessionData {
-  // 旧格式：{ messages: ChatMessage[], ... }
-  if ('messages' in (oldData as Record<string, unknown>)) {
-    const old = oldData as { messages: ChatMessage[] };
-    // 迁移：将全量 messages 转换为新格式
-    const recentMessages = extractRecentTurns(old.messages, 3);
-    return {
-      ...old,
-      recentMessages,
-      lastSummary: undefined,
-      archivedMessages: old.messages.slice(0, -recentMessages.length),
-      archivedCount: old.messages.length - recentMessages.length,
-    };
+// src/session/store.ts loadSession() 实际实现
+// 旧格式（无 recentMessages 且 messages 非空）→ 自动转换为分层格式
+if (!data.recentMessages && data.messages && data.messages.length > 0) {
+  const nonSystemMessages = data.messages.filter((m) => m.role !== 'system');
+  data.recentMessages = nonSystemMessages.slice(-this.recentTurns * 4);
+  data.archivedMessages = nonSystemMessages.slice(0, Math.max(0, nonSystemMessages.length - this.recentTurns * 4));
+  data.archivedCount = data.archivedMessages.length;
+  data.recentTurns = this.recentTurns;
+
+  // 归档过多时生成摘要（buildSummary，限制条数与长度）
+  if (data.archivedMessages.length > MAX_ARCHIVED_BEFORE_COMPACT) {
+    data.lastSummary = buildSummary(data.archivedMessages);
+    data.archivedMessages = data.archivedMessages.slice(-10);
   }
-  
-  // 新格式：直接返回
-  return oldData as SessionData;
+
+  await this.writeSession(data);  // 持久化转换结果
 }
 ```
 
@@ -1627,10 +1684,10 @@ Phase 4: 索引与降级
   ├── 索引重建工具
   └── 所有 memory 操作 timeout/fallback
 
-Phase 5: 向量检索（可选）
-  ├── 接入 embedding 模型
-  ├── BM25 + 向量 RRF 融合
-  └── 语义相似度排序
+Phase 5: 可配置向量检索（已完成）
+  ├── vectorSearch 配置块（默认禁用，可选即降级）
+  ├── OpenAI 兼容 embedding 客户端 + SQLite 向量表（零向量库依赖）
+  └── BM25 + 向量 RRF 混合检索
 ```
 
 ---
@@ -1664,22 +1721,23 @@ Phase 5: 向量检索（可选）
 - 防止网页搜索的不可靠信息直接晋升
 - 用户明确说出的话优先级最高
 
-### ADR-4：L2 不自动注入 Context
+### ADR-4：L2 按需检索注入而非全量注入
 
-**决策**：Daily Notes 永远不会被自动拼进 system prompt，只能通过 `memory_search()` 按需召回。
+**决策**：Daily Notes 不会被全量拼进 system prompt；由 `ContextAssembler` 在每次 LLM 调用前按当前用户消息检索相关片段（带 timeout，失败降级为空），也可通过 `/memory search` 手动召回。相关片段作为 system prompt 的补充注入。
 
 **理由**：
 - 历史记录量大，全量注入会爆 token
 - 按需检索保证召回的相关性和新鲜度
 - 避免"昨天聊过的废话"污染今天的推理
+- 检索带超时与降级，不影响主回复路径
 
-### ADR-5：L3 Curated 启动注入而非动态注入
+### ADR-5：L3 Curated 每次 LLM 调用注入
 
-**决策**：L3 在每次 LLM 调用时都注入 system prompt（作为 context 的一部分）。
+**决策**：L3 在每次 LLM 调用时都注入 system prompt（作为 context 的一部分），由 `ContextAssembler` 组装，而非仅在会话启动时注入一次。
 
 **理由**：
 - 用户画像和 Agent 人格是稳定的，需要始终参考
-- 动态注入（按需检索）会增加复杂度
+- 每次调用组装可保证最新写入的 Curated 内容立即可用
 - token 开销可控（Curated 文件通常 < 1000 token）
 
 ### ADR-6：不替代 SessionStore
@@ -1696,21 +1754,23 @@ Phase 5: 向量检索（可选）
 ## 附录 B：快速体验流程
 
 ```
-# 1. 初始化 L3
-/memory init
-→ 自动创建 SOUL.md / USER.md / MEMORY.md
-
-# 2. 正常对话（L1 + L2 自动工作）
+# 1. 正常对话（L1 + L2 自动工作；L3 首次运行自动创建 SOUL/USER/MEMORY.md）
 Agent> 你好，我叫张三，是采购负责人
 Agent> 帮我查一下华锐的报价
 
+# 2. 查看 L3 Curated 文件
+/memory curated list
+→ 列出 SOUL.md / USER.md / MEMORY.md
+/memory curated read user
+→ 查看用户画像内容
+
 # 3. 查看 L2 记录
-/memory list
+/memory episodic list
 → 列出 memory/ 下的日期文件
-/memory read 2026-08-08
+/memory episodic read 2026-08-08
 → 查看今日对话的结构化笔记
 
-# 4. 手动触发 Dreaming（或退出时自动触发）
+# 4. 手动触发 Dreaming（Phase 3 待实现）
 /memory dream
 → 巡检最近 3 天的日记
 → 提取候选事实 → 过 Gate → 写入 USER.md
@@ -1729,7 +1789,7 @@ Agent> 你好
 ## 附录 C：配置示例
 
 ```jsonc
-// {cwd}/.agent-config.json
+// {cwd}/.loop-agent/.agent-config.json
 {
   "memory": {
     "enabled": true,

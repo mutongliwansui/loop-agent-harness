@@ -38,7 +38,7 @@ export function scanSkillsDir(dir: string, scope: SkillScope): SkillMetadata[] {
 
   let entries: string[];
   try {
-    entries = readdirSync(dir);
+    entries = readdirSync(dir).sort();
   } catch {
     return [];
   }
@@ -67,7 +67,7 @@ export function scanSkillsDir(dir: string, scope: SkillScope): SkillMetadata[] {
       scope,
     });
   }
-  return skills;
+  return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** 格式化 Skill 列表用于调试 */

@@ -4,6 +4,22 @@ import { MCPClient } from './mcp/client.js';
 import { adaptMCPTool } from './mcp/adapter.js';
 import type { MCPServerConfig } from './mcp/client.js';
 
+/**
+ * 规范化 JSON 对象：递归排序对象 keys，确保 JSON Schema 序列化结果确定性。
+ * DeepSeek V4 等模型的前缀缓存依赖字节级一致的请求体，
+ * 不稳定的 key 顺序会导致 tools 部分无法命中缓存。
+ */
+function canonicalize(obj: unknown): unknown {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(canonicalize);
+  const sortedKeys = Object.keys(obj as Record<string, unknown>).sort();
+  const result: Record<string, unknown> = {};
+  for (const key of sortedKeys) {
+    result[key] = canonicalize((obj as Record<string, unknown>)[key]);
+  }
+  return result;
+}
+
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   /** MCP 客户端实例映射：serverName → MCPClient */
@@ -78,17 +94,19 @@ export class ToolRegistry {
 
   /**
    * 转换为 OpenAI function calling 的 tools 参数格式
-   * 输出可直接传入 chat() 的 tools 参数
+   * 按名称排序 + 参数规范化，确保序列化结果确定性以命中模型前缀缓存
    */
   toOpenAITools(): OpenAIToolDef[] {
-    return this.list().map((t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      },
-    }));
+    return this.list()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((t) => ({
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: canonicalize(t.parameters) as Record<string, unknown>,
+        },
+      }));
   }
 
   /**

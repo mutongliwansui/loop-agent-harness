@@ -81,6 +81,41 @@ export interface DreamingResult {
 
 // ===== Memory 配置 =====
 
+/**
+ * Phase 5 向量检索配置（可选）
+ * 默认禁用：不配置（enabled=false 或 endpoint/model 为空）时完全不影响功能，
+ * 检索走现有 BM25 → 文件关键词匹配；配置后 embedding 失败/超时也自动降级。
+ */
+export interface VectorSearchConfig {
+  /** 是否启用向量检索（默认 false） */
+  enabled: boolean;
+  /** 服务类型：'openai-compatible'（OpenAI 兼容 /v1/embeddings） */
+  provider: string;
+  /** embedding 模型名（如 bge-large-zh-vllm） */
+  model: string;
+  /** 向量维度（bge-large-zh 为 1024） */
+  dimension: number;
+  /** OpenAI 兼容 embeddings 端点完整 URL（如 http://host:port/v1/embeddings） */
+  endpoint: string;
+  /** API Key（可选，vLLM 等本地服务通常无需） */
+  apiKey: string;
+  /** 单次 embedding 调用超时（毫秒） */
+  timeoutMs: number;
+  /** 单批 embedding 文本数 */
+  batchSize: number;
+}
+
+export const DEFAULT_VECTOR_CONFIG: VectorSearchConfig = {
+  enabled: false,
+  provider: 'openai-compatible',
+  model: '',
+  dimension: 1024,
+  endpoint: '',
+  apiKey: '',
+  timeoutMs: 10000,
+  batchSize: 16,
+};
+
 export interface MemoryConfig {
   enabled: boolean;
   working: WorkingMemoryConfig;
@@ -88,6 +123,8 @@ export interface MemoryConfig {
     dir: string;
     searchTopK: number;
     searchTimeoutMs: number;
+    /** Phase 5：向量检索配置（可选，未配置则禁用向量检索） */
+    vectorSearch?: VectorSearchConfig;
   };
   curated: {
     files: string[];
@@ -110,6 +147,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     dir: 'memory',
     searchTopK: 3,
     searchTimeoutMs: 500,
+    vectorSearch: DEFAULT_VECTOR_CONFIG,
   },
   curated: {
     files: ['SOUL.md', 'USER.md', 'MEMORY.md'],

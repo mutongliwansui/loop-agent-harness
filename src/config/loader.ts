@@ -57,7 +57,8 @@ export class ConfigLoader {
   }
 
   get workspaceConfigPath(): string {
-    return join(this.workspacePath, '.agent-config.json');
+    // Task：workspace 配置统一存放于 {workspace}/.loop-agent/.agent-config.json
+    return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
   get globalConfigPath(): string {

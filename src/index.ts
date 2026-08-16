@@ -136,7 +136,7 @@ function printBanner(): void {
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
   console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show）`);
   console.log(`  ${C.bold}/session${C.reset}      → 会话管理（list/load/save/new/delete）`);
-  console.log(`  ${C.bold}/memory${C.reset}       → 记忆管理（curated/episodic/status/search）`);
+  console.log(`  ${C.bold}/memory${C.reset}       → 记忆管理（curated/episodic/status/search/dream/gate/init）`);
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 同样有效）`);
@@ -547,7 +547,7 @@ async function handleSkill(input: string, rl: readline.Interface): Promise<void>
     console.log('');
     console.log(`${C.bold}可用 Skill 列表 (${skills.length} 个):${C.reset}`);
     if (skills.length === 0) {
-      console.log(`  ${C.gray}（暂无 Skill，可在 ~/.loop-agent/skills/ 或 <cwd>/skills/ 下创建）${C.reset}`);
+      console.log(`  ${C.gray}（暂无 Skill，可在 ~/.loop-agent/skills/ 或 <cwd>/.loop-agent/skills/ 下创建）${C.reset}`);
     } else {
       for (const s of skills) {
         const scopeTag = s.scope === 'workspace' ? `${C.green}[工作空间]${C.reset}` : `${C.magenta}[全局]${C.reset}`;
@@ -970,7 +970,96 @@ async function handleMemory(input: string, rl: readline.Interface): Promise<void
     return;
   }
 
-  console.log(`${C.red}未知 /memory 子命令: ${sub}。支持 status / curated / episodic / search${C.reset}\n`);
+  // init 命令：初始化 L3 Curated 文件（幂等）
+  if (sub === 'init') {
+    if (!curMemory) {
+      console.log(`${C.red}L3 Curated Memory 未初始化${C.reset}\n`);
+      return;
+    }
+    await curMemory.init();
+    const paths = curMemory.getFilePaths();
+    console.log(`${C.green}✓ L3 Curated 文件已就绪:${C.reset}`);
+    for (const [key, path] of Object.entries(paths)) {
+      console.log(`  - ${C.bold}${key}${C.reset}: ${path}`);
+    }
+    console.log('');
+    return;
+  }
+
+  // dream 命令：手动触发 Dreaming 晋升
+  if (sub === 'dream') {
+    const daysBack = args.length > 0 ? parseInt(args[0], 10) : undefined;
+    if (daysBack !== undefined && (Number.isNaN(daysBack) || daysBack <= 0)) {
+      console.log(`${C.red}用法: /memory dream [天数]（默认读取配置）${C.reset}\n`);
+      return;
+    }
+    const { config: cfg } = configLoader.load();
+    if (!cfg.memory.dreaming.enabled) {
+      console.log(`${C.yellow}⚠ Dreaming 未启用，请在配置中设置 memory.dreaming.enabled=true${C.reset}\n`);
+      return;
+    }
+    console.log(`${C.cyan}⏳ Dreaming 巡检开始（最近 ${daysBack ?? cfg.memory.dreaming.daysBack} 天）...${C.reset}`);
+    try {
+      const result = await agent.runDreaming(daysBack);
+      if (!result) {
+        console.log(`${C.red}Dreaming 未初始化（请检查记忆系统状态）${C.reset}\n`);
+        return;
+      }
+      console.log('');
+      console.log(`${C.bold}Dreaming 巡检结果:${C.reset}`);
+      console.log(`  ${C.green}✓ 晋升 ${result.promoted.length} 条${C.reset}`);
+      for (const p of result.promoted) {
+        console.log(`    - [${p.provenance}] ${p.fact} → ${p.targetFile}`);
+      }
+      if (result.skipped.length > 0) {
+        console.log(`  ${C.gray}⏸ 待确认 ${result.skipped.length} 条${C.reset}`);
+        const gate = agent.promotionGate;
+        for (const s of result.skipped) {
+          const count = gate?.getCount(s.fact) ?? 0;
+          console.log(`    - [${s.provenance}] ${s.fact} (确认 ${count} 次)`);
+        }
+      }
+      if (result.errors.length > 0) {
+        console.log(`  ${C.yellow}⚠ 错误 ${result.errors.length} 条${C.reset}`);
+        for (const e of result.errors) {
+          console.log(`    - ${e}`);
+        }
+      }
+      if (result.promoted.length === 0 && result.skipped.length === 0) {
+        console.log(`  ${C.gray}（近期无值得晋升的记忆）${C.reset}`);
+      }
+      console.log('');
+    } catch (e) {
+      console.error(`${C.red}Dreaming 执行异常: ${e instanceof Error ? e.message : String(e)}${C.reset}\n`);
+    }
+    return;
+  }
+
+  // gate 命令：查看 Promotion Gate 待处理事实
+  if (sub === 'gate') {
+    const gate = agent.promotionGate;
+    if (!gate) {
+      console.log(`${C.red}Promotion Gate 未初始化${C.reset}\n`);
+      return;
+    }
+    const pending = gate.listPending();
+    const approved = gate.listApproved();
+    console.log('');
+    console.log(`${C.bold}Promotion Gate 状态:${C.reset}`);
+    console.log(`  ${C.cyan}待确认事实:${C.reset} ${pending.length} 条`);
+    for (const p of pending) {
+      console.log(`    - [${p.provenance}] ×${p.count} ${p.fact} → ${p.targetFile} (首次: ${p.firstSeen.slice(0, 10)})`);
+    }
+    console.log(`  ${C.green}已达阈值待晋升:${C.reset} ${approved.length} 条`);
+    for (const a of approved) {
+      console.log(`    - [${a.provenance}] ×${a.count} ${a.fact} → ${a.targetFile}`);
+    }
+    console.log(`  ${C.gray}提示: 已达阈值的事实会在下次 /memory dream 时写入 L3${C.reset}`);
+    console.log('');
+    return;
+  }
+
+  console.log(`${C.red}未知 /memory 子命令: ${sub}。支持 status / curated / episodic / search / dream / gate / init${C.reset}\n`);
   void rl;
 }
 
@@ -1225,7 +1314,19 @@ async function main() {
     rl.close();
   });
 
-  rl.on('close', () => {
+  rl.on('close', async () => {
+    // 会话结束：自动触发 Dreaming（等待完成后再退出）
+    const { config: exitCfg } = configLoader.load();
+    if (exitCfg.memory.enabled && exitCfg.memory.dreaming.enabled && exitCfg.memory.dreaming.onExit) {
+      try {
+        const result = await agent.runDreaming();
+        if (result && result.promoted.length > 0) {
+          console.log(`\n[Dreaming] 晋升 ${result.promoted.length} 条事实到 L3`);
+        }
+      } catch {
+        // Dreaming 失败不影响退出
+      }
+    }
     console.log(`\n${C.bold}${C.yellow}再见！感谢使用 ReAct Agent 👋${C.reset}\n`);
     process.exit(0);
   });

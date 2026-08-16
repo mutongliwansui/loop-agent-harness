@@ -9,7 +9,7 @@ export interface SkillConfig {
   enabled: boolean;
   /** 全局 Skill 目录（默认 ~/.loop-agent/skills） */
   globalDir: string;
-  /** 工作空间 Skill 目录（默认 <cwd>/skills） */
+  /** 工作空间 Skill 目录（默认 <cwd>/.loop-agent/skills） */
   workspaceDir: string;
   /** 启动时是否自动扫描 */
   autoLoad: boolean;

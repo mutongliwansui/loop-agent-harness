@@ -16,7 +16,8 @@ export class SkillLoader {
 
   /** 扫描并加载所有 Skill 元信息 */
   scan(cwd: string): SkillMetadata[] {
-    const workspaceDir = join(cwd, 'skills');
+    // Task：workspace Skill 统一存放于 {cwd}/.loop-agent/skills
+    const workspaceDir = join(cwd, '.loop-agent', 'skills');
 
     const globalSkills = scanSkillsDir(this.globalDir, 'global');
     const workspaceSkills = scanSkillsDir(workspaceDir, 'workspace');
@@ -45,9 +46,9 @@ export class SkillLoader {
     };
   }
 
-  /** 获取所有 Skill 元信息 */
+  /** 获取所有 Skill 元信息（按名称排序） */
   list(): SkillMetadata[] {
-    return [...this.skills.values()];
+    return [...this.skills.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** 按名称查找 */
@@ -57,7 +58,7 @@ export class SkillLoader {
 
   /** 获取工作空间 Skill 目录 */
   getWorkspaceDir(cwd: string): string {
-    return join(cwd, 'skills');
+    return join(cwd, '.loop-agent', 'skills');
   }
 
   /** 重新扫描 */

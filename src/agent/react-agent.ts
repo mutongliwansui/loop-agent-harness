@@ -5,6 +5,7 @@ import { llm } from '../llm/client.js';
 import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
+import { buildLLMStatsSummary } from './stats.js';
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import { skillLoader } from '../skill/loader.js';
@@ -15,9 +16,13 @@ import {
   EpisodicMemory,
   CuratedMemory,
   ContextAssembler,
+  repairMessageSequence,
   ToolMemoryCallback,
+  PromotionGate,
+  DreamingPipeline,
   type ILLMClient,
   type WorkingMemoryConfig,
+  type DreamingResult,
 } from '../memory/index.js';
 import type {
   AgentEvents,
@@ -26,6 +31,8 @@ import type {
   AgentOptions,
   ChatMessage,
   LLMResponse,
+  LLMStats,
+  LLMUsage,
   ToolCall,
 } from '../types.js';
 
@@ -53,6 +60,10 @@ export class ReActAgent {
   private _curatedMemory: CuratedMemory | null = null;
   private _contextAssembler: ContextAssembler | null = null;
   private _memoryCallback: ToolMemoryCallback | null = null;
+  private _promotionGate: PromotionGate | null = null;
+  private _dreamingPipeline: DreamingPipeline | null = null;
+  /** Dreaming 使用的模型（可配置，默认与主对话一致） */
+  private _dreamingModel: string | null = null;
 
   /** 记忆配置 */
   private _memoryEnabled = false;
@@ -108,13 +119,19 @@ export class ReActAgent {
     }
     restored.push({ role: 'system', content: enhancedSystem });
 
-    // 2. 添加 recentMessages
+    // 2. 添加 recentMessages + 修复损坏的 tool-assistant 配对
+    let restoredMessages: ChatMessage[];
     if (data.recentMessages && data.recentMessages.length > 0) {
-      restored.push(...data.recentMessages);
+      restoredMessages = [...data.recentMessages];
     } else if (data.messages) {
       // 兼容旧格式
-      restored.push(...data.messages.filter((m) => m.role !== 'system'));
+      restoredMessages = data.messages.filter((m) => m.role !== 'system');
+    } else {
+      restoredMessages = [];
     }
+
+    // 持久化/恢复过程中可能导致 tool-assistant 配对损坏，统一修复
+    restored.push(...repairMessageSequence(restoredMessages));
 
     this._chatHistory = restored;
     debug.log(`Session 恢复: ${data.id}, recentMessages=${data.recentMessages?.length ?? 0}, archivedCount=${data.archivedCount ?? 0}`);
@@ -141,17 +158,33 @@ export class ReActAgent {
 
     const episodicDir = cfg.memory.episodic.dir;
     const curatedDir = cwd;
+    this._dreamingModel = cfg.model.name;
 
     // L1 Working Memory
     this._workingMemory = new WorkingMemory(cfg.memory.working);
 
-    // L2 Episodic Memory
-    this._episodicMemory = new EpisodicMemory(episodicDir);
+    // L2 Episodic Memory（Phase 5：可选向量检索配置透传）
+    this._episodicMemory = new EpisodicMemory(episodicDir, cfg.memory.episodic.vectorSearch);
     await this._episodicMemory.init();
 
     // L3 Curated Memory
     this._curatedMemory = new CuratedMemory(curatedDir);
     await this._curatedMemory.init();
+
+    // Promotion Gate（恢复持久化状态）
+    this._promotionGate = new PromotionGate();
+    await this._promotionGate.loadState(curatedDir);
+
+    // Dreaming Pipeline（后台巡检）
+    if (this._episodicMemory && this._promotionGate && this._curatedMemory) {
+      const llmAdapter = createLLMAdapter(cfg.model.name, cfg.model.temperature);
+      this._dreamingPipeline = new DreamingPipeline(
+        this._episodicMemory,
+        this._promotionGate,
+        this._curatedMemory,
+        llmAdapter,
+      );
+    }
 
     // Context Assembler
     if (this._curatedMemory && this._episodicMemory) {
@@ -163,7 +196,7 @@ export class ReActAgent {
       this._memoryCallback = new ToolMemoryCallback(this._episodicMemory);
     }
 
-    debug.log(`记忆系统已初始化: L1(maxTokens=${cfg.memory.working.maxTokens}), L2(dir=${episodicDir}), L3(Curated)`);
+    debug.log(`记忆系统已初始化: L1(maxTokens=${cfg.memory.working.maxTokens}), L2(dir=${episodicDir}), L3(Curated), Dreaming(daysBack=${cfg.memory.dreaming.daysBack})`);
   }
 
   /** 是否启用了记忆系统 */
@@ -179,6 +212,26 @@ export class ReActAgent {
   /** 获取 CuratedMemory 实例（供 CLI 命令使用） */
   get curatedMemory(): CuratedMemory | null {
     return this._curatedMemory;
+  }
+
+  /** 获取 PromotionGate 实例（供 CLI 命令使用） */
+  get promotionGate(): PromotionGate | null {
+    return this._promotionGate;
+  }
+
+  /** 获取 DreamingPipeline 实例（供 CLI 命令使用） */
+  get dreamingPipeline(): DreamingPipeline | null {
+    return this._dreamingPipeline;
+  }
+
+  /**
+   * 运行 Dreaming 晋升巡检
+   * 供 CLI `/memory dream` 与退出时自动触发使用
+   */
+  async runDreaming(daysBack?: number): Promise<DreamingResult | null> {
+    if (!this._dreamingPipeline) return null;
+    const { config: cfg } = this._configLoader.load();
+    return this._dreamingPipeline.run(daysBack ?? cfg.memory.dreaming.daysBack);
   }
 
   async run(userInput: string, options: AgentOptions = {}): Promise<AgentResult> {
@@ -202,7 +255,7 @@ export class ReActAgent {
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义
     const events = this.composeEvents([
-      new ConsoleLogger(verbose),
+      new ConsoleLogger(verbose, cfg.agent.showTokenStats),
       ...(options.events ?? []),
     ]);
 
@@ -238,6 +291,9 @@ export class ReActAgent {
 
     let result: AgentResult | null = null;
     const safeEvents = events as Required<AgentEvents>;
+    const usageHistory: LLMUsage[] = [];
+    /** Task-15：每轮统计历史（用于会话结束汇总） */
+    const statsHistory: LLMStats[] = [];
     try {
       await safeEvents.onStart(userInput);
 
@@ -285,9 +341,40 @@ export class ReActAgent {
         }
 
         // 1. 流式调用 LLM，累积完整响应
+        const llmStartTs = Date.now();
         const resp = await this.streamLLM(messages, openaiTools, { model, temperature }, events);
 
         await safeEvents.onLLMEnd(resp, i);
+
+        // 收集每轮 LLM 调用的 Token 使用数据（含缓存命中率）
+        if (resp.usage) {
+          usageHistory.push(resp.usage);
+        }
+
+        // ===== Task-15：每轮统计（上下文占用 / 缓存命中率 / 输入输出 token） =====
+        const usage = resp.usage;
+        const workingConfig = this._workingMemory?.getConfig();
+        const contextTokens =
+          usage?.prompt_tokens ?? (this._workingMemory?.estimateTokens(messages) ?? 0);
+        const maxTokens = workingConfig?.maxTokens ?? 0;
+        const stats: LLMStats = {
+          iteration: i,
+          maxIterations,
+          contextTokens,
+          contextMaxTokens: maxTokens,
+          contextThreshold: Math.round(maxTokens * (workingConfig?.compactionThreshold ?? 0)),
+          promptTokens: usage?.prompt_tokens ?? 0,
+          completionTokens: usage?.completion_tokens ?? 0,
+          totalTokens: usage?.total_tokens ?? 0,
+          cacheHitTokens: usage?.prompt_cache_hit_tokens,
+          cacheHitRate:
+            usage?.prompt_tokens
+              ? (usage.prompt_cache_hit_tokens ?? 0) / usage.prompt_tokens
+              : undefined,
+          elapsedMs: Date.now() - llmStartTs,
+        };
+        statsHistory.push(stats);
+        await safeEvents.onLLMStats(stats);
 
         // 2. 无 tool_calls → 最终答案
         if (!resp.tool_calls?.length) {
@@ -385,6 +472,12 @@ export class ReActAgent {
         throw err;
       }
 
+      // 输出缓存命中率汇总（debug 日志 + Task-15 控制台汇总）
+      debug.cacheSummary(usageHistory);
+      if (statsHistory.length > 0) {
+        await safeEvents.onLLMStatsSummary(buildLLMStatsSummary(statsHistory));
+      }
+
       // 持久化到实例，供下一轮多轮对话复用
       this._chatHistory = [...result.messages];
 
@@ -476,6 +569,8 @@ export class ReActAgent {
       onIterationStart: (i, max) => callAll('onIterationStart', i, max),
       onLLMStream: (delta) => callAll('onLLMStream', delta),
       onLLMEnd: (resp, iter) => callAll('onLLMEnd', resp, iter),
+      onLLMStats: (stats) => callAll('onLLMStats', stats),
+      onLLMStatsSummary: (summary) => callAll('onLLMStatsSummary', summary),
       onToolStart: (tool, args) => callAll('onToolStart', tool, args),
       onToolEnd: (tool, result) => callAll('onToolEnd', tool, result),
       onFinal: (answer) => callAll('onFinal', answer),

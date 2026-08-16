@@ -1,7 +1,7 @@
 // 配置写入器：工作空间/全局写入，支持部分更新
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { PartialAgentConfig, AgentConfig } from './schema.js';
 import { deepMerge } from './merge.js';
 import { configLoader } from './loader.js';
@@ -22,7 +22,8 @@ export class ConfigWriter {
   }
 
   get workspaceConfigPath(): string {
-    return join(this.workspacePath, '.agent-config.json');
+    // Task：workspace 配置统一存放于 {workspace}/.loop-agent/.agent-config.json
+    return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
   get globalConfigPath(): string {
@@ -31,6 +32,7 @@ export class ConfigWriter {
 
   /** 写入工作空间配置（完整覆盖） */
   async writeWorkspace(config: PartialAgentConfig): Promise<void> {
+    await mkdir(dirname(this.workspaceConfigPath), { recursive: true });
     await writeJson(this.workspaceConfigPath, config);
   }
 

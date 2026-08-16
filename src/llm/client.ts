@@ -99,12 +99,20 @@ export class LLMClient {
         content: msg.content ?? null,
         tool_calls: toolCalls,
         finish_reason: choice.finish_reason ?? 'stop',
+        usage: resp.usage ? {
+          prompt_tokens: resp.usage.prompt_tokens ?? 0,
+          prompt_cache_hit_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_hit_tokens as number | undefined,
+          prompt_cache_miss_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_miss_tokens as number | undefined,
+          completion_tokens: resp.usage.completion_tokens ?? 0,
+          total_tokens: resp.usage.total_tokens ?? 0,
+        } : undefined,
       };
 
       debug.llmResponse(
         response.content,
         response.tool_calls?.map((tc) => ({ name: tc.function.name, arguments: tc.function.arguments })),
         Date.now() - startMs,
+        response.usage,
       );
 
       return response;
@@ -157,6 +165,7 @@ export class LLMClient {
     let contentBuf = '';
     let finishReason: LLMResponse['finish_reason'] = 'stop';
     let streamError: Error | null = null;
+    let streamUsage: LLMResponse['usage'] | undefined;
 
     try {
       for await (const chunk of stream) {
@@ -198,6 +207,17 @@ export class LLMClient {
         if (choice.finish_reason) {
           finishReason = choice.finish_reason;
         }
+
+        // 4. usage：流式模式下通常在最后一个 chunk 返回
+        if (chunk.usage) {
+          streamUsage = {
+            prompt_tokens: chunk.usage.prompt_tokens ?? 0,
+            prompt_cache_hit_tokens: (chunk.usage as unknown as Record<string, unknown>).prompt_cache_hit_tokens as number | undefined,
+            prompt_cache_miss_tokens: (chunk.usage as unknown as Record<string, unknown>).prompt_cache_miss_tokens as number | undefined,
+            completion_tokens: chunk.usage.completion_tokens ?? 0,
+            total_tokens: chunk.usage.total_tokens ?? 0,
+          };
+        }
       }
     } catch (e) {
       // 流连接过早关闭（Premature close 等），保存错误但不丢失已累积的内容
@@ -221,6 +241,7 @@ export class LLMClient {
       content: contentBuf || null,
       tool_calls: toolCalls,
       finish_reason: toolCalls ? 'tool_calls' : finishReason,
+      usage: streamUsage,
     };
 
     if (streamError) {
@@ -237,6 +258,7 @@ export class LLMClient {
       response.content,
       response.tool_calls?.map((tc) => ({ name: tc.function.name, arguments: tc.function.arguments })),
       Date.now() - streamStartMs,
+      response.usage,
     );
 
     yield { type: 'done', response };

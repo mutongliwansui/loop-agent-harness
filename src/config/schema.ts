@@ -35,6 +35,8 @@ export interface AgentBehaviorConfig {
   verbose: boolean;
   debug: boolean;
   systemPrompt: string | null;
+  /** Task-15：是否打印每轮 token/缓存/上下文统计（默认 true，独立于 verbose） */
+  showTokenStats: boolean;
 }
 
 /** 配置来源标记 */
@@ -74,6 +76,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     verbose: true,
     debug: false,
     systemPrompt: null,
+    showTokenStats: true,
   },
   session: {
     autoSave: true,
@@ -83,7 +86,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   skill: {
     enabled: true,
     globalDir: join(homedir(), '.loop-agent', 'skills'),
-    workspaceDir: 'skills',
+    workspaceDir: '.loop-agent/skills',
     autoLoad: true,
   },
   memory: {

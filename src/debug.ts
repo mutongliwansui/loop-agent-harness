@@ -101,7 +101,18 @@ export const debug = {
   },
 
   /** LLM 响应日志 */
-  llmResponse(content: string | null, toolCalls: Array<{ name: string; arguments: string }> | undefined, elapsedMs: number): void {
+  llmResponse(
+    content: string | null,
+    toolCalls: Array<{ name: string; arguments: string }> | undefined,
+    elapsedMs: number,
+    usage?: {
+      prompt_tokens: number;
+      prompt_cache_hit_tokens?: number;
+      prompt_cache_miss_tokens?: number;
+      completion_tokens: number;
+      total_tokens: number;
+    },
+  ): void {
     if (!config.debug) return;
     const lines = [`[DEBUG ${ts()}] ← LLM 响应 (${elapsedMs}ms)`];
     if (content) lines.push(`  内容: ${truncate(content, 300)}`);
@@ -113,6 +124,14 @@ export const debug = {
     if (!content && (!toolCalls || toolCalls.length === 0)) {
       lines.push('  (空响应)');
     }
+    if (usage) {
+      const hit = usage.prompt_cache_hit_tokens ?? 0;
+      const total = usage.prompt_tokens;
+      const rate = total > 0 ? ((hit / total) * 100).toFixed(1) : '0.0';
+      lines.push(
+        `  Cache: ${hit}/${total} tokens hit (${rate}%) | prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`,
+      );
+    }
     write(lines.join('\n') + '\n');
   },
 
@@ -121,6 +140,39 @@ export const debug = {
     if (!config.debug) return;
     const msg = error instanceof Error ? error.message : String(error);
     write(`[DEBUG ${ts()}] ✗ LLM 错误 (${elapsedMs}ms)\n  ${msg}\n`);
+  },
+
+  /**
+   * 缓存命中率汇总日志（Agent 运行结束时调用）
+   * 统计整轮 ReAct 会话的累计缓存命中情况
+   */
+  cacheSummary(rounds: Array<{
+    prompt_tokens: number;
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
+    completion_tokens: number;
+    total_tokens: number;
+  }>): void {
+    if (!config.debug || rounds.length === 0) return;
+    const totalPrompt = rounds.reduce((s, r) => s + r.prompt_tokens, 0);
+    const totalHit = rounds.reduce((s, r) => s + (r.prompt_cache_hit_tokens ?? 0), 0);
+    const totalMiss = rounds.reduce((s, r) => s + (r.prompt_cache_miss_tokens ?? 0), 0);
+    const totalCompletion = rounds.reduce((s, r) => s + r.completion_tokens, 0);
+    const totalAll = rounds.reduce((s, r) => s + r.total_tokens, 0);
+    const hitRate = totalPrompt > 0 ? ((totalHit / totalPrompt) * 100).toFixed(1) : '0.0';
+    const savingsPct = totalAll > 0 ? ((totalHit / totalAll) * 100).toFixed(1) : '0.0';
+
+    const lines = [
+      `[DEBUG ${ts()}] ╔══ 缓存命中率汇总 ════`,
+      `  迭代轮数: ${rounds.length}`,
+      `  Prompt 命中率: ${totalHit}/${totalPrompt} tokens (${hitRate}%)`,
+      `  节省比例 (hit/total): ${totalHit}/${totalAll} (${savingsPct}%)`,
+      `  未命中 tokens: ${totalMiss}`,
+      `  总输入 tokens: ${totalPrompt}`,
+      `  总输出 tokens: ${totalCompletion}`,
+      `  总 tokens: ${totalAll}`,
+    ];
+    write(lines.join('\n') + '\n');
   },
 
   /** 工具调用日志 */

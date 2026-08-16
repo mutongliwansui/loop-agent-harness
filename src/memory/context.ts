@@ -7,6 +7,83 @@ import { CuratedMemory } from './curated.js';
 import { EpisodicMemory } from './episodic.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 
+/**
+ * 消息序列验证与修复
+ *
+ * 问题：当消息被持久化/恢复时，去重逻辑可能导致 assistant(tool_calls) 消息被错误移除，
+ * 但其对应的 tool 消息仍然存在，造成 "tool must be response to preceding tool_calls" 错误。
+ *
+ * 修复策略：
+ * 1. 扫描消息序列，收集所有 assistant(tool_calls) 中的 tool_call_id
+ * 2. 对每条 tool 消息，检查其 tool_call_id 是否存在于前置 assistant 的 tool_calls 中
+ * 3. 若 tool 的 tool_call_id 在任何前置 assistant 中找不到 → 移除该 tool 消息（孤立 tool）
+ * 4. 若 assistant(tool_calls) 的所有 tool_call_id 都已被对应 tool 消息消费 → 保留
+ */
+export function repairMessageSequence(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length === 0) return messages;
+
+  // 收集每个 assistant(tool_calls) 中的 tool_call_id，以及它们在数组中的位置
+  const toolCallMap = new Map<string, number>(); // tool_call_id → assistant 消息的索引
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      for (const tc of msg.tool_calls) {
+        toolCallMap.set(tc.id, i);
+      }
+    }
+  }
+
+  // 检查每条 tool 消息，看其 tool_call_id 是否在前置 assistant 中存在
+  const validIndices = new Set<number>();
+  const orphanToolIndices: number[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'tool') {
+      const toolId = msg.tool_call_id;
+      const assistantIdx = toolCallMap.get(toolId);
+      if (assistantIdx !== undefined && assistantIdx < i) {
+        // 找到对应的 assistant，且在 tool 之前 → 合法
+        validIndices.add(i);
+      } else {
+        // 孤立的 tool 消息，对应的 assistant 不存在或在 tool 之后
+        orphanToolIndices.push(i);
+      }
+    } else {
+      // 非 tool 消息直接保留
+      validIndices.add(i);
+    }
+  }
+
+  // 过滤掉孤立的 tool 消息
+  let result = messages;
+  if (orphanToolIndices.length > 0) {
+    result = messages.filter((_, i) => validIndices.has(i));
+  }
+
+  // 清理 assistant 中已无对应 tool 消息的 tool_calls（含部分孤立场景）
+  const validToolCallIds = new Set(
+    result
+      .filter((m) => m.role === 'tool')
+      .map((m) => (m as { tool_call_id: string }).tool_call_id),
+  );
+
+  let changed = false;
+  const finalResult = result.map((msg) => {
+    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      const remainingCalls = msg.tool_calls.filter((tc) => validToolCallIds.has(tc.id));
+      if (remainingCalls.length < msg.tool_calls.length) {
+        changed = true;
+        return { ...msg, tool_calls: remainingCalls };
+      }
+    }
+    return msg;
+  });
+
+  return changed || orphanToolIndices.length > 0 ? finalResult : messages;
+}
+
 export class ContextAssembler {
   private curated: CuratedMemory;
   private episodic: EpisodicMemory;
@@ -65,15 +142,15 @@ export class ContextAssembler {
       ? `\n\n## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n${memoryBlock}`
       : '';
 
-    // 3. 组装完整 messages
+    // 3. 组装完整 messages + 修复损坏的 tool-assistant 配对
     const finalSystemPrompt = basePrompt + curatedSection + memorySection;
 
-    const messages: ChatMessage[] = [
+    const rawMessages: ChatMessage[] = [
       { role: 'system', content: finalSystemPrompt },
       ...currentMessages.filter((m) => m.role !== 'system'),
     ];
 
-    return messages;
+    return repairMessageSequence(rawMessages);
   }
 
   /** 带超时的安全检索（支持 sessionId 隔离） */

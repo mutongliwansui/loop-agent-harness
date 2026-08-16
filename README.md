@@ -24,6 +24,7 @@
 [💬 多轮对话](#-多轮对话)
 [💾 会话持久化](#-会话持久化)
 [🧠 记忆管理](#-记忆管理)
+[📊 LLM Token 统计](#-llm-token-统计)
 [📝 调试日志](#-调试日志)
 [📁 项目结构](#-项目结构)
 [🛠️ 技术栈](#️-技术栈)
@@ -39,6 +40,7 @@
 |---|---|
 | 🔄 **ReAct 循环** | Thought → Action → Observation 逐步推理，直到得出最终答案 |
 | 📡 **流式输出** | LLM 推理过程实时流式输出，支持 `content` 与 `tool_calls` 分片拼接 |
+| 📊 **Token 统计** | 每轮输出上下文/输入/输出 token 与缓存命中率，会话结束输出汇总（`showTokenStats` 可关） |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
 | 🛠️ **内置工具** | 命令执行、文件读取（支持行范围）、文件写入、内容检索（grep）、Skill 激活 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
@@ -48,7 +50,7 @@
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory` 命令，支持热修改 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
-| 🎯 **事件监听** | 参考 LangChain callbacks 设计，9 个生命周期钩子便于扩展 |
+| 🎯 **事件监听** | 参考 LangChain callbacks 设计，11 个生命周期钩子便于扩展 |
 | 💬 **多轮对话** | 跨 `run()` 调用持久化消息历史，支持上下文续接 |
 | ⚡ **同轮多工具** | 支持 LLM 单轮返回多个 `tool_calls`，`Promise.all` 并发执行 |
 | 🛡️ **失败隔离** | 单个工具失败不影响其他工具，工具不存在时返回错误 Observation 让 Agent 继续推理 |
@@ -106,7 +108,7 @@ npm start
 # 📝 编程式调用示例
 npx tsx examples/run.ts
 
-# 🧪 集成测试（7 个用例，串行执行避免 API 限速）
+# 🧪 测试（集成 7 例 + 记忆/会话/统计等单测，串行执行避免 API 限速）
 npm test
 
 # ✅ 类型检查
@@ -136,7 +138,7 @@ BaseURL: https://api.openai.com/v1 (env)
 最大迭代: 10
 内置工具: [commandRun, fileRead, fileWrite, grep, activate_skill]
 MCP 工具: 3 个, Servers: atlasGraphMcp (atlasGraphMcp__toolName)
-Skills: 1 个 (example-skill)
+Skills: 2 个 (example-skill, py-pptx)
 ⚠ 调试模式已开启，日志输出到: ~/.loop-agent/logs
 
 Agent> 帮我读取 package.json 的版本号
@@ -157,7 +159,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/mcp` | MCP 管理（list / add / remove / reload / test） |
 | `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
 | `/skill` | Skill 管理（list / reload / show） |
-| `/memory` | 记忆管理（status / curated / episodic / search） |
+| `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
 
 ### 输出示例
@@ -247,7 +249,7 @@ Agent> 帮我读取 package.json 的版本号
 /skill show <name>              # 显示指定 Skill 的 SKILL.md 完整内容
 ```
 
-Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](#-skill-技能包)。
+Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](#-skill-技能包)。
 
 #### `/memory` — 记忆管理
 
@@ -259,6 +261,9 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/skills/` 两个�
 /memory episodic list                   # 列出 L2 情景记忆日志（按天）
 /memory episodic read <YYYY-MM-DD>      # 读取指定日期的情景记忆
 /memory search <关键词>                  # 搜索 L2 情景记忆（返回相关片段）
+/memory dream [天数]                    # 手动触发 Dreaming 巡检（晋升 L2 → L3）
+/memory gate                            # 查看 Promotion Gate 待确认/待晋升事实
+/memory init                            # 初始化 L3 核心记忆文件
 ```
 
 详见 [🧠 记忆管理](#-记忆管理)。
@@ -449,7 +454,7 @@ const result = await agent.run('搜索 src 目录中的 config', {
 
 ```
 加载优先级（高 → 低）：
-  CLI 参数 > 工作空间配置 (.agent-config.json)
+  CLI 参数 > 工作空间配置 (.loop-agent/.agent-config.json)
            > 全局配置 (~/.loop-agent/config.json)
            > 环境变量 (.env)
            > 默认值 (DEFAULT_CONFIG)
@@ -589,7 +594,7 @@ Skill（技能包）是一组针对特定领域任务的**可复用指令集**�
 └── example-skill/
     └── SKILL.md
 
-<workspace>/skills/             # 工作空间 Skill（仅当前项目可用，优先级更高）
+<workspace>/.loop-agent/skills/   # 工作空间 Skill（仅当前项目可用，优先级更高）
 └── my-skill/
     ├── SKILL.md
     ├── scripts/                # 可选：可执行脚本
@@ -652,7 +657,7 @@ console.log(content?.fullContent);
 | 层级 | 文件位置 | 说明 |
 |---|---|---|
 | CLI 参数 | 运行时传入 | 最高优先级，仅内存中生效 |
-| 工作空间 (workspace) | `{项目目录}/.agent-config.json` | 项目级配置，随项目分发 |
+| 工作空间 (workspace) | `{项目目录}/.loop-agent/.agent-config.json` | 项目级配置（.loop-agent/ 整体不进入版本控制） |
 | 全局 (global) | `~/.loop-agent/config.json` | 用户级配置，跨项目共享 |
 | 环境变量 (env) | `.env` 或 `process.env` | 向后兼容，支持原有环境变量 |
 | 默认值 (default) | `DEFAULT_CONFIG` | 代码内置的默认值 |
@@ -682,7 +687,8 @@ console.log(content?.fullContent);
   "agent": {
     "verbose": true,
     "debug": false,
-    "systemPrompt": null
+    "systemPrompt": null,
+    "showTokenStats": true
   },
   "session": {
     "autoSave": true,
@@ -705,7 +711,17 @@ console.log(content?.fullContent);
     "episodic": {
       "dir": "memory",
       "searchTopK": 3,
-      "searchTimeoutMs": 500
+      "searchTimeoutMs": 500,
+      "vectorSearch": {
+        "enabled": false,
+        "provider": "openai-compatible",
+        "model": "",
+        "dimension": 1024,
+        "endpoint": "",
+        "apiKey": "",
+        "timeoutMs": 10000,
+        "batchSize": 16
+      }
     },
     "curated": {
       "files": ["SOUL.md", "USER.md", "MEMORY.md"]
@@ -726,11 +742,12 @@ console.log(content?.fullContent);
 | `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
 | `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
 | `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |
+| `agent` | `showTokenStats` | 是否输出每轮/会话汇总 token 统计（Task-15） | `true` |
 | `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
 | `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill 技能包开关与扫描目录 | 全部启用 |
-| `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` | 三层记忆系统配置 | 全部启用 |
+| `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | 三层记忆系统配置（含检索增强） | 全部启用 |
 
 ### 环境变量（向后兼容）
 
@@ -761,7 +778,7 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 
 ### 运行时配置管理
 
-通过 CLI 内置的 `/config` 命令可直接修改配置（写入 `.agent-config.json`）：
+通过 CLI 内置的 `/config` 命令可直接修改配置（写入 `.loop-agent/.agent-config.json`）：
 
 ```bash
 # 查看当前完整配置及来源
@@ -793,7 +810,7 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 
 ## 🎧 事件监听器
 
-参考 LangChain callbacks 设计，支持 **9 个生命周期钩子**。可叠加任意数量的监听器。
+参考 LangChain callbacks 设计，支持 **11 个生命周期钩子**。可叠加任意数量的监听器。
 
 ### 钩子列表
 
@@ -808,6 +825,8 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 | `onFinal` | Agent 给出最终答案 | `answer: string` |
 | `onError` | 发生错误 | `error: Error` |
 | `onEnd` | Agent 执行结束（成功或失败） | `result: AgentResult \| null` |
+| `onLLMStats` | 每轮 LLM 调用结束，输出 token 统计（Task-15） | `stats: LLMStats` |
+| `onLLMStatsSummary` | 会话全部迭代结束，输出汇总统计（Task-15） | `summary: LLMStatsSummary` |
 
 ### 多个监听器叠加
 
@@ -970,12 +989,17 @@ Agent 内置了基于文件系统的会话持久化能力：对话历史（messa
 /memory episodic list                   # 列出 L2 情景记忆日志
 /memory episodic read 2026-08-09        # 读取指定日期日志
 /memory search 华锐                      # 搜索历史记忆
+/memory dream 3                         # 手动触发 Dreaming 巡检（最近 3 天）
+/memory gate                            # 查看 Promotion Gate 待确认/待晋升事实
 ```
 
 ### 编程式使用
 
 ```typescript
-import { EpisodicMemory, CuratedMemory, WorkingMemory } from './src/memory/index.js';
+import {
+  EpisodicMemory, CuratedMemory, WorkingMemory,
+  PromotionGate, DreamingPipeline, MemoryIndex, VectorMemory, rrfMerge,
+} from './src/memory/index.js';
 
 // L2 情景记忆：按天写入/读取
 const episodic = new EpisodicMemory(process.cwd());
@@ -990,14 +1014,44 @@ await curated.append('user', '用户偏好邮件沟通');
 // L1 工作记忆：token 估算与压缩
 const working = new WorkingMemory();
 const needs = working.needsCompaction(messages);
+
+// Promotion Gate + Dreaming：L2 → L3 晋升（不同来源需不同确认次数）
+const gate = new PromotionGate(process.cwd());
+await gate.init();
+await gate.record('用户偏好邮件沟通', 'owner_direct');
+
+const dream = new DreamingPipeline({ gate, episodic, curated, llm });
+const result = await dream.run(3);   // 巡检最近 3 天，达标事实晋升 L3
+
+// 混合检索：BM25 全文 + 向量（可选）通过 RRF 融合排序
+const index = new MemoryIndex();
+index.add(day, content);
+const vector = new VectorMemory();
+const merged = rrfMerge(ftsHits, vectorHits);
 ```
 
-### 设计原则
+### 设计原则（Phase 1-5 已落地）
 
 - **文件即真相源**：Markdown 明文可读、可 diff、可版本管理（SQLite 索引在后续阶段引入）
-- **写读分离**：回复路径只做检索，不抽取记忆；抽取走后台 Dreaming 流水线（规划中）
-- **晋升有闸门**：不同来源（用户直述 / 工具输出 / 网页搜索）需不同确认次数才能晋升 L3（规划中）
+- **写读分离**：回复路径只做检索，不抽取记忆；抽取走 Dreaming 流水线（`/memory dream` 或退出时自动触发）
+- **晋升有闸门**：不同来源（用户直述 / 工具输出 / 网页搜索）需不同确认次数才能晋升 L3（Promotion Gate 已实现，`/memory gate` 可查看）
+- **混合检索**：BM25 全文检索 + 向量检索（可选）通过 RRF 融合排序，配置 `episodic.vectorSearch` 后自动启用，embedding 失败自动降级
 - **失败降级**：记忆子系统异常不影响主回复路径
+
+---
+
+## 📊 LLM Token 统计
+
+Agent 内置 LLM Token 统计（Task-15）：每轮 LLM 调用结束后输出上下文/输入/输出 token 与缓存命中率，会话结束后输出会话级汇总（总 token、平均缓存命中率、上下文峰值）。
+
+```
+[迭代 2/5] 上下文 3214/8000 (40%) | 输入 2588 | 输出 412 | 缓存 72.3% | 1.2s
+[统计汇总] 3 轮 | 总输入 7842 | 总输出 1230 | 总 token 9072 | 平均缓存命中 68.5% | 上下文峰值 4500/8000 (56%)
+```
+
+- **开关**：配置 `agent.showTokenStats`（默认 `true`），关闭后不再打印统计行
+- **事件**：可监听 `onLLMStats`（每轮）与 `onLLMStatsSummary`（会话结束）获取结构化数据
+- **上下文警示**：上下文 token 接近/超过 L1 压缩阈值时，统计行以黄色高亮警示
 
 ---
 
@@ -1064,7 +1118,8 @@ loop-agent-command/
 │   ├── agent/
 │   │   ├── react-agent.ts            # 🔄 ReAct 主循环（流式版本 + 会话自动保存）
 │   │   ├── prompt.ts                 # 📝 System Prompt 构造器（含 Skill 元信息注入）
-│   │   └── logger.ts                 # 🎨 ConsoleLogger（彩色日志输出，实现 AgentEvents）
+│   │   ├── logger.ts                 # 🎨 ConsoleLogger（彩色日志输出，实现 AgentEvents）
+│   │   └── stats.ts                  # 📊 LLM 统计聚合（buildLLMStatsSummary）
 │   ├── llm/
 │   │   └── client.ts                 # 🤖 LLM 客户端（chat + chatStream + 自动重试）
 │   ├── config/                       # ⚙️ 分层配置系统
@@ -1079,14 +1134,20 @@ loop-agent-command/
 │   │   ├── types.ts                  # Skill 类型定义（SkillMetadata / SkillContent）
 │   │   ├── scanner.ts                # 目录扫描 + SKILL.md YAML frontmatter 解析
 │   │   └── loader.ts                 # SkillLoader（扫描 / 渐进式加载）
-│   ├── memory/                       # 🧠 三层记忆管理
+│   ├── memory/                       # 🧠 三层记忆管理（Phase 1-5）
 │   │   ├── index.ts                  # 统一导出
 │   │   ├── types.ts                  # 记忆类型定义 + 默认配置
 │   │   ├── working.ts                # L1 WorkingMemory（token 估算 + 压缩）
 │   │   ├── episodic.ts               # L2 EpisodicMemory（按天 Markdown 日记 + 检索）
 │   │   ├── curated.ts                # L3 CuratedMemory（SOUL/USER/MEMORY 读写）
 │   │   ├── context.ts                # ContextAssembler（L3 注入 + L2 检索组装）
-│   │   └── callback.ts               # ToolMemoryCallback（工具结果自动写入 L2）
+│   │   ├── callback.ts               # ToolMemoryCallback（工具结果自动写入 L2）
+│   │   ├── gate.ts                   # PromotionGate（晋升闸门：确认计数/阈值）
+│   │   ├── dreaming.ts               # DreamingPipeline（L2 → L3 后台晋升）
+│   │   ├── fts.ts                    # MemoryIndex（BM25 全文检索 + 分词）
+│   │   ├── embedding.ts              # EmbeddingClient（向量嵌入客户端）
+│   │   ├── vector.ts                 # VectorMemory（向量存储 + 余弦相似度）
+│   │   └── hybrid.ts                 # 混合检索（FTS + 向量 RRF 融合）
 │   ├── session/                      # 💾 会话持久化（加密存储）
 │   │   ├── index.ts                  # 统一导出
 │   │   ├── store.ts                  # SessionStore（会话读写/索引/工作空间隔离）
@@ -1108,28 +1169,37 @@ loop-agent-command/
 │           └── adapter.ts            # MCP 工具适配器（转 Tool 接口）
 ├── examples/
 │   └── run.ts                        # 📝 编程式调用示例
-├── tests/
-│   └── integration/                  # 🧪 集成测试（7 个用例，串行执行）
-│       ├── a-no-tool.test.ts         # 无需工具的场景
-│       ├── b-single-tool.test.ts     # 单工具调用
-│       ├── c-multi-tool.test.ts      # 多工具调用
-│       ├── d-tool-failure.test.ts    # 工具执行失败
-│       ├── e-unknown-tool.test.ts    # 工具不存在
-│       ├── f-max-iterations.test.ts  # 达到最大迭代次数
-│       └── g-parallel-tools.test.ts  # 同轮并行工具
+├── tests/                            # 🧪 测试（串行执行避免 API 限速）
+│   ├── integration/                  # 集成测试（7 个用例）
+│   │   ├── a-no-tool.test.ts         # 无需工具的场景
+│   │   ├── b-single-tool.test.ts     # 单工具调用
+│   │   ├── c-multi-tool.test.ts      # 多工具调用
+│   │   ├── d-tool-failure.test.ts    # 工具执行失败
+│   │   ├── e-unknown-tool.test.ts    # 工具不存在
+│   │   ├── f-max-iterations.test.ts  # 达到最大迭代次数
+│   │   └── g-parallel-tools.test.ts  # 同轮并行工具
+│   ├── memory-working.test.ts        # L1 工作记忆（token 估算 + 压缩）
+│   ├── memory-callback.test.ts       # 工具回调自动写入 L2
+│   ├── memory-flush.test.ts          # L2 按天日志 flush
+│   ├── memory-dreaming.test.ts       # Dreaming 晋升流水线
+│   ├── memory-gate.test.ts           # Promotion Gate
+│   ├── memory-phase4.test.ts         # Phase 4 混合检索
+│   ├── memory-phase5.test.ts         # Phase 5 向量检索
+│   ├── session-isolation.test.ts     # 会话工作空间隔离
+│   └── llm-stats.test.ts             # LLM 统计聚合
 ├── docs/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
-│   └── tasks/                        # 📂 逐任务文档（14 个任务，含 Skill 与记忆管理）
-├── skills/                           # 🎯 工作空间 Skill（示例：example-skill）
-│   └── example-skill/
-│       └── SKILL.md
+│   ├── openclaw_memory_management.md # 🧠 记忆管理设计参考（OpenClaw 风格）
+│   └── tasks/                        # 📂 逐任务文档（15 个任务，含记忆管理 Phase 1-5 与 LLM 统计）
+├── .loop-agent/                      # 📋 工作空间配置与 Skill（.agent-config.json + skills/，整体不进入版本控制）
+│   ├── .agent-config.json            # ⚙️ 工作空间配置（可选，运行时生成）
+│   └── skills/                       # 🎯 工作空间 Skill（example-skill、py-pptx 等）
 ├── memory/                           # 🧠 L2 情景记忆（运行时生成，按天分文件）
 ├── SOUL.md                           # 🧠 L3：Agent 人格
 ├── USER.md                           # 🧠 L3：用户画像
 ├── MEMORY.md                         # 🧠 L3：精炼事实
 ├── .env                              # 🔒 环境变量（需从 .env.example 复制创建）
 ├── .env.example                      # 📄 环境变量模板
-├── .agent-config.json                # 📋 工作空间配置（可选，运行时生成）
 ├── .mcp.json                         # 🔌 MCP 配置（可选，从 .mcp.json.example 复制）
 ├── .mcp.json.example                 # 📄 MCP 配置模板
 ├── package.json
@@ -1245,7 +1315,7 @@ npm run test:watch
 错误：Skill "xxx" 未找到。可用的 Skill: ...
 ```
 
-**解决**：确认 Skill 已放入 `~/.loop-agent/skills/`（全局）或 `<cwd>/skills/`（工作空间），且 `SKILL.md` 包含合法的 `name` 和 `description` frontmatter。通过 `/skill list` 查看扫描结果，`/skill reload` 重新扫描。
+**解决**：确认 Skill 已放入 `~/.loop-agent/skills/`（全局）或 `<cwd>/.loop-agent/skills/`（工作空间），且 `SKILL.md` 包含合法的 `name` 和 `description` frontmatter。通过 `/skill list` 查看扫描结果，`/skill reload` 重新扫描。
 
 ### 记忆系统未启用
 
@@ -1253,7 +1323,7 @@ npm run test:watch
 ⚠ 记忆系统未启用，请在配置中设置 memory.enabled=true
 ```
 
-**解决**：通过 `/config set memory.enabled true` 开启，或直接编辑 `.agent-config.json`。`/memory status` 可查看当前启用状态与各层统计。
+**解决**：通过 `/config set memory.enabled true` 开启，或直接编辑 `.loop-agent/.agent-config.json`。`/memory status` 可查看当前启用状态与各层统计。
 
 ### 会话无法加载 / 解密失败
 
