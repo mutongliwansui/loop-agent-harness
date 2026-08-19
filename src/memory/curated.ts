@@ -1,10 +1,10 @@
 // L3 Curated Core Memory：精炼常驻文件
 // SOUL.md (Agent 人格) / USER.md (用户画像) / MEMORY.md (精炼事实)
 // 启动时注入 system prompt，由 Dreaming 晋升写入
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import type { CuratedFileKey, CuratedFiles } from './types.js';
+import type { CuratedFileKey } from './types.js';
 import type { MergeDecision } from './curated-dedupe.js';
 
 /** Curated 文件溢出处理（行数超限时自动压缩） */
@@ -24,6 +24,9 @@ const FILE_MAP: Record<CuratedFileKey, string> = {
   user: 'USER.md',
   memory: 'MEMORY.md',
 };
+
+/** 归属全局用户目录的文件（SOUL/USER 跨项目共享），其余（MEMORY）归属项目目录 */
+const GLOBAL_KEYS: CuratedFileKey[] = ['soul', 'user'];
 
 const DEFAULT_CONTENT: Record<CuratedFileKey, string> = {
   soul: `# SOUL - Agent 人格
@@ -61,28 +64,70 @@ const DEFAULT_CONTENT: Record<CuratedFileKey, string> = {
 
 export class CuratedMemory {
   private workspaceDir: string;
-  private files: CuratedFiles = { ...FILE_MAP };
+  /** 全局用户目录（SOUL/USER 所在；未提供时回退到 workspaceDir，保持旧行为） */
+  private globalDir: string | null;
   private overflow: CuratedOverflowOptions | null = null;
 
-  constructor(workspaceDir: string, overflow?: CuratedOverflowOptions) {
+  constructor(
+    workspaceDir: string,
+    overflow?: CuratedOverflowOptions | null,
+    globalDir?: string | null,
+  ) {
     this.workspaceDir = workspaceDir;
     this.overflow = overflow ?? null;
+    this.globalDir = globalDir ?? null;
   }
 
-  /** 初始化：创建文件（如不存在） */
+  /** 文件实际所在目录：全局文件走 globalDir，其余走 workspaceDir */
+  private dirFor(key: CuratedFileKey): string {
+    return this.globalDir && GLOBAL_KEYS.includes(key) ? this.globalDir : this.workspaceDir;
+  }
+
+  private filepathFor(key: CuratedFileKey): string {
+    return join(this.dirFor(key), FILE_MAP[key]);
+  }
+
+  /** 初始化：创建文件（如不存在），并把旧版 workspace 下的 SOUL/USER 迁移到全局目录 */
   async init(): Promise<void> {
     await mkdir(this.workspaceDir, { recursive: true });
+    if (this.globalDir) {
+      await mkdir(this.globalDir, { recursive: true });
+    }
+    // 先迁移旧文件，再补建缺失文件（否则全局目标总存在，迁移被跳过）
+    await this.migrateLegacyFiles();
     for (const key of Object.keys(FILE_MAP) as CuratedFileKey[]) {
-      const filepath = join(this.workspaceDir, FILE_MAP[key]);
+      const filepath = this.filepathFor(key);
       if (!fileExists(filepath)) {
         await writeFile(filepath, DEFAULT_CONTENT[key], 'utf-8');
       }
     }
   }
 
+  /** 迁移旧版：workspace 根目录下遗留的 SOUL.md / USER.md 搬到全局目录（目标已存在则跳过） */
+  private async migrateLegacyFiles(): Promise<void> {
+    if (!this.globalDir) return;
+    for (const key of GLOBAL_KEYS) {
+      const legacyPath = join(this.workspaceDir, FILE_MAP[key]);
+      const targetPath = join(this.globalDir, FILE_MAP[key]);
+      if (!fileExists(legacyPath) || fileExists(targetPath)) continue;
+      try {
+        await rename(legacyPath, targetPath);
+      } catch {
+        // 跨盘符时 rename 失败，回退为复制后删除
+        try {
+          const content = await readFile(legacyPath, 'utf-8');
+          await writeFile(targetPath, content, 'utf-8');
+          await rm(legacyPath, { force: true });
+        } catch {
+          // 迁移失败不影响启动
+        }
+      }
+    }
+  }
+
   /** 读取指定文件内容 */
   async read(key: CuratedFileKey): Promise<string> {
-    const filepath = join(this.workspaceDir, this.files[key]);
+    const filepath = this.filepathFor(key);
     if (!fileExists(filepath)) return '';
     return readFile(filepath, 'utf-8');
   }
@@ -111,7 +156,7 @@ export class CuratedMemory {
 
   /** 向指定文件追加一条事实 */
   async append(key: CuratedFileKey, fact: string): Promise<void> {
-    const filepath = join(this.workspaceDir, this.files[key]);
+    const filepath = this.filepathFor(key);
     const current = fileExists(filepath)
       ? await readFile(filepath, 'utf-8')
       : DEFAULT_CONTENT[key];
@@ -157,7 +202,7 @@ export class CuratedMemory {
     decisions: MergeDecision[],
     candidates: string[],
   ): Promise<{ appended: number; merged: number; skipped: number }> {
-    const filepath = join(this.workspaceDir, this.files[key]);
+    const filepath = this.filepathFor(key);
     const lines = (await readFile(filepath, 'utf-8')).split('\n');
 
     // merge 先应用，按行号从大到小替换避免偏移
@@ -200,7 +245,7 @@ export class CuratedMemory {
   getFilePaths(): Record<CuratedFileKey, string> {
     const result = {} as Record<CuratedFileKey, string>;
     for (const key of Object.keys(FILE_MAP) as CuratedFileKey[]) {
-      result[key] = join(this.workspaceDir, FILE_MAP[key]);
+      result[key] = this.filepathFor(key);
     }
     return result;
   }

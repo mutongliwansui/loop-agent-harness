@@ -46,10 +46,14 @@ export function tokenizeForFts(content: string): string {
   return tokens.join(' ');
 }
 
-/** 查询分词：与索引同规则，每个 token 加引号保证精确短语匹配 */
+/**
+ * 查询分词：与索引同规则，每个 token 加引号保证精确短语匹配
+ * 采用 OR 语义：查询可能包含索引中没有的 bigram（如"篮球吗"），
+ * AND 会让整个查询失败；OR 只要任一 bigram 命中即可召回，精度由上层原文校验兜底
+ */
 export function tokenizeQuery(query: string): string {
   const tokens = tokenizeForFts(query).split(/\s+/).filter(Boolean);
-  return tokens.map((t) => `"${t}"`).join(' ');
+  return tokens.map((t) => `"${t}"`).join(' OR ');
 }
 
 export interface IndexedEntry {

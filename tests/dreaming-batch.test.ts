@@ -104,47 +104,50 @@ describe('DreamingPipeline Task-16（按天分批 + 增量）', () => {
     expect(calls[1]).not.toContain('处理今日数据');
   });
 
-  it('2. 增量过滤：有状态文件时只送更新的天', async () => {
+  it('2. 增量过滤：跳过已处理天和当天，只处理新增的昨日记录', async () => {
     await seedDay(0, '[tool:cmd] 今天新记录');
-    await seedDay(1, '[tool:cmd] 昨天旧记录');
-    // 状态：已处理到昨天 → 只处理今天
-    writeFileSync(STATE_FILE, JSON.stringify({ lastProcessedDay: dayOffset(1) }), 'utf-8');
+    await seedDay(1, '[tool:cmd] 昨天新记录');
+    await seedDay(2, '[tool:cmd] 前天旧记录');
+    // 状态：已处理到前天 → 应只处理昨天（今天内容留到明天整理）
+    writeFileSync(STATE_FILE, JSON.stringify({ lastProcessedDay: dayOffset(2) }), 'utf-8');
 
-    const { llm, calls } = makeRecordingLLM([FACT(dayOffset(0), 2)]);
+    const { llm, calls } = makeRecordingLLM([FACT(dayOffset(1), 2)]);
     const pipeline = new DreamingPipeline(episodic, gate, curated, llm);
     await pipeline.run(3, undefined, { batchByDay: true, incremental: true, dedupeEnabled: false });
 
     expect(calls.length).toBe(1);
-    expect(calls[0]).toContain(`---对话记录（${dayOffset(0)}）---`);
-    expect(calls[0]).not.toContain('昨天旧记录');
+    expect(calls[0]).toContain(`---对话记录（${dayOffset(1)}）---`);
+    expect(calls[0]).not.toContain('今天新记录');
+    expect(calls[0]).not.toContain('前天旧记录');
   });
 
-  it('3. 状态更新：处理完成后 lastProcessedDay = 窗口内最新一天', async () => {
+  it('3. 状态更新：处理完成后 lastProcessedDay = 窗口内最新非当天日期', async () => {
     rmSync(STATE_FILE, { force: true });
-    await seedDay(0, '[tool:cmd] 记录A');
-    const { llm } = makeRecordingLLM([FACT(dayOffset(0), 3)]);
+    await seedDay(1, '[tool:cmd] 记录A');
+    const { llm } = makeRecordingLLM([FACT(dayOffset(1), 3)]);
     const pipeline = new DreamingPipeline(episodic, gate, curated, llm);
     await pipeline.run(2, undefined, { batchByDay: true, incremental: true, dedupeEnabled: false });
 
     const state = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
-    expect(state.lastProcessedDay).toBe(dayOffset(0));
+    // 当天不处理（留到明天），状态推进到已处理的最晚非当天日期
+    expect(state.lastProcessedDay).toBe(dayOffset(1));
   });
 
   it('4. 单天失败：进 errors、其他天正常、状态不推进', async () => {
     // 清空状态（模拟无状态）
     rmSync(STATE_FILE, { force: true });
-    await seedDay(0, '[tool:cmd] 今天失败场景');
-    await seedDay(1, '[tool:cmd] 昨天正常场景');
+    await seedDay(1, '[tool:cmd] 昨天失败场景');
+    await seedDay(2, '[tool:cmd] 前天正常场景');
 
-    const { llm } = makeRecordingLLM([FACT(dayOffset(1), 4)], undefined, (c) =>
-      c.includes(`---对话记录（${dayOffset(0)}）---`),
+    const { llm } = makeRecordingLLM([FACT(dayOffset(2), 4)], undefined, (c) =>
+      c.includes(`---对话记录（${dayOffset(1)}）---`),
     );
     const pipeline = new DreamingPipeline(episodic, gate, curated, llm);
-    const result = await pipeline.run(2, undefined, { batchByDay: true, incremental: true });
+    const result = await pipeline.run(3, undefined, { batchByDay: true, incremental: true });
 
-    // 今天失败 → errors 记录；昨天正常 → 有候选
+    // 昨天失败 → errors 记录；前天正常 → 有候选
     expect(result.errors.length).toBe(1);
-    expect(result.errors[0]).toContain(dayOffset(0));
+    expect(result.errors[0]).toContain(dayOffset(1));
     // 状态未推进（任一天失败保留旧状态）
     expect(existsSync(STATE_FILE)).toBe(false);
   });

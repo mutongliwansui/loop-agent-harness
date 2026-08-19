@@ -1,4 +1,4 @@
-﻿// ReAct Agent CLI 入口：交互式 REPL
+// ReAct Agent CLI 入口：交互式 REPL
 // 运行：npm run dev 或 npm start
 import readline from 'node:readline';
 import { execSync } from 'node:child_process';
@@ -646,8 +646,12 @@ async function handleSession(
   rl: readline.Interface,
   sessionStore: SessionStore | null,
 ): Promise<void> {
-  if (!sessionStore || !keychain.isUnlocked()) {
-    console.log(`${C.red}会话系统未启用或未解锁${C.reset}\n`);
+  if (!sessionStore) {
+    console.log(`${C.red}会话系统未启用（autoSave 与 autoRestore 均为 false）${C.reset}\n`);
+    return;
+  }
+  if (sessionStore.isEncrypted && !keychain.isUnlocked()) {
+    console.log(`${C.red}会话系统未解锁${C.reset}\n`);
     return;
   }
 
@@ -1097,17 +1101,26 @@ async function main() {
   // 0. 加载合并配置
   const { config: cfg } = configLoader.load();
 
-  // 1. 初始化会话系统（自动生成/加载密钥，用户无感）
+  // 1. 初始化会话系统
   let sessionStore: SessionStore | null = null;
   let restoredMessages: ChatMessage[] | null = null;
+  const sessionEnabled = cfg.session.autoSave || cfg.session.autoRestore;
   try {
-    if (cfg.session.encryptionEnabled) {
-      sessionStore = new SessionStore();
+    if (sessionEnabled) {
+      sessionStore = new SessionStore(
+        process.cwd(),
+        3,
+        cfg.session.encryptionEnabled,
+      );
       await sessionStore.init();
 
-      const isNewKey = !keychain.exists();
-      if (isNewKey) {
-        console.log(`${C.green}✓ 加密密钥已自动生成，会话数据将加密存储${C.reset}`);
+      if (cfg.session.encryptionEnabled) {
+        const isNewKey = !keychain.exists();
+        if (isNewKey) {
+          console.log(`${C.green}✓ 加密密钥已自动生成，会话数据将加密存储${C.reset}`);
+        }
+      } else {
+        console.log(`${C.gray}会话系统已启用（明文存储，未加密）${C.reset}`);
       }
 
       // 自动恢复最近会话（仅加载数据，渲染延后到 Banner 之后）

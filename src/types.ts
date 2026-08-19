@@ -115,6 +115,22 @@ export interface LLMStatsSummary {
   peakContextMaxTokens: number;
 }
 
+/** L1 压缩事件信息（触发压缩时回调） */
+export interface CompactionInfo {
+  /** 压缩阈值（maxTokens × compactionThreshold） */
+  threshold: number;
+  /** 触发时的上下文 token（真实 usage 或估算） */
+  contextTokens: number;
+  /** pre-compaction flush 提取写入 L2 的字符数 */
+  flushedChars: number;
+  /** 压缩后保留的消息数 */
+  keptMessages: number;
+  /** Task-17：提取是否失败（false=正常压缩；true=提取失败走了兜底路径） */
+  failed?: boolean;
+  /** Task-17：提取失败时的兜底策略（'skip'=跳过压缩保留全部历史；'archive'=降级存档后压缩） */
+  fallback?: 'skip' | 'archive';
+}
+
 // ===== Agent 相关 =====
 
 /**
@@ -189,6 +205,8 @@ export interface AgentEvents {
   onToolStart?(tool: string, args: Record<string, unknown>): void | Promise<void>;
   /** 工具调用结束，拿到 Observation */
   onToolEnd?(tool: string, result: string): void | Promise<void>;
+  /** L1 上下文超阈值，触发压缩 */
+  onCompaction?(info: CompactionInfo): void | Promise<void>;
   /** Agent 给出最终答案 */
   onFinal?(answer: string): void | Promise<void>;
   /** Agent 出错（达到 maxIterations 或其他异常） */

@@ -52,8 +52,8 @@ describe('Session 分层存储和恢复', () => {
 
     keychain.ensureUnlocked();
 
-    // 使用隔离的 workspace 路径，避免污染真实会话数据
-    store = new SessionStore(TEST_WORKSPACE);
+    // 使用隔离的 workspace/userDir 路径，避免污染真实会话数据（沙盒禁止写真实 HOME）
+    store = new SessionStore(TEST_WORKSPACE, 3, true, TEST_DIR);
     await store.init();
 
     episodic = new EpisodicMemory(MEMORY_DIR);
@@ -97,15 +97,16 @@ describe('Session 分层存储和恢复', () => {
 
     const restored = agent.getSessionMessages();
 
-    // 只恢复 system + recentMessages（远小于全量 100 条）
-    expect(restored.length).toBeLessThanOrEqual(13);
+    // 只恢复 system + lastSummary + recentMessages（远小于全量 100 条）
+    expect(restored.length).toBeLessThanOrEqual(14);
     expect(restored.length).toBeLessThan(messages.length);
     expect(restored[0].role).toBe('system');
     expect(restored[0].content).toContain(systemPrompt);
 
-    // lastSummary 注入到 system prompt
+    // lastSummary 作为首条 user 消息注入（不污染 system，保留前缀缓存）
     if (data.lastSummary) {
-      expect(restored[0].content).toContain('会话历史摘要');
+      expect(restored[1].role).toBe('user');
+      expect(restored[1].content).toContain('会话历史摘要');
     }
   });
 
@@ -177,7 +178,7 @@ describe('Session 分层存储和恢复', () => {
     // 关键断言：只加载 recentMessages，不加载全部 500 条
     const restored = agent.getSessionMessages();
     expect(restored.length).toBeLessThan(messages.length);
-    expect(restored.length).toBeLessThanOrEqual(13);
+    expect(restored.length).toBeLessThanOrEqual(14);
 
     // 首轮 = 恢复后的上下文 + 用户新消息，不应触发 L1 压缩
     // （若错误加载全量 500 条，估算 token 约 2.5w+，必触发 8000*0.8=6400 阈值）

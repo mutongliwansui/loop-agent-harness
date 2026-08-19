@@ -11,12 +11,19 @@ export interface WorkingMemoryConfig {
   compactionThreshold: number;
   /** 压缩后保留最近 N 轮对话（每轮 = user + assistant） */
   keepRecentTurns: number;
+  /**
+   * Task-17：压缩提取（pre-compaction flush）失败时的兜底策略
+   * 'skip'    （默认）跳过压缩，保留全部历史（宁可超上下文不丢信息）
+   * 'archive' 把原始对话降级写入 L2（tag=compaction_fallback）后仍压缩
+   */
+  flushFailure: 'skip' | 'archive';
 }
 
 export const DEFAULT_WORKING_CONFIG: WorkingMemoryConfig = {
   maxTokens: 102400,
   compactionThreshold: 0.8,
   keepRecentTurns: 3,
+  flushFailure: 'skip',
 };
 
 // ===== L2 Episodic Memory =====
@@ -152,6 +159,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     maxTokens: 102400,
     compactionThreshold: 0.8,
     keepRecentTurns: 3,
+    flushFailure: 'skip',
   },
   episodic: {
     dir: 'memory',

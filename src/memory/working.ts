@@ -44,7 +44,9 @@ export class WorkingMemory {
 
     const extractMessages: ChatMessage[] = [
       { role: 'system', content: flushPrompt },
-      ...messages,
+      // 过滤掉原 messages 中的 system（主 system prompt），保证压缩 prompt 是唯一 system 且在首位
+      //（部分模型后端严格要求 "System message must be at the beginning"，双 system 会 500）
+      ...messages.filter((m) => m.role !== 'system'),
     ];
 
     try {

@@ -16,6 +16,40 @@ function fileExists(path: string): boolean {
   return existsSync(path);
 }
 
+/** 提取字符串中的中文 bigram 集合（纯中文连续序列按 2-gram 切分，用于模糊召回） */
+function extractChineseBigrams(text: string): Set<string> {
+  const bigrams = new Set<string>();
+  const runs = text.match(/[\u4e00-\u9fff]+/g) ?? [];
+  for (const run of runs) {
+    if (run.length === 1) {
+      bigrams.add(run);
+    } else {
+      for (let i = 0; i < run.length - 1; i++) {
+        bigrams.add(run.slice(i, i + 2));
+      }
+    }
+  }
+  return bigrams;
+}
+
+/**
+ * 段落相关性匹配（Task-17 8.5）
+ * 三级判定：条目包含查询（常规）→ 查询包含条目（短条目）→ 共有中文 bigram（长查询召回短事实）
+ * 例：查询"我会打篮球吗？"与条目"我会打篮球"无子串包含关系，但共有 bigram（我会/会打/打篮/篮球）
+ */
+function sectionMatches(query: string, body: string): boolean {
+  const q = query.toLowerCase();
+  const b = body.toLowerCase();
+  if (!b) return false;
+  if (b.includes(q)) return true;
+  if (q.includes(b)) return true;
+  const qBigrams = extractChineseBigrams(q);
+  for (const bg of qBigrams) {
+    if (b.includes(bg)) return true;
+  }
+  return false;
+}
+
 /** 记忆条目的作用域 */
 export type MemoryScope = 'session' | 'global';
 
@@ -274,7 +308,7 @@ export class EpisodicMemory {
 
   /**
    * 统一候选过滤：解析 section 结构 + Session 隔离
-   * @param exact true=要求正文原文包含 query（FTS 部分命中确认）；false=仅按语义召回（向量结果）
+   * @param exact true=要求正文与 query 实质相关（sectionMatches：子串包含或中文 bigram 交集）；false=仅按语义召回（向量结果）
    */
   private filterEntries(
     entries: IndexedEntry[],
@@ -283,15 +317,14 @@ export class EpisodicMemory {
     exact: boolean,
   ): MemorySearchResult[] {
     const results: MemorySearchResult[] = [];
-    const lowerQuery = query.toLowerCase();
     for (const entry of entries) {
       // entry.content 形如 "## {header}\n{body}"
       const lines = entry.content.split('\n');
       const sectionHeader = (lines[0] ?? '').replace(/^## /, '');
       const sectionBody = lines.slice(1).join('\n').trim();
 
-      // 精确内容校验（FTS 可能按 bigram 部分命中）
-      if (exact && !sectionBody.toLowerCase().includes(lowerQuery)) continue;
+      // 精确内容校验（FTS 可能按 bigram 部分命中，需确认实质相关）
+      if (exact && !sectionMatches(query, sectionBody)) continue;
 
       // === Session 隔离过滤 ===
       if (!this.isSectionVisible(sectionHeader, options)) continue;
@@ -313,23 +346,19 @@ export class EpisodicMemory {
   ): Promise<MemorySearchResult[]> {
     const days = await this.listDays();
     const results: MemorySearchResult[] = [];
-    const lowerQuery = query.toLowerCase();
 
     for (const day of days) {
       const content = await this.readDay(day);
       if (!content) continue;
 
-      const lowerContent = content.toLowerCase();
-      if (!lowerContent.includes(lowerQuery)) continue;
-
-      // 按段落匹配，找到包含关键词的段落
+      // 按段落匹配（sectionMatches：子串包含或中文 bigram 交集）
       const sections = content.split(/^## /m);
       for (const section of sections) {
         const lines = section.split('\n');
         const sectionHeader = lines[0] ?? '';
         const sectionBody = lines.slice(1).join('\n').trim();
 
-        if (!sectionBody.toLowerCase().includes(lowerQuery)) continue;
+        if (!sectionMatches(query, sectionBody)) continue;
 
         // === Session 隔离过滤 ===
         if (!this.isSectionVisible(sectionHeader, options)) continue;
@@ -372,6 +401,8 @@ export class EpisodicMemory {
 
       // session 条目 → 仅创建它的会话可见
       if (entryScope === 'session') {
+        // Task-17：无 sessionId 的旧条目（会话早期写入）→ 视为可见，避免成为数据黑洞
+        if (!entrySessionId) return true;
         return entrySessionId === options.sessionId;
       }
 

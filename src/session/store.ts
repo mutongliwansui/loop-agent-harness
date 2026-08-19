@@ -85,11 +85,19 @@ export class SessionStore {
   private currentSessionId: string | null = null;
   /** 保存最近 N 轮对话（每轮 = user + assistant + tool） */
   private readonly recentTurns: number;
+  /** 是否启用加密存储 */
+  private readonly encryptionEnabled: boolean;
 
-  constructor(workspacePath: string = process.cwd(), recentTurns = 3) {
+  constructor(
+    workspacePath: string = process.cwd(),
+    recentTurns = 3,
+    encryptionEnabled = true,
+    userDir: string = join(homedir(), '.loop-agent'),
+  ) {
     this.workspaceId = workspaceId(workspacePath);
-    this.workspaceDir = join(homedir(), '.loop-agent', 'sessions', this.workspaceId);
+    this.workspaceDir = join(userDir, 'sessions', this.workspaceId);
     this.recentTurns = recentTurns;
+    this.encryptionEnabled = encryptionEnabled;
   }
 
   /** 当前会话 ID */
@@ -102,11 +110,18 @@ export class SessionStore {
     return this.workspaceId;
   }
 
+  /** 是否启用加密存储 */
+  get isEncrypted(): boolean {
+    return this.encryptionEnabled;
+  }
+
   /**
-   * 初始化：确保密钥已加载，创建目录
+   * 初始化：加密模式下确保密钥已加载，创建目录
    */
   async init(): Promise<void> {
-    keychain.ensureUnlocked();
+    if (this.encryptionEnabled) {
+      keychain.ensureUnlocked();
+    }
     await mkdir(this.workspaceDir, { recursive: true });
     await this.touchWorkspaceMeta();
   }
@@ -284,9 +299,13 @@ export class SessionStore {
    * 删除会话
    */
   async deleteSession(id: string): Promise<void> {
+    const dataFile = join(this.workspaceDir, `${id}${this.sessionFileExt}`);
     const encFile = join(this.workspaceDir, `${id}.enc`);
-    if (await fileExists(encFile)) {
-      await unlink(encFile);
+    const jsonFile = join(this.workspaceDir, `${id}.json`);
+    for (const f of [dataFile, encFile, jsonFile]) {
+      if (await fileExists(f)) {
+        await unlink(f);
+      }
     }
     await this.removeFromIndex(id);
     if (this.currentSessionId === id) {
@@ -317,22 +336,37 @@ export class SessionStore {
 
   // ===== 私有方法 =====
 
+  private get sessionFileExt(): string {
+    return this.encryptionEnabled ? '.enc' : '.json';
+  }
+
   private async writeSession(data: SessionData): Promise<void> {
-    const key = keychain.getKey();
-    if (!key) {
-      throw new Error('密钥未加载，无法保存会话');
+    const filePath = join(this.workspaceDir, `${data.id}${this.sessionFileExt}`);
+    if (this.encryptionEnabled) {
+      const key = keychain.getKey();
+      if (!key) {
+        throw new Error('密钥未加载，无法保存会话');
+      }
+      const encrypted = encrypt(data, key);
+      await writeFile(filePath, encrypted, 'utf-8');
+    } else {
+      await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
     }
-    const encrypted = encrypt(data, key);
-    await writeFile(join(this.workspaceDir, `${data.id}.enc`), encrypted, 'utf-8');
   }
 
   private async readSession(id: string): Promise<SessionData> {
-    const key = keychain.getKey();
-    if (!key) {
-      throw new Error('密钥未加载，无法读取会话');
+    const filePath = join(this.workspaceDir, `${id}${this.sessionFileExt}`);
+    if (this.encryptionEnabled) {
+      const key = keychain.getKey();
+      if (!key) {
+        throw new Error('密钥未加载，无法读取会话');
+      }
+      const encrypted = await readFile(filePath, 'utf-8');
+      return decrypt<SessionData>(encrypted, key);
+    } else {
+      const raw = await readFile(filePath, 'utf-8');
+      return JSON.parse(raw) as SessionData;
     }
-    const encrypted = await readFile(join(this.workspaceDir, `${id}.enc`), 'utf-8');
-    return decrypt<SessionData>(encrypted, key);
   }
 
   private async readIndex(): Promise<SessionMeta[]> {
@@ -385,7 +419,7 @@ export class SessionStore {
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
       messageCount: count,
-      file: `${data.id}.enc`,
+      file: `${data.id}${this.sessionFileExt}`,
     };
   }
 

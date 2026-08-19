@@ -2,7 +2,10 @@
 // 使用流式 LLM 调用 + 事件监听器（events）扩展
 // 集成三层记忆管理：L1 压缩 + L2 情景记忆 + L3 Curated
 import { llm } from '../llm/client.js';
-import { copyFile, writeFile } from 'node:fs/promises';
+import { copyFile, writeFile, rename, cp, rm, mkdir } from 'node:fs/promises';
+import { join, isAbsolute, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
@@ -10,7 +13,7 @@ import { buildLLMStatsSummary } from './stats.js';
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import { skillLoader } from '../skill/loader.js';
-import { type SessionStore } from '../session/store.js';
+import { type SessionStore, workspaceId } from '../session/store.js';
 import type { SessionData } from '../session/types.js';
 import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
 import type { CuratedFileKey } from '../memory/types.js';
@@ -57,6 +60,8 @@ export class ReActAgent {
   private _sessionStore: SessionStore | null = null;
   /** 当前会话 ID */
   private _currentSessionId: string | null = null;
+  /** 最近一次 LLM 调用的真实 prompt_tokens（供 /status 展示） */
+  private _lastContextTokens: number | null = null;
 
   /** 记忆模块（可选，根据配置启用） */
   private _workingMemory: WorkingMemory | null = null;
@@ -94,6 +99,7 @@ export class ReActAgent {
   resetSession(): void {
     this._chatHistory = [];
     this._currentSessionId = null;
+    this._lastContextTokens = null;
     // 同步清理记忆回调的 sessionId
     if (this._memoryCallback) {
       this._memoryCallback.setSessionId(null);
@@ -156,11 +162,13 @@ export class ReActAgent {
     maxTokens: number;
     threshold: number;
   } {
-    const messages = this.getSessionMessages();
     const { config: cfg } = this._configLoader.load();
     const maxTokens = cfg.memory.working.maxTokens;
     const threshold = Math.round(maxTokens * cfg.memory.working.compactionThreshold);
-    const contextTokens = this._workingMemory?.estimateTokens(messages) ?? 0;
+    // 优先使用最近一次 API 调用的真实 token 数，缺失时回退到本地估算
+    const messages = this.getSessionMessages();
+    const contextTokens =
+      this._lastContextTokens ?? this._workingMemory?.estimateTokens(messages) ?? 0;
     return { contextTokens, maxTokens, threshold };
   }
 
@@ -178,8 +186,36 @@ export class ReActAgent {
     this._memoryEnabled = true;
     this._workingConfig = cfg.memory.working;
 
-    const episodicDir = cfg.memory.episodic.dir;
+    // L2 目录：显式绝对路径配置 → 尊重配置；默认相对路径 → ~/.loop-agent/memory/{workspaceId}
+    const configEpisodicDir = cfg.memory.episodic.dir;
+    const episodicDir = configEpisodicDir && isAbsolute(configEpisodicDir)
+      ? configEpisodicDir
+      : join(homedir(), '.loop-agent', 'memory', workspaceId(cwd));
+
+    // 迁移旧版 L2 目录（{cwd}/memory → 用户目录），目标不存在且源存在时才迁移（幂等）
+    const legacyEpisodicDir = join(cwd, configEpisodicDir);
+    if (
+      legacyEpisodicDir !== episodicDir
+      && existsSync(legacyEpisodicDir)
+      && !existsSync(episodicDir)
+    ) {
+      try {
+        await mkdir(dirname(episodicDir), { recursive: true });
+        await rename(legacyEpisodicDir, episodicDir);
+      } catch {
+        // 跨盘符时 rename 失败，回退为复制后删除
+        try {
+          await cp(legacyEpisodicDir, episodicDir, { recursive: true });
+          await rm(legacyEpisodicDir, { recursive: true, force: true });
+        } catch {
+          // 迁移失败不影响启动
+        }
+      }
+    }
+
     const curatedDir = cwd;
+    // 全局 Curated 目录：SOUL/USER 存用户目录，MEMORY.md 留项目目录
+    const globalCuratedDir = join(homedir(), '.loop-agent', 'curated');
     this._dreamingModel = cfg.model.name;
 
     // L1 Working Memory
@@ -189,16 +225,20 @@ export class ReActAgent {
     this._episodicMemory = new EpisodicMemory(episodicDir, cfg.memory.episodic.vectorSearch);
     await this._episodicMemory.init();
 
-    // L3 Curated Memory（行数超限时自动 LLM 精简）
-    this._curatedMemory = new CuratedMemory(curatedDir, {
-      maxLines: cfg.memory.curated.maxLines,
-      compress: async (content, key) => {
-        const { config: curCfg } = this._configLoader.load();
-        if (!curCfg.memory.curated.dedupe.enabled) return null;
-        const adapter = createLLMAdapter(curCfg.model.name, curCfg.model.temperature);
-        return dedupeCuratedFile(adapter, content);
+    // L3 Curated Memory（行数超限时自动 LLM 精简；SOUL/USER 全局，MEMORY 项目级）
+    this._curatedMemory = new CuratedMemory(
+      curatedDir,
+      {
+        maxLines: cfg.memory.curated.maxLines,
+        compress: async (content, key) => {
+          const { config: curCfg } = this._configLoader.load();
+          if (!curCfg.memory.curated.dedupe.enabled) return null;
+          const adapter = createLLMAdapter(curCfg.model.name, curCfg.model.temperature);
+          return dedupeCuratedFile(adapter, content);
+        },
       },
-    });
+      globalCuratedDir,
+    );
     await this._curatedMemory.init();
 
     // Promotion Gate（恢复持久化状态）
@@ -367,24 +407,74 @@ export class ReActAgent {
         await safeEvents.onIterationStart(i, maxIterations);
 
         // ===== 记忆管理：L1 压缩检查 =====
-        if (this._workingMemory && this._workingMemory.needsCompaction(messages)) {
-          debug.log('L1 超阈值，触发 pre-compaction flush');
-          try {
-            const llmAdapter = createLLMAdapter(model, temperature);
-            const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter);
-            if (extracted && this._episodicMemory) {
-              // pre-compaction flush 的内容标记为 global（跨会话知识）
-              await this._episodicMemory.appendToday(extracted, {
-                sessionId: this._currentSessionId ?? undefined,
-                scope: 'global',
-                tag: 'compaction',
-              });
-              debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
+        if (this._workingMemory) {
+          const wmConfig = this._workingMemory.getConfig();
+          const threshold = Math.round(
+            wmConfig.maxTokens * wmConfig.compactionThreshold,
+          );
+          // 优先使用上一轮 LLM 返回的真实 prompt_tokens（含 system/工具/L2/L3 注入），
+          // 缺失时回退本地估算（长度/4，对中文会低估，可能导致压缩不触发）
+          const overThreshold = this._lastContextTokens !== null
+            ? this._lastContextTokens >= threshold
+            : this._workingMemory.needsCompaction(messages);
+          if (overThreshold) {
+            debug.log('L1 超阈值，触发 pre-compaction flush');
+            try {
+              const llmAdapter = createLLMAdapter(model, temperature);
+              const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter);
+              if (extracted && this._episodicMemory) {
+                // pre-compaction flush 的内容标记为 global（跨会话知识）
+                await this._episodicMemory.appendToday(extracted, {
+                  sessionId: this._currentSessionId ?? undefined,
+                  scope: 'global',
+                  tag: 'compaction',
+                });
+                debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
+                messages = this._workingMemory.compact(messages);
+                debug.log(`压缩完成，保留 ${messages.length} 条消息`);
+                await safeEvents.onCompaction?.({
+                  threshold,
+                  contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                  flushedChars: extracted.length,
+                  keptMessages: messages.length,
+                  failed: false,
+                });
+              } else if (wmConfig.flushFailure === 'archive' && this._episodicMemory) {
+                // Task-17：提取失败 + archive → 原始对话降级写入 L2 保底，再压缩
+                const rawContent = messages
+                  .map((m) => `${m.role}: ${m.content}`)
+                  .join('\n');
+                await this._episodicMemory.appendToday(rawContent, {
+                  sessionId: this._currentSessionId ?? undefined,
+                  scope: 'session',
+                  tag: 'compaction_fallback',
+                });
+                debug.log(`flush 失败，降级存档 ${rawContent.length} 字符到 L2（compaction_fallback）`);
+                messages = this._workingMemory.compact(messages);
+                debug.log(`压缩完成，保留 ${messages.length} 条消息`);
+                await safeEvents.onCompaction?.({
+                  threshold,
+                  contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                  flushedChars: 0,
+                  keptMessages: messages.length,
+                  failed: true,
+                  fallback: 'archive',
+                });
+              } else {
+                // Task-17：提取失败 + skip（默认）→ 保留全部历史，不压缩（宁可超上下文不丢信息）
+                debug.log('flush 提取失败，跳过压缩（保留全部历史）');
+                await safeEvents.onCompaction?.({
+                  threshold,
+                  contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                  flushedChars: 0,
+                  keptMessages: messages.length,
+                  failed: true,
+                  fallback: 'skip',
+                });
+              }
+            } catch (e) {
+              debug.log(`压缩过程出错（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
             }
-            messages = this._workingMemory.compact(messages);
-            debug.log(`压缩完成，保留 ${messages.length} 条消息`);
-          } catch (e) {
-            debug.log(`压缩过程出错（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
 
@@ -422,6 +512,7 @@ export class ReActAgent {
         const workingConfig = this._workingMemory?.getConfig();
         const contextTokens =
           usage?.prompt_tokens ?? (this._workingMemory?.estimateTokens(messages) ?? 0);
+        this._lastContextTokens = contextTokens;
         const maxTokens = workingConfig?.maxTokens ?? 0;
         const stats: LLMStats = {
           iteration: i,
@@ -639,6 +730,7 @@ export class ReActAgent {
       onLLMStatsSummary: (summary) => callAll('onLLMStatsSummary', summary),
       onToolStart: (tool, args) => callAll('onToolStart', tool, args),
       onToolEnd: (tool, result) => callAll('onToolEnd', tool, result),
+      onCompaction: (info) => callAll('onCompaction', info),
       onFinal: (answer) => callAll('onFinal', answer),
       onError: (err) => callAll('onError', err),
       onEnd: (res) => callAll('onEnd', res),

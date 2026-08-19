@@ -84,15 +84,18 @@ export class DreamingPipeline {
       }
       onProgress?.(`已读取 ${days.length} 天的记录`);
 
-      // 增量过滤：只处理上次之后新增的天
+      // 增量过滤：只处理上次之后新增的天；排除今天（当天记录仍在写入，留到明天完整整理）
       let targets = days;
       if (incremental) {
         const state = await this.loadState();
+        const today = new Date().toISOString().split('T')[0];
+        targets = days.filter((d) => d.day < today);
         if (state.lastProcessedDay) {
-          targets = days.filter((d) => d.day > state.lastProcessedDay);
+          targets = targets.filter((d) => d.day > state.lastProcessedDay);
         }
         if (targets.length === 0) {
-          onProgress?.('最近记录已整理过，无新增内容');
+          const onlyToday = days.length === 1 && days[0].day === today;
+          onProgress?.(onlyToday ? '今天的内容将在明天整理' : '最近记录已整理过，无新增内容');
           return result;
         }
         onProgress?.(`增量处理：本次 ${targets.length} 天（已跳过 ${days.length - targets.length} 天旧记录）`);
@@ -128,6 +131,7 @@ export class DreamingPipeline {
       }
 
       // 全部天提取成功才推进增量状态（任一天失败则保留旧状态，下次重跑重试，避免丢数据）
+      // targets 已排除今天，targets[0] 即"已处理到的最晚的非今天的天"，当天内容不会被标记为已完成
       if (incremental && targets.length > 0 && result.errors.length === 0) {
         await this.saveState({ lastProcessedDay: targets[0].day });
       }

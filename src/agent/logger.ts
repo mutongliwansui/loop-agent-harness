@@ -3,6 +3,7 @@
 import type {
   AgentEvents,
   AgentResult,
+  CompactionInfo,
   LLMResponse,
   LLMStats,
   LLMStatsSummary,
@@ -135,6 +136,33 @@ export class ConsoleLogger implements AgentEvents {
       : '(无参数)';
     console.log(
       `${COLOR.magenta}${COLOR.bold}[Action]${COLOR.reset} ${tool}(${COLOR.magenta}${argsStr}${COLOR.reset})`,
+    );
+  }
+
+  /**
+   * L1 压缩提示：`[记忆] 上下文达阈值 4000 (4967)，触发压缩：提取 1234 字符 → 保留 7 条消息`
+   * 失败时区分 skip（保留全部历史）/ archive（降级存档后压缩）
+   * 受 verbose 控制
+   */
+  onCompaction(info: CompactionInfo): void {
+    if (!this.verbose) return;
+
+    if (info.failed) {
+      const msg =
+        info.fallback === 'archive'
+          ? `压缩提取失败，已降级存档原始对话到 L2 并压缩（保留 ${info.keptMessages} 条消息）`
+          : `压缩提取失败，已跳过压缩（保留全部 ${info.keptMessages} 条消息）`;
+      console.log(
+        `${COLOR.bold}${COLOR.red}[记忆]${COLOR.reset} ${COLOR.red}${msg}${COLOR.reset}`,
+      );
+      return;
+    }
+
+    console.log(
+      `${COLOR.bold}${COLOR.yellow}[记忆]${COLOR.reset} ` +
+        `${COLOR.yellow}上下文达阈值 ${info.threshold}（实际 ${info.contextTokens}），触发压缩${COLOR.reset}` +
+        `${info.flushedChars > 0 ? `，提取 ${info.flushedChars} 字符` : ''}` +
+        ` → 保留 ${info.keptMessages} 条消息`,
     );
   }
 
