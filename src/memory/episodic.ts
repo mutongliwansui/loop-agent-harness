@@ -50,6 +50,25 @@ function sectionMatches(query: string, body: string): boolean {
   return false;
 }
 
+/**
+ * Task-19 方案 3：时间衰减加权
+ * 基于半衰期对记忆分数进行衰减——每经过 halfLifeDays 天，分数减半。
+ * 今天 ×1.0，半衰期处 ×0.5，2 倍半衰期 ×0.25 ……
+ * @param baseScore 原始分数（BM25 或 bigram 匹配比例）
+ * @param day 记忆条目所在日期（YYYY-MM-DD）
+ * @param halfLifeDays 半衰期（天）；0/undefined/负数 = 禁用衰减，原样返回
+ */
+function applyRecency(baseScore: number, day: string, halfLifeDays?: number): number {
+  if (!halfLifeDays || halfLifeDays <= 0) return baseScore;
+  const dayMs = new Date(`${day}T00:00:00`).getTime();
+  // 日期格式非法（如旧数据）→ 不衰减，保留原分
+  if (Number.isNaN(dayMs)) return baseScore;
+  const daysSince = (Date.now() - dayMs) / 86400000;
+  // 半衰期语义：Math.pow(0.5, n/halfLife) 等价于 Math.exp(-n*ln2/halfLife)
+  const recencyFactor = Math.pow(0.5, Math.max(daysSince, 0) / halfLifeDays);
+  return baseScore * recencyFactor;
+}
+
 /** 记忆条目的作用域 */
 export type MemoryScope = 'session' | 'global';
 
@@ -69,6 +88,8 @@ export interface SearchOptions {
   sessionId?: string;
   /** 作用域过滤：只返回指定 scope 的条目 */
   scope?: MemoryScope;
+  /** Task-19：时间衰减半衰期（天，0=禁用），越新的记忆分数越高 */
+  recencyHalfLifeDays?: number;
 }
 
 export class EpisodicMemory {
@@ -276,7 +297,7 @@ export class EpisodicMemory {
     return rrfMerge(bm25Filtered, vecFiltered, 60, topK).map((e) => ({
       day: e.day,
       content: e.content,
-      score: 1,
+      score: e.score ?? 1,
     }));
   }
 
@@ -332,7 +353,7 @@ export class EpisodicMemory {
       results.push({
         day: entry.day,
         content: `## ${sectionHeader}${sectionBody}`,
-        score: 1,
+        score: applyRecency(entry.score ?? 1, entry.day, options.recencyHalfLifeDays),
       });
     }
     return results;
@@ -363,10 +384,19 @@ export class EpisodicMemory {
         // === Session 隔离过滤 ===
         if (!this.isSectionVisible(sectionHeader, options)) continue;
 
+        // Task-19：用 bigram 匹配比例作为分数（0~1）
+        const queryBigrams = extractChineseBigrams(query);
+        const matchedCount = queryBigrams.size > 0
+          ? [...queryBigrams].filter(bg => sectionBody.toLowerCase().includes(bg)).length
+          : 1;
+        const matchScore = queryBigrams.size > 0
+          ? matchedCount / queryBigrams.size
+          : 1;
+
         results.push({
           day,
           content: `## ${sectionHeader}${sectionBody}`,
-          score: 1, // 文件检索统一分数
+          score: applyRecency(matchScore, day, options.recencyHalfLifeDays),
         });
       }
 

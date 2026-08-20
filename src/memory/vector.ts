@@ -14,6 +14,8 @@ import type { VectorSearchConfig } from './types.js';
 export interface VectorEntry {
   day: string;
   content: string;
+  /** 余弦相似度分数 */
+  score?: number;
 }
 
 /** 余弦相似度（维度不一致时返回 0） */
@@ -153,7 +155,7 @@ export class VectorMemory {
         .filter((r) => r.score > 0.5) // 相似度阈值，过滤无关条目
         .sort((a, b) => b.score - a.score);
 
-      return scored.slice(0, topK).map(({ day, content }) => ({ day, content }));
+      return scored.slice(0, topK).map(({ day, content, score }) => ({ day, content, score }));
     } catch {
       this.markBroken();
       return [];

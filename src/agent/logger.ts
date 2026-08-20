@@ -8,18 +8,7 @@ import type {
   LLMStats,
   LLMStatsSummary,
 } from '../types.js';
-
-/** ANSI 颜色码 */
-const COLOR = {
-  reset: '\x1b[0m',
-  gray: '\x1b[90m',
-  cyan: '\x1b[36m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  magenta: '\x1b[35m',
-  bold: '\x1b[1m',
-} as const;
+import { COLORS } from '../ui/colors.js';
 
 /**
  * 控制台彩色日志监听器
@@ -36,15 +25,15 @@ export class ConsoleLogger implements AgentEvents {
   onStart(input: string): void {
     if (!this.verbose) return;
     console.log(
-      `${COLOR.bold}${COLOR.yellow}━━━ ReAct Agent 启动 ━━━${COLOR.reset}`,
+      `${COLORS.bold}${COLORS.yellow}━━━ ReAct Agent 启动 ━━━${COLORS.reset}`,
     );
-    console.log(`${COLOR.gray}Query:${COLOR.reset} ${input}\n`);
+    console.log(`${COLORS.gray}Query:${COLORS.reset} ${input}\n`);
   }
 
   onIterationStart(iteration: number, maxIterations: number): void {
     if (!this.verbose) return;
     console.log(
-      `\n${COLOR.gray}━━━ 迭代 ${iteration + 1}/${maxIterations} ━━━${COLOR.reset}`,
+      `\n${COLORS.gray}━━━ 迭代 ${iteration + 1}/${maxIterations} ━━━${COLORS.reset}`,
     );
   }
 
@@ -53,7 +42,7 @@ export class ConsoleLogger implements AgentEvents {
     // 流式输出 Thought：首次出现时打 [Thought] 前缀
     // 通过类实例字段记录是否已打前缀（每轮重置由 react-agent 控制）
     if (!this._thoughtHeaderPrinted) {
-      process.stdout.write(`\n${COLOR.cyan}${COLOR.bold}[Thought]${COLOR.reset} `);
+      process.stdout.write(`\n${COLORS.cyan}${COLORS.bold}[Thought]${COLORS.reset} `);
       this._thoughtHeaderPrinted = true;
     }
     process.stdout.write(delta);
@@ -87,19 +76,19 @@ export class ConsoleLogger implements AgentEvents {
     const overThreshold =
       stats.contextThreshold > 0 && stats.contextTokens >= stats.contextThreshold;
     const ctx = overThreshold
-      ? `${COLOR.yellow}${ctxText} ⚠${COLOR.reset}`
-      : `${COLOR.gray}${ctxText}${COLOR.reset}`;
+      ? `${COLORS.yellow}${ctxText} ⚠${COLORS.reset}`
+      : `${COLORS.gray}${ctxText}${COLORS.reset}`;
     const cache =
       stats.cacheHitRate !== undefined
         ? `${(stats.cacheHitRate * 100).toFixed(1)}%`
         : 'N/A';
 
     console.log(
-      `${COLOR.gray}[迭代 ${stats.iteration + 1}/${stats.maxIterations}]${COLOR.reset} ` +
-        `${COLOR.cyan}上下文${COLOR.reset} ${ctx} | ` +
-        `${COLOR.cyan}输入${COLOR.reset} ${stats.promptTokens} | ` +
-        `${COLOR.cyan}输出${COLOR.reset} ${stats.completionTokens} | ` +
-        `${COLOR.cyan}缓存${COLOR.reset} ${cache} | ${(stats.elapsedMs / 1000).toFixed(1)}s`,
+      `${COLORS.gray}[迭代 ${stats.iteration + 1}/${stats.maxIterations}]${COLORS.reset} ` +
+        `${COLORS.cyan}上下文${COLORS.reset} ${ctx} | ` +
+        `${COLORS.cyan}输入${COLORS.reset} ${stats.promptTokens} | ` +
+        `${COLORS.cyan}输出${COLORS.reset} ${stats.completionTokens} | ` +
+        `${COLORS.cyan}缓存${COLORS.reset} ${cache} | ${(stats.elapsedMs / 1000).toFixed(1)}s`,
     );
   }
 
@@ -120,12 +109,12 @@ export class ConsoleLogger implements AgentEvents {
         : `${summary.peakContextTokens}`;
 
     console.log(
-      `${COLOR.gray}[统计汇总]${COLOR.reset} ${summary.iterations} 轮 | ` +
-        `${COLOR.cyan}总输入${COLOR.reset} ${summary.totalPrompt} | ` +
-        `${COLOR.cyan}总输出${COLOR.reset} ${summary.totalCompletion} | ` +
-        `${COLOR.cyan}总 token${COLOR.reset} ${summary.totalTokens} | ` +
-        `${COLOR.cyan}平均缓存命中${COLOR.reset} ${cache} | ` +
-        `${COLOR.cyan}上下文峰值${COLOR.reset} ${peak}`,
+      `${COLORS.gray}[统计汇总]${COLORS.reset} ${summary.iterations} 轮 | ` +
+        `${COLORS.cyan}总输入${COLORS.reset} ${summary.totalPrompt} | ` +
+        `${COLORS.cyan}总输出${COLORS.reset} ${summary.totalCompletion} | ` +
+        `${COLORS.cyan}总 token${COLORS.reset} ${summary.totalTokens} | ` +
+        `${COLORS.cyan}平均缓存命中${COLORS.reset} ${cache} | ` +
+        `${COLORS.cyan}上下文峰值${COLORS.reset} ${peak}`,
     );
   }
 
@@ -135,7 +124,7 @@ export class ConsoleLogger implements AgentEvents {
       ? JSON.stringify(args)
       : '(无参数)';
     console.log(
-      `${COLOR.magenta}${COLOR.bold}[Action]${COLOR.reset} ${tool}(${COLOR.magenta}${argsStr}${COLOR.reset})`,
+      `${COLORS.magenta}${COLORS.bold}[Action]${COLORS.reset} ${tool}(${COLORS.magenta}${argsStr}${COLORS.reset})`,
     );
   }
 
@@ -153,14 +142,14 @@ export class ConsoleLogger implements AgentEvents {
           ? `压缩提取失败，已降级存档原始对话到 L2 并压缩（保留 ${info.keptMessages} 条消息）`
           : `压缩提取失败，已跳过压缩（保留全部 ${info.keptMessages} 条消息）`;
       console.log(
-        `${COLOR.bold}${COLOR.red}[记忆]${COLOR.reset} ${COLOR.red}${msg}${COLOR.reset}`,
+        `${COLORS.bold}${COLORS.red}[记忆]${COLORS.reset} ${COLORS.red}${msg}${COLORS.reset}`,
       );
       return;
     }
 
     console.log(
-      `${COLOR.bold}${COLOR.yellow}[记忆]${COLOR.reset} ` +
-        `${COLOR.yellow}上下文达阈值 ${info.threshold}（实际 ${info.contextTokens}），触发压缩${COLOR.reset}` +
+      `${COLORS.bold}${COLORS.yellow}[记忆]${COLORS.reset} ` +
+        `${COLORS.yellow}上下文达阈值 ${info.threshold}（实际 ${info.contextTokens}），触发压缩${COLORS.reset}` +
         `${info.flushedChars > 0 ? `，提取 ${info.flushedChars} 字符` : ''}` +
         ` → 保留 ${info.keptMessages} 条消息`,
     );
@@ -169,28 +158,35 @@ export class ConsoleLogger implements AgentEvents {
   onToolEnd(tool: string, result: string): void {
     if (!this.verbose) return;
     const indented = result.split('\n').join('\n  ');
-    console.log(`${COLOR.green}[Observation]${COLOR.reset}\n  ${indented}`);
+    console.log(`${COLORS.green}[Observation]${COLORS.reset}\n  ${indented}`);
   }
 
   onFinal(answer: string): void {
     if (!this.verbose) return;
     console.log(
-      `\n${COLOR.bold}${COLOR.green}━━━ Final Answer ━━━${COLOR.reset}\n${answer}\n`,
+      `\n${COLORS.bold}${COLORS.green}━━━ Final Answer ━━━${COLORS.reset}\n${answer}\n`,
     );
   }
 
   onError(error: Error): void {
     if (!this.verbose) return;
     console.error(
-      `\n${COLOR.red}${COLOR.bold}[Error]${COLOR.reset} ${COLOR.red}${error.message}${COLOR.reset}\n`,
+      `\n${COLORS.red}${COLORS.bold}[Error]${COLORS.reset} ${COLORS.red}${error.message}${COLORS.reset}\n`,
     );
+  }
+
+  onWarning(info: { level: 'warning' | 'error'; message: string; context?: string }): void {
+    if (!this.verbose) return;
+    const tag = info.level === 'error' ? `${COLORS.red}[Error]` : `${COLORS.yellow}[Warning]`;
+    const ctx = info.context ? ` ${COLORS.gray}(${info.context})${COLORS.reset}` : '';
+    console.error(`\n${COLORS.bold}${tag}${COLORS.reset} ${info.level === 'error' ? COLORS.red : COLORS.yellow}${info.message}${COLORS.reset}${ctx}\n`);
   }
 
   onEnd(result: AgentResult | null): void {
     if (!this.verbose) return;
     if (result) {
       console.log(
-        `${COLOR.gray}━━━ 完成（${result.iterations} 轮，${result.steps.length} 步） ━━━${COLOR.reset}`,
+        `${COLORS.gray}━━━ 完成（${result.iterations} 轮，${result.steps.length} 步） ━━━${COLORS.reset}`,
       );
     }
   }

@@ -28,5 +28,5 @@ export function rrfMerge(
   return [...scoreMap.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, topK)
-    .map(([content]) => entryMap.get(content)!);
+    .map(([content, score]) => ({ ...entryMap.get(content)!, score }));
 }

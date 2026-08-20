@@ -489,6 +489,11 @@ export class ReActAgent {
                 searchTopK: cfg.memory.episodic.searchTopK,
                 searchTimeoutMs: cfg.memory.episodic.searchTimeoutMs,
                 sessionId: this._currentSessionId ?? undefined,
+                searchMinScore: cfg.memory.episodic.searchMinScore,
+                queryEnhanceRounds: cfg.memory.episodic.queryEnhanceRounds,
+                shortQueryMinLength: cfg.memory.episodic.shortQueryMinLength,
+                stopwords: cfg.memory.episodic.stopwords,
+                recencyHalfLifeDays: cfg.memory.episodic.recencyHalfLifeDays,
               },
             );
           } catch {
@@ -657,7 +662,11 @@ export class ReActAgent {
             this._currentSessionId = meta.id;
           }
         } catch (e) {
-          console.error('[session] 自动保存失败:', e instanceof Error ? e.message : String(e));
+          await safeEvents.onWarning?.({
+            level: 'warning',
+            message: `会话自动保存失败: ${e instanceof Error ? e.message : String(e)}`,
+            context: 'session',
+          });
         }
       }
     } finally {
@@ -716,7 +725,7 @@ export class ReActAgent {
         try {
           await fn.apply(l, args);
         } catch (e) {
-          console.error(`[events.${String(hook)}] 监听器异常:`, e);
+          debug.log(`[events.${String(hook)}] 监听器异常: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     };
@@ -733,6 +742,7 @@ export class ReActAgent {
       onCompaction: (info) => callAll('onCompaction', info),
       onFinal: (answer) => callAll('onFinal', answer),
       onError: (err) => callAll('onError', err),
+      onWarning: (info) => callAll('onWarning', info),
       onEnd: (res) => callAll('onEnd', res),
     } as AgentEvents;
   }

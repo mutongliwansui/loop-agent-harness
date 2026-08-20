@@ -211,6 +211,8 @@ export interface AgentEvents {
   onFinal?(answer: string): void | Promise<void>;
   /** Agent 出错（达到 maxIterations 或其他异常） */
   onError?(error: Error): void | Promise<void>;
+  /** Agent 警告（非致命问题，如会话保存失败） */
+  onWarning?(info: { level: 'warning' | 'error'; message: string; context?: string }): void | Promise<void>;
   /** Agent 结束（无论成功或失败） */
   onEnd?(result: AgentResult | null): void | Promise<void>;
 }

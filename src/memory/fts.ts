@@ -59,6 +59,8 @@ export function tokenizeQuery(query: string): string {
 export interface IndexedEntry {
   day: string;
   content: string;
+  /** BM25 相关性分数（FTS5 路径可用；文件检索无此字段） */
+  score?: number;
 }
 
 export class MemoryIndex {
@@ -119,7 +121,7 @@ export class MemoryIndex {
          FROM memory_fts WHERE memory_fts MATCH ?
          ORDER BY score LIMIT ?`,
       ).all(matchQuery, topK) as Array<{ day: string; content: string; score: number }>;
-      return rows.map((r) => ({ day: r.day, content: r.content }));
+      return rows.map((r) => ({ day: r.day, content: r.content, score: -r.score }));
     } catch {
       this.markBroken();
       return [];

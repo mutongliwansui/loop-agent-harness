@@ -130,6 +130,16 @@ export interface MemoryConfig {
     dir: string;
     searchTopK: number;
     searchTimeoutMs: number;
+    /** Task-19：BM25/匹配分数最低阈值，低于此值的结果不注入上下文（0=禁用过滤） */
+    searchMinScore: number;
+    /** Task-19：查询增强轮数，拼接最近 N 轮对话作为搜索词（0=禁用，仅用当前消息） */
+    queryEnhanceRounds: number;
+    /** Task-19：短查询最小长度，低于此长度跳过 L2 检索 */
+    shortQueryMinLength: number;
+    /** Task-19：自定义停用词，追加到内置列表 */
+    stopwords: string[];
+    /** Task-19 方案 3：时间衰减半衰期（天，0=禁用），每经过 N 天分数减半，默认 7 */
+    recencyHalfLifeDays: number;
     /** Phase 5：向量检索配置（可选，未配置则禁用向量检索） */
     vectorSearch?: VectorSearchConfig;
   };
@@ -165,6 +175,11 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     dir: 'memory',
     searchTopK: 3,
     searchTimeoutMs: 500,
+    searchMinScore: 0.3,
+    queryEnhanceRounds: 3,
+    shortQueryMinLength: 4,
+    stopwords: [],
+    recencyHalfLifeDays: 7,
     vectorSearch: DEFAULT_VECTOR_CONFIG,
   },
   curated: {
