@@ -8,10 +8,19 @@
 //
 // 中文分词：FTS5 unicode61/trigram 对中文短词支持差，
 // 采用 bigram 预分词方案（标准中文本地化做法），英文/数字保持原样。
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, resolve } from 'node:path';
+
+const nodeRequire = createRequire(resolve(process.cwd(), 'package.json'));
+let DatabaseSyncCtor: typeof DatabaseSync | undefined;
+try {
+  DatabaseSyncCtor = nodeRequire('node:sqlite').DatabaseSync;
+} catch {
+  DatabaseSyncCtor = undefined;
+}
 
 /** FTS5 虚拟表：day/content 为 UNINDEXED（原样返回），content_fts 为预分词索引列 */
 const FTS_CREATE_SQL = `CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
@@ -75,10 +84,11 @@ export class MemoryIndex {
 
   /** 初始化：打开数据库并创建 FTS5 表。失败返回 false（调用方降级为文件检索） */
   init(): boolean {
+    if (!DatabaseSyncCtor) return false;
     try {
       const dir = dirname(this.dbPath);
       mkdirSync(dir, { recursive: true });
-      this.db = new DatabaseSync(this.dbPath);
+      this.db = new DatabaseSyncCtor(this.dbPath);
       this.db.exec(FTS_CREATE_SQL);
       this.broken = false;
       return true;

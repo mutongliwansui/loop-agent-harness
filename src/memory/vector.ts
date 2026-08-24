@@ -4,12 +4,21 @@
 // - 向量以 Float32 BLOB 存储于独立 SQLite 文件（node:sqlite），自己算余弦相似度
 // - 文件仍是真相源，向量只做语义召回（与 MemoryIndex 一致的降级哲学）
 // - 任一操作失败 → markBroken() 释放句柄，上层降级为 BM25/文件检索
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, resolve } from 'node:path';
 import { EmbeddingClient } from './embedding.js';
 import type { VectorSearchConfig } from './types.js';
+
+const nodeRequire = createRequire(resolve(process.cwd(), 'package.json'));
+let DatabaseSyncCtor: typeof DatabaseSync | undefined;
+try {
+  DatabaseSyncCtor = nodeRequire('node:sqlite').DatabaseSync;
+} catch {
+  DatabaseSyncCtor = undefined;
+}
 
 export interface VectorEntry {
   day: string;
@@ -54,9 +63,10 @@ export class VectorMemory {
   }
 
   init(): boolean {
+    if (!DatabaseSyncCtor) return false;
     try {
       mkdirSync(dirname(this.dbPath), { recursive: true });
-      this.db = new DatabaseSync(this.dbPath);
+      this.db = new DatabaseSyncCtor(this.dbPath);
       this.db.exec(VECTOR_CREATE_SQL);
       this.broken = false;
       return true;
