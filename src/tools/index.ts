@@ -7,6 +7,7 @@ export type { RunOptions } from './runner.js';
 export { commandRun } from './commandRun.js';
 export { fileRead } from './fileRead.js';
 export { fileWrite } from './fileWrite.js';
+export { editFile } from './editFile.js';
 export { grep } from './grep.js';
 export { activateSkill } from './activateSkill.js';
 
@@ -24,6 +25,7 @@ import { registry } from './registry.js';
 import { commandRun } from './commandRun.js';
 import { fileRead } from './fileRead.js';
 import { fileWrite } from './fileWrite.js';
+import { editFile } from './editFile.js';
 import { grep } from './grep.js';
 import { activateSkill } from './activateSkill.js';
 import type { ToolsConfig } from '../config/schema.js';
@@ -34,7 +36,7 @@ import type { ToolsConfig } from '../config/schema.js';
  * @returns 已注册的工具名数组
  */
 export function registerBuiltinTools(toolsConfig?: ToolsConfig): string[] {
-  const allTools = [commandRun, fileRead, fileWrite, grep, activateSkill];
+  const allTools = [commandRun, fileRead, fileWrite, editFile, grep, activateSkill];
 
   // 根据配置过滤
   let active = allTools;

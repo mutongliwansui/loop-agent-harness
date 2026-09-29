@@ -12,12 +12,17 @@ import type { SkillMetadata } from '../skill/types.js';
  * - 注入 Skill 元信息，供 LLM 判断何时激活 Skill
  */
 export function buildSystemPrompt(skills: SkillMetadata[] = []): string {
+  // 始终注入 Skill 区块：即使没有任何技能，也要显式告知模型"当前无可用技能"，
+  // 否则模型面对"有哪些技能"的提问会误判为需要去文件系统检索技能目录。
   const skillSection = skills.length > 0
     ? `\n## 可用 Skill（技能包）
 当用户的需求与以下 Skill 的描述匹配时，使用 activate_skill 工具激活对应 Skill，获取详细的执行指令。
 ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace' ? '(工作空间)' : '(全局)'}`).join('\n')}
+- 以上即为当前全部可用 Skill；当用户询问「有哪些技能 / 当前有什么技能」时，请直接依据该列表回答，不要通过检索文件系统去寻找技能目录。
 `
-    : '';
+    : `\n## 可用 Skill（技能包）
+当前没有可用的 Skill（技能包）。当用户询问「有哪些技能 / 当前有什么技能」时，请直接如实回答「当前没有可用的技能」，不要通过 ls / grep / commandRun 等工具去检索文件系统或技能目录。
+`;
 
   return `你是一个能够使用工具的 ReAct（Reasoning + Acting）Agent。通过 Thought → Action → Observation 的循环解决用户问题。
 

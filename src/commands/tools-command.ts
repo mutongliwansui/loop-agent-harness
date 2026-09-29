@@ -4,6 +4,7 @@ import {
   commandRun,
   fileRead,
   fileWrite,
+  editFile,
   grep,
   activateSkill,
 } from '../tools/index.js';
@@ -56,9 +57,9 @@ export const toolsCommand: CommandHandler = {
       }
       const { scope, rest } = parseScope(args);
       const toolName = rest[0];
-      const builtinNames = ['commandRun', 'fileRead', 'fileWrite', 'grep', 'activateSkill'];
+      const builtinNames = ['commandRun', 'fileRead', 'fileWrite', 'editFile', 'grep', 'activateSkill'];
       if (!builtinNames.includes(toolName)) {
-        out.log(`${COLORS.yellow}⚠️  /tools enable/disable 仅用于内置工具（commandRun/fileRead/fileWrite/grep），MCP 工具使用 /mcp remove${COLORS.reset}`);
+        out.log(`${COLORS.yellow}⚠️  /tools enable/disable 仅用于内置工具（commandRun/fileRead/fileWrite/editFile/grep/activateSkill），MCP 工具使用 /mcp remove${COLORS.reset}`);
         out.blank();
         return;
       }
@@ -83,7 +84,7 @@ export const toolsCommand: CommandHandler = {
       try {
         await configWriter.updateScope(scope, partial);
         if (sub === 'enable') {
-          const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, grep, activateSkill };
+          const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, editFile, grep, activateSkill };
           const t = toolMap[toolName];
           if (t && !registry.has(toolName)) registry.register(t as never);
         } else {
