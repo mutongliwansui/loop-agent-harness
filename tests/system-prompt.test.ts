@@ -45,3 +45,18 @@ describe('buildSystemPrompt 的 Skill 区块', () => {
     expect(p).not.toContain('当前没有可用的技能');
   });
 });
+
+describe('buildSystemPrompt 的环境信息区块', () => {
+  it('传入工作空间目录时在末尾注入环境信息', () => {
+    const p = buildSystemPrompt([], 'D:\\work\\proj');
+    expect(p).toContain('## 环境信息');
+    expect(p).toContain('当前工作空间目录：D:\\work\\proj');
+    expect(p.trimEnd().endsWith('以该目录为基准描述路径')).toBe(true);
+  });
+
+  it('未传工作空间目录时不注入环境信息（向后兼容）', () => {
+    const p = buildSystemPrompt([]);
+    expect(p).not.toContain('## 环境信息');
+    expect(p).not.toContain('当前工作空间目录');
+  });
+});

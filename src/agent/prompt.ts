@@ -11,7 +11,7 @@ import type { SkillMetadata } from '../skill/types.js';
  * - 保留工具使用指导（如 MCP 前缀说明）
  * - 注入 Skill 元信息，供 LLM 判断何时激活 Skill
  */
-export function buildSystemPrompt(skills: SkillMetadata[] = []): string {
+export function buildSystemPrompt(skills: SkillMetadata[] = [], workspaceDir?: string): string {
   // 始终注入 Skill 区块：即使没有任何技能，也要显式告知模型"当前无可用技能"，
   // 否则模型面对"有哪些技能"的提问会误判为需要去文件系统检索技能目录。
   const skillSection = skills.length > 0
@@ -23,6 +23,14 @@ ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace'
     : `\n## 可用 Skill（技能包）
 当前没有可用的 Skill（技能包）。当用户询问「有哪些技能 / 当前有什么技能」时，请直接如实回答「当前没有可用的技能」，不要通过 ls / grep / commandRun 等工具去检索文件系统或技能目录。
 `;
+
+  // 环境信息：显式告知当前工作空间目录，使模型能准确回答目录相关问题、产出可靠路径
+  const envSection = workspaceDir
+    ? `\n\n## 环境信息
+- 当前工作空间目录：${workspaceDir}
+- 工具的相对路径均相对该目录解析；涉及文件位置时以该目录为基准描述路径
+`
+    : '';
 
   return `你是一个能够使用工具的 ReAct（Reasoning + Acting）Agent。通过 Thought → Action → Observation 的循环解决用户问题。
 
@@ -43,5 +51,5 @@ ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace'
 
 ## 工具使用指导
 - 工具的参数 schema 通过 function calling 协议暴露，按需调用即可
-- 工具名前缀 \`{serverName}__\` 表示来自 MCP server 的工具，可正常使用${skillSection}`;
+- 工具名前缀 \`{serverName}__\` 表示来自 MCP server 的工具，可正常使用${skillSection}${envSection}`;
 }
