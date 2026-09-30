@@ -1,0 +1,27 @@
+# Git 行尾统一策略：避免 core.autocrlf 造成的“假改动”
+# 默认：文本文件自动识别，检出时按仓库存储（LF）
+* text=auto
+
+# 明确使用 LF 的文本文件
+*.ts   text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+LICENSE text eol=lf
+
+# Windows 批处理需要 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制文件不做行尾转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.exe  binary
+*.zip  binary
+*.gz   binary
