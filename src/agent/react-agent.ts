@@ -10,6 +10,7 @@ import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
 import { ConsoleLogger } from './logger.js';
 import { buildLLMStatsSummary } from './stats.js';
+import { createToolCallGenTracker, dispatchStreamChunk } from './stream-forward.js';
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import { skillLoader } from '../skill/loader.js';
@@ -361,7 +362,7 @@ export class ReActAgent {
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义
     const events = this.composeEvents([
-      new ConsoleLogger(verbose, cfg.agent.showTokenStats),
+      new ConsoleLogger(verbose, cfg.agent.showTokenStats, options.spinner),
       ...(options.events ?? []),
     ]);
 
@@ -591,9 +592,18 @@ export class ReActAgent {
               return `工具 ${c.toolName} 缺少必需参数: ${missing.join(', ')}，请补充后重试`;
             }
             const toolStart = Date.now();
-            const result = runner.run(c.tool, c.args);
-            void result.then((r) => debug.toolCall(c.toolName, c.args ?? {}, r, Date.now() - toolStart));
-            return result;
+            // P2：执行期间每秒上报一次进度心跳，长耗时工具（如 commandRun）可见实时进展
+            const ticker = setInterval(() => {
+              void safeEvents.onToolProgress(c.toolName, Date.now() - toolStart);
+            }, 1000);
+            ticker.unref?.();
+            try {
+              const result = await runner.run(c.tool, c.args);
+              void debug.toolCall(c.toolName, c.args ?? {}, result, Date.now() - toolStart);
+              return result;
+            } finally {
+              clearInterval(ticker);
+            }
           }),
         );
 
@@ -645,6 +655,8 @@ export class ReActAgent {
 
       // 自动保存会话（如果配置启用且 SessionStore 可用）
       if (this._sessionStore && cfg.session.autoSave) {
+        // P2：会话保存（常为加密写盘）期间的短指示器
+        options.spinner?.start('保存会话…');
         try {
           if (this._currentSessionId) {
             await this._sessionStore.updateSession(
@@ -667,6 +679,8 @@ export class ReActAgent {
             message: `会话自动保存失败: ${e instanceof Error ? e.message : String(e)}`,
             context: 'session',
           });
+        } finally {
+          options.spinner?.stop();
         }
       }
     } finally {
@@ -688,12 +702,10 @@ export class ReActAgent {
   ): Promise<LLMResponse> {
     let response: LLMResponse | null = null;
     const safeEvents = events as Required<AgentEvents>;
+    const tracker = createToolCallGenTracker();
     for await (const chunk of llm.chatStream(messages, tools, options)) {
-      if (chunk.type === 'delta') {
-        await safeEvents.onLLMStream(chunk.content);
-      } else if (chunk.type === 'done') {
-        response = chunk.response;
-      }
+      const done = await dispatchStreamChunk(chunk, tracker, safeEvents);
+      if (done) response = done;
     }
     if (!response) {
       throw new Error('LLM 流式调用未返回 done chunk');
@@ -739,6 +751,8 @@ export class ReActAgent {
       onLLMStatsSummary: (summary) => callAll('onLLMStatsSummary', summary),
       onToolStart: (tool, args) => callAll('onToolStart', tool, args),
       onToolEnd: (tool, result) => callAll('onToolEnd', tool, result),
+      onToolProgress: (tool, elapsedMs) => callAll('onToolProgress', tool, elapsedMs),
+      onToolCallDelta: (tool, bytes, elapsedMs) => callAll('onToolCallDelta', tool, bytes, elapsedMs),
       onCompaction: (info) => callAll('onCompaction', info),
       onFinal: (answer) => callAll('onFinal', answer),
       onError: (err) => callAll('onError', err),

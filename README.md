@@ -41,6 +41,7 @@
 |---|---|
 | 🔄 **ReAct 循环** | Thought → Action → Observation 逐步推理，直到得出最终答案 |
 | 📡 **流式输出** | LLM 推理过程实时流式输出，支持 `content` 与 `tool_calls` 分片拼接 |
+| ⏳ **等待提示** | 模型生成 / 工具执行等耗时阶段显示「思考中…」「执行中：<tool>…」loading 指示器，打印前自动清行不混行；非 TTY（管道/重定向/CI）自动禁用 |
 | 📊 **Token 统计** | 每轮输出上下文/输入/输出 token 与缓存命中率，会话结束输出汇总（`showTokenStats` 可关） |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
 | 🛠️ **内置工具** | 命令执行、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
@@ -51,7 +52,7 @@
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory` 命令，支持热修改 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
-| 🎯 **事件监听** | 参考 LangChain callbacks 设计，11 个生命周期钩子便于扩展 |
+| 🎯 **事件监听** | 参考 LangChain callbacks 设计，15 个生命周期钩子便于扩展 |
 | 💬 **多轮对话** | 跨 `run()` 调用持久化消息历史，支持上下文续接 |
 | ⚡ **同轮多工具** | 支持 LLM 单轮返回多个 `tool_calls`，`Promise.all` 并发执行 |
 | 🛡️ **失败隔离** | 单个工具失败不影响其他工具，工具不存在时返回错误 Observation 让 Agent 继续推理 |
@@ -149,6 +150,8 @@ Agent> 帮我读取 package.json 的版本号
 ```
 
 > 若配置中开启了 `agent.debug`，启动时会额外提示调试日志输出目录（见 [📝 调试日志](#-调试日志)）。
+
+> 运行期间，在模型生成（尤其工具调用参数）与工具执行等耗时阶段会显示 loading 指示器（如「思考中…（第 N 轮）」「生成参数：fileWrite…（12.3KB / 8s）」「执行中：grep…」），让等待过程有实时反馈；日志/流式 Thought/最终答案打印前会先清除指示器行，二者不会混行。该指示器仅在交互式 TTY 下启用，管道、重定向与 CI 环境下自动关闭、零输出。
 
 ### 内置命令
 
@@ -769,6 +772,7 @@ console.log(content?.fullContent);
 | `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
 | `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |
 | `agent` | `showTokenStats` | 是否输出每轮/会话汇总 token 统计（Task-15） | `true` |
+| `agent` | `loading` | 是否显示等待 loading 指示器（非 TTY 环境始终禁用，Task-20260930-001） | `true` |
 | `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
 | `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
@@ -836,7 +840,7 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 
 ## 🎧 事件监听器
 
-参考 LangChain callbacks 设计，支持 **11 个生命周期钩子**。可叠加任意数量的监听器。
+参考 LangChain callbacks 设计，支持 **15 个生命周期钩子**。可叠加任意数量的监听器。
 
 ### 钩子列表
 
@@ -848,8 +852,12 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 | `onLLMEnd` | 每轮 LLM 调用结束 | `response: LLMResponse, iteration: number` |
 | `onToolStart` | 工具开始执行 | `tool: string, args: Record<string, unknown>` |
 | `onToolEnd` | 工具执行结束 | `tool: string, result: string` |
+| `onToolProgress` | 工具执行进度心跳（Task-20260930-001，长耗时工具每秒上报已用时） | `tool: string, elapsedMs: number` |
+| `onToolCallDelta` | 生成工具参数（tool_calls.arguments）的流式增量（Task-20260930-001，覆盖 Thought 后到 [Action] 的空窗） | `tool: string, accumulatedBytes: number, elapsedMs: number` |
+| `onCompaction` | L1 上下文达阈值触发压缩（Task-17） | `info: CompactionInfo` |
 | `onFinal` | Agent 给出最终答案 | `answer: string` |
 | `onError` | 发生错误 | `error: Error` |
+| `onWarning` | 非致命告警（level: warning/error） | `info: { level: 'warning' \| 'error'; message: string; context?: string }` |
 | `onEnd` | Agent 执行结束（成功或失败） | `result: AgentResult \| null` |
 | `onLLMStats` | 每轮 LLM 调用结束，输出 token 统计（Task-15） | `stats: LLMStats` |
 | `onLLMStatsSummary` | 会话全部迭代结束，输出汇总统计（Task-15） | `summary: LLMStatsSummary` |

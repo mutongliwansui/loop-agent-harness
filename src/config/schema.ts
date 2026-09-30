@@ -39,6 +39,8 @@ export interface AgentBehaviorConfig {
   showTokenStats: boolean;
   /** 是否记录每次模型调用的输入参数与响应到独立日志文件（~/.loop-agent/logs/llm-*.log） */
   llmLogEnabled: boolean;
+  /** Task-20260930-001：是否显示等待 loading 指示器（默认 true；非 TTY 环境始终禁用） */
+  loading: boolean;
 }
 
 /** 配置来源标记 */
@@ -80,6 +82,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     systemPrompt: null,
     showTokenStats: true,
     llmLogEnabled: true,
+    loading: true,
   },
   session: {
     autoSave: true,

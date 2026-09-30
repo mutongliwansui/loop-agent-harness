@@ -11,6 +11,7 @@ import { configLoader, configWriter } from './config/index.js';
 import { skillLoader } from './skill/index.js';
 import { SessionStore, keychain } from './session/index.js';
 import { COLORS as C } from './ui/colors.js';
+import { Spinner } from './ui/spinner.js';
 import { ConsoleOutputChannel } from './ui/output-channel.js';
 import {
   printBanner as renderBanner,
@@ -219,6 +220,12 @@ async function main() {
   /** readline 是否已关闭 */
   let rlClosed = false;
 
+  // loading 指示器：受 agent.loading 开关控制，且非 TTY（管道/重定向/CI）自动禁用
+  // 显式传入 enabled 会覆盖 Spinner 内部 isTTY 默认值，故此处显式与 isTTY 相与
+  const spinner = new Spinner({
+    enabled: cfg.agent.loading && process.stdout.isTTY === true,
+  });
+
   const safePrompt = (): void => {
     if (!rlClosed) rl.prompt();
   };
@@ -235,6 +242,7 @@ async function main() {
     }
 
     if (running) {
+      spinner.stop();
       console.log(`${C.yellow}⚠️  Agent 正在处理上一个请求，请稍候...${C.reset}`);
       safePrompt();
       return;
@@ -272,16 +280,22 @@ async function main() {
     // 命令分发：通过 CommandRegistry
     running = true;
     try {
+      // P1：非斜杠命令即普通提问，提前启动指示器，覆盖 dispatch / 配置载入 / skill 扫描 / toOpenAITools 等前置耗时
+      if (!input.startsWith('/')) spinner.start('思考中…');
       const matched = await commandRegistry.dispatch(input, ctx);
-      if (!matched) {
+      if (matched) {
+        spinner.stop();
+      } else {
         // 未匹配到命令，执行 Agent
-        const result = await agent.run(input, { verbose: cfg.agent.verbose });
+        const result = await agent.run(input, { verbose: cfg.agent.verbose, spinner });
+        spinner.stop();
         console.log(
           `\n${C.gray}(完成：${result.iterations} 轮迭代 / ${result.steps.length} 步工具 / ${result.messages.length} 条消息历史)${C.reset}\n`,
         );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      spinner.stop();
       console.error(`\n${C.bold}${C.red}[Error]${C.reset} ${C.red}${msg}${C.reset}\n`);
     } finally {
       running = false;

@@ -1,4 +1,5 @@
 // ReAct Agent 核心类型定义
+import type { Spinner } from './ui/spinner.js';
 
 // ===== 工具相关 =====
 
@@ -180,6 +181,8 @@ export interface AgentOptions {
   messages?: ChatMessage[];
   /** true=清空历史重新开始（覆盖 messages 参数），默认 false */
   resetHistory?: boolean;
+  /** 可选的 loading 指示器（由 CLI 层创建注入；程序化调用不传即无指示器） */
+  spinner?: Spinner;
 }
 
 /**
@@ -205,6 +208,16 @@ export interface AgentEvents {
   onToolStart?(tool: string, args: Record<string, unknown>): void | Promise<void>;
   /** 工具调用结束，拿到 Observation */
   onToolEnd?(tool: string, result: string): void | Promise<void>;
+  /** 工具执行进度心跳（Task-20260930-001 P2：长耗时工具运行期间周期性上报已用时） */
+  onToolProgress?(tool: string, elapsedMs: number): void | Promise<void>;
+  /**
+   * 生成工具调用参数（tool_calls.arguments）的流式增量
+   * Task-20260930-001：覆盖「Thought 文本结束 → [Action] 打印」之间的空窗（如 fileWrite 会逐 token 生成整个文件内容）
+   * @param tool 工具名（首帧 name 未知时为占位名）
+   * @param accumulatedBytes 该 tool_call 已累积的参数字节数
+   * @param elapsedMs 自该轮参数生成开始以来的耗时
+   */
+  onToolCallDelta?(tool: string, accumulatedBytes: number, elapsedMs: number): void | Promise<void>;
   /** L1 上下文超阈值，触发压缩 */
   onCompaction?(info: CompactionInfo): void | Promise<void>;
   /** Agent 给出最终答案 */
