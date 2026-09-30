@@ -7,6 +7,7 @@ import type { CommandContext, CommandHandler } from './registry.js';
 export const memoryCommand: CommandHandler = {
   name: '/memory',
   description: '记忆管理（status/curated/episodic/search/dream/gate/init）',
+  subcommands: ['status', 'curated', 'episodic', 'search', 'dream', 'gate', 'init'],
   match: (input) => input.toLowerCase().startsWith('/memory'),
   async execute(input, ctx) {
     const { out, agent, configLoader } = ctx;

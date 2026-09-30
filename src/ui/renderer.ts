@@ -77,6 +77,7 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 同样有效）`);
+  console.log(`  ${C.bold}Tab${C.reset}          → 命令自动补全（输入 /con 按 Tab 补全为 /config，/config 后可补子命令）`);
   console.log(`${C.gray}──────────────────────────────────────────────────────────${C.reset}`);
   console.log('');
 }

@@ -7,6 +7,7 @@ import type { CommandContext, CommandHandler } from './registry.js';
 export const skillCommand: CommandHandler = {
   name: '/skill',
   description: 'Skill 管理（list/reload/show）',
+  subcommands: ['list', 'reload', 'show'],
   match: (input) => input.toLowerCase().startsWith('/skill'),
   async execute(input, ctx) {
     const { out, configLoader, skillLoader } = ctx;

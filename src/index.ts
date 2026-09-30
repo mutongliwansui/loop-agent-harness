@@ -20,11 +20,13 @@ import {
 } from './ui/renderer.js';
 import {
   CommandRegistry,
+  completeCommandLineAsync,
+  type ArgCompletionProvider,
   type CommandContext,
 } from './commands/registry.js';
 import { configCommand } from './commands/config-command.js';
 import { mcpCommand } from './commands/mcp-command.js';
-import { toolsCommand } from './commands/tools-command.js';
+import { toolsCommand, BUILTIN_TOOL_NAMES } from './commands/tools-command.js';
 import { skillCommand } from './commands/skill-command.js';
 import { sessionCommand } from './commands/session-command.js';
 import { memoryCommand } from './commands/memory-command.js';
@@ -185,14 +187,7 @@ async function main() {
     renderHistory(restoredMessages as Parameters<typeof renderHistory>[0]);
   }
 
-  // 8. 创建 readline 接口
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: `${C.bold}${C.cyan}Agent>${C.reset} `,
-  });
-
-  // 9. 构建命令注册器
+  // 8. 构建命令注册器（须先于 readline：Tab 补全需要读取命令清单）
   const commandRegistry = new CommandRegistry();
   commandRegistry.register(configCommand);
   commandRegistry.register(mcpCommand);
@@ -201,7 +196,46 @@ async function main() {
   commandRegistry.register(sessionCommand);
   commandRegistry.register(memoryCommand);
 
-  // 10. 构建 CommandContext
+  // 9. 动态参数候选提供器（P2）：为三级补全供给真实数据（会话 id / 工具名 / 技能名 / MCP server 名）
+  const argProvider: ArgCompletionProvider = {
+    async completeArgs(command, subcommand, prefix) {
+      try {
+        if (command === '/session' && (subcommand === 'load' || subcommand === 'delete')) {
+          if (!sessionStore) return [];
+          const sessions = await sessionStore.listSessions();
+          return sessions.map((s) => s.id).filter((id) => id.startsWith(prefix));
+        }
+        if (command === '/tools' && (subcommand === 'enable' || subcommand === 'disable')) {
+          return BUILTIN_TOOL_NAMES.filter((n) => n.startsWith(prefix));
+        }
+        if (command === '/skill' && subcommand === 'show') {
+          return skillLoader.list().map((s) => s.name).filter((n) => n.startsWith(prefix));
+        }
+        if (command === '/mcp' && (subcommand === 'test' || subcommand === 'remove')) {
+          const { config: c } = configLoader.load();
+          return Object.keys(c.tools.mcpServers).filter((n) => n.startsWith(prefix));
+        }
+      } catch {
+        return [];
+      }
+      return [];
+    },
+  };
+
+  // 10. 创建 readline 接口（注册异步 completer：静态命令/子命令 + 单词命令 + 动态参数）
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: `${C.bold}${C.cyan}Agent>${C.reset} `,
+    // 双参数形式被 readline 识别为异步 completer
+    completer: (line: string, cb: (err: Error | null, result: [string[], string]) => void) => {
+      completeCommandLineAsync(line, commandRegistry, argProvider)
+        .then((res) => cb(null, res))
+        .catch((e: unknown) => cb(e instanceof Error ? e : new Error(String(e)), [[], line]));
+    },
+  });
+
+  // 11. 构建 CommandContext
   const ctx: CommandContext = {
     agent,
     configLoader,
@@ -230,7 +264,7 @@ async function main() {
     if (!rlClosed) rl.prompt();
   };
 
-  // 11. REPL 主循环
+  // 12. REPL 主循环
   safePrompt();
 
   rl.on('line', async (raw: string) => {

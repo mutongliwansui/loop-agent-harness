@@ -10,6 +10,7 @@ import type { CommandContext, CommandHandler } from './registry.js';
 export const sessionCommand: CommandHandler = {
   name: '/session',
   description: '会话管理（list/load/save/new/current/delete/delete-all）',
+  subcommands: ['list', 'load', 'save', 'new', 'current', 'delete', 'delete-all'],
   match: (input) => input.toLowerCase().startsWith('/session'),
   async execute(input, ctx) {
     const { out, agent, configLoader, skillLoader, sessionStore, rl } = ctx;

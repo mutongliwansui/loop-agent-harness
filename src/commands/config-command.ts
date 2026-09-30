@@ -32,6 +32,7 @@ function printConfigLayer(obj: Record<string, unknown>, sources: Record<string, 
 export const configCommand: CommandHandler = {
   name: '/config',
   description: '配置管理（list/get/set/delete/path）',
+  subcommands: ['list', 'get', 'set', 'delete', 'path'],
   match: (input) => input.toLowerCase().startsWith('/config'),
   async execute(input, ctx) {
     const { out } = ctx;

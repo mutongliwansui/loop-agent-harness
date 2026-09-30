@@ -14,9 +14,20 @@ import { printTools } from '../ui/renderer.js';
 import { parseScope } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
+/** 内置工具名（供 /tools enable|disable 校验与 Tab 补全复用） */
+export const BUILTIN_TOOL_NAMES = [
+  'commandRun',
+  'fileRead',
+  'fileWrite',
+  'editFile',
+  'grep',
+  'activateSkill',
+];
+
 export const toolsCommand: CommandHandler = {
   name: '/tools',
   description: '工具管理（list/enable/disable/reload）',
+  subcommands: ['list', 'enable', 'disable', 'reload'],
   match: (input) => input.toLowerCase().startsWith('/tools'),
   async execute(input, ctx) {
     const { out, configLoader, configWriter, registry, mcpManager } = ctx;
@@ -57,7 +68,7 @@ export const toolsCommand: CommandHandler = {
       }
       const { scope, rest } = parseScope(args);
       const toolName = rest[0];
-      const builtinNames = ['commandRun', 'fileRead', 'fileWrite', 'editFile', 'grep', 'activateSkill'];
+      const builtinNames = BUILTIN_TOOL_NAMES;
       if (!builtinNames.includes(toolName)) {
         out.log(`${COLORS.yellow}⚠️  /tools enable/disable 仅用于内置工具（commandRun/fileRead/fileWrite/editFile/grep/activateSkill），MCP 工具使用 /mcp remove${COLORS.reset}`);
         out.blank();

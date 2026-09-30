@@ -50,6 +50,7 @@
 | 🧠 **三层记忆管理** | L1 Working（token 压缩）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入） |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory` 命令，支持热修改 |
+| ⌨️ **Tab 自动补全** | REPL 输入 `/con` 按 Tab 补全为 `/config`，命令与子命令均可补全，多候选自动列出 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
 | 🎯 **事件监听** | 参考 LangChain callbacks 设计，15 个生命周期钩子便于扩展 |
@@ -168,6 +169,14 @@ Agent> 帮我读取 package.json 的版本号
 | `/skill` | Skill 管理（list / reload / show） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
+
+> **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
+> - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
+> - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show ` 补技能名、`/mcp test ` 补 server 名；
+> - **单词命令**：`hel` → `help`、`ex` → `exit`。
+>
+> 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
 
 ### 输出示例
 

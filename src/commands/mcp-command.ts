@@ -80,6 +80,7 @@ async function interactiveAddMcp(
 export const mcpCommand: CommandHandler = {
   name: '/mcp',
   description: 'MCP 管理（list/add/remove/reload/test）',
+  subcommands: ['list', 'add', 'remove', 'reload', 'test'],
   match: (input) => input.toLowerCase().startsWith('/mcp'),
   async execute(input, ctx) {
     const { out, configLoader, configWriter, mcpManager, rl } = ctx;
