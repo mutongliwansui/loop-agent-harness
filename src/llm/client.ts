@@ -82,7 +82,6 @@ export class LLMClient {
         model,
         messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
         temperature,
-        stream_options: { include_usage: true },
       };
       if (tools && tools.length > 0) {
         params.tools = tools as OpenAI.Chat.ChatCompletionTool[];
