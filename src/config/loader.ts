@@ -170,6 +170,20 @@ export class ConfigLoader {
       cfg.agent.debug = ['1', 'true', 'TRUE', 'yes'].includes(env.DEBUG);
     }
 
+    // 视觉配置（Task-20261010-001）：设置 VISION_API_KEY 或 VISION_MODEL 时自动启用视觉工具
+    if (env.VISION_API_KEY || env.VISION_BASE_URL || env.VISION_MODEL) {
+      cfg.vision = {};
+      if (env.VISION_API_KEY) {
+        cfg.vision.apiKey = env.VISION_API_KEY;
+        cfg.vision.enabled = true;
+      }
+      if (env.VISION_BASE_URL) cfg.vision.baseUrl = env.VISION_BASE_URL;
+      if (env.VISION_MODEL) {
+        cfg.vision.model = env.VISION_MODEL;
+        cfg.vision.enabled = true;
+      }
+    }
+
     return cfg;
   }
 

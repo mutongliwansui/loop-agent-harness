@@ -26,7 +26,7 @@ export class ToolRunner {
     args: Record<string, unknown>,
     options: RunOptions = {},
   ): Promise<string> {
-    const timeout = options.timeout ?? 30000;
+    const timeout = options.timeout ?? tool.timeoutMs ?? 30000;
     try {
       const result = await this.withTimeout(tool.execute(args), timeout);
       // 结果归一化为字符串

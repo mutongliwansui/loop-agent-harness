@@ -45,11 +45,12 @@
 | 📊 **Token Stats** | Prints context/input/output tokens and cache hit rate per round, plus a summary at session end (`showTokenStats` can disable it) |
 | 🔌 **OpenAI Protocol** | Compatible with any OpenAI-protocol provider (OpenAI, DeepSeek, Moonshot, local vLLM, etc.) |
 | 🛠️ **Built-in Tools** | Command execution, file read (supports line ranges, numbered by default), file write, text editing (editFile: literal/regex/line-range), content search (grep), skill activation |
+| 👁️ **Vision Understanding** | Integrates multimodal vision models (OpenAI-protocol `image_url` format): four tools for image description / targeted Q&A / structured extraction / OCR; local images auto-converted to base64; LRU result caching and usage stats; `/vision` command for management and connectivity testing |
 | 🌐 **MCP Support** | Connect external tool services via the Model Context Protocol (stdio / SSE) |
 | 🧩 **Skills** | SKILL.md spec + progressive loading; the `activate_skill` tool activates domain instructions on demand |
 | 🧠 **Three-tier Memory** | L1 Working (token compaction) / L2 Episodic (daily journal) / L3 Curated (always injected) |
 | 🔧 **Layered Config** | CLI > workspace > global > .env > defaults, with multiple layers of overrides and traceable sources |
-| 🎛️ **Runtime Config Management** | Built-in `/config`, `/mcp`, `/tools`, `/skill`, `/memory` commands with hot modification |
+| 🎛️ **Runtime Config Management** | Built-in `/config`, `/mcp`, `/tools`, `/skill`, `/memory`, `/vision` commands with hot modification |
 | 💾 **Session Persistence** | Conversation history stored with AES-256-GCM encryption; auto-saved across processes / manually restorable |
 | 📝 **Debug Logging** | File logs of LLM requests/responses, tool calls and agent iterations, with automatic rotation |
 | 🎯 **Event Hooks** | 15 lifecycle hooks, inspired by LangChain callbacks, for easy extension |
@@ -167,6 +168,7 @@ Agent> Read the version from package.json
 | `/session` | Session management (list / load / save / new / current / delete / delete-all) |
 | `/skill` | Skill management (list / reload / show) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
+| `/vision` | Vision model management (status / test) |
 | `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
 
 ### Output Example
@@ -274,6 +276,22 @@ Skills are auto-scanned from the global `~/.loop-agent/skills/` and the workspac
 ```
 
 See [🧠 Memory Management](#-memory-management).
+
+#### `/vision` — Vision Model Management
+
+```
+/vision status                  # Show the vision model config (enabled state / triplet source tags / masked apiKey / cache stats / session cumulative stats)
+/vision test                    # Run a connectivity test with a 1x1 PNG (verifies baseUrl / apiKey / model)
+```
+
+When the vision triplet (`vision.baseUrl` / `vision.apiKey` / `vision.model`) is empty, it automatically falls back to the main model's `model.*` values — zero duplicated config for multiple models of the same provider. To enable:
+
+```
+/config set vision.enabled true    # takes effect immediately: vision tools are auto-registered (auto-unregistered on false/delete), no /tools reload needed
+/config set vision.model gpt-4o    # falls back to model.name when unset
+```
+
+Once enabled, four vision tools are registered: `describe_image` (whole-image description), `ask_image` (targeted Q&A), `extract_json` (structured extraction) and `ocr_image` (text recognition). See [🔧 Built-in Tools](#-built-in-tools).
 
 ---
 
@@ -485,6 +503,10 @@ Load priority (high → low):
 | 🔁 **File Edit** | `editFile` | Three modes: ① literal replacement (must appear exactly once; multiple matches error out to avoid accidental edits); ② `regex=true` regex replacement (supports `$1`/`$&` capture references); ③ whole-line-range replacement when `startLine`/`endLine` are given | `path` (required), `newText` (required), `oldText` (required unless a line range is given), `startLine` (optional), `endLine` (optional), `replaceAll` (optional, defaults to `false`), `regex` (optional, defaults to `false`), `flags` (optional, e.g. `i`/`m`/`s`) |
 | 🔍 **Content Search** | `grep` | Search content in a file or directory; supports regex, case-insensitivity and recursive search | `pattern` (required), `path` (required), `ignoreCase` (optional), `recursive` (optional), `maxResults` (optional, defaults to 50) |
 | 🎯 **Skill Activation** | `activate_skill` | Activate a Skill, returning the full SKILL.md instructions **plus the skill's directory (skill dir / absolute SKILL.md path)**, making it easy to locate bundled scripts, reference docs, etc. | `name` (required) |
+| 👁️ **Image Description** | `describe_image` | Produce an overall description of an image (subject, scene, visible text, colors, counts, etc.); use it first to get global context when unsure what to ask | `image` (required, local path or http(s) URL) |
+| ❓ **Image Q&A** | `ask_image` | Answer a specific question about an image (UI text, error codes, button states, colors, counts, etc.); more precise and shorter output than `describe_image` | `image` (required), `question` (required) |
+| 🧾 **Structured Extraction** | `extract_json` | Extract structured data from an image by a list of fields and return JSON (forms / tables / config screens, etc.); falls back to the raw text automatically when parsing fails | `image` (required), `fields` (required, array of field names) |
+| 📝 **Text Recognition** | `ocr_image` | Recognize all text in an image (OCR), preserving the original reading order and line breaks | `image` (required) |
 
 ### Tool Usage Examples
 
@@ -527,6 +549,18 @@ grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 
 
 # Skill activation (progressive loading; returns the full SKILL.md content + skill dir / absolute SKILL.md path)
 activate_skill({ "name": "example-skill" })
+
+# Image description (local paths are auto-converted to base64 data URLs; requires vision.enabled = true)
+describe_image({ "image": "screenshots/login.png" })
+
+# Image Q&A (accepts a local path or an http(s) URL)
+ask_image({ "image": "https://example.com/chart.png", "question": "Which month does the tallest bar in this chart correspond to?" })
+
+# Structured extraction (returns a JSON string; falls back to the raw text when parsing fails)
+extract_json({ "image": "invoice.png", "fields": ["title", "amount", "date"] })
+
+# Text recognition (OCR; preserves the original reading order and line breaks)
+ocr_image({ "image": "receipt.jpg" })
 ```
 
 ---
@@ -766,6 +800,19 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
       "daysBack": 3,
       "onExit": true
     }
+  },
+  "vision": {
+    "enabled": false,
+    "baseUrl": "",
+    "apiKey": "",
+    "model": "",
+    "temperature": 0,
+    "maxTokens": 2048,
+    "timeoutMs": 60000,
+    "maxImageBytes": 10485760,
+    "maxResultChars": 8000,
+    "cacheEnabled": true,
+    "cacheTtlMs": 600000
   }
 }
 ```
@@ -784,6 +831,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `session` | `encryptionEnabled` | Whether session files are stored encrypted (AES-256-GCM) | `true` |
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill toggles and scan directories | all enabled |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | Three-tier memory system config (incl. retrieval enhancement) | all enabled |
+| `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | Vision model config (Task-20261010-001); an empty `baseUrl` / `apiKey` / `model` falls back to the main model's `model.*` triplet | `enabled: false`; other defaults in the config structure above |
 
 ### Environment Variables (Backward Compatible)
 
@@ -1204,6 +1252,11 @@ loop-agent-command/
 │       ├── editFile.ts               # 🔁 Built-in tool: text edit (literal/regex/line-range)
 │       ├── grep.ts                   # 🔍 Built-in tool: content search
 │       ├── activateSkill.ts          # 🎯 Built-in tool: Skill activation (progressive loading)
+│       ├── vision/                   # 👁️ Vision tools (multimodal vision model integration)
+│       │   ├── tools.ts              # Four vision tools (describe_image / ask_image / extract_json / ocr_image)
+│       │   ├── image.ts              # Image resolution (local → base64 data URL / URL validation / size limits)
+│       │   ├── cache.ts              # LRU result cache (local file fingerprints in the key; auto-invalidated on content change)
+│       │   └── stats.ts              # Usage stats (success / failure / cache hits / elapsed / tokens)
 │       └── mcp/                      # 🌐 MCP tool integration
 │           ├── index.ts              # Entry
 │           ├── client.ts             # MCP client (stdio / SSE transport)
@@ -1231,7 +1284,13 @@ loop-agent-command/
 │   ├── file-read.test.ts             # fileRead line-number output
 │   ├── activate-skill.test.ts        # activate_skill outputs the skill dir / SKILL.md path
 │   ├── system-prompt.test.ts         # Skill block injection into the System Prompt
-│   └── llm-stats.test.ts             # LLM stats aggregation
+│   ├── llm-stats.test.ts             # LLM stats aggregation
+│   ├── vision-cache.test.ts          # Vision result cache (LRU / TTL / file-fingerprint invalidation)
+│   ├── vision-image.test.ts          # Image resolution (local → base64 / URL / size & format validation)
+│   ├── vision-client.test.ts         # chatVision multimodal client (jsonMode / error-context rewrite / retry)
+│   ├── vision-registry.test.ts       # Vision tool registration (vision.enabled gating / Tab-completion list)
+│   ├── vision-tools.test.ts          # Vision tool pipeline (parsing / cache / fallback / truncation)
+│   └── vision-command.test.ts        # /vision command (status / test)
 ├── docs/
 │   ├── plan.md                       # 📋 Overall dev plan and milestones
 │   ├── openclaw_memory_management.md # 🧠 Memory management design reference (OpenClaw style)

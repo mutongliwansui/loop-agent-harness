@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { debug } from '../debug.js';
 import { llmLogger, beginLLMCall } from '../llm-logger.js';
-import type { ChatMessage, LLMResponse, OpenAIToolDef, StreamChunk, ToolCall } from '../types.js';
+import type { ChatMessage, LLMResponse, OpenAIToolDef, StreamChunk, ToolCall, VisionMessage } from '../types.js';
 
 export interface ChatOptions {
   /** 采样温度，默认 0 */
@@ -12,6 +12,24 @@ export interface ChatOptions {
   model?: string;
   /** 最大 token 数 */
   maxTokens?: number;
+}
+
+/** 视觉调用选项（Task-20261010-001）：三元组由调用方从 cfg.vision 解析回退后传入 */
+export interface VisionChatOptions {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  /** 尝试 JSON 模式（response_format），服务商不支持时自动降级重试一次 */
+  jsonMode?: boolean;
+}
+
+/** 视觉调用结果 */
+export interface VisionChatResult {
+  content: string;
+  usage?: LLMResponse['usage'];
+  elapsedMs: number;
 }
 
 /**
@@ -28,6 +46,11 @@ export class LLMClient {
   private client: OpenAI | null = null;
   private _lastApiKey = '';
   private _lastBaseUrl = '';
+
+  // 视觉客户端独立缓存（与主 client 并列，各自的 apiKey/baseUrl 变化时重建）
+  private visionClient: OpenAI | null = null;
+  private _lastVisionKey = '';
+  private _lastVisionUrl = '';
 
   constructor() {}
 
@@ -130,6 +153,109 @@ export class LLMClient {
 
       return response;
     });
+  }
+
+  /**
+   * 获取视觉调用对应的 OpenAI 客户端（独立于主 client，配置变化时重建）
+   */
+  private getVisionClient(apiKey: string, baseURL: string): OpenAI {
+    if (!this.visionClient || apiKey !== this._lastVisionKey || baseURL !== this._lastVisionUrl) {
+      this.visionClient = new OpenAI({ apiKey, baseURL });
+      this._lastVisionKey = apiKey;
+      this._lastVisionUrl = baseURL;
+    }
+    return this.visionClient;
+  }
+
+  /**
+   * 视觉模型调用（Task-20261010-001，非流式）
+   *
+   * 设计要点：
+   * - messages 可含多模态 content 数组（VisionMessage），仅在请求参数中出现，不进入 ChatMessage 历史
+   * - jsonMode=true 时首次带 response_format: json_object；服务商不支持（400 类错误）时自动降级重试一次
+   * - 复用 retry()（网络/429/5xx 重试）与 llmLogger/debug 可观测性
+   * - 错误消息重写为视觉语境（避免误导用户去改主模型配置）
+   */
+  async chatVision(messages: VisionMessage[], options: VisionChatOptions): Promise<VisionChatResult> {
+    const model = options.model;
+    const temperature = options.temperature ?? 0;
+    const startMs = Date.now();
+
+    const callId = beginLLMCall();
+    llmLogger.request({
+      id: callId,
+      model,
+      temperature,
+      toolsCount: 0,
+      maxTokens: options.maxTokens,
+      messages: messages as unknown as ChatMessage[],
+    });
+    debug.llmRequest(model, messages.length, 0);
+
+    const buildParams = (jsonMode: boolean): OpenAI.Chat.ChatCompletionCreateParamsNonStreaming => {
+      const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+        model,
+        messages: messages as unknown as OpenAI.Chat.ChatCompletionMessageParam[],
+        temperature,
+      };
+      if (options.maxTokens !== undefined) {
+        params.max_tokens = options.maxTokens;
+      }
+      if (jsonMode) {
+        params.response_format = { type: 'json_object' };
+      }
+      return params;
+    };
+
+    const invoke = async (jsonMode: boolean): Promise<LLMResponse> => {
+      const client = this.getVisionClient(options.apiKey, options.baseUrl);
+      const resp = await client.chat.completions.create(buildParams(jsonMode));
+      const choice = resp.choices[0];
+      if (!choice) {
+        throw new Error('视觉模型返回为空：choices 为空数组');
+      }
+      return {
+        content: choice.message.content ?? null,
+        finish_reason: choice.finish_reason ?? 'stop',
+        usage: resp.usage ? {
+          prompt_tokens: resp.usage.prompt_tokens ?? 0,
+          completion_tokens: resp.usage.completion_tokens ?? 0,
+          total_tokens: resp.usage.total_tokens ?? 0,
+        } : undefined,
+      };
+    };
+
+    let response: LLMResponse;
+    try {
+      response = await this.retry(() => invoke(options.jsonMode === true));
+    } catch (firstErr) {
+      if (options.jsonMode !== true) throw this.rewriteVisionError(firstErr, model);
+      debug.log(`JSON 模式调用失败，降级为普通模式重试: ${firstErr instanceof Error ? firstErr.message : String(firstErr)}`);
+      try {
+        response = await this.retry(() => invoke(false));
+      } catch (secondErr) {
+        throw this.rewriteVisionError(secondErr, model);
+      }
+    }
+
+    debug.llmResponse(
+      response.content,
+      [],
+      Date.now() - startMs,
+      response.usage,
+    );
+    llmLogger.response({ id: callId, response, elapsedMs: Date.now() - startMs });
+
+    return { content: response.content ?? '', usage: response.usage, elapsedMs: Date.now() - startMs };
+  }
+
+  /** 将 retry/wrapError 产生的通用错误消息重写为视觉语境，避免误导用户修改主模型配置 */
+  private rewriteVisionError(e: unknown, visionModel: string): Error {
+    const msg = e instanceof Error ? e.message : String(e);
+    const rewritten = msg
+      .replace('请检查 .env 中的 OPENAI_API_KEY', '请检查视觉配置 vision.apiKey（未设置时回退主模型 OPENAI_API_KEY）')
+      .replace(/请检查 \.env 中的 MODEL_NAME（当前: [^）]*）/, `请检查视觉配置 vision.model（当前: ${visionModel}）`);
+    return rewritten === msg && !msg.startsWith('视觉模型') ? new Error(`视觉模型调用失败: ${msg}`) : new Error(rewritten);
   }
 
   /**

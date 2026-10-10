@@ -358,7 +358,7 @@ export class ReActAgent {
 
     // 自定义 system prompt 覆盖
     const skills = cfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
-    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills, process.cwd());
+    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills, process.cwd(), cfg.vision.enabled);
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义
     const events = this.composeEvents([

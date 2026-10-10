@@ -7,9 +7,34 @@ import {
   type ConfigSource,
   type PartialAgentConfig,
 } from '../config/index.js';
+import { registerBuiltinTools } from '../tools/index.js';
+import { VISION_TOOL_NAMES } from '../tools/vision/tools.js';
 import { COLORS, sourceColor } from '../ui/colors.js';
 import { parseScope, parseValue } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
+
+/**
+ * vision.enabled 写入/删除后立即同步视觉工具注册（与 /tools reload 的内置工具语义一致，免去手动重载）
+ * - 生效值为 true：按 tools.enabled/disabled 过滤注册尚未注册的工具
+ * - 生效值非 true：注销全部视觉工具（其余内置工具不受影响）
+ */
+function syncVisionTools(ctx: CommandContext): void {
+  const { config: cfg } = ctx.configLoader.load();
+  if (cfg.vision.enabled === true) {
+    const before = new Set(ctx.registry.list().map((t) => t.name));
+    registerBuiltinTools(cfg.tools, cfg.vision);
+    const added = VISION_TOOL_NAMES.filter((n) => !before.has(n));
+    if (added.length > 0) {
+      ctx.out.log(`  ${COLORS.green}✓ 已自动注册视觉工具: ${added.join(', ')}${COLORS.reset}`);
+    }
+  } else {
+    const removed = VISION_TOOL_NAMES.filter((n) => ctx.registry.has(n));
+    for (const n of removed) ctx.registry.unregister(n);
+    if (removed.length > 0) {
+      ctx.out.log(`  ${COLORS.gray}✓ 已自动注销视觉工具: ${removed.join(', ')}${COLORS.reset}`);
+    }
+  }
+}
 
 /** 递归打印配置层（带来源着色） */
 function printConfigLayer(obj: Record<string, unknown>, sources: Record<string, ConfigSource>, prefix: string, out: CommandContext['out']): void {
@@ -82,6 +107,7 @@ export const configCommand: CommandHandler = {
       try {
         await ctx.configWriter.updateScope(scope, partial);
         out.log(`${COLORS.bold}${COLORS.green}✓ 已写入${COLORS.reset} ${COLORS.bold}${scope === 'workspace' ? '工作空间' : '全局'}${COLORS.reset} 配置: ${key} = ${JSON.stringify(value)}`);
+        if (key === 'vision.enabled') syncVisionTools(ctx);
         out.blank();
       } catch (e) {
         out.error(`${COLORS.bold}${COLORS.red}[Error]${COLORS.reset} 写入失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -101,6 +127,7 @@ export const configCommand: CommandHandler = {
       try {
         await ctx.configWriter.deleteScopeKey(scope, ConfigWriter.parseKey(key));
         out.log(`${COLORS.bold}${COLORS.green}✓ 已从 ${scope === 'workspace' ? '工作空间' : '全局'} 配置删除: ${key}${COLORS.reset}`);
+        if (key === 'vision.enabled') syncVisionTools(ctx);
         out.blank();
       } catch (e) {
         out.error(`${COLORS.bold}${COLORS.red}[Error]${COLORS.reset} 删除失败: ${e instanceof Error ? e.message : String(e)}`);

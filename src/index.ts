@@ -30,6 +30,7 @@ import { toolsCommand, BUILTIN_TOOL_NAMES } from './commands/tools-command.js';
 import { skillCommand } from './commands/skill-command.js';
 import { sessionCommand } from './commands/session-command.js';
 import { memoryCommand } from './commands/memory-command.js';
+import { visionCommand } from './commands/vision-command.js';
 import type { ChatMessage } from './types.js';
 
 // Windows 终端默认代码页为 GBK(936)，切换到 UTF-8(65001) 避免中文乱码
@@ -138,8 +139,8 @@ async function main() {
     sessionStore = null;
   }
 
-  // 2. 注册内置工具（根据配置的 enabled/disabled 过滤）
-  registerBuiltinTools(cfg.tools);
+  // 2. 注册内置工具（根据配置的 enabled/disabled 过滤；vision 配置决定视觉工具是否注册）
+  registerBuiltinTools(cfg.tools, cfg.vision);
 
   // 3. 加载 MCP 配置
   try {
@@ -195,6 +196,7 @@ async function main() {
   commandRegistry.register(skillCommand);
   commandRegistry.register(sessionCommand);
   commandRegistry.register(memoryCommand);
+  commandRegistry.register(visionCommand);
 
   // 9. 动态参数候选提供器（P2）：为三级补全供给真实数据（会话 id / 工具名 / 技能名 / MCP server 名）
   const argProvider: ArgCompletionProvider = {

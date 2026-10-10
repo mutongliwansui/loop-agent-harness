@@ -13,6 +13,8 @@ export interface Tool {
   parameters: Record<string, unknown>;
   /** 执行工具，返回字符串形式的 Observation */
   execute: (args: Record<string, unknown>) => Promise<string>;
+  /** 工具自定义超时毫秒；未设置时使用 runner 默认 30000（视觉等慢工具可调大） */
+  timeoutMs?: number;
 }
 
 /**
@@ -228,6 +230,26 @@ export interface AgentEvents {
   onWarning?(info: { level: 'warning' | 'error'; message: string; context?: string }): void | Promise<void>;
   /** Agent 结束（无论成功或失败） */
   onEnd?(result: AgentResult | null): void | Promise<void>;
+}
+
+// ===== 视觉模型相关 =====
+
+/**
+ * 视觉请求的多模态 content 片段（OpenAI 协议格式）
+ *
+ * 仅在 VisionClient（chatVision）内部构造请求时使用，
+ * 不进入 ChatMessage 历史与会话持久化——主模型是纯文本模型，永不接收图像像素。
+ */
+export interface VisionContentPart {
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string };
+}
+
+/** 视觉请求消息（content 支持多模态数组） */
+export interface VisionMessage {
+  role: 'system' | 'user';
+  content: string | VisionContentPart[];
 }
 
 // ===== 流式相关 =====

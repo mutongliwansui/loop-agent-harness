@@ -45,11 +45,12 @@
 | 📊 **Token 统计** | 每轮输出上下文/输入/输出 token 与缓存命中率，会话结束输出汇总（`showTokenStats` 可关） |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
 | 🛠️ **内置工具** | 命令执行、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
+| 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
 | 🧠 **三层记忆管理** | L1 Working（token 压缩）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入） |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
-| 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory` 命令，支持热修改 |
+| 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory`、`/vision` 命令，支持热修改 |
 | ⌨️ **Tab 自动补全** | REPL 输入 `/con` 按 Tab 补全为 `/config`，命令与子命令均可补全，多候选自动列出 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
@@ -168,6 +169,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
 | `/skill` | Skill 管理（list / reload / show） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
+| `/vision` | 视觉模型管理（status / test） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
 
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
@@ -283,6 +285,22 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 ```
 
 详见 [🧠 记忆管理](#-记忆管理)。
+
+#### `/vision` — 视觉模型管理
+
+```
+/vision status                  # 查看视觉模型配置（启用状态 / 三元组来源标记 / apiKey 掩码 / 缓存状态 / 会话累计统计）
+/vision test                    # 用 1x1 PNG 做连通性测试（校验 baseUrl / apiKey / model 是否可用）
+```
+
+视觉三元组（`vision.baseUrl` / `vision.apiKey` / `vision.model`）为空时自动回退主模型 `model.*`，同一服务商多模型零重复配置。启用方式：
+
+```
+/config set vision.enabled true    # 立即生效：自动注册视觉工具（设为 false / delete 时自动注销），无需 /tools reload
+/config set vision.model gpt-4o    # 不设置则回退主模型 model.name
+```
+
+启用后注册四个视觉工具：`describe_image`（整体描述）、`ask_image`（定向问答）、`extract_json`（结构化提取）、`ocr_image`（文字识别），见 [🔧 内置工具](#-内置工具)。
 
 ---
 
@@ -488,6 +506,10 @@ const result = await agent.run('搜索 src 目录中的 config', {
 | 🔁 **文件编辑** | `editFile` | 三种模式：①字面量替换（要求唯一出现，多处匹配报错以防误改）；②`regex=true` 正则替换（支持 `$1`/`$&` 捕获引用）；③指定 `startLine`/`endLine` 整段行替换 | `path`（必填）, `newText`（必填）, `oldText`（未指定行范围时必填）, `startLine`（可选）, `endLine`（可选）, `replaceAll`（可选，默认 `false`）, `regex`（可选，默认 `false`）, `flags`（可选，如 `i`/`m`/`s`） |
 | 🔍 **内容检索** | `grep` | 在文件或目录中检索内容，支持正则、忽略大小写、递归搜索 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选）, `recursive`（可选）, `maxResults`（可选，默认 50） |
 | 🎯 **Skill 激活** | `activate_skill` | 激活指定 Skill（技能包），返回 SKILL.md 完整指令**及技能所在目录（技能目录 / SKILL.md 绝对路径）**，便于定位技能内附带的脚本、参考文档等文件 | `name`（必填） |
+| 👁️ **图片描述** | `describe_image` | 对图片做整体描述（主体、场景、可见文字、颜色、数量等）；不确定该问什么时先用它获取全局信息 | `image`（必填，本地路径或 http(s) URL） |
+| ❓ **图片问答** | `ask_image` | 针对图片回答一个具体问题（界面文字、错误码、按钮状态、颜色、数量等），比 `describe_image` 更精准、输出更短 | `image`（必填）, `question`（必填） |
+| 🧾 **结构化提取** | `extract_json` | 按字段列表从图片提取结构化数据并返回 JSON（表单 / 表格 / 配置界面等场景）；解析失败自动降级返回原始文本 | `image`（必填）, `fields`（必填，字段名数组） |
+| 📝 **文字识别** | `ocr_image` | 识别图片中全部文字（OCR），保持原始阅读顺序与换行输出 | `image`（必填） |
 
 ### 工具使用示例
 
@@ -530,6 +552,18 @@ grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 
 
 # Skill 激活（渐进式加载，返回 SKILL.md 完整内容 + 技能目录 / SKILL.md 绝对路径）
 activate_skill({ "name": "example-skill" })
+
+# 图片描述（本地路径自动转 base64 data URL，需 vision.enabled = true）
+describe_image({ "image": "screenshots/login.png" })
+
+# 图片问答（支持本地路径或 http(s) URL）
+ask_image({ "image": "https://example.com/chart.png", "question": "这张图里最高的柱子对应哪个月份？" })
+
+# 结构化提取（返回 JSON 字符串，解析失败自动降级返回原始文本）
+extract_json({ "image": "invoice.png", "fields": ["标题", "金额", "日期"] })
+
+# 文字识别（OCR，保持原始阅读顺序与换行）
+ocr_image({ "image": "receipt.jpg" })
 ```
 
 ---
@@ -769,6 +803,19 @@ console.log(content?.fullContent);
       "daysBack": 3,
       "onExit": true
     }
+  },
+  "vision": {
+    "enabled": false,
+    "baseUrl": "",
+    "apiKey": "",
+    "model": "",
+    "temperature": 0,
+    "maxTokens": 2048,
+    "timeoutMs": 60000,
+    "maxImageBytes": 10485760,
+    "maxResultChars": 8000,
+    "cacheEnabled": true,
+    "cacheTtlMs": 600000
   }
 }
 ```
@@ -787,6 +834,7 @@ console.log(content?.fullContent);
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill 技能包开关与扫描目录 | 全部启用 |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | 三层记忆系统配置（含检索增强） | 全部启用 |
+| `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | 视觉模型配置（Task-20261010-001）；`baseUrl` / `apiKey` / `model` 为空时回退主模型 `model.*` 三元组 | `enabled: false`，其余见上方配置结构 |
 
 ### 环境变量（向后兼容）
 
@@ -1207,6 +1255,11 @@ loop-agent-command/
 │       ├── editFile.ts               # 🔁 内置工具：文本编辑（字面量/正则/行范围）
 │       ├── grep.ts                   # 🔍 内置工具：内容检索
 │       ├── activateSkill.ts          # 🎯 内置工具：Skill 激活（渐进式加载）
+│       ├── vision/                   # 👁️ 视觉工具（对接多模态视觉模型）
+│       │   ├── tools.ts              # 四个视觉工具（describe_image / ask_image / extract_json / ocr_image）
+│       │   ├── image.ts              # 图片解析（本地转 base64 data URL / URL 校验 / 大小限制）
+│       │   ├── cache.ts              # LRU 结果缓存（本地文件指纹参与 key，内容变更自动失效）
+│       │   └── stats.ts              # 用量统计（成功 / 失败 / 缓存命中 / 耗时 / token）
 │       └── mcp/                      # 🌐 MCP 工具接入
 │           ├── index.ts              # 入口
 │           ├── client.ts             # MCP 客户端（stdio / SSE 传输）
@@ -1234,7 +1287,13 @@ loop-agent-command/
 │   ├── file-read.test.ts             # fileRead 行号输出
 │   ├── activate-skill.test.ts        # activate_skill 输出技能目录 / SKILL.md 路径
 │   ├── system-prompt.test.ts         # System Prompt 的 Skill 区块注入
-│   └── llm-stats.test.ts             # LLM 统计聚合
+│   ├── llm-stats.test.ts             # LLM 统计聚合
+│   ├── vision-cache.test.ts          # 视觉结果缓存（LRU / TTL / 文件指纹失效）
+│   ├── vision-image.test.ts          # 图片解析（本地转 base64 / URL / 大小与格式校验）
+│   ├── vision-client.test.ts         # chatVision 多模态客户端（jsonMode / 错误语境重写 / 重试）
+│   ├── vision-registry.test.ts       # 视觉工具注册（vision.enabled 联动 / Tab 补全名单）
+│   ├── vision-tools.test.ts          # 视觉工具管道（解析 / 缓存 / 回退 / 截断）
+│   └── vision-command.test.ts        # /vision 命令（status / test）
 ├── docs/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
 │   ├── openclaw_memory_management.md # 🧠 记忆管理设计参考（OpenClaw 风格）

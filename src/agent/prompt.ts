@@ -11,7 +11,11 @@ import type { SkillMetadata } from '../skill/types.js';
  * - 保留工具使用指导（如 MCP 前缀说明）
  * - 注入 Skill 元信息，供 LLM 判断何时激活 Skill
  */
-export function buildSystemPrompt(skills: SkillMetadata[] = [], workspaceDir?: string): string {
+export function buildSystemPrompt(
+  skills: SkillMetadata[] = [],
+  workspaceDir?: string,
+  visionEnabled?: boolean,
+): string {
   // 始终注入 Skill 区块：即使没有任何技能，也要显式告知模型"当前无可用技能"，
   // 否则模型面对"有哪些技能"的提问会误判为需要去文件系统检索技能目录。
   const skillSection = skills.length > 0
@@ -29,6 +33,20 @@ ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace'
     ? `\n\n## 环境信息
 - 当前工作空间目录：${workspaceDir}
 - 工具的相对路径均相对该目录解析；涉及文件位置时以该目录为基准描述路径
+`
+    : '';
+
+  // 视觉能力段：仅在 vision.enabled 时注入；未启用时 prompt 保持字节级一致，保护前缀缓存
+  const visionSection = visionEnabled
+    ? `
+## 图片理解能力
+当前会话已接入视觉模型，你可以借助视觉工具理解图片：
+- 你自己无法直接"看到"图片；用户消息中的图片以字符串形式出现（本地路径、http(s) URL 或 data URI），需要理解图片时把该字符串传给视觉工具
+- \`ask_image\`：已明确想了解图片的某方面信息时优先使用（定向提问，输出精准、简短）
+- \`describe_image\`：需要整体了解图片内容时使用（通用描述，兜底方案）
+- \`extract_json\`：需要从图片中提取结构化数据（表格、字段、列表等）时使用，参数中给出 JSON schema
+- \`ocr_image\`：仅需识别图片中的文字时使用（速度最快）
+- 支持一次传入多张图片（数组参数）；视觉工具失败时会返回错误说明，可修正参数后重试
 `
     : '';
 
@@ -51,5 +69,5 @@ ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace'
 
 ## 工具使用指导
 - 工具的参数 schema 通过 function calling 协议暴露，按需调用即可
-- 工具名前缀 \`{serverName}__\` 表示来自 MCP server 的工具，可正常使用${skillSection}${envSection}`;
+- 工具名前缀 \`{serverName}__\` 表示来自 MCP server 的工具，可正常使用${visionSection}${skillSection}${envSection}`;
 }

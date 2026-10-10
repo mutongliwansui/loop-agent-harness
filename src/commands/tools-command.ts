@@ -7,6 +7,10 @@ import {
   editFile,
   grep,
   activateSkill,
+  describeImage,
+  askImage,
+  extractJson,
+  ocrImage,
 } from '../tools/index.js';
 import type { PartialAgentConfig } from '../config/index.js';
 import { COLORS } from '../ui/colors.js';
@@ -21,7 +25,11 @@ export const BUILTIN_TOOL_NAMES = [
   'fileWrite',
   'editFile',
   'grep',
-  'activateSkill',
+  'activate_skill',
+  'describe_image',
+  'ask_image',
+  'extract_json',
+  'ocr_image',
 ];
 
 export const toolsCommand: CommandHandler = {
@@ -49,7 +57,7 @@ export const toolsCommand: CommandHandler = {
       const { config: cfg } = configLoader.load();
       await mcpManager.disconnectAll();
       registry.clear();
-      const built = registerBuiltinTools(cfg.tools);
+      const built = registerBuiltinTools(cfg.tools, cfg.vision);
       const mcp = await mcpManager.loadFromConfig();
       out.blank();
       out.log(`${COLORS.green}✓${COLORS.reset} 工具重新加载完成`);
@@ -70,7 +78,7 @@ export const toolsCommand: CommandHandler = {
       const toolName = rest[0];
       const builtinNames = BUILTIN_TOOL_NAMES;
       if (!builtinNames.includes(toolName)) {
-        out.log(`${COLORS.yellow}⚠️  /tools enable/disable 仅用于内置工具（commandRun/fileRead/fileWrite/editFile/grep/activateSkill），MCP 工具使用 /mcp remove${COLORS.reset}`);
+        out.log(`${COLORS.yellow}⚠️  /tools enable/disable 仅用于内置工具（含视觉工具，见 /tools list），MCP 工具使用 /mcp remove${COLORS.reset}`);
         out.blank();
         return;
       }
@@ -95,7 +103,7 @@ export const toolsCommand: CommandHandler = {
       try {
         await configWriter.updateScope(scope, partial);
         if (sub === 'enable') {
-          const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, editFile, grep, activateSkill };
+          const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, editFile, grep, activate_skill: activateSkill, describeImage, askImage, extractJson, ocrImage };
           const t = toolMap[toolName];
           if (t && !registry.has(toolName)) registry.register(t as never);
         } else {

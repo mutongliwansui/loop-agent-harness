@@ -11,6 +11,9 @@ export { editFile } from './editFile.js';
 export { grep } from './grep.js';
 export { activateSkill } from './activateSkill.js';
 
+// 视觉工具（按 vision.enabled 条件注册）
+export { visionTools, describeImage, askImage, extractJson, ocrImage } from './vision/tools.js';
+
 // MCP 接入
 export { MCPClient } from './mcp/client.js';
 export type { MCPServerConfig, StdioConfig, SSEConfig } from './mcp/client.js';
@@ -28,15 +31,21 @@ import { fileWrite } from './fileWrite.js';
 import { editFile } from './editFile.js';
 import { grep } from './grep.js';
 import { activateSkill } from './activateSkill.js';
-import type { ToolsConfig } from '../config/schema.js';
+import { visionTools } from './vision/tools.js';
+import type { ToolsConfig, VisionConfig } from '../config/schema.js';
 
 /**
  * 注册所有内置工具到全局 registry
  * @param toolsConfig 可选的 tools 配置，根据 enabled/disabled 过滤
+ * @param visionConfig 可选的 vision 配置，enabled 时才注册视觉工具（未启用时 tools 列表保持不变，保护前缀缓存）
  * @returns 已注册的工具名数组
  */
-export function registerBuiltinTools(toolsConfig?: ToolsConfig): string[] {
-  const allTools = [commandRun, fileRead, fileWrite, editFile, grep, activateSkill];
+export function registerBuiltinTools(toolsConfig?: ToolsConfig, visionConfig?: VisionConfig): string[] {
+  const visionEnabled = visionConfig?.enabled === true;
+  const allTools = [
+    commandRun, fileRead, fileWrite, editFile, grep, activateSkill,
+    ...(visionEnabled ? visionTools : []),
+  ];
 
   // 根据配置过滤
   let active = allTools;
