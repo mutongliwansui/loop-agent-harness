@@ -28,6 +28,23 @@ await build({
   splitting: false,
   sourcemap: false,
   noExternal: [/^(?!node:)/],
+  // 依赖链 openai→node-fetch→whatwg-url→tr46 在模块加载时 require 内置 punycode，
+  // Node 22+ 会打印 DEP0040 弃用警告，且该警告发生在内置模块编译期，process.on('warning')
+  // 无法拦截；esbuild 的 alias 也会被 platform=node 的内置模块解析短路。这里用 plugin
+  // 把 punycode 重定向到用户态 punycode npm 包（内置版镜像，devDependencies），bundle
+  // 不再加载内置模块，警告源头消失。待 openai 升级移除 node-fetch 后可删除本配置。
+  esbuildPlugins: [
+    {
+      name: 'punycode-userland',
+      setup(build) {
+        // 注意：require.resolve('punycode') 会命中 Node 内置模块名而返回裸字符串 'punycode'，
+        // 不能用；必须显式指向 npm 包文件（punycode@2 的 main 为 punycode.js）。
+        build.onResolve({ filter: /^punycode$/ }, () => ({
+          path: resolve(root, 'node_modules/punycode/punycode.js'),
+        }));
+      },
+    },
+  ],
 });
 
 const seaConfigPath = resolve(root, 'sea-config.json');
