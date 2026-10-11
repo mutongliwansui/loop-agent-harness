@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { agent } from './agent/react-agent.js';
 import { buildSystemPrompt } from './agent/prompt.js';
+import { ensureBootstrap } from './bootstrap/index.js';
 import { registerBuiltinTools, registry, mcpManager } from './tools/index.js';
 import { configLoader, configWriter } from './config/index.js';
 import { skillLoader } from './skill/index.js';
@@ -31,6 +32,8 @@ import { skillCommand } from './commands/skill-command.js';
 import { sessionCommand } from './commands/session-command.js';
 import { memoryCommand } from './commands/memory-command.js';
 import { visionCommand } from './commands/vision-command.js';
+import { setupCommand } from './commands/setup-command.js';
+import { doctorCommand } from './commands/doctor-command.js';
 import type { ChatMessage } from './types.js';
 
 // Windows 终端默认代码页为 GBK(936)，切换到 UTF-8(65001) 避免中文乱码
@@ -88,7 +91,11 @@ function printStatus(): void {
 }
 
 async function main() {
-  // 0. 加载合并配置
+  // 0. 初次启动引导：自动检测必备目录与配置（齐备零打扰；主模型未配置进向导；仅目录/文件缺失静默补建）
+  //    引导可能写盘，随后 step 0.1 重新加载即为生效值；--no-setup 跳过
+  await ensureBootstrap({ noSetup: process.argv.includes('--no-setup') });
+
+  // 0.1 加载合并配置
   const { config: cfg } = configLoader.load();
 
   // 1. 初始化会话系统
@@ -197,6 +204,8 @@ async function main() {
   commandRegistry.register(sessionCommand);
   commandRegistry.register(memoryCommand);
   commandRegistry.register(visionCommand);
+  commandRegistry.register(setupCommand);
+  commandRegistry.register(doctorCommand);
 
   // 9. 动态参数候选提供器（P2）：为三级补全供给真实数据（会话 id / 工具名 / 技能名 / MCP server 名）
   const argProvider: ArgCompletionProvider = {

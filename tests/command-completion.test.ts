@@ -19,6 +19,8 @@ import { toolsCommand } from '../src/commands/tools-command.js';
 import { skillCommand } from '../src/commands/skill-command.js';
 import { sessionCommand } from '../src/commands/session-command.js';
 import { memoryCommand } from '../src/commands/memory-command.js';
+import { setupCommand } from '../src/commands/setup-command.js';
+import { doctorCommand } from '../src/commands/doctor-command.js';
 
 function handler(name: string, subcommands?: string[]): CommandHandler {
   return {
@@ -152,6 +154,7 @@ describe('真实命令的 subcommands 声明与二级补全', () => {
     skillCommand,
     sessionCommand,
     memoryCommand,
+    setupCommand,
   ];
 
   /** 提取 description 中括号内的子命令（如「配置管理（list/get））」→ ['list','get']） */
@@ -186,6 +189,26 @@ describe('真实命令的 subcommands 声明与二级补全', () => {
     expect(completeCommandLine('/memory g', r)).toEqual([['/memory gate'], '/memory g']);
     expect(completeCommandLine('/session ', r)[0]).toContain('/session delete-all');
     expect(completeCommandLine('/tools d', r)).toEqual([['/tools disable'], '/tools d']);
+  });
+
+  it('P1 引导命令：/doc 一级补全为 /doctor（Task-20261011-001）', () => {
+    const r = new CommandRegistry();
+    for (const c of REAL_COMMANDS) r.register(c);
+    r.register(doctorCommand);
+    expect(completeCommandLine('/doc', r)).toEqual([['/doctor'], '/doc']);
+    // /doctor 只读检测，无二级子命令
+    expect(completeCommandLine('/doctor l', r)).toEqual([[], '/doctor l']);
+  });
+
+  it('P1 引导命令：/se 候选含 /setup，二级列出 --global/--workspace', () => {
+    const r = new CommandRegistry();
+    for (const c of REAL_COMMANDS) r.register(c);
+    expect(completeCommandLine('/se', r)[0]).toContain('/setup');
+    expect(completeCommandLine('/setup ', r)[0]).toEqual([
+      '/setup --global',
+      '/setup --workspace',
+    ]);
+    expect(completeCommandLine('/setup --g', r)).toEqual([['/setup --global'], '/setup --g']);
   });
 });
 

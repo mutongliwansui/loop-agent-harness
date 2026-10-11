@@ -50,6 +50,7 @@
 | 🧩 **Skills** | SKILL.md spec + progressive loading; the `activate_skill` tool activates domain instructions on demand |
 | 🧠 **Three-tier Memory** | L1 Working (token compaction) / L2 Episodic (daily journal) / L3 Curated (always injected) |
 | 🔧 **Layered Config** | CLI > workspace > global > .env > defaults, with multiple layers of overrides and traceable sources |
+| 🧭 **First-run Bootstrap** | On startup, the model config and global/workspace directories are checked automatically: if config is missing, an interactive wizard starts (baseUrl → masked apiKey input → model name → connectivity check → choose write scope) and directories are scaffolded with defaults; `--no-setup` skips it, while `/setup` re-runs it and `/doctor` performs a read-only check inside the REPL |
 | 🎛️ **Runtime Config Management** | Built-in `/config`, `/mcp`, `/tools`, `/skill`, `/memory`, `/vision` commands with hot modification |
 | 💾 **Session Persistence** | Conversation history stored with AES-256-GCM encryption; auto-saved across processes / manually restorable |
 | 📝 **Debug Logging** | File logs of LLM requests/responses, tool calls and agent iterations, with automatic rotation |
@@ -77,7 +78,16 @@ npm install
 
 ### 2. Configure
 
-Copy `.env.example` to `.env` and fill in your configuration:
+**Option A: Bootstrap wizard (recommended, zero manual config)** — skip this step and run `npm start` directly. On first launch, if no usable model config (apiKey / model name) is detected, a guided wizard starts automatically:
+
+1. Asks for the model service URL (baseUrl), the API Key (input is masked with `*`) and the model name one by one;
+2. Runs a connectivity check automatically; on failure you can retry / re-enter / save anyway (the summary is marked with ⚠ unverified);
+3. Choose to write to the global config (`~/.loop-agent/config.json`) or the current workspace (`.loop-agent/.agent-config.json`); if the target file exists but is corrupted, it is backed up as `.bak-<timestamp>` before writing;
+4. Skills and other directories are scaffolded with defaults, then you go straight into the chat.
+
+Later you can re-run the wizard with `/setup` (`--global` / `--workspace` to choose the write scope) or run a read-only check with `/doctor` in the REPL.
+
+**Option B: Manual .env config** — copy `.env.example` to `.env` and fill in your configuration:
 
 ```bash
 cp .env.example .env
@@ -105,8 +115,11 @@ DEBUG=true
 ### 3. Run
 
 ```bash
-# 🎮 CLI interactive mode
+# 🎮 CLI interactive mode (the bootstrap wizard starts automatically when config is missing on first launch)
 npm start
+
+# ⏭️ Skip bootstrap detection and the wizard
+npm start -- --no-setup
 
 # 📝 Programmatic usage example
 npx tsx examples/run.ts
@@ -169,6 +182,8 @@ Agent> Read the version from package.json
 | `/skill` | Skill management (list / reload / show) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
 | `/vision` | Vision model management (status / test) |
+| `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
+| `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
 | `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
 
 ### Output Example
@@ -292,6 +307,38 @@ When the vision triplet (`vision.baseUrl` / `vision.apiKey` / `vision.model`) is
 ```
 
 Once enabled, four vision tools are registered: `describe_image` (whole-image description), `ask_image` (targeted Q&A), `extract_json` (structured extraction) and `ocr_image` (text recognition). See [🔧 Built-in Tools](#-built-in-tools).
+
+#### `/setup` — Re-run the Bootstrap Wizard
+
+Re-runs the first-launch config wizard inside the REPL with the same flow: baseUrl → apiKey (masked input) → model name → connectivity check → choose write scope. When it finishes, the config is reloaded and tool registration is refreshed immediately, so the following conversation takes effect without a restart:
+
+```
+/setup                     # without a scope flag, the wizard's default suggestion applies
+/setup --global            # write to the global config ~/.loop-agent/config.json
+/setup --workspace         # write to the workspace config .loop-agent/.agent-config.json
+```
+
+If the target file exists but is corrupted (invalid JSON), it is backed up as `.bak-<timestamp>` before writing.
+
+#### `/doctor` — Startup Health Check
+
+Read-only check of whether the current environment is ready for normal conversation, with a three-state report per item (✓ ok / ✗ blocker / ! warning). It never modifies any file:
+
+```
+/doctor
+Startup health check report
+
+  ✓ Main model apiKey
+  ✓ Main model name
+  ✗ Global config file: <reason> (auto-created on first config write)
+  ! Global skills directory: <reason> → ~/.loop-agent/skills
+  ……
+
+  ✓ 0 blockers, main model config is ready for conversation
+  This command is read-only and never modifies any file
+```
+
+There are 6 check items in total: main model apiKey, main model name, global config file, workspace config file, global skills directory and workspace skills directory; ✗ items come with a fix hint (e.g. "run /setup to reconfigure").
 
 ---
 

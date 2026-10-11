@@ -50,6 +50,7 @@
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
 | 🧠 **三层记忆管理** | L1 Working（token 压缩）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入） |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
+| 🧭 **首次启动引导** | 启动时自动检测模型配置与全局/工作空间目录：缺配置进入交互式向导（baseUrl → apiKey 遮蔽输入 → 模型名 → 连通性校验 → 选择写入层级），目录按默认结构补建；`--no-setup` 跳过，REPL 内 `/setup` 重跑、`/doctor` 只读体检 |
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory`、`/vision` 命令，支持热修改 |
 | ⌨️ **Tab 自动补全** | REPL 输入 `/con` 按 Tab 补全为 `/config`，命令与子命令均可补全，多候选自动列出 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
@@ -78,7 +79,16 @@ npm install
 
 ### 2. 配置
 
-复制 `.env.example` 为 `.env` 并填入配置：
+**方式一：初始化向导（推荐，零手工配置）**——跳过本步直接运行 `npm start`。首次启动时若未检测到可用的模型配置（apiKey / 模型名），会自动进入引导：
+
+1. 逐项询问模型服务地址（baseUrl）、API Key（输入回显以 `*` 遮蔽）、模型名称；
+2. 自动做一次连通性校验，失败可重试 / 重新输入 / 仍保存（摘要标注 ⚠ 未验证）；
+3. 选择写入全局（`~/.loop-agent/config.json`）或当前工作空间（`.loop-agent/.agent-config.json`），目标文件存在但损坏时写盘前自动备份为 `.bak-<时间戳>`；
+4. 两级 skills 等目录按默认结构自动补建，完成后直接进入对话界面。
+
+之后可在 REPL 中随时用 `/setup` 重跑向导（`--global` / `--workspace` 指定写入层级）、用 `/doctor` 做只读体检。
+
+**方式二：.env 手工配置**——复制 `.env.example` 为 `.env` 并填入配置：
 
 ```bash
 cp .env.example .env
@@ -106,8 +116,11 @@ DEBUG=true
 ### 3. 运行
 
 ```bash
-# 🎮 CLI 交互模式
+# 🎮 CLI 交互模式（首次启动缺配置时自动进入初始化向导）
 npm start
+
+# ⏭️ 跳过初始化检测与引导
+npm start -- --no-setup
 
 # 📝 编程式调用示例
 npx tsx examples/run.ts
@@ -170,6 +183,8 @@ Agent> 帮我读取 package.json 的版本号
 | `/skill` | Skill 管理（list / reload / show） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `/vision` | 视觉模型管理（status / test） |
+| `/setup` | 重跑初始化配置向导（--global / --workspace 指定写入层级） |
+| `/doctor` | 启动体检：逐项检测模型配置 / 配置文件 / skills 目录（只读） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
 
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
@@ -301,6 +316,38 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 ```
 
 启用后注册四个视觉工具：`describe_image`（整体描述）、`ask_image`（定向问答）、`extract_json`（结构化提取）、`ocr_image`（文字识别），见 [🔧 内置工具](#-内置工具)。
+
+#### `/setup` — 重跑初始化向导
+
+在 REPL 内重新运行首次启动的配置向导，流程一致：baseUrl → apiKey（遮蔽输入）→ 模型名 → 连通性校验 → 选择写入层级。完成后立即重新加载配置并刷新工具注册，后续对话即时生效，无需重启：
+
+```
+/setup                     # 未指定层级时沿用向导默认建议
+/setup --global            # 写入全局配置 ~/.loop-agent/config.json
+/setup --workspace         # 写入工作空间配置 .loop-agent/.agent-config.json
+```
+
+写入前若目标文件存在但内容损坏（非法 JSON），会自动备份为 `.bak-<时间戳>`。
+
+#### `/doctor` — 启动体检
+
+只读检查当前环境是否具备正常对话条件，逐项输出三态报告（✓ 正常 / ✗ 阻断 / ! 警告），不修改任何文件：
+
+```
+/doctor
+启动体检报告
+
+  ✓ 主模型 apiKey
+  ✓ 主模型名称
+  ✗ 全局配置文件：<原因>（首次写入配置时自动创建）
+  ! 全局 skills 目录：<原因> → ~/.loop-agent/skills
+  ……
+
+  ✓ 阻断项 0 个，主模型配置齐备，可正常对话
+  本命令只读，不修改任何文件
+```
+
+共 6 个检测项：主模型 apiKey、主模型名称、全局配置文件、工作空间配置文件、全局 skills 目录、工作空间 skills 目录；✗ 项附带修复提示（如「运行 /setup 重新配置」）。
 
 ---
 
