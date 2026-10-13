@@ -36,6 +36,25 @@ function syncVisionTools(ctx: CommandContext): void {
   }
 }
 
+/**
+ * 深度遮蔽 apiKey 字段（Task-20261011-002 D8：仅保留尾 4 位）。
+ * profiles 引入多份 apiKey 副本后，list/get 展示必须全链路遮蔽；
+ * 顺带修复既有 model.apiKey / vision.apiKey 明文打印问题。返回遮蔽副本，不改原值。
+ */
+function maskSecretsDeep(v: unknown, key = ''): unknown {
+  if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = maskSecretsDeep(val, k);
+    }
+    return out;
+  }
+  if (key === 'apiKey') {
+    return typeof v === 'string' && v.length > 0 ? `****${v.slice(-4)}` : v;
+  }
+  return v;
+}
+
 /** 递归打印配置层（带来源着色） */
 function printConfigLayer(obj: Record<string, unknown>, sources: Record<string, ConfigSource>, prefix: string, out: CommandContext['out']): void {
   const keys = Object.keys(obj).sort();
@@ -48,7 +67,7 @@ function printConfigLayer(obj: Record<string, unknown>, sources: Record<string, 
       out.log(`  ${COLORS.cyan}${flat}${COLORS.reset}:${tag}`);
       printConfigLayer(v as Record<string, unknown>, sources, flat, out);
     } else {
-      const pretty = JSON.stringify(v);
+      const pretty = k === 'apiKey' ? JSON.stringify(maskSecretsDeep(v, k)) : JSON.stringify(v);
       out.log(`  ${COLORS.white}${flat}${COLORS.reset} = ${pretty}${tag}`);
     }
   }
@@ -84,8 +103,9 @@ export const configCommand: CommandHandler = {
       const { config: cfg, sources } = ctx.configLoader.load();
       const val = ConfigWriter.getByKey(cfg as unknown as Record<string, unknown>, key);
       const source = sources[key];
+      const leafKey = key.split('.').pop() ?? '';
       out.blank();
-      out.log(`  ${COLORS.bold}${key}${COLORS.reset} = ${JSON.stringify(val, null, 2)}`);
+      out.log(`  ${COLORS.bold}${key}${COLORS.reset} = ${JSON.stringify(maskSecretsDeep(val, leafKey), null, 2)}`);
       if (source) out.log(`  ${COLORS.gray}来源: ${sourceColor(source)}${source}${COLORS.reset}`);
       out.blank();
       return;

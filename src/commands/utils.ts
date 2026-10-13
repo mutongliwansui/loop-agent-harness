@@ -1,16 +1,17 @@
 // 命令处理器共用的工具函数
 import type { ConfigScope } from '../config/index.js';
 
-/** 解析命令行 flag：--workspace / --global */
-export function parseScope(args: string[]): { scope: ConfigScope; rest: string[] } {
+/** 解析命令行 flag：--workspace / --global（explicit 标记用户是否显式指定了 flag） */
+export function parseScope(args: string[]): { scope: ConfigScope; rest: string[]; explicit: boolean } {
   let scope: ConfigScope = 'workspace';
+  let explicit = false;
   const rest: string[] = [];
   for (const a of args) {
-    if (a === '--workspace') scope = 'workspace';
-    else if (a === '--global') scope = 'global';
+    if (a === '--workspace') { scope = 'workspace'; explicit = true; }
+    else if (a === '--global') { scope = 'global'; explicit = true; }
     else rest.push(a);
   }
-  return { scope, rest };
+  return { scope, rest, explicit };
 }
 
 /** 从字符串解析配置值（支持 JSON / number / boolean） */

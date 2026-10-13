@@ -2,6 +2,7 @@
 // 从 index.ts 搬迁，接收数据参数，不直接访问 agent/config
 
 import { COLORS as C, sourceColor } from './colors.js';
+import { detectDrift } from '../config/schema.js';
 import type { AgentConfig, ConfigSource } from '../config/index.js';
 
 /** printBanner 所需的数据 */
@@ -49,7 +50,14 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`${C.bold}${C.yellow}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${C.reset}`);
   console.log('');
   const tag = sources['model.name'] ?? 'default';
-  console.log(`${C.cyan}模型:${C.reset} ${C.bold}${cfg.model.name}${C.reset} ${C.gray}(${sourceColor(tag)}${tag}${C.reset}${C.gray})${C.reset}`);
+  // 多模型管理标注（Task-20261011-002 P1）：激活 profile 非空时标注归属，漂移时追加「未同步」
+  let profileNote = '';
+  if (cfg.models.active) {
+    profileNote = detectDrift(cfg)
+      ? ` ${C.gray}(profile: ${cfg.models.active}·未同步)${C.reset}`
+      : ` ${C.gray}(profile: ${cfg.models.active})${C.reset}`;
+  }
+  console.log(`${C.cyan}模型:${C.reset} ${C.bold}${cfg.model.name}${C.reset}${profileNote} ${C.gray}(${sourceColor(tag)}${tag}${C.reset}${C.gray})${C.reset}`);
   const urlTag = sources['model.baseUrl'] ?? 'default';
   console.log(`${C.cyan}BaseURL:${C.reset} ${cfg.model.baseUrl} ${C.gray}(${sourceColor(urlTag)}${urlTag}${C.reset}${C.gray})${C.reset}`);
   console.log(`${C.cyan}最大迭代:${C.reset} ${cfg.model.maxIterations}`);

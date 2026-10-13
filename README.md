@@ -44,6 +44,7 @@
 | ⏳ **等待提示** | 模型生成 / 工具执行等耗时阶段显示「思考中…」「执行中：<tool>…」loading 指示器，打印前自动清行不混行；非 TTY（管道/重定向/CI）自动禁用 |
 | 📊 **Token 统计** | 每轮输出上下文/输入/输出 token 与缓存命中率，会话结束输出汇总（`showTokenStats` 可关） |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
+| 🔀 **多模型接入与切换** | `/model` 登记多个 OpenAI 协议模型到登记簿，`/model use <别名>` 一键热切换（写盘即生效、零重启），支持连通性测试、漂移检测与全局/工作空间分层管理 |
 | 🛠️ **内置工具** | 命令执行、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
@@ -183,6 +184,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/skill` | Skill 管理（list / reload / show） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `/vision` | 视觉模型管理（status / test） |
+| `/model` | 多模型管理（list / use / add / remove / test） |
 | `/setup` | 重跑初始化配置向导（--global / --workspace 指定写入层级） |
 | `/doctor` | 启动体检：逐项检测模型配置 / 配置文件 / skills 目录（只读） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
@@ -190,7 +192,7 @@ Agent> 帮我读取 package.json 的版本号
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
 > - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
 > - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
-> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show ` 补技能名、`/mcp test ` 补 server 名；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show ` 补技能名、`/mcp test ` 补 server 名、`/model use / remove / test ` 补已登记模型别名；
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
@@ -316,6 +318,49 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 ```
 
 启用后注册四个视觉工具：`describe_image`（整体描述）、`ask_image`（定向问答）、`extract_json`（结构化提取）、`ocr_image`（文字识别），见 [🔧 内置工具](#-内置工具)。
+
+#### `/model` — 多模型接入与切换
+
+把多个 OpenAI 协议模型登记到登记簿（`models.profiles`，以别名为键），用别名一键切换当前生效模型（`model.*` 快照），写盘即生效、无需重启：
+
+```
+/model list                  # 列出登记簿与当前生效快照（含 apiKey 掩码与漂移检测提示）
+/model use <别名>            # 切换到已登记模型（同步激活指针与生效快照，立即生效）
+/model use <别名> --global   # 切换全局层；与工作空间层冲突时可交互确认并自动清理冲突键
+/model add <别名>            # 登记新模型（交互选择写入位置，回车默认工作空间）
+/model add <别名> --global   # 登记到全局层（flag 显式指定时跳过位置询问）
+/model remove <别名>         # 从登记簿移除（不影响当前生效快照）
+/model test <别名>           # 对已登记模型做连通性测试（不改变激活状态）
+```
+
+设计要点：
+
+- **登记簿 + 激活指针**：`models.profiles` 只做登记，`models.active` 指向当前激活别名；`/model use` 会同时写入激活指针与 `model.*` 生效快照——运行时只读 `model.*` 一处，主模型、视觉回退三元组、记忆系统（Dreaming / 压缩）全部跟随新模型。
+- **跨层叠加**：登记簿按「全局 → 工作空间」逐层深合并（同名别名工作空间叶子覆盖全局），`temperature` 未登记的模型切换时不覆盖现有采样温度。
+- **漂移检测**：`/model list` 与启动 Banner 会比对激活别名与生效快照（只比 name + baseUrl，apiKey 轮换不算漂移），不一致时提示执行 `/model use <别名>` 重新同步。
+- **向导联动**：首次启动向导写入模型时，若登记簿为空会自动登记为 `default` 别名，之后接入第二个模型即可随时 `/model use default` 回切。
+
+配置示例（工作空间 `.loop-agent/.agent-config.json`）：
+
+```json
+{
+  "models": {
+    "active": "deepseek",
+    "profiles": {
+      "deepseek": {
+        "name": "deepseek-chat",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": "sk-yyy"
+      },
+      "glm": {
+        "name": "glm-4.7",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "sk-zzz"
+      }
+    }
+  }
+}
+```
 
 #### `/setup` — 重跑初始化向导
 
@@ -792,6 +837,16 @@ console.log(content?.fullContent);
     "temperature": 0,
     "maxIterations": 10
   },
+  "models": {
+    "active": "",
+    "profiles": {
+      "deepseek": {
+        "name": "deepseek-chat",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": "sk-yyy"
+      }
+    }
+  },
   "tools": {
     "enabled": ["commandRun", "fileRead", "fileWrite", "editFile", "grep", "activate_skill"],
     "disabled": [],
@@ -869,7 +924,8 @@ console.log(content?.fullContent);
 
 | 配置段 | 字段 | 说明 | 默认值 |
 |---|---|---|---|
-| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM 模型配置 | `gpt-4o-mini` 等 |
+| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM 模型配置（当前生效快照，运行时唯一读取点） | `gpt-4o-mini` 等 |
+| `models` | `active` / `profiles` | 多模型登记簿（Task-20261011-002）：`profiles` 以别名为键登记各模型三元组（`name` / `baseUrl` / `apiKey`，可选 `temperature`），`active` 指向当前激活别名（空串 = 未纳入多模型管理）；`/model use <别名>` 会同步更新 `active` 与 `model.*` 快照 | `active: ""`、`profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | 内置工具开关与 MCP server 配置 | 全部启用 |
 | `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
 | `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
@@ -939,6 +995,8 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 # 查看配置文件路径
 /config path
 ```
+
+> 模型接入与切换建议用 `/model` 命令（详见 [内置命令](#内置命令)）：`/model use <别名>` 会同步激活指针与生效快照，避免直接 `/config set model.name` 造成快照与登记簿漂移。
 
 ---
 

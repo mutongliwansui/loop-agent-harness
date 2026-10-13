@@ -72,8 +72,6 @@ export class ReActAgent {
   private _memoryCallback: ToolMemoryCallback | null = null;
   private _promotionGate: PromotionGate | null = null;
   private _dreamingPipeline: DreamingPipeline | null = null;
-  /** Dreaming 使用的模型（可配置，默认与主对话一致） */
-  private _dreamingModel: string | null = null;
 
   /** 记忆配置 */
   private _memoryEnabled = false;
@@ -217,7 +215,6 @@ export class ReActAgent {
     const curatedDir = cwd;
     // 全局 Curated 目录：SOUL/USER 存用户目录，MEMORY.md 留项目目录
     const globalCuratedDir = join(homedir(), '.loop-agent', 'curated');
-    this._dreamingModel = cfg.model.name;
 
     // L1 Working Memory
     this._workingMemory = new WorkingMemory(cfg.memory.working);
@@ -248,7 +245,15 @@ export class ReActAgent {
 
     // Dreaming Pipeline（后台巡检）
     if (this._episodicMemory && this._promotionGate && this._curatedMemory) {
-      const llmAdapter = createLLMAdapter(cfg.model.name, cfg.model.temperature);
+      // Task-20261011-002 P1：动态 adapter——每次调用时重读配置，
+      // /model use 切换主模型后 Dreaming 跟随新模型（与上方 Curated 压缩回调同款写法）
+      const configLoader = this._configLoader;
+      const llmAdapter: ILLMClient = {
+        async chat(messages: ChatMessage[]) {
+          const { config: curCfg } = configLoader.load();
+          return createLLMAdapter(curCfg.model.name, curCfg.model.temperature).chat(messages);
+        },
+      };
       this._dreamingPipeline = new DreamingPipeline(
         this._episodicMemory,
         this._promotionGate,

@@ -44,6 +44,7 @@
 | ⏳ **Loading Indicator** | Shows "Thinking…" / "Running: <tool>…" loading indicators during time-consuming phases (model generation / tool execution); the line is cleared before printing so output never mixes. Automatically disabled for non-TTY (pipe / redirect / CI) |
 | 📊 **Token Stats** | Prints context/input/output tokens and cache hit rate per round, plus a summary at session end (`showTokenStats` can disable it) |
 | 🔌 **OpenAI Protocol** | Compatible with any OpenAI-protocol provider (OpenAI, DeepSeek, Moonshot, local vLLM, etc.) |
+| 🔀 **Multi-Model & Hot Switching** | Register multiple OpenAI-protocol models with `/model`, then switch with one command via `/model use <alias>` (takes effect on write, zero restarts), with connectivity testing, drift detection and global/workspace layering |
 | 🛠️ **Built-in Tools** | Command execution, file read (supports line ranges, numbered by default), file write, text editing (editFile: literal/regex/line-range), content search (grep), skill activation |
 | 👁️ **Vision Understanding** | Integrates multimodal vision models (OpenAI-protocol `image_url` format): four tools for image description / targeted Q&A / structured extraction / OCR; local images auto-converted to base64; LRU result caching and usage stats; `/vision` command for management and connectivity testing |
 | 🌐 **MCP Support** | Connect external tool services via the Model Context Protocol (stdio / SSE) |
@@ -182,6 +183,7 @@ Agent> Read the version from package.json
 | `/skill` | Skill management (list / reload / show) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
 | `/vision` | Vision model management (status / test) |
+| `/model` | Multi-model management (list / use / add / remove / test) |
 | `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
 | `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
 | `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
@@ -307,6 +309,49 @@ When the vision triplet (`vision.baseUrl` / `vision.apiKey` / `vision.model`) is
 ```
 
 Once enabled, four vision tools are registered: `describe_image` (whole-image description), `ask_image` (targeted Q&A), `extract_json` (structured extraction) and `ocr_image` (text recognition). See [🔧 Built-in Tools](#-built-in-tools).
+
+#### `/model` — Multi-Model & Hot Switching
+
+Register multiple OpenAI-protocol models into the registry (`models.profiles`, keyed by alias) and switch the effective model (the `model.*` snapshot) with a single alias command — takes effect on write, no restart needed:
+
+```
+/model list                  # List the registry and the effective snapshot (masked apiKey, drift hints)
+/model use <alias>           # Switch to a registered model (syncs the active pointer and snapshot, effective immediately)
+/model use <alias> --global  # Switch the global layer; conflicting workspace keys can be cleaned interactively
+/model add <alias>           # Register a new model (interactive scope prompt, Enter defaults to workspace)
+/model add <alias> --global  # Register into the global layer (explicit flag skips the scope prompt)
+/model remove <alias>        # Remove a model from the registry (does not touch the effective snapshot)
+/model test <alias>          # Run a connectivity test on a registered model (does not change the active state)
+```
+
+Design notes:
+
+- **Registry + active pointer**: `models.profiles` is a pure registry, `models.active` points to the currently active alias; `/model use` writes both the active pointer and the `model.*` effective snapshot — the runtime only reads `model.*`, so the main model, the vision fallback triplet and the memory system (Dreaming / compaction) all follow the new model.
+- **Layer merging**: the registry is deep-merged layer by layer (global → workspace; workspace leaves win for the same alias); models without a registered `temperature` do not override the current sampling temperature when switched to.
+- **Drift detection**: `/model list` and the startup banner compare the active alias against the effective snapshot (name + baseUrl only; apiKey rotation is not drift) and suggest `/model use <alias>` to re-sync when they differ.
+- **Wizard integration**: when the first-launch wizard writes a model and the registry is empty, the model is auto-registered as the `default` alias, so a later `/model use default` switches right back.
+
+Config example (workspace `.loop-agent/.agent-config.json`):
+
+```json
+{
+  "models": {
+    "active": "deepseek",
+    "profiles": {
+      "deepseek": {
+        "name": "deepseek-chat",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": "sk-yyy"
+      },
+      "glm": {
+        "name": "glm-4.7",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "sk-zzz"
+      }
+    }
+  }
+}
+```
 
 #### `/setup` — Re-run the Bootstrap Wizard
 
@@ -789,6 +834,16 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "temperature": 0,
     "maxIterations": 10
   },
+  "models": {
+    "active": "",
+    "profiles": {
+      "deepseek": {
+        "name": "deepseek-chat",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": "sk-yyy"
+      }
+    }
+  },
   "tools": {
     "enabled": ["commandRun", "fileRead", "fileWrite", "editFile", "grep", "activate_skill"],
     "disabled": [],
@@ -866,7 +921,8 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 
 | Section | Field | Description | Default |
 |---|---|---|---|
-| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM model config | `gpt-4o-mini`, etc. |
+| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM model config (the effective snapshot, the runtime's single read point) | `gpt-4o-mini`, etc. |
+| `models` | `active` / `profiles` | Multi-model registry (Task-20261011-002): `profiles` maps aliases to model triplets (`name` / `baseUrl` / `apiKey`, optional `temperature`), `active` points to the current alias (empty string = not under multi-model management); `/model use <alias>` updates both `active` and the `model.*` snapshot | `active: ""`, `profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | Built-in tool toggles and MCP server config | all enabled |
 | `agent` | `verbose` | Whether to output Thought/Action/Observation console logs | `true` |
 | `agent` | `debug` | Whether to enable file debug logging (see 📝 Debug Logging) | `false` |
@@ -936,6 +992,8 @@ Use the CLI's built-in `/config` command to modify config directly (written to `
 # Show the config file path
 /config path
 ```
+
+> Prefer the `/model` command for model registration and switching (see [Built-in Commands](#built-in-commands)): `/model use <alias>` syncs the active pointer and the effective snapshot, avoiding drift between the snapshot and the registry that a direct `/config set model.name` would cause.
 
 ---
 

@@ -1,34 +1,31 @@
 // 初次启动配置向导：分步收集主模型三元组（baseUrl/apiKey/name）并校验连通性
 // 交互函数通过 deps 注入，单测可模拟输入序列；默认实现基于 readline 与 openai SDK
 import readline from 'node:readline';
-import OpenAI from 'openai';
 import { configWriter, type ConfigScope } from '../config/index.js';
 import { DEFAULT_CONFIG, type AgentConfig } from '../config/schema.js';
+import {
+  defaultCheckConnectivity,
+  type CheckConnectivityFn,
+  type ConnectivityResult,
+  type ModelCandidate,
+} from '../llm/connectivity.js';
 import { COLORS as C } from '../ui/colors.js';
 import { Spinner } from '../ui/spinner.js';
 import { defaultBootstrapPaths } from './doctor.js';
 import type { BootstrapReport } from './doctor.js';
 import { backupCorruptedFile, ensureScaffold } from './scaffold.js';
 
-/** 向导收集的主模型三元组候选值 */
-export interface ModelCandidate {
-  baseUrl: string;
-  apiKey: string;
-  name: string;
-}
+// 连通性校验已抽到 llm/connectivity.ts 共享（/model 命令复用）；此处原样 re-export 保持既有 API
+export { defaultCheckConnectivity } from '../llm/connectivity.js';
+export type { ModelCandidate, ConnectivityResult, CheckConnectivityFn } from '../llm/connectivity.js';
 
 export type AskFn = (prompt: string) => Promise<string>;
 
-export interface ConnectivityResult {
-  ok: boolean;
-  error?: string;
-  elapsedMs?: number;
-}
-
-export type CheckConnectivityFn = (candidate: ModelCandidate) => Promise<ConnectivityResult>;
-
 /** 写入候选三元组，返回实际写入的配置文件路径 */
 export type WriteConfigFn = (scope: ConfigScope, candidate: ModelCandidate) => Promise<string>;
+
+/** 登记 profile（Task-20261011-002 P1 向导联动；默认 configWriter.updateScope 写 default） */
+export type RegisterProfileFn = (scope: ConfigScope, alias: string, candidate: ModelCandidate) => Promise<void>;
 
 export type ScaffoldFn = () => Promise<string[]>;
 
@@ -47,6 +44,8 @@ export interface WizardDeps {
   checkConnectivity?: CheckConnectivityFn;
   /** 配置写盘（默认 configWriter.updateScope） */
   writeConfig?: WriteConfigFn;
+  /** profile 登记（默认 configWriter.updateScope 写 models.active + profiles；注入用于单测断言） */
+  registerProfile?: RegisterProfileFn;
   /** 目录补建（默认 ensureScaffold） */
   scaffold?: ScaffoldFn;
   /** 输出通道（默认 console.log，便于单测收集） */
@@ -54,9 +53,6 @@ export interface WizardDeps {
   /** 向导结束后的清理（默认关闭自建的 readline；注入 rl 时绝不关闭外部接口） */
   close?: () => void;
 }
-
-/** 连通性校验超时（ms），SDK 层生效 */
-const CHECK_TIMEOUT_MS = 15_000;
 
 /** 自建 readline（首次启动场景）；Ctrl+C 打印未完成提示后退出 */
 function createOwnRl(): readline.Interface {
@@ -138,44 +134,18 @@ export function createMaskedAsk(rl: readline.Interface): AskFn {
     });
 }
 
-/** 默认连通性校验：直接用候选三元组发一次极小请求（15s 超时、禁用重试，避免拖慢向导） */
-export const defaultCheckConnectivity: CheckConnectivityFn = async (candidate) => {
-  const started = Date.now();
-  try {
-    const client = new OpenAI({
-      apiKey: candidate.apiKey,
-      baseURL: candidate.baseUrl,
-      timeout: CHECK_TIMEOUT_MS,
-      maxRetries: 0,
-    });
-    await client.chat.completions.create({
-      model: candidate.name,
-      messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 16,
-    });
-    return { ok: true, elapsedMs: Date.now() - started };
-  } catch (err) {
-    return { ok: false, error: describeCheckError(err) };
-  }
-};
-
-/** 校验错误分类（D5：401/404/网络/超时给出明确提示） */
-function describeCheckError(err: unknown): string {
-  const status = (err as { status?: number } | null)?.status;
-  if (status === 401 || status === 403) return 'apiKey 无效或无权限';
-  if (status === 404) return '模型名或服务地址可能有误';
-  if (status === 429) return '请求过于频繁（429），请稍后重试';
-  if (status && status >= 400) return `服务返回错误（${status}）`;
-  const msg = err instanceof Error ? err.message : String(err);
-  if (/timeout|aborted/i.test(msg)) return `校验超时（${CHECK_TIMEOUT_MS / 1000}s），请检查网络或代理设置`;
-  return `无法连接到服务地址：${msg}`;
-}
-
 const defaultWriteConfig: WriteConfigFn = async (scope, candidate) => {
   await configWriter.updateScope(scope, {
     model: { baseUrl: candidate.baseUrl, apiKey: candidate.apiKey, name: candidate.name },
   });
   return scope === 'global' ? configWriter.globalConfigPath : configWriter.workspaceConfigPath;
+};
+
+/** 向导联动（Task-20261011-002 P1 5.6）：登记 profile（写激活指针 + 登记簿） */
+const defaultRegisterProfile: RegisterProfileFn = async (scope, alias, candidate) => {
+  await configWriter.updateScope(scope, {
+    models: { active: alias, profiles: { [alias]: candidate } },
+  });
 };
 
 const defaultScaffold: ScaffoldFn = async () => {
@@ -271,6 +241,7 @@ export async function runWizard(
 
   const checkConnectivity = deps.checkConnectivity ?? defaultCheckConnectivity;
   const writeConfig = deps.writeConfig ?? defaultWriteConfig;
+  const registerProfile = deps.registerProfile ?? defaultRegisterProfile;
   const scaffold = deps.scaffold ?? defaultScaffold;
 
   // 1. 欢迎语 + 缺失项清单
@@ -323,6 +294,18 @@ export async function runWizard(
       }
     }
     const writtenPath = await writeConfig(scope, candidate);
+
+    // 向导联动（Task-20261011-002 P1 5.6）：登记簿为空时将本次模型登记为 profile default（失败不阻断）
+    if (Object.keys(cfg.models.profiles).length === 0) {
+      try {
+        await registerProfile(scope, 'default', candidate);
+        out(`  已登记：profile default（/model add 接入更多模型后 /model use 切换）`);
+      } catch {
+        out(
+          `  ${C.yellow}⚠ profile 登记失败，不影响基本使用，可稍后手动执行 /model add default${C.reset}`,
+        );
+      }
+    }
 
     // 8. 摘要（apiKey 只显示尾 4 位）
     out('');

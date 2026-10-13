@@ -321,6 +321,64 @@ describe('runWizard 损坏配置自动备份（默认写盘路径接线，6.14�
     });
 
     expect(out.join('\n')).not.toContain('已自动备份为');
-    expect(vi.mocked(configWriter.updateScope)).toHaveBeenCalledTimes(1);
+    // P1 向导联动：writeConfig 一次 + 登记 default profile 一次
+    expect(vi.mocked(configWriter.updateScope)).toHaveBeenCalledTimes(2);
+    expect(out.join('\n')).toContain('已登记：profile default');
+  });
+});
+
+describe('runWizard 向导联动（Task-20261011-002 P1 5.6：登记 default profile）', () => {
+  it('profiles 为空：registerProfile 收到（scope, default, 候选三元组），输出提示', async () => {
+    const h = makeHarness(['', 'sk-reg', '', '']);
+    const registered: Array<{ scope: 'global' | 'workspace'; alias: string; candidate: ModelCandidate }> = [];
+    await runWizard(blockerReport, DEFAULT_CONFIG, {
+      ...h.deps,
+      registerProfile: async (scope, alias, candidate) => {
+        registered.push({ scope, alias, candidate });
+      },
+    });
+
+    expect(registered).toHaveLength(1);
+    expect(registered[0].scope).toBe('global');
+    expect(registered[0].alias).toBe('default');
+    expect(registered[0].candidate.apiKey).toBe('sk-reg');
+    expect(outText(h.out)).toContain('已登记：profile default');
+    expect(outText(h.out)).toContain('/model use 切换');
+  });
+
+  it('profiles 非空：不登记（既往多模型用户不受向导影响）', async () => {
+    const cfgWithProfiles = {
+      ...DEFAULT_CONFIG,
+      models: {
+        active: 'legacy',
+        profiles: { legacy: { name: 'old-model', baseUrl: 'https://old.example.com/v1', apiKey: 'sk-old' } },
+      },
+    };
+    const h = makeHarness(['', 'sk-new', '', '']);
+    const registered: unknown[] = [];
+    await runWizard(blockerReport, cfgWithProfiles, {
+      ...h.deps,
+      registerProfile: async () => {
+        registered.push(1);
+      },
+    });
+
+    expect(registered).toHaveLength(0);
+    expect(outText(h.out)).not.toContain('已登记：profile default');
+  });
+
+  it('登记失败不阻断：黄字提示 + 摘要照常输出', async () => {
+    const h = makeHarness(['', 'sk-x', '', '']);
+    await runWizard(blockerReport, DEFAULT_CONFIG, {
+      ...h.deps,
+      registerProfile: async () => {
+        throw new Error('disk full');
+      },
+    });
+
+    const text = outText(h.out);
+    expect(text).toContain('profile 登记失败');
+    expect(text).toContain('/model add default');
+    expect(text).toContain('初始化完成'); // 向导未被阻断
   });
 });

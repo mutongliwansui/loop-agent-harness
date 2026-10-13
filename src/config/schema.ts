@@ -10,6 +10,7 @@ import { join } from 'node:path';
 /** Agent 完整配置结构 */
 export interface AgentConfig {
   model: ModelConfig;
+  models: ModelsConfig;
   tools: ToolsConfig;
   agent: AgentBehaviorConfig;
   session: SessionConfig;
@@ -24,6 +25,37 @@ export interface ModelConfig {
   apiKey: string;
   temperature: number;
   maxIterations: number;
+}
+
+/**
+ * 单个已接入模型的登记信息（Task-20261011-002 多模型接入与切换）
+ */
+export interface ModelProfile {
+  /** 模型名（如 deepseek-chat） */
+  name: string;
+  /** 服务地址（OpenAI 兼容协议） */
+  baseUrl: string;
+  /** API Key（展示时遮蔽，仅尾 4 位） */
+  apiKey: string;
+  /** 采样温度（可选；未设置时切换不覆盖 model.temperature 现值） */
+  temperature?: number;
+}
+
+/**
+ * 多模型接入配置（Task-20261011-002）
+ *
+ * 设计要点：
+ * - profiles 用 Record（别名 → 配置）而非数组：deepMerge 对对象递归合并，
+ *   global 与 workspace 的登记簿可跨层叠加；数组会被整体替换互相覆盖
+ * - model.* 是"当前生效"快照（运行时唯一读取点），models 是"登记簿 + 激活指针"，
+ *   /model use 切换时同步写两者
+ * - active 为空串 = 未纳入多模型管理（兼容存量单模型配置用户）
+ */
+export interface ModelsConfig {
+  /** 当前激活的 profile 别名；空串 = 未纳入多模型管理 */
+  active: string;
+  /** 模型登记簿：别名 → 三元组 */
+  profiles: Record<string, ModelProfile>;
 }
 
 export interface ToolsConfig {
@@ -88,6 +120,7 @@ export interface ResolvedConfig {
 /** 部分配置（用于 CLI override、部分写入等） */
 export type PartialAgentConfig = {
   model?: Partial<ModelConfig>;
+  models?: Partial<ModelsConfig>;
   tools?: Partial<ToolsConfig>;
   agent?: Partial<AgentBehaviorConfig>;
   session?: Partial<SessionConfig>;
@@ -95,6 +128,22 @@ export type PartialAgentConfig = {
   memory?: Partial<MemoryConfig>;
   vision?: Partial<VisionConfig>;
 };
+
+/**
+ * 漂移检测（Task-20261011-002 D4）：激活 profile 与生效快照的结构字段不一致时返回提示。
+ * 只比 name+baseUrl（apiKey 轮换属正常维护，不算漂移）；
+ * 放在 schema 层供 /model 命令与 Banner 渲染共用（纯函数、无依赖）
+ */
+export function detectDrift(cfg: AgentConfig): string | null {
+  const alias = cfg.models.active;
+  if (!alias) return null;
+  const p = cfg.models.profiles[alias];
+  if (!p) return `激活项「${alias}」在登记簿中不存在（可能被手动删除）`;
+  if (p.name !== cfg.model.name || p.baseUrl !== cfg.model.baseUrl) {
+    return `当前生效快照（${cfg.model.name} @ ${cfg.model.baseUrl}）与激活 profile「${alias}」不一致，可执行 /model use ${alias} 重新同步`;
+  }
+  return null;
+}
 
 /** 默认配置值 */
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -104,6 +153,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
     apiKey: '',
     temperature: 0,
     maxIterations: 10,
+  },
+  models: {
+    active: '',
+    profiles: {},
   },
   tools: {
     enabled: [],

@@ -32,6 +32,7 @@ import { skillCommand } from './commands/skill-command.js';
 import { sessionCommand } from './commands/session-command.js';
 import { memoryCommand } from './commands/memory-command.js';
 import { visionCommand } from './commands/vision-command.js';
+import { modelCommand } from './commands/model-command.js';
 import { setupCommand } from './commands/setup-command.js';
 import { doctorCommand } from './commands/doctor-command.js';
 import type { ChatMessage } from './types.js';
@@ -204,6 +205,7 @@ async function main() {
   commandRegistry.register(sessionCommand);
   commandRegistry.register(memoryCommand);
   commandRegistry.register(visionCommand);
+  commandRegistry.register(modelCommand);
   commandRegistry.register(setupCommand);
   commandRegistry.register(doctorCommand);
 
@@ -225,6 +227,13 @@ async function main() {
         if (command === '/mcp' && (subcommand === 'test' || subcommand === 'remove')) {
           const { config: c } = configLoader.load();
           return Object.keys(c.tools.mcpServers).filter((n) => n.startsWith(prefix));
+        }
+        if (
+          command === '/model' &&
+          (subcommand === 'use' || subcommand === 'remove' || subcommand === 'test')
+        ) {
+          const { config: c } = configLoader.load();
+          return Object.keys(c.models.profiles).filter((n) => n.startsWith(prefix));
         }
       } catch {
         return [];
