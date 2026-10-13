@@ -77,11 +77,15 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}输入问题${C.reset}    → Agent 流式输出 Thought / Action / Observation / Final`);
   console.log(`  ${C.bold}/help${C.reset}         → 查看此帮助`);
   console.log(`  ${C.bold}/config${C.reset}       → 配置管理（get/set/delete/list/path）`);
+  console.log(`  ${C.bold}/model${C.reset}        → 多模型管理（list/use/add/remove/test）`);
+  console.log(`  ${C.bold}/vision${C.reset}       → 视觉模型管理（status/test）`);
   console.log(`  ${C.bold}/mcp${C.reset}          → MCP 管理（list/add/remove/reload/test）`);
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
   console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show）`);
   console.log(`  ${C.bold}/session${C.reset}      → 会话管理（list/load/save/new/delete）`);
   console.log(`  ${C.bold}/memory${C.reset}       → 记忆管理（curated/episodic/status/search/dream/gate/init）`);
+  console.log(`  ${C.bold}/setup${C.reset}        → 重新运行初始化配置向导`);
+  console.log(`  ${C.bold}/doctor${C.reset}       → 配置与依赖体检`);
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 同样有效）`);
