@@ -45,7 +45,8 @@
 | 📊 **Token 统计** | 每轮输出上下文/输入/输出 token 与缓存命中率，会话结束输出汇总（`showTokenStats` 可关） |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
 | 🔀 **多模型接入与切换** | `/model` 登记多个 OpenAI 协议模型到登记簿，`/model use <别名>` 一键热切换（写盘即生效、零重启），支持连通性测试、漂移检测与全局/工作空间分层管理 |
-| 🛠️ **内置工具** | 命令执行、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
+| � **文件上传** | `/upload` 把本地文件复制到会话隔离的上传目录并注入 Agent 上下文：支持拖拽（跨终端格式归一）、无参弹出系统文件选择框（Windows / macOS / Linux），Agent 下一轮即可读取处理 |
+| �️ **内置工具** | 命令执行、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
@@ -185,6 +186,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `/vision` | 视觉模型管理（status / test） |
 | `/model` | 多模型管理（list / use / add / remove / test） |
+| `/upload` | 文件上传（复制到会话隔离上传目录并注入 Agent 上下文；list / clean） |
 | `/setup` | 重跑初始化配置向导（--global / --workspace 指定写入层级） |
 | `/doctor` | 启动体检：逐项检测模型配置 / 配置文件 / skills 目录（只读） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
@@ -192,7 +194,7 @@ Agent> 帮我读取 package.json 的版本号
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
 > - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
 > - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
-> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show ` 补技能名、`/mcp test ` 补 server 名、`/model use / remove / test ` 补已登记模型别名；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show ` 补技能名、`/mcp test ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/upload ` 补 `list / clean` 子命令；
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
@@ -361,6 +363,25 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
   }
 }
 ```
+
+#### `/upload` — 文件上传（会话隔离上传目录）
+
+把本地文件复制到 Agent 的全局上传目录（`~/.loop-agent/uploads/{会话ID}/`），并把上传路径注入当前会话上下文——Agent 在后续对话中自动"知道"文件，可直接用 `fileRead` / `commandRun` / 视觉工具处理，无需口头转述路径：
+
+```
+/upload <路径...>         # 上传一个或多个文件（可拖拽到终端，自动解析带引号路径）
+/upload                   # 无参：弹出系统文件选择框（多选；Windows/macOS/Linux 探测可用工具）
+/upload list              # 列出当前会话已上传文件
+/upload clean             # 清理当前会话的上传目录（y/n 确认）
+```
+
+设计要点：
+
+- **会话隔离**：物理目录按会话分隔（`uploads/{sessionId}/`），`/session delete` / `delete-all` 连带清理；跨会话互不可见，且不污染工作空间 git 工作区
+- **Agent 感知**：上传成功后注入 `[文件上传]` 上下文消息（路径 + 大小），随 autoSave 持久化、`/session load` 恢复后依然有效；不自动触发回答，上传是准备动作
+- **跨平台归一**：终端拖拽格式各异（Windows 引号路径 / Linux GNOME `file://` URI / Konsole 转义空格），统一解析为本地路径；无参弹框按平台探测 `PowerShell + WinForms` / `osascript` / `zenity → kdialog → yad`，全部不可用时优雅降级为拖拽/路径参数
+- **防覆盖与上限**：文件名加时间戳前缀防重名；单文件上限 100MB；目录不支持直接上传（提示压缩后上传）
+- **零依赖**：仅 `node:fs` / `node:child_process`，无 npm 新增依赖
 
 #### `/setup` — 重跑初始化向导
 

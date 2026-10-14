@@ -33,6 +33,7 @@ import { sessionCommand } from './commands/session-command.js';
 import { memoryCommand } from './commands/memory-command.js';
 import { visionCommand } from './commands/vision-command.js';
 import { modelCommand } from './commands/model-command.js';
+import { uploadCommand } from './commands/upload-command.js';
 import { setupCommand } from './commands/setup-command.js';
 import { doctorCommand } from './commands/doctor-command.js';
 import type { ChatMessage } from './types.js';
@@ -206,6 +207,7 @@ async function main() {
   commandRegistry.register(memoryCommand);
   commandRegistry.register(visionCommand);
   commandRegistry.register(modelCommand);
+  commandRegistry.register(uploadCommand);
   commandRegistry.register(setupCommand);
   commandRegistry.register(doctorCommand);
 

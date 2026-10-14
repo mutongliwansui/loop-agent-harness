@@ -6,6 +6,7 @@ import { SessionStore, keychain } from '../session/index.js';
 import { COLORS } from '../ui/colors.js';
 import { renderMessages } from '../ui/renderer.js';
 import type { CommandContext, CommandHandler } from './registry.js';
+import { cleanAllUploads, cleanUploads, defaultUploadsRoot } from '../upload/manager.js';
 
 export const sessionCommand: CommandHandler = {
   name: '/session',
@@ -123,7 +124,7 @@ export const sessionCommand: CommandHandler = {
 
     if (sub === 'new') {
       agent.resetSession();
-      out.log(`${COLORS.green}✓ 已创建新会话（旧会话已自动保存）${COLORS.reset}`);
+      out.log(`${COLORS.green}✓ 已创建新会话（首个对话或文件上传后落盘）${COLORS.reset}`);
       out.blank();
       return;
     }
@@ -140,7 +141,12 @@ export const sessionCommand: CommandHandler = {
         if (agent.currentSessionId === id) {
           agent.setCurrentSessionId(null);
         }
+        // 连带清理该会话的上传目录（Task-20261012-001 D7）
+        const removedUploads = await cleanUploads(defaultUploadsRoot(), id).catch(() => false);
         out.log(`${COLORS.green}✓ 会话已删除: ${id}${COLORS.reset}`);
+        if (removedUploads) {
+          out.log(`${COLORS.gray}  已同步清理该会话的上传文件${COLORS.reset}`);
+        }
         out.blank();
       } catch (e) {
         out.error(`${COLORS.red}✗ 删除失败: ${e instanceof Error ? e.message : String(e)}${COLORS.reset}`);
@@ -164,6 +170,8 @@ export const sessionCommand: CommandHandler = {
       }
       try {
         await sessionStore.deleteAllSessions();
+        // 连带清理全部会话上传目录（Task-20261012-001 D7）
+        await cleanAllUploads(defaultUploadsRoot()).catch(() => {});
         agent.resetSession();
         out.log(`${COLORS.green}✓ 所有会话已删除${COLORS.reset}`);
         out.blank();

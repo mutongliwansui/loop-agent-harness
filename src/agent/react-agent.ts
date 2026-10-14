@@ -94,6 +94,11 @@ export class ReActAgent {
     this._currentSessionId = id;
   }
 
+  /** 向会话历史追加一条用户侧上下文备注（如 /upload 文件上传），随 autoSave 持久化（Task-20261012-001 D2） */
+  appendContextNote(note: string): void {
+    this._chatHistory.push({ role: 'user', content: note });
+  }
+
   /** 手动清空持久化的对话历史（不影响正在进行中的 run 调用） */
   resetSession(): void {
     this._chatHistory = [];

@@ -79,6 +79,7 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}/config${C.reset}       → 配置管理（get/set/delete/list/path）`);
   console.log(`  ${C.bold}/model${C.reset}        → 多模型管理（list/use/add/remove/test）`);
   console.log(`  ${C.bold}/vision${C.reset}       → 视觉模型管理（status/test）`);
+  console.log(`  ${C.bold}/upload${C.reset}       → 文件上传（复制到会话隔离上传目录并注入上下文）`);
   console.log(`  ${C.bold}/mcp${C.reset}          → MCP 管理（list/add/remove/reload/test）`);
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
   console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show）`);

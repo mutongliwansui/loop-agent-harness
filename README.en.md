@@ -45,7 +45,8 @@
 | 📊 **Token Stats** | Prints context/input/output tokens and cache hit rate per round, plus a summary at session end (`showTokenStats` can disable it) |
 | 🔌 **OpenAI Protocol** | Compatible with any OpenAI-protocol provider (OpenAI, DeepSeek, Moonshot, local vLLM, etc.) |
 | 🔀 **Multi-Model & Hot Switching** | Register multiple OpenAI-protocol models with `/model`, then switch with one command via `/model use <alias>` (takes effect on write, zero restarts), with connectivity testing, drift detection and global/workspace layering |
-| 🛠️ **Built-in Tools** | Command execution, file read (supports line ranges, numbered by default), file write, text editing (editFile: literal/regex/line-range), content search (grep), skill activation |
+| � **File Upload** | `/upload` copies local files into a session-isolated upload directory and injects them into the Agent context: supports drag-and-drop (cross-terminal format normalization) and a native file picker with no arguments (Windows / macOS / Linux), ready for the Agent to read on the next turn |
+| �️ **Built-in Tools** | Command execution, file read (supports line ranges, numbered by default), file write, text editing (editFile: literal/regex/line-range), content search (grep), skill activation |
 | 👁️ **Vision Understanding** | Integrates multimodal vision models (OpenAI-protocol `image_url` format): four tools for image description / targeted Q&A / structured extraction / OCR; local images auto-converted to base64; LRU result caching and usage stats; `/vision` command for management and connectivity testing |
 | 🌐 **MCP Support** | Connect external tool services via the Model Context Protocol (stdio / SSE) |
 | 🧩 **Skills** | SKILL.md spec + progressive loading; the `activate_skill` tool activates domain instructions on demand |
@@ -184,6 +185,7 @@ Agent> Read the version from package.json
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
 | `/vision` | Vision model management (status / test) |
 | `/model` | Multi-model management (list / use / add / remove / test) |
+| `/upload` | File upload (copies into the session-isolated upload directory and injects into Agent context; list / clean) |
 | `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
 | `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
 | `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
@@ -352,6 +354,25 @@ Config example (workspace `.loop-agent/.agent-config.json`):
   }
 }
 ```
+
+#### `/upload` — File Upload (Session-Isolated Upload Directory)
+
+Copies local files into the Agent's global upload directory (`~/.loop-agent/uploads/{sessionId}/`) and injects the uploaded paths into the current session context — the Agent automatically "knows" the files in subsequent turns and can process them directly with `fileRead` / `commandRun` / vision tools, no manual path recital needed:
+
+```
+/upload <paths...>        # Upload one or more files (drag into the terminal; quoted paths are parsed automatically)
+/upload                   # No args: open the native file picker (multi-select; auto-detects available tools on Windows/macOS/Linux)
+/upload list              # List files uploaded in the current session
+/upload clean             # Clean the current session's upload directory (y/n confirm)
+```
+
+Design notes:
+
+- **Session isolation**: directories are physically separated per session (`uploads/{sessionId}/`); `/session delete` / `delete-all` clean up the matching upload directory; sessions cannot see each other's files, and the workspace git tree stays untouched
+- **Agent awareness**: each successful upload injects a `[File Upload]` context message (path + size), persisted with autoSave and restored via `/session load`; uploads never trigger an answer by themselves — uploading is a preparation step
+- **Cross-platform normalization**: terminals drag-drop in different formats (Windows quoted paths / Linux GNOME `file://` URIs / Konsole escaped spaces), all unified into local paths; the no-arg picker probes `PowerShell + WinForms` / `osascript` / `zenity → kdialog → yad` per platform, and gracefully falls back to drag-and-drop / path arguments when none is available
+- **Collision & limits**: filenames get a timestamp prefix to avoid overwrites; 100MB per-file cap; directories are not supported (prompt suggests compressing first)
+- **Zero dependencies**: only `node:fs` / `node:child_process`, no new npm packages
 
 #### `/setup` — Re-run the Bootstrap Wizard
 
