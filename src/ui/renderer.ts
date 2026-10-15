@@ -82,7 +82,7 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}/upload${C.reset}       → 文件上传（复制到会话隔离上传目录并注入上下文）`);
   console.log(`  ${C.bold}/mcp${C.reset}          → MCP 管理（list/add/remove/reload/test）`);
   console.log(`  ${C.bold}/tools${C.reset}        → 工具管理（enable/disable/reload/list）`);
-  console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show）`);
+  console.log(`  ${C.bold}/skill${C.reset}        → Skill 管理（list/reload/show/upload）`);
   console.log(`  ${C.bold}/session${C.reset}      → 会话管理（list/load/save/new/delete）`);
   console.log(`  ${C.bold}/memory${C.reset}       → 记忆管理（curated/episodic/status/search/dream/gate/init）`);
   console.log(`  ${C.bold}/setup${C.reset}        → 重新运行初始化配置向导`);

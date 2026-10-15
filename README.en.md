@@ -181,7 +181,7 @@ Agent> Read the version from package.json
 | `/config` | Config management (get / set / delete / list / path) |
 | `/mcp` | MCP management (list / add / remove / reload / test) |
 | `/session` | Session management (list / load / save / new / current / delete / delete-all) |
-| `/skill` | Skill management (list / reload / show) |
+| `/skill` | Skill management (list / reload / show / upload) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
 | `/vision` | Vision model management (status / test) |
 | `/model` | Multi-model management (list / use / add / remove / test) |
@@ -275,9 +275,13 @@ Session data is stored with AES-256-GCM encryption under `~/.loop-agent/sessions
 /skill list                     # List all available Skills (global + workspace, with source tags)
 /skill reload                   # Rescan the Skill directories
 /skill show <name>              # Show the full SKILL.md content of the specified Skill
+/skill upload <dirs...>         # Install local Skill directories (workspace by default; --global for global; asks before overwriting name conflicts)
+/skill upload                   # No args: open the native directory picker (auto-detects available tools on Windows/macOS/Linux)
 ```
 
 Skills are auto-scanned from the global `~/.loop-agent/skills/` and the workspace `<cwd>/.loop-agent/skills/` directories; the workspace version takes precedence when names collide. See [🎯 Skills](#-skills).
+
+`/skill upload` supports dragging directories into the terminal (quoted paths / `file://` URIs are normalized automatically) and batch installation of multiple directories. Each target is validated for a proper `SKILL.md` (name/description) before installation, a single failure does not block the rest, and Skills are rescanned automatically after installation.
 
 #### `/memory` — Memory Management
 

@@ -182,7 +182,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/config` | 配置管理（get / set / delete / list / path） |
 | `/mcp` | MCP 管理（list / add / remove / reload / test） |
 | `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
-| `/skill` | Skill 管理（list / reload / show） |
+| `/skill` | Skill 管理（list / reload / show / upload） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `/vision` | 视觉模型管理（status / test） |
 | `/model` | 多模型管理（list / use / add / remove / test） |
@@ -284,9 +284,13 @@ Agent> 帮我读取 package.json 的版本号
 /skill list                     # 列出所有可用 Skill（全局 + 工作空间，含来源标记）
 /skill reload                   # 重新扫描 Skill 目录
 /skill show <name>              # 显示指定 Skill 的 SKILL.md 完整内容
+/skill upload <目录...>         # 安装本地 Skill 目录（默认工作空间；--global 装到全局；同名冲突询问覆盖）
+/skill upload                   # 无参：弹出系统目录选择框（Windows/macOS/Linux 探测可用工具）
 ```
 
 Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](#-skill-技能包)。
+
+`/skill upload` 支持拖拽目录到终端（引号 / `file://` URI 自动归一）与多目录批量安装；安装前校验目标含合法 `SKILL.md`（name/description），单项失败不阻断其余，安装完成后自动重新扫描立即可用。
 
 #### `/memory` — 记忆管理
 

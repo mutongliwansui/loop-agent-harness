@@ -139,8 +139,8 @@ export async function pickFilesViaDialog(): Promise<DialogPickResult> {
   return { paths: [], reason: 'unavailable' };
 }
 
-/** POSIX command -v 探测（仅 Linux/macOS 弹框路径使用） */
-async function hasCommand(name: string): Promise<boolean> {
+/** POSIX command -v 探测（Linux/macOS 弹框路径使用；Task-20261015-001 导出供 skill 目录选择框复用） */
+export async function hasCommand(name: string): Promise<boolean> {
   try {
     const { stdout } = await execAsync(`command -v ${name}`, { timeout: 5000 });
     return stdout.trim().length > 0;
@@ -154,8 +154,9 @@ async function hasCommand(name: string): Promise<boolean> {
  * - line：逐行一个路径（PowerShell FileNames / osascript POSIX path）
  * - pipe：'|' 分隔（zenity/yad --separator）
  * - args：整行按 shell 风格解析（kdialog 空格分隔带引号转义，复用 parseUploadArgs）
+ * （Task-20261015-001 导出供 skill 目录选择框复用）
  */
-async function runDialogCommand(
+export async function runDialogCommand(
   command: string,
   mode: 'line' | 'pipe' | 'args',
 ): Promise<DialogPickResult> {
