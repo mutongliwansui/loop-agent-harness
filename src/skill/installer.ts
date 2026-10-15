@@ -1,10 +1,12 @@
 // Skill 安装器（Task-20261015-001，需求 20261015-001）
 // 纯逻辑模块：目录校验 → 复制到作用域 skills 目录 → 系统目录选择框（平台探测链）
 // 设计依据：docs/tasks/task-20261015-001-skill上传（skill-upload）.md
+// Task-20261015-002：追加 removeSkills（按 frontmatter name 定位删除，护栏防路径穿越）
 import { cp, mkdir, rm } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseSkillMd } from './scanner.js';
+import type { SkillMetadata, SkillScope } from './types.js';
 import type { DialogPickResult } from '../upload/manager.js';
 import { hasCommand, runDialogCommand } from '../upload/manager.js';
 
@@ -144,4 +146,81 @@ export async function pickDirectoryViaDialog(): Promise<DialogPickResult> {
     );
   }
   return { paths: [], reason: 'unavailable' };
+}
+
+/** 单个删除成功记录 */
+export interface SkillRemoveEntry {
+  /** skill 名（frontmatter name） */
+  name: string;
+  /** 被删除目录（resolve 后） */
+  dir: string;
+  /** 作用域 */
+  scope: SkillScope;
+}
+
+/** 批量删除结果（单项失败不阻断其余） */
+export interface SkillRemoveResult {
+  removed: SkillRemoveEntry[];
+  failed: { name: string; reason: string }[];
+}
+
+/**
+ * 批量删除 skill（Task-20261015-002，D1/D2/D3/D5）。
+ * - D1：仅按 frontmatter name 定位，不做目录名兜底
+ * - D2：auto 工作空间优先 → 全局 fallback；global/workspace 严格限定
+ * - D3：逐项 confirm（默认 N 由调用方实现）
+ * - D5：护栏——目标必须是对应 skills 根的直接子目录，防路径穿越
+ * @param names 待删除 skill 名列表
+ * @param opts.skills 候选元数据（auto 时应同时含工作空间与全局，工作空间在前）
+ */
+export async function removeSkills(
+  names: string[],
+  opts: {
+    skills: SkillMetadata[];
+    scope: 'auto' | 'global' | 'workspace';
+    globalDir: string;
+    workspaceDir: string;
+    confirm: (name: string, dir: string, scope: SkillScope) => Promise<boolean>;
+  },
+): Promise<SkillRemoveResult> {
+  const result: SkillRemoveResult = { removed: [], failed: [] };
+  if (names.length === 0) return result;
+
+  for (const name of names) {
+    try {
+      let target: SkillMetadata | undefined;
+      if (opts.scope === 'global') {
+        target = opts.skills.find((s) => s.name === name && s.scope === 'global');
+      } else if (opts.scope === 'workspace') {
+        target = opts.skills.find((s) => s.name === name && s.scope === 'workspace');
+      } else {
+        target =
+          opts.skills.find((s) => s.name === name && s.scope === 'workspace') ??
+          opts.skills.find((s) => s.name === name && s.scope === 'global');
+      }
+      if (!target) {
+        result.failed.push({ name, reason: '未找到已安装的 Skill' });
+        continue;
+      }
+
+      // D5 护栏：resolve(dir) 必须是对应 skills 根的直接子目录
+      const abs = resolve(target.dir);
+      const root = resolve(target.scope === 'global' ? opts.globalDir : opts.workspaceDir);
+      if (dirname(abs) !== root) {
+        result.failed.push({ name, reason: '目标路径异常，拒绝删除' });
+        continue;
+      }
+
+      const yes = await opts.confirm(name, abs, target.scope);
+      if (!yes) {
+        result.failed.push({ name, reason: '已跳过' });
+        continue;
+      }
+      await rm(abs, { recursive: true, force: true });
+      result.removed.push({ name, dir: abs, scope: target.scope });
+    } catch (e) {
+      result.failed.push({ name, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return result;
 }

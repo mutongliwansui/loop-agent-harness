@@ -182,7 +182,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/config` | 配置管理（get / set / delete / list / path） |
 | `/mcp` | MCP 管理（list / add / remove / reload / test） |
 | `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
-| `/skill` | Skill 管理（list / reload / show / upload） |
+| `/skill` | Skill 管理（list / reload / show / upload / remove） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `/vision` | 视觉模型管理（status / test） |
 | `/model` | 多模型管理（list / use / add / remove / test） |
@@ -194,7 +194,7 @@ Agent> 帮我读取 package.json 的版本号
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
 > - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
 > - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
-> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show ` 补技能名、`/mcp test ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/upload ` 补 `list / clean` 子命令；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/upload ` 补 `list / clean` 子命令；
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
@@ -286,11 +286,14 @@ Agent> 帮我读取 package.json 的版本号
 /skill show <name>              # 显示指定 Skill 的 SKILL.md 完整内容
 /skill upload <目录...>         # 安装本地 Skill 目录（默认工作空间；--global 装到全局；同名冲突询问覆盖）
 /skill upload                   # 无参：弹出系统目录选择框（Windows/macOS/Linux 探测可用工具）
+/skill remove <name...>         # 删除已安装 Skill（默认工作空间优先；--global/--workspace 严格限定；逐个 y/N 确认）
 ```
 
 Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](#-skill-技能包)。
 
 `/skill upload` 支持拖拽目录到终端（引号 / `file://` URI 自动归一）与多目录批量安装；安装前校验目标含合法 `SKILL.md`（name/description），单项失败不阻断其余，安装完成后自动重新扫描立即可用。
+
+`/skill remove` 按 frontmatter `name` 定位并删除整个 Skill 目录：同名两处时默认删工作空间（`--global` / `--workspace` 可严格限定单一作用域），删除前逐个确认（默认 N），内置路径护栏（目标必须是 skills 根的直接子目录，防路径穿越），删除后自动重新扫描，`/skill list` 立即不可见；支持批量删除，单项失败不阻断其余。
 
 #### `/memory` — 记忆管理
 

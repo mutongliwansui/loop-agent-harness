@@ -181,7 +181,7 @@ Agent> Read the version from package.json
 | `/config` | Config management (get / set / delete / list / path) |
 | `/mcp` | MCP management (list / add / remove / reload / test) |
 | `/session` | Session management (list / load / save / new / current / delete / delete-all) |
-| `/skill` | Skill management (list / reload / show / upload) |
+| `/skill` | Skill management (list / reload / show / upload / remove) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
 | `/vision` | Vision model management (status / test) |
 | `/model` | Multi-model management (list / use / add / remove / test) |
@@ -277,11 +277,14 @@ Session data is stored with AES-256-GCM encryption under `~/.loop-agent/sessions
 /skill show <name>              # Show the full SKILL.md content of the specified Skill
 /skill upload <dirs...>         # Install local Skill directories (workspace by default; --global for global; asks before overwriting name conflicts)
 /skill upload                   # No args: open the native directory picker (auto-detects available tools on Windows/macOS/Linux)
+/skill remove <names...>        # Remove installed Skills (workspace first by default; --global/--workspace to restrict; per-item y/N confirmation)
 ```
 
 Skills are auto-scanned from the global `~/.loop-agent/skills/` and the workspace `<cwd>/.loop-agent/skills/` directories; the workspace version takes precedence when names collide. See [🎯 Skills](#-skills).
 
 `/skill upload` supports dragging directories into the terminal (quoted paths / `file://` URIs are normalized automatically) and batch installation of multiple directories. Each target is validated for a proper `SKILL.md` (name/description) before installation, a single failure does not block the rest, and Skills are rescanned automatically after installation.
+
+`/skill remove` locates Skills by frontmatter `name` and deletes the entire Skill directory: when the same name exists in both scopes, the workspace one is removed by default (`--global` / `--workspace` restrict to a single scope), each deletion requires confirmation (default N), and a path guard rejects targets that are not direct children of the skills root (path-traversal protection). After removal, Skills are rescanned automatically and disappear from `/skill list` immediately. Batch removal is supported; a single failure does not block the rest.
 
 #### `/memory` — Memory Management
 

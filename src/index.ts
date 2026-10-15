@@ -223,7 +223,7 @@ async function main() {
         if (command === '/tools' && (subcommand === 'enable' || subcommand === 'disable')) {
           return BUILTIN_TOOL_NAMES.filter((n) => n.startsWith(prefix));
         }
-        if (command === '/skill' && subcommand === 'show') {
+        if (command === '/skill' && (subcommand === 'show' || subcommand === 'remove')) {
           return skillLoader.list().map((s) => s.name).filter((n) => n.startsWith(prefix));
         }
         if (command === '/mcp' && (subcommand === 'test' || subcommand === 'remove')) {

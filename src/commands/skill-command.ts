@@ -1,7 +1,7 @@
 // /skill 命令处理器
-// 支持: list, reload, show <name>, upload（Task-20261015-001）
+// 支持: list, reload, show <name>, upload（Task-20261015-001）, remove（Task-20261015-002）
 import readline from 'node:readline';
-import { formatSkillList, installSkillDirs, pickDirectoryViaDialog } from '../skill/index.js';
+import { formatSkillList, installSkillDirs, pickDirectoryViaDialog, removeSkills, scanSkillsDir } from '../skill/index.js';
 import { parseUploadArgs } from '../upload/manager.js';
 import { COLORS } from '../ui/colors.js';
 import type { CommandContext, CommandHandler } from './registry.js';
@@ -9,6 +9,12 @@ import type { CommandContext, CommandHandler } from './registry.js';
 /** /skill upload：取 upload 之后的原文（保留引号，交给 parseUploadArgs 归一） */
 function uploadArgText(input: string): string {
   const m = input.trim().match(/^\/skill\s+upload\b(.*)$/i);
+  return (m?.[1] ?? '').trim();
+}
+
+/** /skill remove：取 remove 之后的原文（保留引号，交给 parseUploadArgs 归一） */
+function removeArgText(input: string): string {
+  const m = input.trim().match(/^\/skill\s+remove\b(.*)$/i);
   return (m?.[1] ?? '').trim();
 }
 
@@ -80,10 +86,73 @@ async function runSkillUpload(ctx: CommandContext, rest: string): Promise<void> 
   out.blank();
 }
 
+/**
+ * /skill remove <name...> [--global|--workspace]（Task-20261015-002）
+ * 无参报错提示用法（D4）；默认 auto 工作空间优先 → 全局 fallback（D2）；
+ * 逐个 y/N 确认，无 --yes（D3）；删完自动 reload（D6）
+ */
+async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> {
+  const { out, skillLoader } = ctx;
+
+  // 剥离作用域 flag（位置无关），与 upload 同款
+  const scope: 'auto' | 'global' | 'workspace' = /(^|\s)--global(?=\s|$)/i.test(rest)
+    ? 'global'
+    : /(^|\s)--workspace(?=\s|$)/i.test(rest)
+      ? 'workspace'
+      : 'auto';
+  const nameText = rest
+    .replace(/(^|\s)--global(?=\s|$)/gi, '$1')
+    .replace(/(^|\s)--workspace(?=\s|$)/gi, '$1')
+    .trim();
+
+  const names = parseUploadArgs(nameText);
+  if (names.length === 0) {
+    out.log(`${COLORS.red}用法: /skill remove <name...> [--global|--workspace]${COLORS.reset}`);
+    out.blank();
+    return;
+  }
+
+  // auto 需要同时看到工作空间与全局（list() 合并视图会遮蔽同名全局项），直接扫两个目录
+  const globalDir = skillLoader.globalDir;
+  const workspaceDir = skillLoader.getWorkspaceDir(process.cwd());
+  const skills = [...scanSkillsDir(workspaceDir, 'workspace'), ...scanSkillsDir(globalDir, 'global')];
+
+  // D3：逐项确认（临时 readline，与 upload 覆盖确认同款）
+  const confirm = (name: string, dir: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      tempRl.question(
+        `${COLORS.yellow}确认删除 Skill「${name}」？(${dir}) (y/N):${COLORS.reset} `,
+        (a) => {
+          tempRl.close();
+          resolve(a.trim().toLowerCase() === 'y');
+        },
+      );
+    });
+
+  const result = await removeSkills(names, { skills, scope, globalDir, workspaceDir, confirm });
+
+  out.blank();
+  for (const e of result.removed) {
+    const scopeTag = e.scope === 'global' ? '全局' : '工作空间';
+    out.log(`${COLORS.green}✓ ${e.name}${COLORS.reset} ${COLORS.gray}（${scopeTag}）${COLORS.reset}`);
+    out.log(`  ${COLORS.gray}→ 已删除 ${e.dir}${COLORS.reset}`);
+  }
+  for (const f of result.failed) {
+    out.log(`${COLORS.red}✗ ${f.name}：${f.reason}${COLORS.reset}`);
+  }
+  if (result.removed.length > 0) {
+    // D6：自动 reload，/skill list 立即不可见
+    skillLoader.reload(process.cwd());
+    out.log(`${COLORS.gray}已重新扫描 Skill${COLORS.reset}`);
+  }
+  out.blank();
+}
+
 export const skillCommand: CommandHandler = {
   name: '/skill',
-  description: 'Skill 管理（list/reload/show/upload）',
-  subcommands: ['list', 'reload', 'show', 'upload'],
+  description: 'Skill 管理（list/reload/show/upload/remove）',
+  subcommands: ['list', 'reload', 'show', 'upload', 'remove'],
   match: (input) => input.toLowerCase().startsWith('/skill'),
   async execute(input, ctx) {
     const { out, configLoader, skillLoader } = ctx;
@@ -152,7 +221,12 @@ export const skillCommand: CommandHandler = {
       return;
     }
 
-    out.log(`${COLORS.red}未知 /skill 子命令: ${sub}。支持 list / reload / show / upload${COLORS.reset}`);
+    if (sub === 'remove') {
+      await runSkillRemove(ctx, removeArgText(input));
+      return;
+    }
+
+    out.log(`${COLORS.red}未知 /skill 子命令: ${sub}。支持 list / reload / show / upload / remove${COLORS.reset}`);
     out.blank();
   },
 };
