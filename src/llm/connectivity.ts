@@ -30,6 +30,8 @@ export const defaultCheckConnectivity: CheckConnectivityFn = async (candidate) =
       baseURL: candidate.baseUrl,
       timeout: CHECK_TIMEOUT_MS,
       maxRetries: 0,
+      // 注入原生 fetch，规避 SDK 内置 node-fetch 在 Node 24 下的 Premature close
+      fetch: globalThis.fetch,
     });
     const stream = await client.chat.completions.create({
       model: candidate.name,

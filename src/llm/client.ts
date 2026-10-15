@@ -63,7 +63,9 @@ export class LLMClient {
     const baseURL = config.openaiBaseUrl;
 
     if (!this.client || apiKey !== this._lastApiKey || baseURL !== this._lastBaseUrl) {
-      this.client = new OpenAI({ apiKey, baseURL });
+      // 显式注入 Node 原生 fetch：SDK 默认使用内置 node-fetch@2，在 Node 24 下读取
+      // 服务端「chunked + gzip」的长连接响应会抛 ERR_STREAM_PREMATURE_CLOSE（Premature close）
+      this.client = new OpenAI({ apiKey, baseURL, fetch: globalThis.fetch });
       this._lastApiKey = apiKey;
       this._lastBaseUrl = baseURL;
     }
@@ -160,7 +162,8 @@ export class LLMClient {
    */
   private getVisionClient(apiKey: string, baseURL: string): OpenAI {
     if (!this.visionClient || apiKey !== this._lastVisionKey || baseURL !== this._lastVisionUrl) {
-      this.visionClient = new OpenAI({ apiKey, baseURL });
+      // 同 getClient()：注入原生 fetch，规避 node-fetch 的 Premature close
+      this.visionClient = new OpenAI({ apiKey, baseURL, fetch: globalThis.fetch });
       this._lastVisionKey = apiKey;
       this._lastVisionUrl = baseURL;
     }
