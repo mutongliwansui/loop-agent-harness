@@ -14,11 +14,8 @@ vi.mock('../src/upload/manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/upload/manager.js')>();
   return { ...actual, ...managerMocks };
 });
-// clean 的 y/n 确认走 node:readline question，mock 掉避免阻塞
-const questionMock = vi.hoisted(() => vi.fn());
-vi.mock('node:readline', () => ({
-  default: { createInterface: vi.fn(() => ({ question: questionMock, close: vi.fn() })) },
-}));
+// clean 的 y/n 确认统一走 ctx.askConfirm，mock 掉避免阻塞
+const askConfirmMock = vi.hoisted(() => vi.fn());
 
 import { uploadCommand } from '../src/commands/upload-command.js';
 import type { UploadEntry, UploadResult } from '../src/upload/manager.js';
@@ -55,6 +52,7 @@ function makeCtx(overrides: Partial<{ sessionId: string | null; noSessionStore: 
     skillLoader: {},
     sessionStore,
     colors: COLORS,
+    askConfirm: askConfirmMock,
   };
   return { ctx: ctx as unknown as CommandContext, agent, out: ctx.out, sessionStore };
 }
@@ -170,7 +168,7 @@ describe('list / clean', () => {
 
   it('clean：y 确认后调用清理', async () => {
     const { ctx, out } = makeCtx();
-    questionMock.mockImplementation((_q: string, cb: (a: string) => void) => cb('y'));
+    askConfirmMock.mockResolvedValue(true);
     managerMocks.cleanUploads.mockResolvedValue(true);
     await uploadCommand.execute('/upload clean', ctx);
     expect(managerMocks.cleanUploads).toHaveBeenCalledWith(expect.any(String), 'sess-1');
@@ -179,11 +177,11 @@ describe('list / clean', () => {
 
   it('clean：n 取消不清理；无内容提示', async () => {
     const { ctx } = makeCtx();
-    questionMock.mockImplementation((_q: string, cb: (a: string) => void) => cb('n'));
+    askConfirmMock.mockResolvedValue(false);
     await uploadCommand.execute('/upload clean', ctx);
     expect(managerMocks.cleanUploads).not.toHaveBeenCalled();
 
-    questionMock.mockImplementation((_q: string, cb: (a: string) => void) => cb('y'));
+    askConfirmMock.mockResolvedValue(true);
     managerMocks.cleanUploads.mockResolvedValue(false);
     const ctx2 = makeCtx();
     await uploadCommand.execute('/upload clean', ctx2.ctx);

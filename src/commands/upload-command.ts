@@ -13,7 +13,6 @@ import {
   parseUploadArgs,
   pickFilesViaDialog,
 } from '../upload/manager.js';
-import readline from 'node:readline';
 
 /** 取命令名之后的参数原文（保留引号，交给 parseUploadArgs 归一） */
 function argText(input: string): string {
@@ -98,14 +97,11 @@ async function runClean(ctx: CommandContext): Promise<void> {
     warnNoSession(ctx);
     return;
   }
-  const q = await new Promise<string>((resolve) => {
-    const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    tempRl.question(`${COLORS.yellow}确认清理当前会话的全部上传文件？(y/N):${COLORS.reset} `, (a) => {
-      tempRl.close();
-      resolve(a);
-    });
-  });
-  if (q.trim().toLowerCase() !== 'y') {
+  // 统一走 ctx.askConfirm，禁止新建临时 readline（其 close 会 pause 共享 stdin 导致进程退出）
+  const q = await ctx.askConfirm(
+    `${COLORS.yellow}确认清理当前会话的全部上传文件？(y/N):${COLORS.reset} `,
+  );
+  if (!q) {
     out.log(`${COLORS.gray}已取消${COLORS.reset}`);
     out.blank();
     return;

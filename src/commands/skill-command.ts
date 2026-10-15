@@ -1,6 +1,5 @@
 // /skill 命令处理器
 // 支持: list, reload, show <name>, upload（Task-20261015-001）, remove（Task-20261015-002）
-import readline from 'node:readline';
 import { formatSkillList, installSkillDirs, pickDirectoryViaDialog, removeSkills, scanSkillsDir } from '../skill/index.js';
 import { parseUploadArgs } from '../upload/manager.js';
 import { COLORS } from '../ui/colors.js';
@@ -53,19 +52,13 @@ async function runSkillUpload(ctx: CommandContext, rest: string): Promise<void> 
     paths = picked.paths;
   }
 
-  // D5：冲突确认（临时 readline，与 /upload clean 同款）
-  const confirmOverwrite = (name: string, targetDir: string): Promise<boolean> =>
-    new Promise((resolve) => {
-      const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      tempRl.question(
-        `${COLORS.yellow}目标已存在同名 Skill「${name}」，覆盖？(y/N):${COLORS.reset} `,
-        (a) => {
-          tempRl.close();
-          resolve(a.trim().toLowerCase() === 'y');
-        },
-      );
-      void targetDir;
-    });
+  // D5：冲突确认（统一走 ctx.askConfirm，禁止新建临时 readline——其 close 会 pause 共享 stdin 导致进程退出）
+  const confirmOverwrite = (name: string, targetDir: string): Promise<boolean> => {
+    void targetDir;
+    return ctx.askConfirm(
+      `${COLORS.yellow}目标已存在同名 Skill「${name}」，覆盖？(y/N):${COLORS.reset} `,
+    );
+  };
 
   const result = await installSkillDirs(paths, { targetRoot, confirmOverwrite });
 
@@ -117,18 +110,11 @@ async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> 
   const workspaceDir = skillLoader.getWorkspaceDir(process.cwd());
   const skills = [...scanSkillsDir(workspaceDir, 'workspace'), ...scanSkillsDir(globalDir, 'global')];
 
-  // D3：逐项确认（临时 readline，与 upload 覆盖确认同款）
+  // D3：逐项确认（统一走 ctx.askConfirm，禁止新建临时 readline——其 close 会 pause 共享 stdin 导致进程退出）
   const confirm = (name: string, dir: string): Promise<boolean> =>
-    new Promise((resolve) => {
-      const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      tempRl.question(
-        `${COLORS.yellow}确认删除 Skill「${name}」？(${dir}) (y/N):${COLORS.reset} `,
-        (a) => {
-          tempRl.close();
-          resolve(a.trim().toLowerCase() === 'y');
-        },
-      );
-    });
+    ctx.askConfirm(
+      `${COLORS.yellow}确认删除 Skill「${name}」？(${dir}) (y/N):${COLORS.reset} `,
+    );
 
   const result = await removeSkills(names, { skills, scope, globalDir, workspaceDir, confirm });
 

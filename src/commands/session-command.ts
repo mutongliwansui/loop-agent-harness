@@ -1,6 +1,5 @@
 // /session 命令处理器
 // 支持: list, load <id>, save, new, current, delete <id>, delete-all
-import readline from 'node:readline';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { SessionStore, keychain } from '../session/index.js';
 import { COLORS } from '../ui/colors.js';
@@ -156,14 +155,11 @@ export const sessionCommand: CommandHandler = {
     }
 
     if (sub === 'delete-all') {
-      const q = await new Promise<string>((resolve) => {
-        const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        tempRl.question(`${COLORS.red}确认删除当前工作空间的所有会话？(y/N):${COLORS.reset} `, (a) => {
-          tempRl.close();
-          resolve(a);
-        });
-      });
-      if (q.trim().toLowerCase() !== 'y') {
+      // 统一走 ctx.askConfirm，禁止新建临时 readline（其 close 会 pause 共享 stdin 导致进程退出）
+      const q = await ctx.askConfirm(
+        `${COLORS.red}确认删除当前工作空间的所有会话？(y/N):${COLORS.reset} `,
+      );
+      if (!q) {
         out.log(`${COLORS.gray}已取消${COLORS.reset}`);
         out.blank();
         return;

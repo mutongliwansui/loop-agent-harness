@@ -201,3 +201,4 @@ export type { SkillInstallEntry, SkillInstallResult, ValidateResult, SkillRemove
 - 2026-10-15 P0：installer.ts 追加 removeSkills + SkillRemoveEntry/SkillRemoveResult；skill-command.ts 新增 runSkillRemove 分支（flag 剥离/无参报错/逐项确认/reload），description/subcommands/报错文案同步；index.ts provider 条件扩展 remove；skill/index.ts 导出。
 - 2026-10-15 P1：tests/skill-installer.test.ts 追加 removeSkills 11 个用例（空数组/auto 三态/--global/--workspace/未找到/护栏/确认 N/批量不阻断/D1 按 frontmatter name 定位）；`npx tsc --noEmit` 通过；全量回归 466 用例全绿。
 - 2026-10-15 P2：renderer.ts /help 行更新；README.md / README.en.md 命令表、/skill 详解、Tab 补全说明同步；需求台账置完成。
+- 2026-10-15 Bugfix：修复「执行 /skill remove 后进程退出」——根因是临时 readline 与主 REPL 共享 process.stdin，close() 会 pause 共享流导致主 REPL 永久失聪、TTY 下进程退出。修复：废弃全部临时 readline，在 index.ts 用主 rl.question 实现统一 askConfirm 并加入 confirming 守卫防止答案行被主循环重复消费；同步替换 skill-command（upload overwrite + remove）、session-command（delete-all）、upload-command（clean）共 4 处。类型检查 + 全量 466 用例回归全绿。

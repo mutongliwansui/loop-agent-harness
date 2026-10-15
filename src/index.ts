@@ -258,6 +258,26 @@ async function main() {
   });
 
   // 11. 构建 CommandContext
+  /**
+   * 是否处于 y/N 确认中（bugfix：替代临时 readline 方案）。
+   * 历史问题：命令内新建临时 readline 与主 REPL 共享 process.stdin，其 close() 会 pause
+   * 共享流导致主 REPL 永久失聪、TTY 下进程直接退出；且答案行被主循环重复消费。
+   * 现统一用主 rl.question 实现确认，确认期间主 'line' 处理器直接忽略输入。
+   */
+  let confirming = false;
+  const askConfirm = (question: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      confirming = true;
+      rl.question(question, (answer) => {
+        // 答案行与 'line' 事件的派发顺序随 Node 版本可能不同，延迟一拍复位，
+        // 确保无论谁先谁后，答案行都不会落入主循环被当作新输入
+        setImmediate(() => {
+          confirming = false;
+        });
+        resolve(answer.trim().toLowerCase() === 'y');
+      });
+    });
+
   const ctx: CommandContext = {
     agent,
     configLoader,
@@ -269,6 +289,7 @@ async function main() {
     rl,
     out: new ConsoleOutputChannel(),
     colors: C,
+    askConfirm,
   };
 
   /** 是否有正在执行的 Agent 任务 */
@@ -290,6 +311,9 @@ async function main() {
   safePrompt();
 
   rl.on('line', async (raw: string) => {
+    // y/N 确认期间：答案行由 rl.question 回调处理，主循环忽略
+    if (confirming) return;
+
     const input = raw.trim();
 
     if (!input) {

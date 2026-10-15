@@ -22,6 +22,13 @@ export interface CommandContext {
   rl: readline.Interface;
   out: OutputChannel;
   colors: typeof COLORS;
+  /**
+   * 统一 y/N 确认（复用主 REPL 的 readline，严禁新建临时 readline）。
+   * 背景：临时 readline 与主 REPL 共享 process.stdin，其 close() 会 pause 共享流，
+   * 导致主 REPL 永久失聪、TTY 下进程直接退出；且答案行会被主循环重复消费。
+   * 返回 true 表示用户明确输入 y，其余（含回车）一律 false。
+   */
+  askConfirm: (question: string) => Promise<boolean>;
 }
 
 /** 命令处理器 */
