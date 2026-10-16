@@ -1,0 +1,287 @@
+# 📖 CLI 使用
+
+> [⬅ 返回 README](../../../README.md)
+
+```bash
+npm start
+```
+
+启动后进入交互式 REPL 控制台：
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃            ReAct Agent 交互式控制台                      ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+模型: gpt-4o-mini (workspace)
+BaseURL: https://api.openai.com/v1 (env)
+最大迭代: 10
+内置工具: [commandRun, fileRead, fileWrite, editFile, grep, activate_skill]
+MCP 工具: 3 个, Servers: atlasGraphMcp (atlasGraphMcp__toolName)
+Skills: 2 个 (example-skill, py-pptx)
+⚠ 调试模式已开启，日志输出到: ~/.loop-agent/logs
+
+Agent> 帮我读取 package.json 的版本号
+```
+
+> 若配置中开启了 `agent.debug`，启动时会额外提示调试日志输出目录（见 [📝 调试日志](debug-logging.md)）。
+
+> 运行期间，在模型生成（尤其工具调用参数）与工具执行等耗时阶段会显示 loading 指示器（如「思考中…（第 N 轮）」「生成参数：fileWrite…（12.3KB / 8s）」「执行中：grep…」），让等待过程有实时反馈；日志/流式 Thought/最终答案打印前会先清除指示器行，二者不会混行。该指示器仅在交互式 TTY 下启用，管道、重定向与 CI 环境下自动关闭、零输出。
+
+### 内置命令
+
+| 命令 | 说明 |
+|---|---|
+| `输入问题` | Agent 流式输出 Thought / Action / Observation / Final |
+| `/help` | 查看全局帮助信息；任意命令后加 `help`（如 `/mcp help`）查看其子命令用法 |
+| `/reset` `/clear` | 清空多轮对话历史，开始新会话 |
+| `/status` | 查看当前会话状态（消息数 / 工具数 / MCP 工具数 / Skills） |
+| `/tools` | 工具管理（list / enable / disable / reload） |
+| `/config` | 配置管理（get / set / delete / list / path） |
+| `/mcp` | MCP 管理（list / add / remove / reload / test / view） |
+| `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
+| `/skill` | Skill 管理（list / reload / show / upload / remove） |
+| `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
+| `/vision` | 视觉模型管理（status / test） |
+| `/model` | 多模型管理（list / use / add / remove / test） |
+| `/upload` | 文件上传（复制到会话隔离上传目录并注入 Agent 上下文；list / clean） |
+| `/setup` | 重跑初始化配置向导（--global / --workspace 指定写入层级） |
+| `/doctor` | 启动体检：逐项检测模型配置 / 配置文件 / skills 目录（只读） |
+| `exit` / `quit` / `退出` | 退出程序（Ctrl+C 同样有效） |
+
+> **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
+> - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
+> - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test / view ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/config get / set / delete ` 补配置项名（如 `model.name`、`vision.enabled`）、`/upload ` 补 `list / clean` 子命令；
+> - **单词命令**：`hel` → `help`、`ex` → `exit`。
+>
+> 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
+>
+> **子命令帮助**：任意命令后加 `help`（或简写 `-h` / `--help`）即可查看该命令的子命令用法，如 `/mcp help`、`/skill help`、`/config help`——无需记忆全局 `/help`。
+
+### 输出示例
+
+```
+━━━ 迭代 1/10 ━━━
+
+[Thought] 我需要读取 package.json 文件来获取版本号...
+
+[Action] fileRead({"path":"package.json"})
+[Observation]
+  1: {
+  2:   "name": "loop-agent-command",
+  3:   "version": "0.1.0",
+  4:   ...
+  5: }
+
+━━━ Final Answer ━━━
+项目名称为 loop-agent-command，版本号为 0.1.0。
+
+━━━ 完成（1 轮，1 步） ━━━
+```
+
+### CLI 命令详解
+
+#### `/config` — 配置管理
+
+支持对工作空间（默认）和全局两个层级的配置进行读写：
+
+```
+/config list                    # 查看当前生效配置（含每一字段的来源标记）
+/config get <key>               # 查看某个配置项（如 model.name）
+/config set <key> <value>       # 设置配置项（默认写入工作空间）
+/config set <key> <value> --global  # 写入全局配置
+/config delete <key>            # 删除某配置项
+/config path                    # 查看配置文件路径
+```
+
+配置值支持自动识别类型：`true`/`false` 为布尔值，数字自动转为 Number，`{...}` 或 `[...]` 自动解析为 JSON。
+
+#### `/mcp` — MCP 管理
+
+```
+/mcp list                       # 列出所有 MCP Server 配置及连接状态
+/mcp add <name>                 # 交互式添加新 MCP Server
+/mcp remove <name>              # 移除指定 MCP Server
+/mcp reload                     # 重新加载全部 MCP 配置
+/mcp test <name>                # 测试连接指定 MCP Server
+/mcp view <name>                # 查看指定 MCP Server 的服务信息与工具清单
+/mcp help                       # 查看 /mcp 的子命令用法
+```
+
+> `/mcp view <name>` 展示服务名称、传输配置、连接状态与该服务下的工具清单（工具名 + 描述）：已连接的 Server 直接读取已注册工具（零开销），未连接的会临时连接查询后自动断开（与 `/mcp test` 同款模式），无需先 `/mcp reload`。
+
+#### `/tools` — 工具管理
+
+```
+/tools list                     # 列出所有已注册工具（内置 + MCP）
+/tools enable <name>            # 启用内置工具
+/tools disable <name>           # 禁用内置工具
+/tools reload                   # 重新加载所有工具
+```
+
+#### `/session` — 会话管理
+
+```
+/session list                   # 列出当前工作空间所有会话（ID / 标题 / 消息数 / 时间）
+/session current                # 查看当前会话详情
+/session load <id>              # 加载指定会话，恢复历史对话
+/session save                   # 手动保存当前会话
+/session new                    # 新建会话（旧会话自动保存）
+/session delete <id>            # 删除指定会话
+/session delete-all             # 删除当前工作空间的所有会话（需二次确认）
+```
+
+会话列表输出示例：
+
+```
+当前工作空间会话 (2 个):
+  sess_20260806_143022 [当前] 2026/08/06 14:30:22 [5条] 帮我读取 package.json 的版本号
+  sess_20260805_210011        2026/08/05 21:00:11 [3条] 搜索 src 目录中的 config
+```
+
+会话数据以 AES-256-GCM 加密存储在 `~/.loop-agent/sessions/` 目录（按工作空间隔离），详见 [💾 会话持久化](session-persistence.md)。
+
+#### `/skill` — Skill 管理
+
+```
+/skill list                     # 列出所有可用 Skill（全局 + 工作空间，含来源标记）
+/skill reload                   # 重新扫描 Skill 目录
+/skill show <name>              # 显示指定 Skill 的 SKILL.md 完整内容
+/skill upload <目录...>         # 安装本地 Skill 目录（默认工作空间；--global 装到全局；同名冲突询问覆盖）
+/skill upload                   # 无参：弹出系统目录选择框（Windows/macOS/Linux 探测可用工具）
+/skill remove <name...>         # 删除已安装 Skill（默认工作空间优先；--global/--workspace 严格限定；逐个 y/N 确认）
+```
+
+Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](skills.md)。
+
+`/skill upload` 支持拖拽目录到终端（引号 / `file://` URI 自动归一）与多目录批量安装；安装前校验目标含合法 `SKILL.md`（name/description），单项失败不阻断其余，安装完成后自动重新扫描立即可用。
+
+`/skill remove` 按 frontmatter `name` 定位并删除整个 Skill 目录：同名两处时默认删工作空间（`--global` / `--workspace` 可严格限定单一作用域），删除前逐个确认（默认 N），内置路径护栏（目标必须是 skills 根的直接子目录，防路径穿越），删除后自动重新扫描，`/skill list` 立即不可见；支持批量删除，单项失败不阻断其余。
+
+#### `/memory` — 记忆管理
+
+```
+/memory status                          # 查看记忆系统状态（L1/L2/L3 各层统计）
+/memory curated list                    # 列出 L3 核心记忆文件（SOUL / USER / MEMORY）
+/memory curated read <soul|user|memory> # 读取指定核心记忆文件内容
+/memory curated append <key> <内容>      # 向核心记忆文件追加一条事实
+/memory episodic list                   # 列出 L2 情景记忆日志（按天）
+/memory episodic read <YYYY-MM-DD>      # 读取指定日期的情景记忆
+/memory search <关键词>                  # 搜索 L2 情景记忆（返回相关片段）
+/memory dream [天数]                    # 手动触发 Dreaming 巡检（晋升 L2 → L3）
+/memory gate                            # 查看 Promotion Gate 待确认/待晋升事实
+/memory init                            # 初始化 L3 核心记忆文件
+```
+
+详见 [🧠 记忆管理](memory-management.md)。
+
+#### `/vision` — 视觉模型管理
+
+```
+/vision status                  # 查看视觉模型配置（启用状态 / 三元组来源标记 / apiKey 掩码 / 缓存状态 / 会话累计统计）
+/vision test                    # 用 1x1 PNG 做连通性测试（校验 baseUrl / apiKey / model 是否可用）
+```
+
+视觉三元组（`vision.baseUrl` / `vision.apiKey` / `vision.model`）为空时自动回退主模型 `model.*`，同一服务商多模型零重复配置。启用方式：
+
+```
+/config set vision.enabled true    # 立即生效：自动注册视觉工具（设为 false / delete 时自动注销），无需 /tools reload
+/config set vision.model gpt-4o    # 不设置则回退主模型 model.name
+```
+
+启用后注册四个视觉工具：`describe_image`（整体描述）、`ask_image`（定向问答）、`extract_json`（结构化提取）、`ocr_image`（文字识别），见 [🔧 内置工具](built-in-tools.md)。
+
+#### `/model` — 多模型接入与切换
+
+把多个 OpenAI 协议模型登记到登记簿（`models.profiles`，以别名为键），用别名一键切换当前生效模型（`model.*` 快照），写盘即生效、无需重启：
+
+```
+/model list                  # 列出登记簿与当前生效快照（含 apiKey 掩码与漂移检测提示）
+/model use <别名>            # 切换到已登记模型（同步激活指针与生效快照，立即生效）
+/model use <别名> --global   # 切换全局层；与工作空间层冲突时可交互确认并自动清理冲突键
+/model add <别名>            # 登记新模型（交互选择写入位置，回车默认工作空间）
+/model add <别名> --global   # 登记到全局层（flag 显式指定时跳过位置询问）
+/model remove <别名>         # 从登记簿移除（不影响当前生效快照）
+/model test <别名>           # 对已登记模型做连通性测试（不改变激活状态）
+```
+
+设计要点：
+
+- **登记簿 + 激活指针**：`models.profiles` 只做登记，`models.active` 指向当前激活别名；`/model use` 会同时写入激活指针与 `model.*` 生效快照——运行时只读 `model.*` 一处，主模型、视觉回退三元组、记忆系统（Dreaming / 压缩）全部跟随新模型。
+- **跨层叠加**：登记簿按「全局 → 工作空间」逐层深合并（同名别名工作空间叶子覆盖全局），`temperature` 未登记的模型切换时不覆盖现有采样温度。
+- **漂移检测**：`/model list` 与启动 Banner 会比对激活别名与生效快照（只比 name + baseUrl，apiKey 轮换不算漂移），不一致时提示执行 `/model use <别名>` 重新同步。
+- **向导联动**：首次启动向导写入模型时，若登记簿为空会自动登记为 `default` 别名，之后接入第二个模型即可随时 `/model use default` 回切。
+
+配置示例（工作空间 `.loop-agent/.agent-config.json`）：
+
+```json
+{
+  "models": {
+    "active": "deepseek",
+    "profiles": {
+      "deepseek": {
+        "name": "deepseek-chat",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": "sk-yyy"
+      },
+      "glm": {
+        "name": "glm-4.7",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "sk-zzz"
+      }
+    }
+  }
+}
+```
+
+#### `/upload` — 文件上传（会话隔离上传目录）
+
+把本地文件复制到 Agent 的全局上传目录（`~/.loop-agent/uploads/{会话ID}/`），并把上传路径注入当前会话上下文——Agent 在后续对话中自动"知道"文件，可直接用 `fileRead` / `commandRun` / 视觉工具处理，无需口头转述路径：
+
+```
+/upload <路径...>         # 上传一个或多个文件（可拖拽到终端，自动解析带引号路径）
+/upload                   # 无参：弹出系统文件选择框（多选；Windows/macOS/Linux 探测可用工具）
+/upload list              # 列出当前会话已上传文件
+/upload clean             # 清理当前会话的上传目录（y/n 确认）
+```
+
+设计要点：
+
+- **会话隔离**：物理目录按会话分隔（`uploads/{sessionId}/`），`/session delete` / `delete-all` 连带清理；跨会话互不可见，且不污染工作空间 git 工作区
+- **Agent 感知**：上传成功后注入 `[文件上传]` 上下文消息（路径 + 大小），随 autoSave 持久化、`/session load` 恢复后依然有效；不自动触发回答，上传是准备动作
+- **跨平台归一**：终端拖拽格式各异（Windows 引号路径 / Linux GNOME `file://` URI / Konsole 转义空格），统一解析为本地路径；无参弹框按平台探测 `PowerShell + WinForms` / `osascript` / `zenity → kdialog → yad`，全部不可用时优雅降级为拖拽/路径参数
+- **防覆盖与上限**：文件名加时间戳前缀防重名；单文件上限 100MB；目录不支持直接上传（提示压缩后上传）
+- **零依赖**：仅 `node:fs` / `node:child_process`，无 npm 新增依赖
+
+#### `/setup` — 重跑初始化向导
+
+在 REPL 内重新运行首次启动的配置向导，流程一致：baseUrl → apiKey（遮蔽输入）→ 模型名 → 连通性校验 → 选择写入层级。完成后立即重新加载配置并刷新工具注册，后续对话即时生效，无需重启：
+
+```
+/setup                     # 未指定层级时沿用向导默认建议
+/setup --global            # 写入全局配置 ~/.loop-agent/config.json
+/setup --workspace         # 写入工作空间配置 .loop-agent/.agent-config.json
+```
+
+写入前若目标文件存在但内容损坏（非法 JSON），会自动备份为 `.bak-<时间戳>`。
+
+#### `/doctor` — 启动体检
+
+只读检查当前环境是否具备正常对话条件，逐项输出三态报告（✓ 正常 / ✗ 阻断 / ! 警告），不修改任何文件：
+
+```
+/doctor
+启动体检报告
+
+  ✓ 主模型 apiKey
+  ✓ 主模型名称
+  ✗ 全局配置文件：<原因>（首次写入配置时自动创建）
+  ! 全局 skills 目录：<原因> → ~/.loop-agent/skills
+  ……
+
+  ✓ 阻断项 0 个，主模型配置齐备，可正常对话
+  本命令只读，不修改任何文件
+```
+
+共 6 个检测项：主模型 apiKey、主模型名称、全局配置文件、工作空间配置文件、全局 skills 目录、工作空间 skills 目录；✗ 项附带修复提示（如「运行 /setup 重新配置」）。
