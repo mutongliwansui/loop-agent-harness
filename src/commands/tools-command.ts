@@ -35,7 +35,13 @@ export const BUILTIN_TOOL_NAMES = [
 export const toolsCommand: CommandHandler = {
   name: '/tools',
   description: '工具管理（list/enable/disable/reload）',
-  subcommands: ['list', 'enable', 'disable', 'reload'],
+  subcommands: ['list', 'enable', 'disable', 'reload', 'help'],
+  subcommandHelp: {
+    list: '列出所有已注册工具（内置 + MCP）',
+    enable: '启用内置工具（--workspace|--global）',
+    disable: '禁用内置工具（--workspace|--global）',
+    reload: '重新加载所有工具',
+  },
   match: (input) => input.toLowerCase().startsWith('/tools'),
   async execute(input, ctx) {
     const { out, configLoader, configWriter, registry, mcpManager } = ctx;

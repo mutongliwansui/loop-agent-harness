@@ -64,7 +64,7 @@ describe('/setup match 与声明', () => {
   });
 
   it('声明二级子命令 --global/--workspace', () => {
-    expect(setupCommand.subcommands).toEqual(['--global', '--workspace']);
+    expect(setupCommand.subcommands).toEqual(['--global', '--workspace', 'help']);
   });
 });
 

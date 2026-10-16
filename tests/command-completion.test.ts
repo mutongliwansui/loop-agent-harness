@@ -169,9 +169,10 @@ describe('真实命令的 subcommands 声明与二级补全', () => {
     });
   }
 
-  it('每个命令的 subcommands 与 description 括号内容一致', () => {
+  it('每个命令的 subcommands 与 description 括号内容一致（help 为通用子命令，不入描述）', () => {
     for (const c of REAL_COMMANDS) {
-      expect([...(c.subcommands ?? [])].sort()).toEqual(descriptionSubs(c.description).sort());
+      const subs = [...(c.subcommands ?? [])].filter((s) => s !== 'help').sort();
+      expect(subs).toEqual(descriptionSubs(c.description).sort());
     }
   });
 
@@ -207,6 +208,7 @@ describe('真实命令的 subcommands 声明与二级补全', () => {
     expect(completeCommandLine('/setup ', r)[0]).toEqual([
       '/setup --global',
       '/setup --workspace',
+      '/setup help',
     ]);
     expect(completeCommandLine('/setup --g', r)).toEqual([['/setup --global'], '/setup --g']);
   });

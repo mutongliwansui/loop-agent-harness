@@ -76,7 +76,14 @@ function printConfigLayer(obj: Record<string, unknown>, sources: Record<string, 
 export const configCommand: CommandHandler = {
   name: '/config',
   description: '配置管理（list/get/set/delete/path）',
-  subcommands: ['list', 'get', 'set', 'delete', 'path'],
+  subcommands: ['list', 'get', 'set', 'delete', 'path', 'help'],
+  subcommandHelp: {
+    list: '列出全部配置项（含来源）',
+    get: '读取指定配置项，如 /config get model.name',
+    set: '设置配置项（--workspace|--global 指定写入层级）',
+    delete: '删除配置项（--workspace|--global）',
+    path: '显示全局 / 工作空间配置文件路径',
+  },
   match: (input) => input.toLowerCase().startsWith('/config'),
   async execute(input, ctx) {
     const { out } = ctx;

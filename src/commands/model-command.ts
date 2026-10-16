@@ -384,7 +384,14 @@ export function createModelCommand(deps: ModelCommandDeps = {}): CommandHandler 
   return {
     name: '/model',
     description: '多模型接入与切换（list/use/add/remove/test）',
-    subcommands: ['list', 'use', 'add', 'remove', 'test'],
+    subcommands: ['list', 'use', 'add', 'remove', 'test', 'help'],
+    subcommandHelp: {
+      list: '列出登记簿中的全部模型',
+      use: '切换当前模型（/model use <别名>）',
+      add: '登记新模型（/model add <别名>，交互式输入配置）',
+      remove: '移除模型（/model remove <别名>）',
+      test: '测试模型连通性（/model test <别名>）',
+    },
     match: (input) => /^\/model(?:\s|$)/i.test(input.trim()),
     async execute(input, ctx) {
       const { out } = ctx;

@@ -10,7 +10,16 @@ import { cleanAllUploads, cleanUploads, defaultUploadsRoot } from '../upload/man
 export const sessionCommand: CommandHandler = {
   name: '/session',
   description: '会话管理（list/load/save/new/current/delete/delete-all）',
-  subcommands: ['list', 'load', 'save', 'new', 'current', 'delete', 'delete-all'],
+  subcommands: ['list', 'load', 'save', 'new', 'current', 'delete', 'delete-all', 'help'],
+  subcommandHelp: {
+    list: '列出所有已保存会话',
+    load: '加载指定会话（/session load <id>）',
+    save: '保存当前会话',
+    new: '新建会话',
+    current: '显示当前会话信息',
+    delete: '删除指定会话（/session delete <id>）',
+    'delete-all': '删除全部会话（需二次确认）',
+  },
   match: (input) => input.toLowerCase().startsWith('/session'),
   async execute(input, ctx) {
     const { out, agent, configLoader, skillLoader, sessionStore, rl } = ctx;

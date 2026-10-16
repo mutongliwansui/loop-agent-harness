@@ -122,7 +122,15 @@ async function interactiveAddMcp(
 export const mcpCommand: CommandHandler = {
   name: '/mcp',
   description: 'MCP 管理（list/add/remove/reload/test/view）',
-  subcommands: ['list', 'add', 'remove', 'reload', 'test', 'view'],
+  subcommands: ['list', 'add', 'remove', 'reload', 'test', 'view', 'help'],
+  subcommandHelp: {
+    list: '列出所有 MCP Server 配置及连接状态',
+    add: '交互式添加新 MCP Server（stdio / sse / http）',
+    remove: '移除指定 MCP Server（--workspace|--global）',
+    reload: '重新加载全部 MCP 配置',
+    test: '测试连接指定 MCP Server',
+    view: '查看指定 Server 的信息与工具清单',
+  },
   match: (input) => input.toLowerCase().startsWith('/mcp'),
   async execute(input, ctx) {
     const { out, configLoader, configWriter, mcpManager, rl } = ctx;

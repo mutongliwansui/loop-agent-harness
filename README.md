@@ -175,7 +175,7 @@ Agent> 帮我读取 package.json 的版本号
 | 命令 | 说明 |
 |---|---|
 | `输入问题` | Agent 流式输出 Thought / Action / Observation / Final |
-| `/help` | 查看帮助信息 |
+| `/help` | 查看全局帮助信息；任意命令后加 `help`（如 `/mcp help`）查看其子命令用法 |
 | `/reset` `/clear` | 清空多轮对话历史，开始新会话 |
 | `/status` | 查看当前会话状态（消息数 / 工具数 / MCP 工具数 / Skills） |
 | `/tools` | 工具管理（list / enable / disable / reload） |
@@ -198,6 +198,8 @@ Agent> 帮我读取 package.json 的版本号
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
+>
+> **子命令帮助**：任意命令后加 `help`（或简写 `-h` / `--help`）即可查看该命令的子命令用法，如 `/mcp help`、`/skill help`、`/config help`——无需记忆全局 `/help`。
 
 ### 输出示例
 
@@ -246,6 +248,7 @@ Agent> 帮我读取 package.json 的版本号
 /mcp reload                     # 重新加载全部 MCP 配置
 /mcp test <name>                # 测试连接指定 MCP Server
 /mcp view <name>                # 查看指定 MCP Server 的服务信息与工具清单
+/mcp help                       # 查看 /mcp 的子命令用法
 ```
 
 > `/mcp view <name>` 展示服务名称、传输配置、连接状态与该服务下的工具清单（工具名 + 描述）：已连接的 Server 直接读取已注册工具（零开销），未连接的会临时连接查询后自动断开（与 `/mcp test` 同款模式），无需先 `/mcp reload`。

@@ -91,6 +91,7 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 同样有效）`);
   console.log(`  ${C.bold}Tab${C.reset}          → 命令自动补全（输入 /con 按 Tab 补全为 /config，/config 后可补子命令）`);
+  console.log(`  ${C.bold}/xxx help${C.reset}    → 查看任意命令的子命令用法（如 /mcp help、/skill help）`);
   console.log(`${C.gray}──────────────────────────────────────────────────────────${C.reset}`);
   console.log('');
 }

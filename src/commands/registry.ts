@@ -43,6 +43,45 @@ export interface CommandHandler {
   execute: (input: string, ctx: CommandContext) => Promise<void>;
   /** 子命令候选（用于二级 Tab 补全，如 /config 的 list/get/set …）；可选 */
   subcommands?: string[];
+  /** 子命令一句话说明（键为子命令名），用于 `/xxx help` 渲染；未提供则仅列子命令名 */
+  subcommandHelp?: Record<string, string>;
+}
+
+/** 子命令 help 的触发词（D4：`/xxx help` / `-h` / `--help` 等价） */
+const SUBCOMMAND_HELP_ALIASES = new Set(['help', '-h', '--help']);
+
+/** 取输入行的第二个 token（子命令位），小写归一 */
+export function subcommandOf(input: string): string {
+  return (input.trim().split(/\s+/)[1] ?? '').toLowerCase();
+}
+
+/**
+ * 渲染某命令的子命令帮助（纯函数，便于单测，D1/D5）。
+ * 返回逐行数组（含颜色标记），由调用方写入输出通道。
+ * 不含 `help` 自身（帮助词无需自我说明）。
+ */
+export function buildSubcommandHelp(handler: CommandHandler): string[] {
+  const lines: string[] = [];
+  lines.push(
+    `${COLORS.bold}${handler.name}${COLORS.reset} ${COLORS.gray}— ${handler.description}${COLORS.reset}`,
+  );
+  const subs = (handler.subcommands ?? []).filter((s) => !SUBCOMMAND_HELP_ALIASES.has(s.toLowerCase()));
+  if (subs.length === 0) {
+    lines.push(`  ${COLORS.gray}（该命令无子命令）${COLORS.reset}`);
+  } else {
+    const width = Math.max(...subs.map((s) => s.length)) + 2;
+    for (const s of subs) {
+      const pad = ' '.repeat(Math.max(0, width - s.length));
+      const desc = handler.subcommandHelp?.[s] ?? '';
+      lines.push(
+        `  ${COLORS.bold}${s}${COLORS.reset}${pad}${COLORS.gray}${desc}${COLORS.reset}`,
+      );
+    }
+  }
+  lines.push(
+    `  ${COLORS.gray}提示：输入 ${handler.name} <子命令> 执行；任一命令加 help 查看其子命令用法${COLORS.reset}`,
+  );
+  return lines;
 }
 
 /** 命令注册器：注册与分发 */
@@ -53,10 +92,20 @@ export class CommandRegistry {
     this.handlers.push(handler);
   }
 
-  /** 尝试分发命令，返回是否匹配到命令 */
+  /**
+   * 尝试分发命令，返回是否匹配到命令。
+   * 统一拦截子命令级帮助（`/xxx help` / `-h` / `--help`，D2/D4）：
+   * 在命令层之外渲染，各命令无需各自实现；其余输入交给命令自身 execute。
+   */
   async dispatch(input: string, ctx: CommandContext): Promise<boolean> {
     for (const h of this.handlers) {
       if (h.match(input)) {
+        if (SUBCOMMAND_HELP_ALIASES.has(subcommandOf(input))) {
+          ctx.out.blank();
+          for (const line of buildSubcommandHelp(h)) ctx.out.log(line);
+          ctx.out.blank();
+          return true;
+        }
         await h.execute(input, ctx);
         return true;
       }

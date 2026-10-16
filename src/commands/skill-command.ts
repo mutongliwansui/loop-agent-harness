@@ -138,7 +138,14 @@ async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> 
 export const skillCommand: CommandHandler = {
   name: '/skill',
   description: 'Skill 管理（list/reload/show/upload/remove）',
-  subcommands: ['list', 'reload', 'show', 'upload', 'remove'],
+  subcommands: ['list', 'reload', 'show', 'upload', 'remove', 'help'],
+  subcommandHelp: {
+    list: '列出已发现的 Skill（含作用域）',
+    reload: '重新扫描 Skill 目录',
+    show: '查看指定 Skill 的完整内容（/skill show <name>）',
+    upload: '安装 Skill 目录（--workspace|--global；无参弹目录选择框）',
+    remove: '删除已安装 Skill（--workspace|--global；逐个确认）',
+  },
   match: (input) => input.toLowerCase().startsWith('/skill'),
   async execute(input, ctx) {
     const { out, configLoader, skillLoader } = ctx;

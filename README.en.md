@@ -174,7 +174,7 @@ Agent> Read the version from package.json
 | Command | Description |
 |---|---|
 | `type a question` | The agent streams Thought / Action / Observation / Final |
-| `/help` | Show help information |
+| `/help` | Show global help; append `help` to any command (e.g. `/mcp help`) to see its subcommand usage |
 | `/reset` `/clear` | Clear the multi-turn conversation history and start a new session |
 | `/status` | Show the current session status (messages / tools / MCP tools / Skills) |
 | `/tools` | Tool management (list / enable / disable / reload) |
@@ -189,6 +189,8 @@ Agent> Read the version from package.json
 | `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
 | `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
 | `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
+
+> **Subcommand help**: append `help` (or the shorthand `-h` / `--help`) to any command to see its subcommand usage, e.g. `/mcp help`, `/skill help`, `/config help` — no need to remember the global `/help`.
 
 ### Output Example
 
@@ -237,6 +239,7 @@ Values are auto-typed: `true`/`false` become booleans, numbers become Numbers, a
 /mcp reload                     # Reload all MCP config
 /mcp test <name>                # Test the connection to the specified MCP server
 /mcp view <name>                # Show the server info and its tool list
+/mcp help                       # Show the subcommand usage of /mcp
 ```
 
 > `/mcp view <name>` shows the server name, transport config, connection status and the list of tools it provides (tool name + description): for a connected server it reads the already-registered tools directly (zero overhead); for a disconnected one it connects temporarily to query and then disconnects automatically (same pattern as `/mcp test`), so no prior `/mcp reload` is needed.

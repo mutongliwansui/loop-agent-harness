@@ -7,7 +7,16 @@ import type { CommandContext, CommandHandler } from './registry.js';
 export const memoryCommand: CommandHandler = {
   name: '/memory',
   description: '记忆管理（status/curated/episodic/search/dream/gate/init）',
-  subcommands: ['status', 'curated', 'episodic', 'search', 'dream', 'gate', 'init'],
+  subcommands: ['status', 'curated', 'episodic', 'search', 'dream', 'gate', 'init', 'help'],
+  subcommandHelp: {
+    status: '查看记忆系统状态（L1/L2/L3 统计）',
+    curated: 'L3 核心记忆：list / read <soul|user|memory> / append <key> <内容>',
+    episodic: 'L2 情景记忆：list / read <YYYY-MM-DD>',
+    search: '跨层检索记忆（/memory search <关键词>）',
+    dream: '触发记忆整理（/memory dream [天数]）',
+    gate: '查看记忆晋升门控状态（待确认 / 已达阈值）',
+    init: '初始化记忆目录结构',
+  },
   match: (input) => input.toLowerCase().startsWith('/memory'),
   async execute(input, ctx) {
     const { out, agent, configLoader } = ctx;

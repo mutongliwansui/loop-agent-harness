@@ -10,7 +10,11 @@ import type { CommandContext, CommandHandler } from './registry.js';
 export const setupCommand: CommandHandler = {
   name: '/setup',
   description: '重跑初始化向导：模型三元组与连通性（--global/--workspace）',
-  subcommands: ['--global', '--workspace'],
+  subcommands: ['--global', '--workspace', 'help'],
+  subcommandHelp: {
+    '--global': '向导结果写入全局配置（~/.loop-agent/）',
+    '--workspace': '向导结果写入工作空间配置（<cwd>/.loop-agent/）',
+  },
   match: (input) => /^\/setup(?:\s|$)/i.test(input.trim()),
   async execute(input, ctx: CommandContext) {
     const { out } = ctx;

@@ -120,7 +120,11 @@ async function runClean(ctx: CommandContext): Promise<void> {
 export const uploadCommand: CommandHandler = {
   name: '/upload',
   description: '文件上传（复制到会话隔离上传目录并注入上下文）',
-  subcommands: ['list', 'clean'],
+  subcommands: ['list', 'clean', 'help'],
+  subcommandHelp: {
+    list: '列出当前会话的上传文件',
+    clean: '清理当前会话的上传文件（需确认）',
+  },
   match: (input) => /^\/upload(?:\s|$)/i.test(input.trim()),
   async execute(input, ctx) {
     const { out } = ctx;

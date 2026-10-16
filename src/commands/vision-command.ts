@@ -92,7 +92,11 @@ async function runTest(ctx: CommandContext): Promise<void> {
 export const visionCommand: CommandHandler = {
   name: '/vision',
   description: '视觉功能管理（status/test）',
-  subcommands: ['status', 'test'],
+  subcommands: ['status', 'test', 'help'],
+  subcommandHelp: {
+    status: '查看视觉模型配置状态',
+    test: '测试视觉模型连通性',
+  },
   match: (input) => /^\/vision(?:\s|$)/i.test(input.trim()),
   async execute(input, ctx) {
     const { out } = ctx;
