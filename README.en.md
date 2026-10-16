@@ -191,6 +191,8 @@ Agent> Read the version from package.json
 | `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
 
 > **Subcommand help**: append `help` (or the shorthand `-h` / `--help`) to any command to see its subcommand usage, e.g. `/mcp help`, `/skill help`, `/config help` — no need to remember the global `/help`.
+>
+> **Tab completion**: press `Tab` to complete commands (`/con` → `/config`), subcommands (`/config ` → list / get / set / …) and dynamic arguments (session ids, tool names, skill names, MCP server names, model aliases, and **config keys** for `/config get|set|delete`, e.g. `model.name` / `vision.enabled`).
 
 ### Output Example
 

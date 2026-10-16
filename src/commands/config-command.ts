@@ -55,6 +55,28 @@ function maskSecretsDeep(v: unknown, key = ''): unknown {
   return v;
 }
 
+/**
+ * 将配置对象扁平化为点路径「叶子键」列表（用于 /config get|set|delete 的 Tab 补全）。
+ * - 仅递归普通对象；数组、null 与原始值一律视为叶子（与 printConfigLayer 展示口径一致）
+ * - 空对象不产出候选（如未登记任何 profile 的 models.profiles）
+ * - 结果按字典序排序，保证补全候选顺序稳定
+ */
+export function flattenConfigKeys(obj: unknown, prefix = ''): string[] {
+  if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+    return prefix ? [prefix] : [];
+  }
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const flat = prefix ? `${prefix}.${k}` : k;
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      out.push(...flattenConfigKeys(v, flat));
+    } else {
+      out.push(flat);
+    }
+  }
+  return out.sort();
+}
+
 /** 递归打印配置层（带来源着色） */
 function printConfigLayer(obj: Record<string, unknown>, sources: Record<string, ConfigSource>, prefix: string, out: CommandContext['out']): void {
   const keys = Object.keys(obj).sort();

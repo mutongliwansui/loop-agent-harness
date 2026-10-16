@@ -25,7 +25,7 @@ import {
   type ArgCompletionProvider,
   type CommandContext,
 } from './commands/registry.js';
-import { configCommand } from './commands/config-command.js';
+import { configCommand, flattenConfigKeys } from './commands/config-command.js';
 import { mcpCommand } from './commands/mcp-command.js';
 import { toolsCommand, BUILTIN_TOOL_NAMES } from './commands/tools-command.js';
 import { skillCommand } from './commands/skill-command.js';
@@ -232,6 +232,13 @@ async function main() {
         ) {
           const { config: c } = configLoader.load();
           return Object.keys(c.tools.mcpServers).filter((n) => n.startsWith(prefix));
+        }
+        if (
+          command === '/config' &&
+          (subcommand === 'get' || subcommand === 'set' || subcommand === 'delete')
+        ) {
+          const { config: c } = configLoader.load();
+          return flattenConfigKeys(c).filter((k) => k.startsWith(prefix));
         }
         if (
           command === '/model' &&

@@ -194,7 +194,7 @@ Agent> 帮我读取 package.json 的版本号
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
 > - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
 > - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
-> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test / view ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/upload ` 补 `list / clean` 子命令；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test / view ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/config get / set / delete ` 补配置项名（如 `model.name`、`vision.enabled`）、`/upload ` 补 `list / clean` 子命令；
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
