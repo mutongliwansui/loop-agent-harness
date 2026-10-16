@@ -121,8 +121,8 @@ async function interactiveAddMcp(
 
 export const mcpCommand: CommandHandler = {
   name: '/mcp',
-  description: 'MCP 管理（list/add/remove/reload/test）',
-  subcommands: ['list', 'add', 'remove', 'reload', 'test'],
+  description: 'MCP 管理（list/add/remove/reload/test/view）',
+  subcommands: ['list', 'add', 'remove', 'reload', 'test', 'view'],
   match: (input) => input.toLowerCase().startsWith('/mcp'),
   async execute(input, ctx) {
     const { out, configLoader, configWriter, mcpManager, rl } = ctx;
@@ -205,6 +205,45 @@ export const mcpCommand: CommandHandler = {
       return;
     }
 
+    if (sub === 'view') {
+      if (args.length === 0) {
+        out.log(`${COLORS.red}用法: /mcp view <name>${COLORS.reset}`);
+        out.blank();
+        return;
+      }
+      const name = args[0];
+      const { config: cfg } = configLoader.load();
+      const s = cfg.tools.mcpServers[name];
+      if (!s) {
+        out.log(`${COLORS.red}MCP Server ${name} 未在配置中找到，请先 /mcp add 或写入配置${COLORS.reset}`);
+        out.blank();
+        return;
+      }
+      const res = await mcpManager.viewServer(name, s);
+      out.blank();
+      out.log(`${COLORS.bold}MCP Server: ${name}${COLORS.reset}`);
+      out.log(`  ${COLORS.gray}传输: ${describeServer(s)}${COLORS.reset}`);
+      if (!res.ok) {
+        out.log(`  ${COLORS.red}✗ 连接失败: ${res.message}${COLORS.reset}`);
+        out.blank();
+        return;
+      }
+      const conn = res.connected
+        ? `${COLORS.green}[已连接]${COLORS.reset}`
+        : `${COLORS.gray}[未连接，已临时连接查询]${COLORS.reset}`;
+      out.log(`  ${COLORS.gray}状态:${COLORS.reset} ${conn}`);
+      out.log(`  ${COLORS.gray}工具 (${res.tools.length} 个):${COLORS.reset}`);
+      if (res.tools.length === 0) {
+        out.log(`    ${COLORS.gray}（该服务未提供工具）${COLORS.reset}`);
+      }
+      for (const t of res.tools) {
+        out.log(`    ${COLORS.bold}${t.name}${COLORS.reset}`);
+        out.log(`      ${COLORS.gray}${t.description}${COLORS.reset}`);
+      }
+      out.blank();
+      return;
+    }
+
     if (sub === 'add') {
       if (args.length === 0) {
         out.log(`${COLORS.red}用法: /mcp add <name> [--workspace|--global]${COLORS.reset}`);
@@ -217,7 +256,7 @@ export const mcpCommand: CommandHandler = {
       return;
     }
 
-    out.log(`${COLORS.red}未知 /mcp 子命令: ${sub}。支持 list / add / remove / reload / test${COLORS.reset}`);
+    out.log(`${COLORS.red}未知 /mcp 子命令: ${sub}。支持 list / add / remove / reload / test / view${COLORS.reset}`);
     out.blank();
   },
 };

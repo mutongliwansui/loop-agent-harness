@@ -226,7 +226,10 @@ async function main() {
         if (command === '/skill' && (subcommand === 'show' || subcommand === 'remove')) {
           return skillLoader.list().map((s) => s.name).filter((n) => n.startsWith(prefix));
         }
-        if (command === '/mcp' && (subcommand === 'test' || subcommand === 'remove')) {
+        if (
+          command === '/mcp' &&
+          (subcommand === 'test' || subcommand === 'remove' || subcommand === 'view')
+        ) {
           const { config: c } = configLoader.load();
           return Object.keys(c.tools.mcpServers).filter((n) => n.startsWith(prefix));
         }

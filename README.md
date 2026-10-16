@@ -180,7 +180,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/status` | 查看当前会话状态（消息数 / 工具数 / MCP 工具数 / Skills） |
 | `/tools` | 工具管理（list / enable / disable / reload） |
 | `/config` | 配置管理（get / set / delete / list / path） |
-| `/mcp` | MCP 管理（list / add / remove / reload / test） |
+| `/mcp` | MCP 管理（list / add / remove / reload / test / view） |
 | `/session` | 会话管理（list / load / save / new / current / delete / delete-all） |
 | `/skill` | Skill 管理（list / reload / show / upload / remove） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
@@ -194,7 +194,7 @@ Agent> 帮我读取 package.json 的版本号
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
 > - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
 > - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
-> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/upload ` 补 `list / clean` 子命令；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test / view ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/upload ` 补 `list / clean` 子命令；
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
@@ -245,7 +245,10 @@ Agent> 帮我读取 package.json 的版本号
 /mcp remove <name>              # 移除指定 MCP Server
 /mcp reload                     # 重新加载全部 MCP 配置
 /mcp test <name>                # 测试连接指定 MCP Server
+/mcp view <name>                # 查看指定 MCP Server 的服务信息与工具清单
 ```
+
+> `/mcp view <name>` 展示服务名称、传输配置、连接状态与该服务下的工具清单（工具名 + 描述）：已连接的 Server 直接读取已注册工具（零开销），未连接的会临时连接查询后自动断开（与 `/mcp test` 同款模式），无需先 `/mcp reload`。
 
 #### `/tools` — 工具管理
 

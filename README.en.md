@@ -179,7 +179,7 @@ Agent> Read the version from package.json
 | `/status` | Show the current session status (messages / tools / MCP tools / Skills) |
 | `/tools` | Tool management (list / enable / disable / reload) |
 | `/config` | Config management (get / set / delete / list / path) |
-| `/mcp` | MCP management (list / add / remove / reload / test) |
+| `/mcp` | MCP management (list / add / remove / reload / test / view) |
 | `/session` | Session management (list / load / save / new / current / delete / delete-all) |
 | `/skill` | Skill management (list / reload / show / upload / remove) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
@@ -236,7 +236,10 @@ Values are auto-typed: `true`/`false` become booleans, numbers become Numbers, a
 /mcp remove <name>              # Remove the specified MCP server
 /mcp reload                     # Reload all MCP config
 /mcp test <name>                # Test the connection to the specified MCP server
+/mcp view <name>                # Show the server info and its tool list
 ```
+
+> `/mcp view <name>` shows the server name, transport config, connection status and the list of tools it provides (tool name + description): for a connected server it reads the already-registered tools directly (zero overhead); for a disconnected one it connects temporarily to query and then disconnects automatically (same pattern as `/mcp test`), so no prior `/mcp reload` is needed.
 
 #### `/tools` — Tool Management
 

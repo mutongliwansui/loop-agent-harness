@@ -10,6 +10,15 @@ export interface LoadResult {
   failures: string[];
 }
 
+/** /mcp view 结果：服务连接状态 + 工具清单 */
+export interface MCPViewResult {
+  ok: boolean;
+  /** 查询前该 server 是否已连接（false 表示走了临时连接查询） */
+  connected: boolean;
+  tools: { name: string; description: string }[];
+  message?: string;
+}
+
 export class MCPManager {
   constructor(private loader: ConfigLoader = configLoader) {}
 
@@ -87,6 +96,36 @@ export class MCPManager {
       return {
         ok: false,
         message: `连接失败: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  }
+
+  /**
+   * 查看指定 MCP server 的服务信息与工具清单：
+   * - 已连接：直接读 registry 已注册工具（零开销，不重连）
+   * - 未连接：临时连接拉取工具清单后立即断开（与 testServer 同款临时连接模式）
+   */
+  async viewServer(name: string, cfg: MCPServerConfig): Promise<MCPViewResult> {
+    const connected = registry.listMCPServers().includes(name);
+    try {
+      if (!connected) {
+        await registry.registerMCPServer(name, cfg);
+      }
+      const prefix = `${name}__`;
+      const tools = registry
+        .list()
+        .filter((t) => t.name.startsWith(prefix))
+        .map((t) => ({ name: t.name, description: t.description }));
+      if (!connected) {
+        await registry.disconnectMCPServer(name);
+      }
+      return { ok: true, connected, tools };
+    } catch (e) {
+      return {
+        ok: false,
+        connected,
+        tools: [],
+        message: e instanceof Error ? e.message : String(e),
       };
     }
   }
