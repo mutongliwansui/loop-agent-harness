@@ -37,9 +37,10 @@ function syncVisionTools(ctx: CommandContext): void {
 }
 
 /**
- * 深度遮蔽 apiKey 字段（Task-20261011-002 D8：仅保留尾 4 位）。
+ * 深度遮蔽 apiKey / token 字段（Task-20261011-002 D8：仅保留尾 4 位）。
  * profiles 引入多份 apiKey 副本后，list/get 展示必须全链路遮蔽；
  * 顺带修复既有 model.apiKey / vision.apiKey 明文打印问题。返回遮蔽副本，不改原值。
+ * Task-20261016-001 D7：api.token 同为敏感凭据，纳入遮蔽。
  */
 function maskSecretsDeep(v: unknown, key = ''): unknown {
   if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
@@ -49,7 +50,7 @@ function maskSecretsDeep(v: unknown, key = ''): unknown {
     }
     return out;
   }
-  if (key === 'apiKey') {
+  if (key === 'apiKey' || key === 'token') {
     return typeof v === 'string' && v.length > 0 ? `****${v.slice(-4)}` : v;
   }
   return v;

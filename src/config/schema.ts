@@ -17,6 +17,7 @@ export interface AgentConfig {
   skill: SkillConfig;
   memory: MemoryConfig;
   vision: VisionConfig;
+  api: ApiConfig;
 }
 
 export interface ModelConfig {
@@ -108,6 +109,23 @@ export interface VisionConfig {
   cacheTtlMs: number;
 }
 
+/**
+ * HTTP API 服务配置（Task-20261016-001 自定义 REST API 服务）
+ *
+ * 设计要点：
+ * - 仅在 `--serve` 启动模式下生效（REPL 模式完全忽略本段）
+ * - host 绑定非回环地址且 token 为空时拒绝启动（防裸奔暴露局域网，D6）
+ * - token 为空时仅接受本机请求；非空时所有请求强制 Bearer 校验
+ */
+export interface ApiConfig {
+  /** 监听端口 */
+  port: number;
+  /** 监听地址；非回环地址必须配置 token */
+  host: string;
+  /** Bearer Token；为空时仅接受本机请求（展示时遮蔽，仅尾 4 位） */
+  token: string;
+}
+
 /** 配置来源标记 */
 export type ConfigSource = 'cli' | 'workspace' | 'global' | 'env' | 'default';
 
@@ -127,6 +145,7 @@ export type PartialAgentConfig = {
   skill?: Partial<SkillConfig>;
   memory?: Partial<MemoryConfig>;
   vision?: Partial<VisionConfig>;
+  api?: Partial<ApiConfig>;
 };
 
 /**
@@ -197,5 +216,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
     maxResultChars: 8000,
     cacheEnabled: true,
     cacheTtlMs: 600000,
+  },
+  api: {
+    port: 3000,
+    host: '127.0.0.1',
+    token: '',
   },
 };

@@ -11,6 +11,7 @@ import { registerBuiltinTools, registry, mcpManager } from './tools/index.js';
 import { configLoader, configWriter } from './config/index.js';
 import { skillLoader } from './skill/index.js';
 import { SessionStore, keychain } from './session/index.js';
+import { startApiServer } from './api/server.js';
 import { COLORS as C } from './ui/colors.js';
 import { Spinner } from './ui/spinner.js';
 import { ConsoleOutputChannel } from './ui/output-channel.js';
@@ -100,12 +101,18 @@ async function main() {
   // 0.1 加载合并配置
   const { config: cfg } = configLoader.load();
 
+  // --serve 模式（Task-20261016-001）：HTTP API 服务进程
+  // 共用 step 0–5 初始化（bootstrap/配置/工具/MCP/Skill/记忆），
+  // 但跳过 step 1 的 CLI 会话恢复与 agent 注入——持久化由 API 层自持 SessionStore 完成，
+  // 避免共享 agent 的 _currentSessionId 在并发 run 时串话（D5）
+  const serveMode = process.argv.includes('--serve');
+
   // 1. 初始化会话系统
   let sessionStore: SessionStore | null = null;
   let restoredMessages: ChatMessage[] | null = null;
   const sessionEnabled = cfg.session.autoSave || cfg.session.autoRestore;
   try {
-    if (sessionEnabled) {
+    if (sessionEnabled && !serveMode) {
       sessionStore = new SessionStore(
         process.cwd(),
         3,
@@ -187,6 +194,17 @@ async function main() {
     }
   } catch (e) {
     console.error(`${C.yellow}记忆系统初始化失败（继续启动）: ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+  }
+
+  // 5.5 --serve 分支（Task-20261016-001）：起 HTTP API 服务，常驻不进 REPL
+  if (serveMode) {
+    const apiServer = await startApiServer();
+    process.on('SIGINT', async () => {
+      await apiServer.close().catch(() => {});
+      await mcpManager.disconnectAll().catch(() => {});
+      process.exit(0);
+    });
+    return;
   }
 
   // 6. 启动横幅

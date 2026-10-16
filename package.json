@@ -8,6 +8,7 @@
     "build": "tsup src/index.ts --format esm --dts",
     "build:sea": "node scripts/build-sea.mjs",
     "start": "tsx src/index.ts",
+    "serve": "tsx src/index.ts --serve",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
