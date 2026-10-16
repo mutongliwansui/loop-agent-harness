@@ -1,6 +1,7 @@
 // /vision 命令处理器（Task-20261010-001 P1）
 // 支持: status（配置来源 + 缓存状态 + 会话用量）, test（视觉服务连通性测试）
 import type { ConfigSource } from '../config/index.js';
+import type { ModelConfig, VisionConfig } from '../config/schema.js';
 import { llm } from '../llm/client.js';
 import type { VisionMessage } from '../types.js';
 import { COLORS, sourceColor } from '../ui/colors.js';
@@ -47,6 +48,38 @@ function printStatus(ctx: CommandContext): void {
   out.blank();
 }
 
+/** 连通性测试核心（CLI /vision test 与 POST /vision/test 单源共用）：发最小图片请求验证 */
+export async function runVisionConnectivityTest(
+  vision: VisionConfig,
+  model: ModelConfig,
+): Promise<{ ok: boolean; latencyMs: number; error?: string; reply?: string; totalTokens?: number }> {
+  const targets = resolveVisionTargets(vision, model);
+  if (!targets.apiKey) {
+    return { ok: false, latencyMs: 0, error: '未配置 API Key（vision.apiKey 与主模型 model.apiKey 均为空）' };
+  }
+  const startMs = Date.now();
+  const messages: VisionMessage[] = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: '这是一张 1x1 像素的测试图片，请用不超过 10 个字描述它。' },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${TEST_PNG_BASE64}` } },
+      ],
+    },
+  ];
+  try {
+    const result = await llm.chatVision(messages, { ...targets, maxTokens: 64 });
+    return {
+      ok: true,
+      latencyMs: result.elapsedMs,
+      reply: result.content.trim().replace(/\s+/g, ' '),
+      totalTokens: result.usage?.total_tokens,
+    };
+  } catch (e) {
+    return { ok: false, latencyMs: Date.now() - startMs, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 async function runTest(ctx: CommandContext): Promise<void> {
   const { out } = ctx;
   const { config: cfg } = ctx.configLoader.load();
@@ -66,24 +99,13 @@ async function runTest(ctx: CommandContext): Promise<void> {
 
   out.blank();
   out.log(`${COLORS.gray}测试中: ${targets.model} @ ${targets.baseUrl} …${COLORS.reset}`);
-  const messages: VisionMessage[] = [
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: '这是一张 1x1 像素的测试图片，请用不超过 10 个字描述它。' },
-        { type: 'image_url', image_url: { url: `data:image/png;base64,${TEST_PNG_BASE64}` } },
-      ],
-    },
-  ];
-
-  try {
-    const result = await llm.chatVision(messages, { ...targets, maxTokens: 64 });
-    out.log(`${COLORS.green}✓ 连通性测试成功${COLORS.reset} ${COLORS.gray}(${result.elapsedMs}ms${result.usage ? `, tokens ${result.usage.total_tokens}` : ''})${COLORS.reset}`);
-    const reply = result.content.trim().replace(/\s+/g, ' ');
+  const result = await runVisionConnectivityTest(vision, cfg.model);
+  if (result.ok) {
+    out.log(`${COLORS.green}✓ 连通性测试成功${COLORS.reset} ${COLORS.gray}(${result.latencyMs}ms${result.totalTokens !== undefined ? `, tokens ${result.totalTokens}` : ''})${COLORS.reset}`);
+    const reply = result.reply ?? '';
     out.log(`  ${COLORS.white}模型答复:${COLORS.reset} ${reply.length > 100 ? `${reply.slice(0, 100)}…` : reply}`);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    out.log(`${COLORS.red}✗ 连通性测试失败:${COLORS.reset} ${msg}`);
+  } else {
+    out.log(`${COLORS.red}✗ 连通性测试失败:${COLORS.reset} ${result.error}`);
     out.log(`${COLORS.gray}  排查: model 是否为视觉模型 / baseUrl 是否正确 / apiKey 是否有效${COLORS.reset}`);
   }
   out.blank();

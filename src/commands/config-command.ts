@@ -41,8 +41,9 @@ function syncVisionTools(ctx: CommandContext): void {
  * profiles 引入多份 apiKey 副本后，list/get 展示必须全链路遮蔽；
  * 顺带修复既有 model.apiKey / vision.apiKey 明文打印问题。返回遮蔽副本，不改原值。
  * Task-20261016-001 D7：api.token 同为敏感凭据，纳入遮蔽。
+ * Task-20261016-002 D3：导出供 API /config 端点复用（纯函数，不改 CLI 行为）。
  */
-function maskSecretsDeep(v: unknown, key = ''): unknown {
+export function maskSecretsDeep(v: unknown, key = ''): unknown {
   if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
     const out: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {

@@ -48,7 +48,7 @@ export function buildUsePartial(alias: string, profile: ModelProfile): PartialAg
 }
 
 /** 读取某一层的原始配置（不存在/损坏返回 null）——用于跨层冲突与归属检测 */
-async function readLayerRaw(loader: ConfigLoader, scope: ConfigScope): Promise<PartialAgentConfig | null> {
+export async function readLayerRaw(loader: ConfigLoader, scope: ConfigScope): Promise<PartialAgentConfig | null> {
   try {
     return scope === 'workspace' ? await loader.loadWorkspace() : await loader.loadGlobal();
   } catch {
@@ -92,7 +92,7 @@ function aliasList(cfg: AgentConfig): string {
 }
 
 /** 校验别名：非空、无空白、不以 - 开头（避免与 flag 混淆） */
-function validAlias(alias: string): boolean {
+export function validAlias(alias: string): boolean {
   return alias.length > 0 && !/\s/.test(alias) && !alias.startsWith('-');
 }
 

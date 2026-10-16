@@ -32,6 +32,20 @@ export const BUILTIN_TOOL_NAMES = [
   'ocr_image',
 ];
 
+/** 内置工具注册表：名称 → 工具实例（供 /tools enable 与 API 端点同步 registry 复用） */
+export const BUILTIN_TOOL_MAP: Record<string, unknown> = {
+  commandRun,
+  fileRead,
+  fileWrite,
+  editFile,
+  grep,
+  activate_skill: activateSkill,
+  describe_image: describeImage,
+  ask_image: askImage,
+  extract_json: extractJson,
+  ocr_image: ocrImage,
+};
+
 export const toolsCommand: CommandHandler = {
   name: '/tools',
   description: '工具管理（list/enable/disable/reload）',
@@ -109,8 +123,7 @@ export const toolsCommand: CommandHandler = {
       try {
         await configWriter.updateScope(scope, partial);
         if (sub === 'enable') {
-          const toolMap: Record<string, unknown> = { commandRun, fileRead, fileWrite, editFile, grep, activate_skill: activateSkill, describeImage, askImage, extractJson, ocrImage };
-          const t = toolMap[toolName];
+          const t = BUILTIN_TOOL_MAP[toolName];
           if (t && !registry.has(toolName)) registry.register(t as never);
         } else {
           if (registry.has(toolName)) registry.unregister(toolName);

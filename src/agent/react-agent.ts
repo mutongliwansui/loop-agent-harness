@@ -45,7 +45,7 @@ import type {
 } from '../types.js';
 
 /** 适配器：将 LLMClient 包装为 ILLMClient（用于记忆模块） */
-function createLLMAdapter(model: string, temperature: number): ILLMClient {
+export function createLLMAdapter(model: string, temperature: number): ILLMClient {
   return {
     async chat(messages: ChatMessage[]): Promise<{ content: string | null }> {
       const resp = await llm.chat(messages, undefined, { model, temperature });

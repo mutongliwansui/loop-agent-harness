@@ -21,6 +21,30 @@ import { createRoutes, matchRoute, type HandlerContext } from './router.js';
 import { SessionStore } from '../session/index.js';
 import type { AgentConfig } from '../config/schema.js';
 import type { AgentOptions, AgentResult } from '../types.js';
+import { configLoader } from '../config/loader.js';
+import { configWriter } from '../config/writer.js';
+import { mcpManager } from '../config/mcp-manager.js';
+import { skillLoader } from '../skill/loader.js';
+import { defaultUploadsRoot } from '../upload/manager.js';
+import { defaultMemoryKitFactory, type MemoryKit } from './memory-kit.js';
+import type { ConfigLoader } from '../config/loader.js';
+import type { ConfigWriter } from '../config/writer.js';
+import type { MCPManager } from '../config/mcp-manager.js';
+import type { SkillLoader } from '../skill/loader.js';
+
+/**
+ * 命令资源化运行时依赖（Task-20261016-002 D8）：
+ * bootstrap 组装真实单例；单测注入临时目录实例（fake seam）。
+ */
+export interface ApiRuntimeDeps {
+  configLoader: ConfigLoader;
+  configWriter: ConfigWriter;
+  mcpManager: MCPManager;
+  skillLoader: SkillLoader;
+  uploadsRoot: string;
+  /** 记忆子系统工厂（/memory 组；单测注入临时目录版避免污染 ~/.loop-agent） */
+  createMemoryKit: () => Promise<MemoryKit>;
+}
 
 /** 依赖注入面（D9：单测注入 fake runAgent + 临时目录 SessionStore） */
 export interface ApiServerDeps {
@@ -34,6 +58,8 @@ export interface ApiServerDeps {
   version?: string;
   /** 日志输出（默认静默；startApiServer 注入 console.log） */
   log?: (msg: string) => void;
+  /** 命令资源化运行时依赖（D8）；缺省字段回落全局单例 */
+  runtime?: Partial<ApiRuntimeDeps>;
 }
 
 export interface ApiServer {
@@ -54,7 +80,20 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
   let httpServer: http.Server | null = null;
 
   const log = (msg: string): void => deps.log?.(msg);
-  const ctx: HandlerContext = { deps, sessions, log, version: deps.version };
+  // D8：runtime 缺省字段回落全局单例（bootstrap 传真实单例；单测注入临时目录实例）
+  const rt = deps.runtime ?? {};
+  const ctx: HandlerContext = {
+    deps,
+    sessions,
+    log,
+    version: deps.version,
+    configLoader: rt.configLoader ?? configLoader,
+    configWriter: rt.configWriter ?? configWriter,
+    mcpManager: rt.mcpManager ?? mcpManager,
+    skillLoader: rt.skillLoader ?? skillLoader,
+    uploadsRoot: rt.uploadsRoot ?? defaultUploadsRoot(),
+    createMemoryKit: rt.createMemoryKit ?? defaultMemoryKitFactory,
+  };
 
   /** 统一入口：鉴权 → 路由 → 处理器 → 错误转 JSON */
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

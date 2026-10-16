@@ -8,8 +8,23 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
 import { handleCreateSession, handleDeleteSession, handleGetSession, handleListSessions } from './handlers/sessions.js';
 import { handleMessage } from './handlers/messages.js';
+import { uploadRoutes } from './handlers/uploads.js';
+import { configRoutes } from './handlers/config.js';
+import { statusRoutes } from './handlers/status.js';
+import { toolsRoutes } from './handlers/tools.js';
+import { modelRoutes } from './handlers/models.js';
+import { mcpRoutes } from './handlers/mcp.js';
+import { skillRoutes } from './handlers/skills.js';
+import { memoryRoutes } from './handlers/memory.js';
+import { visionRoutes } from './handlers/vision.js';
+import { doctorRoutes } from './handlers/doctor.js';
 import type { ApiServerDeps } from './server.js';
 import type { SessionManager } from './session-manager.js';
+import type { ConfigLoader } from '../config/loader.js';
+import type { ConfigWriter } from '../config/writer.js';
+import type { MCPManager } from '../config/mcp-manager.js';
+import type { SkillLoader } from '../skill/loader.js';
+import type { MemoryKit } from './memory-kit.js';
 
 /** 处理器共享上下文（createApiServer 构造一次，路由分发时透传） */
 export interface HandlerContext {
@@ -20,6 +35,18 @@ export interface HandlerContext {
   log: (msg: string) => void;
   /** 服务版本号（/health 返回） */
   version?: string;
+  /** 分层配置加载器（/config 组读取 + 来源解析；Task-20261016-002 D8） */
+  configLoader: ConfigLoader;
+  /** 配置写入器（PUT/DELETE /config/:key） */
+  configWriter: ConfigWriter;
+  /** MCP 连接管理器（/status 快照） */
+  mcpManager: MCPManager;
+  /** 技能加载器（/status 快照） */
+  skillLoader: SkillLoader;
+  /** 上传根目录（uploads 组读写） */
+  uploadsRoot: string;
+  /** 记忆子系统工厂（/memory 组；API 无共享 agent，独立组装，D8） */
+  createMemoryKit: () => Promise<MemoryKit>;
 }
 
 export type RouteHandler = (
@@ -45,11 +72,23 @@ async function handleHealth(ctx: HandlerContext, _req: IncomingMessage, res: Ser
 export function createRoutes(): Route[] {
   return [
     { method: 'GET', path: '/health', handler: handleHealth },
+    // 会话资源（Task-20261016-001）
     { method: 'POST', path: '/sessions', handler: (ctx, _req, res) => handleCreateSession(ctx, res) },
     { method: 'GET', path: '/sessions', handler: (ctx, _req, res) => handleListSessions(ctx, res) },
     { method: 'POST', path: '/sessions/:id/messages', handler: (ctx, req, res, p) => handleMessage(ctx, req, res, p.id) },
     { method: 'GET', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleGetSession(ctx, res, p.id) },
     { method: 'DELETE', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleDeleteSession(ctx, res, p.id) },
+    // 命令资源化（Task-20261016-002）：每组一工厂，D2 无参静态可组合
+    ...uploadRoutes(),
+    ...configRoutes(), // 注意：/config/path 静态段须注册在 /config/:key 之前（组内已保证）
+    ...statusRoutes(),
+    ...toolsRoutes(), // 注意：/tools/reload 静态段须注册在 /tools/:name 之前（组内已保证）
+    ...modelRoutes(),
+    ...mcpRoutes(),
+    ...skillRoutes(),
+    ...memoryRoutes(),
+    ...visionRoutes(),
+    ...doctorRoutes(),
   ];
 }
 

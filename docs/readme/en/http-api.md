@@ -17,7 +17,7 @@ npx tsx src/index.ts --serve
 HTTP API server started
   Address:  http://127.0.0.1:3000
   Auth:     localhost only (api.token not configured)
-  Endpoints: GET /health · POST /sessions · GET|DELETE /sessions/:id · POST /sessions/:id/messages
+  Endpoints: 46 (sessions 5 + health 1 + command resources 40), see the endpoint tables below
   Tips:     Ctrl+C to exit; config changes require a restart
 ```
 
@@ -47,6 +47,8 @@ Three auth modes:
 
 ### Endpoints
 
+#### Sessions & System
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health probe `{status, version, model}` |
@@ -56,7 +58,105 @@ Three auth modes:
 | DELETE | `/sessions/:id` | Delete a session `{deleted: true}` (409 while in-flight) |
 | POST | `/sessions/:id/messages` | Send a message (SSE streaming by default; `"stream": false` for JSON) |
 
-Errors are uniform `{error: {code, message}}`: 400 bad request / 401 unauthorized / 403 non-loopback / 404 not found / 405 method not allowed / 409 busy / 413 body over 2MB / 500 internal.
+#### Command Resources (CLI commands → REST, 10 groups, 40 endpoints)
+
+**uploads (`/upload` command)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/uploads` | Upload files `{sessionId, paths: string[]}` → 201 `{entries, contextNote, failed}` (partial success 201, all failed 400; contextNote is returned only, not injected — the client sends it with the next /messages round) |
+| GET | `/uploads?sessionId=` | List uploaded files of a session |
+| DELETE | `/uploads?sessionId=` | Clear a session's upload directory (verb as confirmation) |
+
+**config (`/config` command)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/config` | Full config (secrets masked) |
+| GET | `/config/path` | Config file paths `{globalPath, workspacePath, workspaceExists}` |
+| GET | `/config/:key` | Read one key `{key, value, scope}` (secrets masked) |
+| PUT | `/config/:key` | Write one key `{value, scope?}` (workspace default; `api.*` returns restartRequired) |
+| DELETE | `/config/:key?scope=` | Delete one key `{deleted}` |
+
+**status (REPL `/status` snapshot)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/status` | Lightweight snapshot `{version, model, session, tools, mcp, memory, uploads}` |
+
+**tools (`/tools` command)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/tools` | Tool snapshot `{tools: [{name, description, enabled, source}]}` (built-in + MCP, vision-gated) |
+| GET | `/tools/:name` | Tool detail (with JSON Schema) |
+| PATCH | `/tools/:name` | Enable/disable a built-in tool `{enabled, scope?}` (persisted + runtime sync) |
+| POST | `/tools/reload` | Reload all tools `{reloaded}` |
+
+**models (`/model` command)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/models` | Profile registry `{profiles: [{alias, ..., isCurrent}]}` |
+| GET | `/model` | Active model snapshot (apiKey masked) |
+| PUT | `/model` | Switch active profile `{alias, scope?}` (ghost 409/404) |
+| POST | `/models` | Register a profile `{alias, profile, scope?}` → 201 (duplicate alias 409) |
+| DELETE | `/models/:alias?scope=` | Delete a profile `{deleted}` (409 while active; 404 across scopes with scope hint) |
+| POST | `/models/:alias/test` | Connectivity test `{ok, latencyMs, error?}` |
+
+**mcp (`/mcp` command)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/mcp/servers` | Server list `{servers: [{name, transport, status, toolCount}]}` |
+| GET | `/mcp/servers/:name` | Server detail (with tool list) |
+| POST | `/mcp/servers` | Register & connect `{name, transport, command?/url?, ...}` → 201 (duplicate name 409; connect failure 502 but config persisted) |
+| DELETE | `/mcp/servers/:name?scope=` | Disconnect first, then delete config `{deleted}` |
+| POST | `/mcp/reload` | Reconnect all `{reconnected, failed}` |
+| POST | `/mcp/servers/:name/test` | Connection test `{ok, latencyMs, tools, error?}` |
+
+**skills (`/skill` command)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/skills` | Loaded skills `{skills: [{name, description, scope, path}]}` |
+| GET | `/skills/:name` | Skill detail (with full body) |
+| POST | `/skills` | Install from a source directory `{sourcePath, scope?, overwrite?}` → 201 (same name without overwrite 409) |
+| DELETE | `/skills/:name?scope=` | Uninstall a skill `{deleted, scope}` |
+| POST | `/skills/reload` | Reload skills `{loaded}` |
+
+**memory (`/memory` command, 409 when disabled)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/memory/status` | Layered status `{enabled, layers, counts}` (always 200 `{enabled:false,...}` when disabled) |
+| GET | `/memory/curated` | Full text of curated-layer files `{entries}` |
+| GET | `/memory/episodic?limit=` | Episodic-layer log `{entries}` |
+| GET | `/memory/search?q=&limit=` | Cross-layer search `{results: [{content, score, layer}]}` (q required) |
+| GET | `/memory/gate` | Promotion gate thresholds + recent decisions |
+| POST | `/memory/dream` | Trigger async curation → 202 `{accepted}` |
+| POST | `/memory/init` | Initialize layered directories (idempotent) |
+
+**vision (`/vision` command, diagnostic semantics: failure does not fail the endpoint)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/vision` | Probe-chain status `{available, provider, model, reason?}` |
+| POST | `/vision/test` | Minimal image request to verify connectivity `{ok, latencyMs, error?}` |
+
+**doctor (`/doctor` command, read-only checkup)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/doctor` | Per-item checks `{ok, checks: [{name, ok, level, detail}]}` |
+
+Errors are uniform `{error: {code, message}}`: 400 bad request / 401 unauthorized / 403 non-loopback / 404 not found / 405 method not allowed / 409 conflict (session busy / active model rejected / memory disabled) / 413 body over 2MB / 500 internal / 502 upstream connect failure (MCP).
+
+Semantic conventions:
+
+- **Verb as confirmation**: DELETE/PUT/PATCH replace the CLI's y/N prompts; skill overwrite requires explicit `overwrite: true`; deleting the active model returns 409 directly (stricter than a confirmation)
+- **Unified scope**: write-config endpoints accept `?scope=workspace|global` (workspace default), aligned with the CLI `--global` flag
+- **Diagnostic semantics**: `/vision/test`, `/models/:alias/test`, `/mcp/servers/:name/test` and `/doctor` return 200 even when the check fails (`ok: false` + details), never failing the endpoint
 
 ### SSE Streaming Events
 

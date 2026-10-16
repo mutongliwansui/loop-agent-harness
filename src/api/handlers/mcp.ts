@@ -1,0 +1,183 @@
+// /mcp 命令资源化端点（Task-20261016-002 §3.5）
+//
+// 直调 MCPManager（loadServer/unloadServer/reload/testServer/viewServer）+ configWriter，CLI 命令层零改动。
+// CLI add 的交互问答由请求体一次性承接（§3.5 注）；D6 动词即确认。
+// 验收 6.7：DELETE 先断连（unloadServer）再删配置（deleteScopeKey），避免「配置已删但进程仍连接」。
+// 错误边界：同名 409；连接失败 502（配置已落盘，message 附 status）。
+
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { normalizeMcpTransportType } from '../../tools/mcp/client.js';
+import type { MCPServerConfig } from '../../tools/mcp/client.js';
+import { registry } from '../../tools/registry.js';
+import type { HandlerContext, Route } from '../router.js';
+import { ApiHttpError } from '../errors.js';
+import { readJsonBody, sendJson } from '../http-utils.js';
+import { parseScope, queryScope } from './config.js';
+
+/** 从合并配置取指定 server（不存在 → 404） */
+function requireServerCfg(ctx: HandlerContext, name: string): MCPServerConfig {
+  const { config: cfg } = ctx.configLoader.load();
+  const server = cfg.tools.mcpServers[name];
+  if (!server) throw new ApiHttpError('not_found', `MCP server 不存在: ${name}`);
+  return server;
+}
+
+/** 已连接 server 的已注册工具数（未连接为 0） */
+function toolCountFor(name: string): number {
+  const prefix = `${name}__`;
+  return registry.list().filter((t) => t.name.startsWith(prefix)).length;
+}
+
+/** GET /mcp/servers：合并配置全量 + 实时连接状态 */
+async function handleListServers(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const { config: cfg } = ctx.configLoader.load();
+  const connected = new Set(ctx.mcpManager.listConnected());
+  const servers = Object.entries(cfg.tools.mcpServers).map(([name, s]) => ({
+    name,
+    transport: s.type,
+    status: connected.has(name) ? 'connected' : 'disconnected',
+    toolCount: toolCountFor(name),
+  }));
+  sendJson(res, 200, { servers });
+}
+
+/** GET /mcp/servers/:name：详情 + 工具清单（未连接时走临时连接查询，与 CLI view 同款） */
+async function handleGetServer(ctx: HandlerContext, res: ServerResponse, name: string): Promise<void> {
+  const server = requireServerCfg(ctx, name);
+  const view = await ctx.mcpManager.viewServer(name, server);
+  if (!view.ok) {
+    throw new ApiHttpError('bad_gateway', `查询失败: ${view.message ?? '未知错误'}`);
+  }
+  sendJson(res, 200, {
+    name,
+    transport: server.type,
+    status: view.connected ? 'connected' : 'disconnected',
+    tools: view.tools,
+  });
+}
+
+/** 请求体 → MCPServerConfig（transport 归一 + 必填校验，与 CLI add 的 cfg 构造同口径） */
+function parseServerBody(body: Record<string, unknown>): MCPServerConfig {
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name || /\s/.test(name)) {
+    throw new ApiHttpError('bad_request', 'name 必填且不能含空白');
+  }
+  const type = normalizeMcpTransportType(String(body.transport ?? ''));
+  if (!type) {
+    throw new ApiHttpError('bad_request', `transport 必须为 stdio | sse | http（或 streamableHttp），收到: ${String(body.transport ?? '')}`);
+  }
+  if (type === 'stdio') {
+    const command = typeof body.command === 'string' ? body.command.trim() : '';
+    if (!command) throw new ApiHttpError('bad_request', 'stdio 传输必须提供 command');
+    const args = Array.isArray(body.args) ? body.args.filter((a): a is string => typeof a === 'string') : [];
+    const env = typeof body.env === 'object' && body.env !== null
+      ? Object.fromEntries(
+        Object.entries(body.env as Record<string, unknown>)
+          .filter((e) => typeof e[1] === 'string')
+          .map(([k, v]) => [k, v as string]),
+      )
+      : undefined;
+    return {
+      type: 'stdio',
+      command,
+      ...(args.length > 0 ? { args } : {}),
+      ...(env && Object.keys(env).length > 0 ? { env } : {}),
+    };
+  }
+  const url = typeof body.url === 'string' ? body.url.trim() : '';
+  if (!url) throw new ApiHttpError('bad_request', `${type} 传输必须提供 url`);
+  if (type === 'sse') return { type: 'sse', url };
+  const headers = typeof body.headers === 'object' && body.headers !== null
+    ? Object.fromEntries(
+      Object.entries(body.headers as Record<string, unknown>)
+        .filter((e) => typeof e[1] === 'string')
+        .map(([k, v]) => [k, v as string]),
+    )
+    : undefined;
+  return {
+    type: 'streamableHttp',
+    url,
+    ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+  };
+}
+
+/** POST /mcp/servers：登记 + 自动连接（同名 409；连接失败 502 但配置已落盘） */
+async function handleCreateServer(
+  ctx: HandlerContext,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const server = parseServerBody(body);
+  const scope = parseScope(body.scope);
+
+  const { config: cfg } = ctx.configLoader.load();
+  if (cfg.tools.mcpServers[name] !== undefined) {
+    throw new ApiHttpError('conflict', `MCP server「${name}」已存在。如需修改可先 DELETE /mcp/servers/${name} 再重新登记`);
+  }
+
+  await ctx.configWriter.updateScope(scope, { tools: { mcpServers: { [name]: server } } });
+  try {
+    const tools = await ctx.mcpManager.loadServer(name, server);
+    ctx.log(`[api] MCP server 已登记并连接（${scope}）: ${name}（${tools.length} 个工具）`);
+    sendJson(res, 201, { name, scope, transport: server.type, status: 'connected', toolCount: tools.length });
+  } catch (e) {
+    // 配置已落盘但连接失败：502 + message 附 status（§五边界）
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new ApiHttpError('bad_gateway', `MCP 连接失败（配置已落盘，status: disconnected）: ${msg}`);
+  }
+}
+
+/** DELETE /mcp/servers/:name?scope=：先断连再删配置（验收 6.7 反序） */
+async function handleDeleteServer(
+  ctx: HandlerContext,
+  req: IncomingMessage,
+  res: ServerResponse,
+  name: string,
+): Promise<void> {
+  const scope = parseScope(queryScope(req));
+  const { config: cfg } = ctx.configLoader.load();
+  const existed = cfg.tools.mcpServers[name] !== undefined;
+  if (existed) {
+    await ctx.mcpManager.unloadServer(name);
+    await ctx.configWriter.deleteScopeKey(scope, ['tools', 'mcpServers', name]);
+    ctx.log(`[api] MCP server 已断连并移除（${scope}）: ${name}`);
+  }
+  sendJson(res, 200, { name, scope, deleted: existed });
+}
+
+/** POST /mcp/reload：全部断连重连（热更新）；failed 提取 server 名 */
+async function handleReloadServers(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const result = await ctx.mcpManager.reload();
+  ctx.log(`[api] MCP 已重载: 成功 ${result.successes.length}，失败 ${result.failures.length}`);
+  sendJson(res, 200, {
+    reconnected: result.successes.length,
+    failed: result.failures.map((f) => f.split(':')[0]),
+  });
+}
+
+/** POST /mcp/servers/:name/test：临时连接探测（与 CLI test 同款，不影响已注册工具） */
+async function handleTestServer(ctx: HandlerContext, res: ServerResponse, name: string): Promise<void> {
+  const server = requireServerCfg(ctx, name);
+  const start = Date.now();
+  const result = await ctx.mcpManager.testServer(name, server);
+  const latencyMs = Date.now() - start;
+  if (result.ok) {
+    const m = /（(\d+) 个工具）/.exec(result.message);
+    sendJson(res, 200, { ok: true, latencyMs, tools: m ? Number(m[1]) : 0 });
+  } else {
+    sendJson(res, 200, { ok: false, latencyMs, tools: 0, error: result.message });
+  }
+}
+
+export function mcpRoutes(): Route[] {
+  return [
+    { method: 'GET', path: '/mcp/servers', handler: (ctx, _req, res) => handleListServers(ctx, _req, res) },
+    { method: 'POST', path: '/mcp/reload', handler: (ctx, _req, res) => handleReloadServers(ctx, _req, res) },
+    { method: 'GET', path: '/mcp/servers/:name', handler: (ctx, _req, res, p) => handleGetServer(ctx, res, p.name) },
+    { method: 'POST', path: '/mcp/servers', handler: (ctx, req, res) => handleCreateServer(ctx, req, res) },
+    { method: 'POST', path: '/mcp/servers/:name/test', handler: (ctx, _req, res, p) => handleTestServer(ctx, res, p.name) },
+    { method: 'DELETE', path: '/mcp/servers/:name', handler: (ctx, req, res, p) => handleDeleteServer(ctx, req, res, p.name) },
+  ];
+}

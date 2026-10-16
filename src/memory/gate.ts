@@ -7,6 +7,11 @@ import type { Provenance, PendingFact } from './types.js';
 /** 状态持久化文件名 */
 const STATE_FILE = '.memory-gate.json';
 
+/** 各来源晋升阈值（返回副本，供诊断展示；与 REQUIRED_CONFIRMATIONS 同口径） */
+export function getGateThresholds(): Record<Provenance, number> {
+  return PromotionGate.getThresholds();
+}
+
 /** 文件是否存在 */
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -27,6 +32,11 @@ export class PromotionGate {
     agent_inferred: 5, // Agent 自己推断，最难晋升
     system: -1, // 系统脚手架，永不可晋升
   };
+
+  /** 阈值表快照（模块级 getGateThresholds 转发至此，避免外部访问 private static） */
+  static getThresholds(): Record<Provenance, number> {
+    return { ...PromotionGate.REQUIRED_CONFIRMATIONS };
+  }
 
   private pending: Map<string, PendingFact> = new Map();
 

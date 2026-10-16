@@ -6,7 +6,9 @@ export type ErrorCode =
   | 'not_found'
   | 'method_not_allowed'
   | 'bad_request'
+  | 'conflict'
   | 'busy'
+  | 'bad_gateway'
   | 'payload_too_large'
   | 'internal';
 
@@ -17,7 +19,9 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   not_found: 404,
   method_not_allowed: 405,
   bad_request: 400,
+  conflict: 409,
   busy: 409,
+  bad_gateway: 502,
   payload_too_large: 413,
   internal: 500,
 };

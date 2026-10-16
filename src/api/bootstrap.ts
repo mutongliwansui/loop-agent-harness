@@ -7,6 +7,11 @@ import { createApiServer, type ApiServer } from './server.js';
 export async function startApiServer(): Promise<ApiServer> {
   const { agent } = await import('../agent/react-agent.js');
   const { configLoader } = await import('../config/index.js');
+  const { configWriter } = await import('../config/writer.js');
+  const { mcpManager } = await import('../config/mcp-manager.js');
+  const { skillLoader } = await import('../skill/loader.js');
+  const { defaultUploadsRoot } = await import('../upload/manager.js');
+  const { defaultMemoryKitFactory } = await import('./memory-kit.js');
   const { SessionStore: Store } = await import('../session/index.js');
 
   const { config: cfg } = configLoader.load();
@@ -28,6 +33,15 @@ export async function startApiServer(): Promise<ApiServer> {
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
+    // D8：命令资源化运行时依赖（真实单例组装）
+    runtime: {
+      configLoader,
+      configWriter,
+      mcpManager,
+      skillLoader,
+      uploadsRoot: defaultUploadsRoot(),
+      createMemoryKit: defaultMemoryKitFactory,
+    },
   });
 
   const { port } = await server.start();
@@ -36,7 +50,7 @@ export async function startApiServer(): Promise<ApiServer> {
   console.log(`\x1b[1m\x1b[36mHTTP API 服务已启动\x1b[0m`);
   console.log(`  地址:    http://${api.host}:${port}`);
   console.log(`  鉴权:    ${api.token ? 'Bearer Token' : '仅本机（未配置 api.token）'}`);
-  console.log(`  端点:    GET /health · POST /sessions · GET|DELETE /sessions/:id · POST /sessions/:id/messages`);
+  console.log(`  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory`);
   console.log(`  提示:    Ctrl+C 退出；配置变更需重启生效`);
   console.log('');
   return server;
