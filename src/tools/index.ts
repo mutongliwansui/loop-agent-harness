@@ -15,8 +15,13 @@ export { activateSkill } from './activateSkill.js';
 export { visionTools, describeImage, askImage, extractJson, ocrImage } from './vision/tools.js';
 
 // MCP 接入
-export { MCPClient } from './mcp/client.js';
-export type { MCPServerConfig, StdioConfig, SSEConfig } from './mcp/client.js';
+export { MCPClient, normalizeMcpTransportType } from './mcp/client.js';
+export type {
+  MCPServerConfig,
+  StdioConfig,
+  SSEConfig,
+  StreamableHttpConfig,
+} from './mcp/client.js';
 export { adaptMCPTool, buildToolName } from './mcp/adapter.js';
 export {
   MCPManager,

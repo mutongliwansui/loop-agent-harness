@@ -48,7 +48,7 @@
 | � **File Upload** | `/upload` copies local files into a session-isolated upload directory and injects them into the Agent context: supports drag-and-drop (cross-terminal format normalization) and a native file picker with no arguments (Windows / macOS / Linux), ready for the Agent to read on the next turn |
 | �️ **Built-in Tools** | Command execution, file read (supports line ranges, numbered by default), file write, text editing (editFile: literal/regex/line-range), content search (grep), skill activation |
 | 👁️ **Vision Understanding** | Integrates multimodal vision models (OpenAI-protocol `image_url` format): four tools for image description / targeted Q&A / structured extraction / OCR; local images auto-converted to base64; LRU result caching and usage stats; `/vision` command for management and connectivity testing |
-| 🌐 **MCP Support** | Connect external tool services via the Model Context Protocol (stdio / SSE) |
+| 🌐 **MCP Support** | Connect external tool services via the Model Context Protocol (stdio / SSE / Streamable HTTP) |
 | 🧩 **Skills** | SKILL.md spec + progressive loading; the `activate_skill` tool activates domain instructions on demand |
 | 🧠 **Three-tier Memory** | L1 Working (token compaction) / L2 Episodic (daily journal) / L3 Curated (always injected) |
 | 🔧 **Layered Config** | CLI > workspace > global > .env > defaults, with multiple layers of overrides and traceable sources |
@@ -715,7 +715,7 @@ registry.register(myTool);
 
 ### Connecting External MCP Tools
 
-MCP (Model Context Protocol) is a standardized tool-integration protocol supporting both stdio and SSE transports.
+MCP (Model Context Protocol) is a standardized tool-integration protocol supporting stdio, SSE (deprecated) and Streamable HTTP transports; Streamable HTTP is recommended for remote MCP servers.
 
 #### Option 1: Config file (recommended)
 
@@ -733,6 +733,11 @@ Create `.mcp.json` or add one interactively via the CLI's `/mcp add` command:
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    },
+    "remote": {
+      "type": "streamableHttp",
+      "url": "https://host/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }
@@ -742,7 +747,7 @@ On startup, the project automatically loads the config and registers the tools o
 
 #### Option 2: Interactive CLI add
 
-After launching, type `mcp add my-server` and follow the prompts for transport type, command/URL, etc. It tests the connection automatically and then writes the config.
+After launching, type `mcp add my-server` and follow the prompts for transport type, command/URL, etc. It tests the connection automatically and then writes the config. The transport type can be `stdio` / `sse` / `http` (i.e. Streamable HTTP); choosing `http` also lets you enter one optional auth header (e.g. `Authorization: Bearer xxx`).
 
 #### Option 3: Programmatic integration
 
@@ -759,12 +764,26 @@ await registry.registerMCPServer('filesystem', {
 // Example MCP tool names: filesystem__read_file, filesystem__write_file
 ```
 
-#### Option 4: SSE transport
+#### Option 4: Streamable HTTP transport (recommended for remote servers)
+
+```typescript
+await registry.registerMCPServer('my-server', {
+  type: 'streamableHttp',
+  url: 'https://host/mcp',
+  // Optional: custom request headers (Bearer Token / API Key, etc.)
+  headers: { Authorization: 'Bearer <token>' },
+});
+```
+
+> - `type` also accepts the ecosystem aliases `http` / `streamable-http` (case-insensitive); all three are equivalent.
+> - Streamable HTTP has replaced HTTP+SSE since the MCP spec 2025-03-26; the 2026-07-28 spec marks HTTP+SSE as Deprecated.
+
+#### Option 5: SSE transport (deprecated, legacy compatibility only)
 
 ```typescript
 await registry.registerMCPServer('my-server', {
   type: 'sse',
-  url: 'http://localhost:3000/mcp',
+  url: 'http://localhost:3000/sse',
 });
 ```
 

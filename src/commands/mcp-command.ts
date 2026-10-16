@@ -6,10 +6,35 @@ import {
   type PartialAgentConfig,
   type ToolsConfig,
 } from '../config/index.js';
-import type { MCPServerConfig } from '../tools/index.js';
+import { normalizeMcpTransportType } from '../tools/index.js';
+import type {
+  MCPServerConfig,
+  StdioConfig,
+  SSEConfig,
+  StreamableHttpConfig,
+} from '../tools/index.js';
 import { COLORS } from '../ui/colors.js';
 import { parseScope } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
+
+/** 渲染单个 MCP Server 的配置摘要（headers 仅列键名，脱敏，D7） */
+export function describeServer(s: MCPServerConfig): string {
+  const type = normalizeMcpTransportType(String((s as { type?: unknown }).type ?? ''));
+  if (type === 'stdio') {
+    const c = s as StdioConfig;
+    return `stdio: ${c.command} ${(c.args ?? []).join(' ')}`.trim();
+  }
+  if (type === 'sse') {
+    return `sse（已废弃）: ${(s as SSEConfig).url}`;
+  }
+  if (type === 'streamableHttp') {
+    const c = s as StreamableHttpConfig;
+    const keys = c.headers ? Object.keys(c.headers) : [];
+    const h = keys.length > 0 ? ` headers: [${keys.join(', ')}]` : '';
+    return `streamableHttp: ${c.url}${h}`;
+  }
+  return `${String((s as { type?: unknown }).type)}:（未知传输类型）`;
+}
 
 /** 交互式添加 MCP Server */
 async function interactiveAddMcp(
@@ -25,24 +50,41 @@ async function interactiveAddMcp(
   const q = (prompt: string): Promise<string> =>
     new Promise((resolve) => rl.question(prompt, resolve));
 
-  const typeRaw = await q(`传输类型 (stdio/sse, 默认 stdio): `).then((s) => s.trim() || 'stdio');
-  if (typeRaw !== 'stdio' && typeRaw !== 'sse') {
-    out.log(`${COLORS.red}传输类型必须是 stdio 或 sse，已取消${COLORS.reset}`);
+  const typeRaw = await q(`传输类型 (stdio/sse/http, 默认 stdio): `).then((s) => s.trim() || 'stdio');
+  const transport = normalizeMcpTransportType(typeRaw);
+  if (!transport) {
+    out.log(`${COLORS.red}传输类型必须是 stdio / sse / http，已取消${COLORS.reset}`);
     out.blank();
     return;
   }
 
   let cfg: MCPServerConfig;
-  if (typeRaw === 'stdio') {
+  if (transport === 'stdio') {
     const command = await q(`可执行命令 (如 npx / python): `).then((s) => s.trim());
     if (!command) { out.log(`${COLORS.red}命令不能为空${COLORS.reset}`); out.blank(); return; }
     const argsRaw = await q(`参数 (空格分隔，如 -y pkg): `).then((s) => s.trim());
     const args = argsRaw ? argsRaw.split(/\s+/) : [];
     cfg = { type: 'stdio', command, args };
-  } else {
-    const url = await q(`SSE URL: `).then((s) => s.trim());
+  } else if (transport === 'sse') {
+    // sse 已废弃（规范自 2025-03-26 起由 Streamable HTTP 取代），保留仅为兼容存量服务
+    const url = await q(`SSE URL（已废弃，建议改用 http）: `).then((s) => s.trim());
     if (!url) { out.log(`${COLORS.red}URL 不能为空${COLORS.reset}`); out.blank(); return; }
     cfg = { type: 'sse', url };
+  } else {
+    const url = await q(`HTTP URL (Streamable HTTP 端点，如 https://host/mcp): `).then((s) => s.trim());
+    if (!url) { out.log(`${COLORS.red}URL 不能为空${COLORS.reset}`); out.blank(); return; }
+    const headerRaw = await q(`认证头 (如 Authorization: Bearer xxx，留空跳过): `).then((s) => s.trim());
+    let headers: Record<string, string> | undefined;
+    if (headerRaw) {
+      const sep = headerRaw.indexOf(':');
+      if (sep <= 0) {
+        out.log(`${COLORS.red}认证头格式应为 "Key: Value"，已取消${COLORS.reset}`);
+        out.blank();
+        return;
+      }
+      headers = { [headerRaw.slice(0, sep).trim()]: headerRaw.slice(sep + 1).trim() };
+    }
+    cfg = headers ? { type: 'streamableHttp', url, headers } : { type: 'streamableHttp', url };
   }
 
   out.log(`${COLORS.gray}正在测试连接...${COLORS.reset}`);
@@ -99,9 +141,7 @@ export const mcpCommand: CommandHandler = {
       }
       for (const [name, s] of Object.entries(servers)) {
         const conn = connected.includes(name) ? `${COLORS.green}[已连接]${COLORS.reset}` : `${COLORS.red}[未连接]${COLORS.reset}`;
-        const detail = s.type === 'stdio'
-          ? `${s.type}: ${s.command} ${(s.args ?? []).join(' ')}`
-          : `${s.type}: ${s.url}`;
+        const detail = describeServer(s);
         out.log(`  - ${COLORS.bold}${name}${COLORS.reset} ${conn} ${COLORS.gray}(${detail})${COLORS.reset}`);
       }
       out.blank();

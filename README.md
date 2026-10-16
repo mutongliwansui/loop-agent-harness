@@ -48,7 +48,7 @@
 | � **文件上传** | `/upload` 把本地文件复制到会话隔离的上传目录并注入 Agent 上下文：支持拖拽（跨终端格式归一）、无参弹出系统文件选择框（Windows / macOS / Linux），Agent 下一轮即可读取处理 |
 | �️ **内置工具** | 命令执行、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
-| 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE） |
+| 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE / Streamable HTTP） |
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
 | 🧠 **三层记忆管理** | L1 Working（token 压缩）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入） |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
@@ -718,7 +718,7 @@ registry.register(myTool);
 
 ### 接入 MCP 外部工具
 
-MCP（Model Context Protocol）是一种标准化的工具接入协议，支持 stdio 和 SSE 两种传输方式。
+MCP（Model Context Protocol）是一种标准化的工具接入协议，支持 stdio、SSE（已废弃）与 Streamable HTTP 三种传输方式；远程 MCP Server 推荐使用 Streamable HTTP。
 
 #### 方式一：配置文件（推荐）
 
@@ -736,6 +736,11 @@ MCP（Model Context Protocol）是一种标准化的工具接入协议，支持 
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    },
+    "remote": {
+      "type": "streamableHttp",
+      "url": "https://host/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }
@@ -745,7 +750,7 @@ MCP（Model Context Protocol）是一种标准化的工具接入协议，支持 
 
 #### 方式二：CLI 交互式添加
 
-启动后输入 `mcp add my-server`，按提示输入传输类型、命令/URL 等，自动测试连接后写入配置。
+启动后输入 `mcp add my-server`，按提示输入传输类型、命令/URL 等，自动测试连接后写入配置。传输类型可选 `stdio` / `sse` / `http`（即 Streamable HTTP）；选择 `http` 时可再填一行可选认证头（如 `Authorization: Bearer xxx`）。
 
 #### 方式三：编程式接入
 
@@ -762,12 +767,26 @@ await registry.registerMCPServer('filesystem', {
 // MCP 工具名示例：filesystem__read_file, filesystem__write_file
 ```
 
-#### 方式四：SSE 协议接入
+#### 方式四：Streamable HTTP 接入（远程服务推荐）
+
+```typescript
+await registry.registerMCPServer('my-server', {
+  type: 'streamableHttp',
+  url: 'https://host/mcp',
+  // 可选：自定义请求头（Bearer Token / API Key 等）
+  headers: { Authorization: 'Bearer <token>' },
+});
+```
+
+> - `type` 亦可写生态别名 `http` / `streamable-http`（大小写不敏感），三者等价。
+> - Streamable HTTP 自 MCP 规范 2025-03-26 版起取代 HTTP+SSE，2026-07-28 版规范已将 HTTP+SSE 标记为 Deprecated。
+
+#### 方式五：SSE 接入（已废弃，仅兼容存量服务）
 
 ```typescript
 await registry.registerMCPServer('my-server', {
   type: 'sse',
-  url: 'http://localhost:3000/mcp',
+  url: 'http://localhost:3000/sse',
 });
 ```
 
