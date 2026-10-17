@@ -31,8 +31,11 @@ export function serializeError(e: Error): { name: string; message: string } {
   return { name: e.name, message: e.message };
 }
 
-/** 读取请求体；累计超 2MB 抛 413（排空剩余数据，保证客户端能收到 413 响应而非连接重置） */
-export function readBody(req: IncomingMessage): Promise<string> {
+/**
+ * 读取原始请求体为 Buffer；累计超 maxBytes 抛 413（排空剩余数据，保证客户端能收到 413 响应而非连接重置）。
+ * 上限参数化：JSON 体默认 2MB；raw 上传传 MAX_UPLOAD_BYTES（100MB）。
+ */
+export function readRawBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     let overLimit = false;
@@ -40,23 +43,28 @@ export function readBody(req: IncomingMessage): Promise<string> {
     req.on('data', (chunk: Buffer) => {
       if (overLimit) return; // 超限后仅排空，不再累积
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         overLimit = true;
         chunks.length = 0;
         req.removeAllListeners('data');
         req.resume(); // 进入 flowing 模式排空剩余 body
-        reject(new ApiHttpError('payload_too_large', `请求体超过 ${MAX_BODY_BYTES} 字节上限`));
+        reject(new ApiHttpError('payload_too_large', `请求体超过 ${maxBytes} 字节上限`));
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
-      if (!overLimit) resolve(Buffer.concat(chunks).toString('utf8'));
+      if (!overLimit) resolve(Buffer.concat(chunks));
     });
     req.on('error', (e) => {
       if (!overLimit) reject(new ApiHttpError('bad_request', `读取请求体失败: ${e.message}`));
     });
   });
+}
+
+/** 读取请求体为 UTF-8 字符串（上限 2MB） */
+export async function readBody(req: IncomingMessage): Promise<string> {
+  return (await readRawBody(req)).toString('utf8');
 }
 
 /** 解析 JSON 请求体（空体视为 {}） */

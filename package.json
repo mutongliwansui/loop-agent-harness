@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm --dts",
     "build:sea": "node scripts/build-sea.mjs",
+    "build:webui": "npm --prefix webui run build",
     "start": "tsx src/index.ts",
     "serve": "tsx src/index.ts --serve",
     "typecheck": "tsc --noEmit",

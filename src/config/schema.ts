@@ -124,6 +124,8 @@ export interface ApiConfig {
   host: string;
   /** Bearer Token；为空时仅接受本机请求（展示时遮蔽，仅尾 4 位） */
   token: string;
+  /** WebUI 静态资源根目录；空 = 自动探测内置 webui/dist（Task-20261017-001 D3） */
+  webRoot: string;
 }
 
 /** 配置来源标记 */
@@ -221,5 +223,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
     port: 3000,
     host: '127.0.0.1',
     token: '',
+    webRoot: '',
   },
 };

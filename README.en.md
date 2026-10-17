@@ -36,6 +36,7 @@
 | 🔧 **Layered Config** | CLI > workspace > global > .env > defaults, with multiple layers of overrides and traceable sources |
 | 🧭 **First-run Bootstrap** | On startup, the model config and global/workspace directories are checked automatically: if config is missing, an interactive wizard starts (baseUrl → masked apiKey input → model name → connectivity check → choose write scope) and directories are scaffolded with defaults; `--no-setup` skips it, while `/setup` re-runs it and `/doctor` performs a read-only check inside the REPL |
 | 🎛️ **Runtime Config Management** | Built-in `/config`, `/mcp`, `/tools`, `/skill`, `/memory`, `/vision` commands with hot modification |
+| 🖥️ **Web UI** | Open the browser and go: multi-session chat (SSE streaming / stop generation / in-chat upload) plus a config/models/tools/MCP/skills/memory/doctor console, hosted on the same port as `--serve`, reusing the REST endpoints entirely |
 | 💾 **Session Persistence** | Conversation history stored with AES-256-GCM encryption; auto-saved across processes / manually restorable |
 | 📝 **Debug Logging** | File logs of LLM requests/responses, tool calls and agent iterations, with automatic rotation |
 | 🎯 **Event Hooks** | 15 lifecycle hooks, inspired by LangChain callbacks, for easy extension |
@@ -119,6 +120,9 @@ npm run build
 
 # 🚀 Build a SEA single executable (output to dist-sea/, see the section below)
 npm run build:sea
+
+# 🖥️ Build the Web UI frontend (output webui/dist/, committed to the repo — usable right after cloning)
+npm run build:webui
 ```
 
 ---
@@ -132,6 +136,7 @@ Each section's details have been split into [docs/readme/en/](docs/readme/en/) (
 | [📖 CLI Usage](docs/readme/en/cli-usage.md) | REPL interaction and built-in commands: `/config` `/mcp` `/tools` `/session` `/skill` `/memory` `/vision` `/model` `/upload` `/setup` `/doctor` |
 | [💻 Programmatic Usage](docs/readme/en/programmatic-usage.md) | `agent.run()` single/multi-turn examples, session persistence and custom event listeners |
 | [🌐 HTTP API Service (--serve)](docs/readme/en/http-api.md) | Starting the HTTP service, auth configuration, REST endpoints and SSE event stream |
+| [🖥️ Web UI](docs/readme/en/web-ui.md) | Browser interface: how to start it, token auth, an overview of the eight views and frontend development |
 | [🏗️ Architecture](docs/readme/en/architecture.md) | Layered architecture diagram, ReAct loop flow and layered config loading |
 | [🔧 Built-in Tools](docs/readme/en/built-in-tools.md) | Parameter docs and call examples for the 10 built-in tools |
 | [🧩 Tool Extension](docs/readme/en/tool-extension.md) | Writing custom tools and connecting external MCP tools (five ways) |

@@ -36,6 +36,7 @@
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
 | 🧭 **首次启动引导** | 启动时自动检测模型配置与全局/工作空间目录：缺配置进入交互式向导（baseUrl → apiKey 遮蔽输入 → 模型名 → 连通性校验 → 选择写入层级），目录按默认结构补建；`--no-setup` 跳过，REPL 内 `/setup` 重跑、`/doctor` 只读体检 |
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory`、`/vision` 命令，支持热修改 |
+| 🖥️ **Web UI** | 浏览器打开即用：多会话聊天（SSE 流式 / 停止生成 / 对话内上传）+ 配置/模型/工具/MCP/技能/记忆/诊断管理台，与 `--serve` 同端口托管，全部复用 REST 端点 |
 | ⌨️ **Tab 自动补全** | REPL 输入 `/con` 按 Tab 补全为 `/config`，命令与子命令均可补全，多候选自动列出 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
@@ -120,6 +121,9 @@ npm run build
 
 # 🚀 构建 SEA 单可执行文件（输出到 dist-sea/，详见下方章节）
 npm run build:sea
+
+# 🖥️ 构建 Web UI 前端（输出 webui/dist/，产物已随仓库提交，克隆即可用）
+npm run build:webui
 ```
 
 ---
@@ -133,6 +137,7 @@ npm run build:sea
 | [📖 CLI 使用](docs/readme/zh/cli-usage.md) | REPL 交互与 `/config` `/mcp` `/tools` `/session` `/skill` `/memory` `/vision` `/model` `/upload` `/setup` `/doctor` 内置命令详解 |
 | [💻 编程式调用](docs/readme/zh/programmatic-usage.md) | `agent.run()` 单轮/多轮对话、会话持久化与自定义事件监听示例 |
 | [🌐 HTTP API 服务（--serve）](docs/readme/zh/http-api.md) | HTTP 服务启动方式、鉴权配置、REST 端点与 SSE 事件流 |
+| [🖥️ Web UI](docs/readme/zh/web-ui.md) | 浏览器图形界面：启动方式、token 鉴权、八视图功能总览与前端开发 |
 | [🏗️ 架构设计](docs/readme/zh/architecture.md) | 分层架构图、ReAct 循环流程与配置分层加载机制 |
 | [🔧 内置工具](docs/readme/zh/built-in-tools.md) | 10 个内置工具的参数说明与调用示例 |
 | [🧩 工具扩展](docs/readme/zh/tool-extension.md) | 自定义工具编写与 MCP 外部工具接入（五种方式） |

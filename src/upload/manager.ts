@@ -2,7 +2,7 @@
 // 纯逻辑模块：参数跨平台归一 → 系统文件选择框（平台探测链）→ 复制到会话隔离上传目录
 // 设计依据：docs/tasks/optimizations/task-20261012-001-文件上传（upload 会话隔离上传目录）.md
 import { exec } from 'node:child_process';
-import { copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -263,6 +263,45 @@ export async function copyToUploads(
     }
   }
   return result;
+}
+
+/**
+ * 写入单个原始字节文件到会话上传目录（WebUI 对话内上传，Task-20261017-001 §3.1b）。
+ * 复用 copyToUploads 的落盘规则：时间戳前缀 / 同秒同名冲突链（毫秒段 → 序号）/ 大小上限。
+ * 调用方需先归一 fileName 为纯文件名（本函数不再切路径段）；超限抛 Error。
+ */
+export async function writeUpload(
+  fileName: string,
+  bytes: Buffer,
+  opts: { sessionKey: string; uploadsRoot?: string; now?: Date; maxBytes?: number },
+): Promise<UploadEntry> {
+  const root = opts.uploadsRoot ?? defaultUploadsRoot();
+  const now = opts.now ?? new Date();
+  const maxBytes = opts.maxBytes ?? MAX_UPLOAD_BYTES;
+  if (bytes.length > maxBytes) {
+    throw new Error(`超过单文件上限 ${formatBytes(maxBytes)}`);
+  }
+  const dir = join(root, opts.sessionKey);
+  await mkdir(dir, { recursive: true });
+  const existing = new Set(await readdir(dir));
+  const stamp = formatStamp(now);
+  let name = `${stamp}-${fileName}`;
+  let seq = 0;
+  while (existing.has(name)) {
+    seq++;
+    name = seq === 1
+      ? `${stamp}-${now.getMilliseconds()}-${fileName}`
+      : `${stamp}-${now.getMilliseconds()}-${seq}-${fileName}`;
+  }
+  const target = join(dir, name);
+  await writeFile(target, bytes);
+  return {
+    originalPath: '', // 原始字节上传无源路径（与 listUploads 的回显约定一致）
+    targetPath: target,
+    fileName: name,
+    bytes: bytes.length,
+    uploadedAt: now.toISOString(),
+  };
 }
 
 /** 列出会话上传目录（目录不存在返回 []；uploadedAt 取 mtime） */

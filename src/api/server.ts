@@ -18,6 +18,7 @@ import { ApiHttpError } from './errors.js';
 import { LOOPBACK_HOST, isAuthorized, sendError } from './http-utils.js';
 import { SessionManager } from './session-manager.js';
 import { createRoutes, matchRoute, type HandlerContext } from './router.js';
+import { createStaticHandler, resolveWebRoot, type StaticHandler } from './static.js';
 import { SessionStore } from '../session/index.js';
 import type { AgentConfig } from '../config/schema.js';
 import type { AgentOptions, AgentResult } from '../types.js';
@@ -72,12 +73,14 @@ export interface ApiServer {
 /**
  * 创建 API 服务（D9 依赖注入 seam）
  *
- * 请求流：鉴权 → matchRoute → handler（抛 ApiHttpError 统一转 JSON 响应）。
+ * 请求流：matchRoute → 鉴权 → handler（未注册 GET 先静态回落；抛 ApiHttpError 统一转 JSON 响应）。
  */
 export function createApiServer(deps: ApiServerDeps): ApiServer {
   const sessions = new SessionManager(deps.sessionStore);
   const routes = createRoutes();
   let httpServer: http.Server | null = null;
+  /** WebUI 静态资源处理器（start 时按 webRoot 构建；index.html 缺失时整体降级为回落 API） */
+  let staticHandler: StaticHandler | null = null;
 
   const log = (msg: string): void => deps.log?.(msg);
   // D8：runtime 缺省字段回落全局单例（bootstrap 传真实单例；单测注入临时目录实例）
@@ -95,21 +98,30 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     createMemoryKit: rt.createMemoryKit ?? defaultMemoryKitFactory,
   };
 
-  /** 统一入口：鉴权 → 路由 → 处理器 → 错误转 JSON */
+  /** 统一入口：路由 → 鉴权 → 处理器 → 错误转 JSON（D6：静态页免鉴权，已注册端点鉴权语义不变） */
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
+      const method = req.method ?? 'GET';
+      const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const matched = matchRoute(routes, method, path);
+      if (matched.kind === 'not_found') {
+        // 未注册路径：先尝试静态回落（仅 GET 有扩展名 / 根路径；index.html 缺失时恒 false）
+        if (staticHandler && (await staticHandler(req, res))) return;
+        // 回落未命中 → 保持原鉴权与 404 语义
+        const token = deps.getConfig().api.token;
+        if (!isAuthorized(req, token)) {
+          throw token
+            ? new ApiHttpError('unauthorized', '缺少或错误的 Bearer Token')
+            : new ApiHttpError('forbidden', '仅允许本机访问（未配置 api.token）');
+        }
+        throw new ApiHttpError('not_found', `未知路径: ${method} ${path}`);
+      }
+      // 已注册端点（含 method_not_allowed）鉴权行为与原实现一致
       const token = deps.getConfig().api.token;
       if (!isAuthorized(req, token)) {
         throw token
           ? new ApiHttpError('unauthorized', '缺少或错误的 Bearer Token')
           : new ApiHttpError('forbidden', '仅允许本机访问（未配置 api.token）');
-      }
-
-      const method = req.method ?? 'GET';
-      const path = new URL(req.url ?? '/', 'http://localhost').pathname;
-      const matched = matchRoute(routes, method, path);
-      if (matched.kind === 'not_found') {
-        throw new ApiHttpError('not_found', `未知路径: ${method} ${path}`);
       }
       if (matched.kind === 'method_not_allowed') {
         throw new ApiHttpError('method_not_allowed', `${method} ${path} 不支持`);
@@ -141,6 +153,9 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
             `请设置 api.token，或将 api.host 改为 127.0.0.1。`,
         );
       }
+
+      // D3：按 webRoot 构建静态处理器（webRoot 为空 → 自动探测内置 webui/dist；未构建则整体降级）
+      staticHandler = createStaticHandler(resolveWebRoot(cfg.api.webRoot));
 
       const server = http.createServer((req, res) => {
         void handleRequest(req, res).catch(() => {});
