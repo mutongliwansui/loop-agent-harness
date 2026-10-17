@@ -11,7 +11,7 @@
 //   DELETE /uploads             → 上传面板「清空全部」（二次确认）
 // 停止生成：AbortController 中断 fetch（服务端照常完成并持久化，停止后刷新列表）
 
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { api, AuthError, uploadRaw } from '../api/client.js';
@@ -307,7 +307,9 @@ async function send(): Promise<void> {
     text,
     files: chipsSnapshot.map((u) => u.fileName),
   };
-  const asst: ChatMsg = { id: ++msgSeq, role: 'assistant', text: '', tools: [], streaming: true };
+  // 必须 reactive：流式期间 handleEvent 持有此引用做 += 累加，若为普通对象，
+  // 写入绕过响应式代理不触发渲染 → 表现为“全部生成完后才一次性出现”
+  const asst = reactive<ChatMsg>({ id: ++msgSeq, role: 'assistant', text: '', tools: [], streaming: true });
   if (streamChk.value) messages.value.push(userMsg, asst);
   else messages.value.push(userMsg);
 
