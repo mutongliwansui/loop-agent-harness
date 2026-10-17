@@ -46,8 +46,26 @@ export interface SessionData {
 /** 工作空间元信息 */
 export interface WorkspaceMeta {
   workspacePath: string;
+  /** 工作空间名称（工作目录的目录名） */
+  workspaceName: string;
   createdAt: string;
   lastAccessedAt: string;
+}
+
+/** 跨工作空间聚合的工作空间概要（GET /workspaces） */
+export interface WorkspaceSummary {
+  /** 工作空间目录 ID（SHA-256 前 16 位） */
+  id: string;
+  /** 工作空间名称（meta.json 的 workspaceName；旧文件缺失时回退为路径目录名） */
+  name: string;
+  /** 工作目录绝对路径 */
+  path: string;
+  /** 是否为当前服务进程的工作空间 */
+  current: boolean;
+  createdAt: string;
+  lastAccessedAt: string;
+  /** 该空间下的会话索引（按 updatedAt 降序） */
+  sessions: SessionMeta[];
 }
 
 /** 会话存储配置 */

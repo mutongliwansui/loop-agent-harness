@@ -21,6 +21,16 @@ export async function handleMessage(
   }
   const stream = body.stream !== false; // 默认 true
 
+  // 跨工作空间会话只读：仅当前空间的会话可继续对话（架构上一个 serve 进程只服务一个工作空间）
+  if (!(await deps.sessionStore.listSessions()).some((s) => s.id === id)) {
+    const foreign = (await deps.sessionStore.listAllWorkspaces()).some(
+      (w) => !w.current && w.sessions.some((s) => s.id === id),
+    );
+    if (foreign) {
+      throw new ApiHttpError('readonly', '跨工作空间会话仅支持查看与删除，不支持继续对话');
+    }
+  }
+
   const entry = await sessions.ensureEntry(id);
   if (entry.inFlight) {
     throw new ApiHttpError('busy', `会话 ${id} 正在处理上一条消息，请稍后再试`);

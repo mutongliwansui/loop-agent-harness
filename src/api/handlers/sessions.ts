@@ -26,25 +26,33 @@ export async function handleListSessions(ctx: HandlerContext, res: ServerRespons
   sendJson(res, 200, { sessions: list });
 }
 
-/** GET /sessions/:id：会话详情（恢复视图，不含 system） */
+/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；当前空间置顶） */
+export async function handleListWorkspaces(ctx: HandlerContext, res: ServerResponse): Promise<void> {
+  const workspaces = await ctx.deps.sessionStore.listAllWorkspaces();
+  sendJson(res, 200, { workspaces });
+}
+
+/** GET /sessions/:id：会话详情（恢复视图，不含 system；支持跨工作空间会话） */
 export async function handleGetSession(ctx: HandlerContext, res: ServerResponse, id: string): Promise<void> {
-  const metas = await ctx.deps.sessionStore.listSessions();
-  const meta = metas.find((s) => s.id === id);
-  if (!meta) throw new ApiHttpError('not_found', `会话不存在: ${id}`);
+  const owner = (await ctx.deps.sessionStore.listAllWorkspaces()).find((w) =>
+    w.sessions.some((s) => s.id === id),
+  );
+  if (!owner) throw new ApiHttpError('not_found', `会话不存在: ${id}`);
+  const meta = owner.sessions.find((s) => s.id === id);
   const data = await ctx.deps.sessionStore.loadSession(id);
   sendJson(res, 200, { meta, messages: SessionStore.getRestoreMessages(data) });
 }
 
-/** DELETE /sessions/:id：删除会话并清缓存；存在 in-flight run 时拒绝 */
+/** DELETE /sessions/:id：删除会话并清缓存；存在 in-flight run 时拒绝（支持跨工作空间会话） */
 export async function handleDeleteSession(ctx: HandlerContext, res: ServerResponse, id: string): Promise<void> {
   const entry = ctx.sessions.get(id);
   if (entry?.inFlight) {
     throw new ApiHttpError('busy', `会话 ${id} 正在处理消息，暂不能删除`);
   }
-  const metas = await ctx.deps.sessionStore.listSessions();
-  if (!metas.some((s) => s.id === id)) {
-    throw new ApiHttpError('not_found', `会话不存在: ${id}`);
-  }
+  const owner = (await ctx.deps.sessionStore.listAllWorkspaces()).find((w) =>
+    w.sessions.some((s) => s.id === id),
+  );
+  if (!owner) throw new ApiHttpError('not_found', `会话不存在: ${id}`);
   await ctx.deps.sessionStore.deleteSession(id);
   ctx.sessions.delete(id);
   ctx.log(`[api] 会话已删除: ${id}`);

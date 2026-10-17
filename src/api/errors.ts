@@ -8,6 +8,7 @@ export type ErrorCode =
   | 'bad_request'
   | 'conflict'
   | 'busy'
+  | 'readonly'
   | 'bad_gateway'
   | 'payload_too_large'
   | 'internal';
@@ -21,6 +22,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   bad_request: 400,
   conflict: 409,
   busy: 409,
+  readonly: 409,
   bad_gateway: 502,
   payload_too_large: 413,
   internal: 500,

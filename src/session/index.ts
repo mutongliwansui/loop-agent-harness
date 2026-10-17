@@ -6,6 +6,7 @@ export type {
   SessionMeta,
   SessionData,
   WorkspaceMeta,
+  WorkspaceSummary,
   SessionConfig,
 } from './types.js';
 export { DEFAULT_SESSION_CONFIG } from './types.js';

@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web UI 原型 · 20261017-002 · 会话按工作空间分组</title>
+<style>
+/* ========== 主题令牌（跟随系统深浅色） ========== */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --border: #e4e6ea;
+  --text: #1b1f24;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --info-weak: #e0e7ff;
+  --info: #4f46e5;
+  --code-bg: #f3f4f6;
+  --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+  --radius: 10px;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c;
+    --surface: #1f2227;
+    --surface-2: #262a31;
+    --border: #33383f;
+    --text: #e6e8eb;
+    --muted: #9aa1ab;
+    --brand: #34d399;
+    --brand-weak: #143528;
+    --brand-on: #0b221a;
+    --danger: #f87171;
+    --danger-weak: #3b1a1a;
+    --warn: #fbbf24;
+    --warn-weak: #3a2e10;
+    --ok: #34d399;
+    --ok-weak: #143528;
+    --info: #a5b4fc;
+    --info-weak: #262a4a;
+    --code-bg: #2a2e35;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+  --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+  --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+  --warn-weak: #3a2e10; --ok: #34d399; --ok-weak: #143528; --info: #a5b4fc;
+  --info-weak: #262a4a; --code-bg: #2a2e35;
+  --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--sans); background: var(--bg); color: var(--text);
+  font-size: 14px; line-height: 1.55; height: 100vh; overflow: hidden;
+}
+button { font-family: inherit; font-size: 13px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 12px;
+  transition: background .12s, border-color .12s, color .12s; }
+button:hover { border-color: var(--brand); color: var(--brand); }
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+button.primary:hover { filter: brightness(1.06); color: var(--brand-on); }
+button.danger-text { border: none; background: none; color: var(--danger); font-weight: 600; padding: 5px 8px; }
+button.ghost { border: none; background: none; color: var(--muted); }
+input[type=text], input[type=password], select, textarea {
+  font-family: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; outline: none;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--brand); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.ok    { background: var(--ok-weak); color: var(--ok); }
+.badge.warn  { background: var(--warn-weak); color: var(--warn); }
+.badge.err   { background: var(--danger-weak); color: var(--danger); }
+.badge.brand { background: var(--brand-weak); color: var(--brand); }
+.badge.info  { background: var(--info-weak); color: var(--info); }
+.badge.dim   { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 5px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+
+/* ========== 整体布局：左导航 + 主区 ========== */
+.app { display: flex; height: 100vh; }
+.nav {
+  width: 190px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 14px 10px;
+}
+.nav .logo { font-weight: 700; font-size: 15px; padding: 2px 10px 14px; display: flex; align-items: center; gap: 8px; }
+.nav .logo .dot { width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
+.nav .sec { font-size: 11px; color: var(--muted); padding: 12px 10px 4px; letter-spacing: .5px; }
+.nav a {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px;
+}
+.nav a:hover { background: var(--surface-2); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico { width: 17px; text-align: center; opacity: .85; }
+.nav .foot { margin-top: auto; padding: 8px 10px 0; border-top: 1px solid var(--border); }
+.nav .foot .row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
+.main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.view { display: none; flex: 1; overflow: hidden; }
+.view.active { display: flex; }
+
+/* ========== 通用页头 ========== */
+.page { flex: 1; overflow-y: auto; padding: 22px 26px 40px; }
+.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.page-head h1 { font-size: 17px; font-weight: 700; }
+.page-head .spacer { flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 14px; }
+.card .card-h { padding: 11px 16px; border-bottom: 1px solid var(--border); display: flex;
+  align-items: center; gap: 10px; font-weight: 600; font-size: 13.5px; flex-wrap: wrap; }
+.card .card-b { padding: 12px 16px; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.tbl th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px;
+  padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.tbl tr:last-child td { border-bottom: none; }
+table.tbl tr:hover td { background: var(--surface-2); }
+/* 开关 */
+.tgl { position: relative; width: 34px; height: 19px; flex: none; }
+.tgl input { opacity: 0; width: 100%; height: 100%; position: absolute; cursor: pointer; z-index: 2; margin: 0; }
+.tgl .tk { position: absolute; inset: 0; background: var(--border); border-radius: 999px; transition: background .15s; }
+.tgl .tk::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+  background: #fff; border-radius: 50%; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.tgl input:checked + .tk { background: var(--brand); }
+.tgl input:checked + .tk::after { transform: translateX(15px); }
+/* 确认按钮：二次点击（动词即确认） */
+.confirm-btn.armed { background: var(--danger); border-color: var(--danger); color: #fff; }
+/* toast */
+#toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px);
+  background: var(--text); color: var(--bg); padding: 8px 18px; border-radius: 999px;
+  font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 99; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ========== 聊天视图 ========== */
+#chat { display: none; }
+#chat.active { display: flex; }
+.sess-panel { width: 220px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; }
+.sess-panel .h { padding: 12px 12px 8px; display: flex; align-items: center; justify-content: space-between; }
+.sess-panel .h b { font-size: 13px; }
+.sess-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
+.sess { padding: 8px 10px; border-radius: 8px; cursor: pointer; display: flex;
+  align-items: center; gap: 8px; margin-bottom: 2px; }
+.sess:hover { background: var(--surface-2); }
+.sess.active { background: var(--brand-weak); }
+.sess .t { flex: 1; min-width: 0; }
+.sess .t .n { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess .t .s { font-size: 11px; color: var(--muted); }
+.sess .del { visibility: hidden; border: none; background: none; color: var(--muted); font-size: 14px; padding: 0 3px; }
+.sess:hover .del { visibility: visible; }
+.sess .del:hover { color: var(--danger); }
+/* 会话工作空间分组 */
+.ws-group { margin-bottom: 6px; }
+.ws-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer;
+  user-select: none; border-radius: 7px; }
+.ws-head:hover { background: var(--surface-2); }
+.ws-head .arrow { font-size: 9px; color: var(--muted); transition: transform .15s; flex: none; }
+.ws-group.collapsed .arrow { transform: rotate(-90deg); }
+.ws-head .dot { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+.ws-head .nm { font-size: 12px; font-weight: 600; flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-head .cur { font-size: 10px; color: var(--brand); background: var(--brand-weak);
+  padding: 0 6px; border-radius: 999px; font-weight: 600; flex: none; }
+.ws-head .cnt { font-size: 10.5px; color: var(--muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; flex: none; }
+.ws-group.collapsed .sess { display: none; }
+.ws-group .sess { margin-left: 10px; }
+/* 会话分组搜索过滤 */
+.sess-filter { margin: 0 8px 6px; position: relative; }
+.sess-filter input { width: 100%; font-size: 12px; padding: 5px 9px 5px 24px; }
+.sess-filter .ico { position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+  font-size: 11px; color: var(--muted); pointer-events: none; }
+.chat-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.chat-head { padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
+  display: flex; align-items: center; gap: 10px; }
+.chat-head b { font-size: 14px; }
+.msgs { flex: 1; overflow-y: auto; padding: 20px 0; }
+.msg-wrap { max-width: 780px; margin: 0 auto; padding: 0 20px; }
+.msg { margin-bottom: 18px; display: flex; gap: 10px; }
+.msg .ava { width: 28px; height: 28px; border-radius: 8px; flex: none; display: flex;
+  align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+.msg.user { flex-direction: row-reverse; }
+.msg.user .ava { background: var(--surface-2); border: 1px solid var(--border); }
+.msg.assistant .ava { background: var(--brand); color: var(--brand-on); }
+.bubble { max-width: 76%; padding: 9px 14px; border-radius: 12px; }
+.msg.user .bubble { background: var(--brand-weak); border-top-right-radius: 4px; }
+.msg.assistant .bubble { background: var(--surface); border: 1px solid var(--border);
+  border-top-left-radius: 4px; box-shadow: var(--shadow); }
+.msg .bubble p { margin: 0 0 8px; }
+.msg .bubble p:last-child { margin-bottom: 0; }
+.msg .bubble pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; margin: 8px 0; }
+.bubble .cursor { display: inline-block; width: 7px; height: 15px; background: var(--brand);
+  vertical-align: -2px; margin-left: 2px; animation: blink 1s steps(1) infinite; border-radius: 1px; }
+@keyframes blink { 50% { opacity: 0; } }
+/* 工具调用折叠块 */
+.tool-call { border: 1px solid var(--border); border-radius: 9px; margin: 8px 0; overflow: hidden;
+  background: var(--surface-2); }
+.tool-call summary { cursor: pointer; padding: 7px 12px; font-size: 12.5px; display: flex;
+  align-items: center; gap: 8px; list-style: none; font-family: var(--mono); }
+.tool-call summary::-webkit-details-marker { display: none; }
+.tool-call summary .arrow { transition: transform .15s; color: var(--muted); font-size: 10px; }
+.tool-call[open] summary .arrow { transform: rotate(90deg); }
+.tool-call .tc-body { padding: 8px 12px 10px; border-top: 1px solid var(--border); font-family: var(--mono);
+  font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+/* 输入区 */
+.composer { border-top: 1px solid var(--border); background: var(--surface); padding: 12px 20px 14px; }
+.composer-inner { max-width: 780px; margin: 0 auto; }
+.composer .box { display: flex; gap: 10px; align-items: flex-end; }
+.composer textarea { flex: 1; resize: none; height: 44px; line-height: 1.5; padding: 10px 12px; }
+.composer .meta { display: flex; align-items: center; gap: 14px; margin-top: 7px; font-size: 12px; color: var(--muted); }
+.composer label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+/* 上传 chip 与面板（对话内上传） */
+.composer-inner { position: relative; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips:not(:empty) { margin-bottom: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 6px 3px 10px; font-size: 12px; }
+.chip .cn { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.chip button { border: none; background: none; padding: 0 3px; color: var(--muted); font-size: 12px; }
+.chip button:hover { color: var(--danger); }
+.up-pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  padding: 14px 16px; z-index: 20; }
+.up-row { display: flex; gap: 10px; }
+.up-row input { flex: 1; }
+.up-list { margin-top: 10px; max-height: 180px; overflow-y: auto; }
+.up-item { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.up-item:last-child { border-bottom: none; }
+.up-item .n { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up-item .sz { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.up-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
+
+/* ========== Doctor 体检卡 ========== */
+.doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.doc-item { border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 15px;
+  background: var(--surface); border-left-width: 4px; }
+.doc-item.pass { border-left-color: var(--ok); }
+.doc-item.missing { border-left-color: var(--warn); }
+.doc-item.blocker { border-left-color: var(--danger); }
+.doc-item .t { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.doc-item .d { font-size: 12.5px; color: var(--muted); margin-top: 5px; }
+
+/* ========== Token 门 ========== */
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+  align-items: center; justify-content: center; z-index: 50; }
+.modal-mask.show { display: flex; }
+.modal { width: 380px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 22px 24px; box-shadow: var(--shadow); }
+.modal h2 { font-size: 16px; margin-bottom: 6px; }
+.modal p { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+.modal input { width: 100%; margin-bottom: 14px; }
+.modal .acts { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ========== 窄屏 ========== */
+@media (max-width: 900px) {
+  .nav { width: 60px; padding: 12px 6px; }
+  .nav a span.lbl, .nav .sec, .nav .logo .name, .nav .foot { display: none; }
+  .nav a { justify-content: center; padding: 9px 0; }
+  .sess-panel { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ======== 左侧导航 ======== -->
+  <nav class="nav">
+    <div class="logo"><span class="dot">L</span><span class="name">Loop Agent</span></div>
+    <div class="sec">对话</div>
+    <a href="#/chat" data-nav class="active"><span class="ico">💬</span><span class="lbl">聊天</span></a>
+    <div class="sec">运维管理</div>
+    <a href="#/config" data-nav><span class="ico">⚙️</span><span class="lbl">配置</span></a>
+    <a href="#/models" data-nav><span class="ico">🤖</span><span class="lbl">模型</span></a>
+    <a href="#/tools" data-nav><span class="ico">🔧</span><span class="lbl">工具</span></a>
+    <a href="#/mcp" data-nav><span class="ico">🔌</span><span class="lbl">MCP 服务器</span></a>
+    <a href="#/skills" data-nav><span class="ico">🧩</span><span class="lbl">技能</span></a>
+    <a href="#/memory" data-nav><span class="ico">🧠</span><span class="lbl">记忆</span></a>
+    <a href="#/doctor" data-nav><span class="ico">🩺</span><span class="lbl">诊断</span></a>
+    <div class="foot">
+      <div class="row">
+        <span class="muted" style="font-size:12px">主题</span>
+        <button class="ghost" id="themeBtn" title="切换深浅色">🌗</button>
+      </div>
+      <div class="row">
+        <span class="muted" style="font-size:12px">Token 门</span>
+        <button class="ghost" id="authDemo" title="演示 401 弹窗">🔑</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <!-- ======== 聊天 ======== -->
+    <section class="view active" id="chat">
+      <aside class="sess-panel">
+        <div class="h"><b>会话</b><button class="primary" id="newSess">＋ 新建</button></div>
+        <div class="sess-filter">
+          <span class="ico">🔍</span>
+          <input type="text" id="sessSearch" placeholder="搜索会话 / 工作空间">
+        </div>
+        <div class="sess-list" id="sessList"></div>
+      </aside>
+      <div class="chat-main">
+        <div class="chat-head">
+          <b id="chatTitle">排查 Windows 端口占用</b>
+          <span class="badge dim mono" id="chatModel">deepseek-chat</span>
+          <span class="badge brand" id="chatWs" title="所属工作空间">📁 loop-agent-command</span>
+          <span style="flex:1"></span>
+          <span class="muted" style="font-size:12px">SSE 流式</span>
+        </div>
+        <div class="msgs"><div class="msg-wrap" id="msgList"></div></div>
+        <div class="composer">
+          <div class="composer-inner">
+            <div class="chips" id="upChips"></div>
+            <div class="box">
+              <button id="upBtn" title="上传文件" style="height:44px;padding:0 12px;font-size:16px">📎</button>
+              <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+              <button class="primary" id="sendBtn" style="height:44px;padding:0 18px">发送</button>
+              <button id="stopBtn" style="height:44px;padding:0 14px;display:none">■ 停止</button>
+            </div>
+            <div class="meta">
+              <label class="chk"><input type="checkbox" id="streamChk" checked> 流式</label>
+              <span>演示：发送后模拟 SSE 事件序列 <code>llm_stream → tool_start/tool_end → final → done</code></span>
+            </div>
+            <!-- 上传面板：对话内上传（文件选择框 + POST /uploads/raw）+ 已上传管理 -->
+            <div class="up-pop" id="upPop" hidden>
+              <div class="up-row">
+                <button class="primary" id="upPick">选择文件…</button>
+                <input type="file" id="upFile" multiple hidden>
+                <span class="muted" style="font-size:11.5px">支持多选 · 单文件上限 100MB</span>
+              </div>
+              <div class="up-list" id="upList"></div>
+              <p class="muted" style="font-size:11.5px;margin:8px 2px 0">上传成功后以 contextNote（<code>[文件上传] 文件名 / 上传路径 / 大小</code>）随下一条消息注入对话；chip ✕ 仅移除不再注入，「清空全部」删除服务器上传目录（DELETE /uploads）。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 配置 ======== -->
+    <section class="view" id="config">
+      <div class="page">
+        <div class="page-head">
+          <h1>配置</h1>
+          <span class="badge dim">GET /config</span>
+          <span class="spacer"></span>
+          <span class="muted" style="font-size:12px">scope：</span>
+          <select id="cfgScope"><option>merged（合并视图）</option><option>global</option><option>workspace</option></select>
+        </div>
+        <div class="card">
+          <div class="card-h">model <span class="badge warn">api.* 修改需重启</span></div>
+          <table class="tbl">
+            <tr><th style="width:34%">键</th><th>值</th><th style="width:120px">操作</th></tr>
+            <tr><td><code>model.baseUrl</code></td><td class="mono">https://api.deepseek.com/v1</td>
+              <td><button>编辑</button> <button class="ghost">删除</button></td></tr>
+            <tr><td><code>model.apiKey</code></td><td class="mono">sk-3f****9a2c <span class="badge dim">遮蔽</span></td>
+              <td><button>编辑</button> <button class="ghost">删除</button></td></tr>
+            <tr><td><code>model.maxTokens</code></td><td class="mono">8192</td>
+              <td><button>编辑</button> <button class="ghost">删除</button></td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-h">api</div>
+          <table class="tbl">
+            <tr><td><code>api.port</code></td><td class="mono">3000</td><td><button>编辑</button></td></tr>
+            <tr><td><code>api.webRoot</code></td><td class="mono">webui/dist</td><td><button>编辑</button></td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-h">vision <span class="badge ok">已启用</span></div>
+          <table class="tbl">
+            <tr><td><code>vision.baseUrl</code></td><td class="mono">（回退主模型）</td><td><button>编辑</button></td></tr>
+            <tr><td><code>vision.apiKey</code></td><td class="mono">未设置 <span class="badge dim">回退主模型 Key</span></td><td><button>编辑</button></td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 模型 ======== -->
+    <section class="view" id="models">
+      <div class="page">
+        <div class="page-head">
+          <h1>模型</h1><span class="badge dim">GET /models</span><span class="spacer"></span>
+          <button>＋ 登记模型</button><button>⟳ 全部测试</button>
+        </div>
+        <div class="card">
+          <table class="tbl">
+            <tr><th>别名</th><th>baseUrl</th><th>型号</th><th>状态</th><th>连通性</th><th>操作</th></tr>
+            <tr>
+              <td><b>deepseek</b> <span class="badge brand">active</span></td>
+              <td class="mono">api.deepseek.com/v1</td><td class="mono">deepseek-chat</td>
+              <td><span class="badge ok">已启用</span></td>
+              <td><span class="badge ok">842ms</span></td>
+              <td><button>测试</button> <button class="ghost">设为 active</button>
+                  <button class="confirm-btn danger-text" data-confirm>删除</button></td>
+            </tr>
+            <tr>
+              <td><b>qwen-vl</b></td>
+              <td class="mono">dashscope.aliyuncs.com</td><td class="mono">qwen-vl-max</td>
+              <td><span class="badge dim">未启用</span></td>
+              <td><span class="badge warn">未测试</span></td>
+              <td><button>测试</button> <button class="ghost">设为 active</button>
+                  <button class="confirm-btn danger-text" data-confirm>删除</button></td>
+            </tr>
+            <tr>
+              <td><b>local-ollama</b></td>
+              <td class="mono">127.0.0.1:11434/v1</td><td class="mono">qwen2.5:14b</td>
+              <td><span class="badge dim">未启用</span></td>
+              <td><span class="badge err">ECONNREFUSED</span></td>
+              <td><button>测试</button> <button class="ghost">设为 active</button>
+                  <button class="confirm-btn danger-text" data-confirm>删除</button></td>
+            </tr>
+          </table>
+        </div>
+        <p class="muted" style="font-size:12.5px">删除 active 模型将返回 409（需先切换 active）；测试走 <code>POST /models/:alias/test</code>，显示延迟与是否可用。</p>
+      </div>
+    </section>
+
+    <!-- ======== 工具 ======== -->
+    <section class="view" id="tools">
+      <div class="page">
+        <div class="page-head"><h1>工具</h1><span class="badge dim">GET /tools</span><span class="spacer"></span>
+          <button>⟳ 重载</button></div>
+        <div class="card">
+          <div class="card-h">内置工具 <span class="badge dim">PATCH /tools/:name</span></div>
+          <table class="tbl">
+            <tr><th>名称</th><th>说明</th><th style="width:70px">启用</th></tr>
+            <tr><td class="mono">fileRead</td><td class="muted">读取文件内容</td><td><label class="tgl"><input type="checkbox" checked><span class="tk"></span></label></td></tr>
+            <tr><td class="mono">grep</td><td class="muted">正则搜索文件</td><td><label class="tgl"><input type="checkbox" checked><span class="tk"></span></label></td></tr>
+            <tr><td class="mono">commandRun</td><td class="muted">执行终端命令</td><td><label class="tgl"><input type="checkbox" checked><span class="tk"></span></label></td></tr>
+            <tr><td class="mono">describe_image</td><td class="muted">视觉描述图片</td><td><label class="tgl"><input type="checkbox"><span class="tk"></span></label></td></tr>
+            <tr><td class="mono">extract_json</td><td class="muted">从文本提取结构化 JSON</td><td><label class="tgl"><input type="checkbox"><span class="tk"></span></label></td></tr>
+          </table>
+        </div>
+        <p class="muted" style="font-size:12.5px">开关即生效（PATCH）；MCP 工具不在本页展示，见「MCP 服务器」菜单。</p>
+      </div>
+    </section>
+
+    <!-- ======== MCP ======== -->
+    <section class="view" id="mcp">
+      <div class="page">
+        <div class="page-head"><h1>MCP 服务器</h1><span class="badge dim">GET /mcp/servers</span><span class="spacer"></span>
+          <button>＋ 登记</button><button>⟳ 重载</button></div>
+        <div class="card">
+          <table class="tbl">
+            <tr><th>名称</th><th>传输</th><th>命令 / URL</th><th>状态</th><th>提供的工具</th><th>操作</th></tr>
+            <tr>
+              <td><b>filesystem</b></td><td class="mono">stdio</td><td class="mono">npx @modelcontextprotocol/server-filesystem d:\ws</td>
+              <td><span class="badge ok">connected</span></td>
+              <td><span class="mono" style="font-size:11.5px">read_file · write_file · list_directory · search_files · get_file_info</span></td>
+              <td><button>测试</button> <button class="confirm-btn danger-text" data-confirm>删除</button></td>
+            </tr>
+            <tr>
+              <td><b>fetch</b></td><td class="mono">stdio</td><td class="mono">uvx mcp-server-fetch</td>
+              <td><span class="badge ok">connected</span></td>
+              <td><span class="mono" style="font-size:11.5px">get · post</span></td>
+              <td><button>测试</button> <button class="confirm-btn danger-text" data-confirm>删除</button></td>
+            </tr>
+            <tr>
+              <td><b>github</b></td><td class="mono">sse</td><td class="mono">https://api.githubcopilot.com/mcp/</td>
+              <td><span class="badge err">connection refused <span title="半态：配置已落盘但连接失败">ⓘ</span></span></td>
+              <td><span class="muted" style="font-size:12px">—</span></td>
+              <td><button>测试</button> <button class="confirm-btn danger-text" data-confirm>删除</button></td>
+            </tr>
+          </table>
+        </div>
+        <p class="muted" style="font-size:12.5px">登记返回 502 时提示「配置已落盘，但连接失败」半态；删除即断连。</p>
+      </div>
+    </section>
+
+    <!-- ======== 技能 ======== -->
+    <section class="view" id="skills">
+      <div class="page">
+        <div class="page-head"><h1>技能</h1><span class="badge dim">GET /skills</span><span class="spacer"></span>
+          <button>＋ 安装技能</button><button>⟳ 重载</button></div>
+        <div class="card">
+          <table class="tbl">
+            <tr><th>技能</th><th>来源</th><th>描述</th><th>操作</th></tr>
+            <tr><td><b>pdf-report</b></td><td class="mono">global</td><td class="muted">生成 PDF 分析报告</td>
+              <td><button class="confirm-btn danger-text" data-confirm>卸载</button></td></tr>
+            <tr><td><b>excel-clean</b></td><td class="mono">workspace</td><td class="muted">清洗 Excel 数据表</td>
+              <td><button class="confirm-btn danger-text" data-confirm>卸载</button></td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-h">安装技能 <span class="badge dim">POST /skills/install</span></div>
+          <div class="card-b">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+              <input type="text" style="flex:1;min-width:260px" placeholder="技能目录本地路径，如 D:\skills\my-skill">
+              <label class="chk" style="font-size:12.5px"><input type="checkbox"> 同名覆盖</label>
+              <button class="primary">安装</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 记忆 ======== -->
+    <section class="view" id="memory">
+      <div class="page">
+        <div class="page-head"><h1>记忆</h1><span class="badge dim">GET /memory/status</span><span class="spacer"></span>
+          <button>✦ 梳理（dream）</button><button>初始化记忆库</button></div>
+        <div class="card">
+          <div class="card-h">分层状态</div>
+          <table class="tbl">
+            <tr><th>层</th><th>条目</th><th>Gate</th><th>操作</th></tr>
+            <tr><td><b>curated</b>（长期）</td><td class="mono">12</td><td><span class="badge ok">gate 0.35 通过</span></td>
+              <td><button>查看</button></td></tr>
+            <tr><td><b>episodic</b>（情景）</td><td class="mono">47</td><td><span class="badge ok">gate 0.35 通过</span></td>
+              <td><button>查看</button> <button>压缩</button></td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-h">检索 <span class="badge dim">POST /memory/search</span></div>
+          <div class="card-b">
+            <div style="display:flex;gap:10px">
+              <input type="text" style="flex:1" placeholder="搜索记忆，如「端口占用」" value="端口占用">
+              <button class="primary">搜索</button>
+            </div>
+            <div style="margin-top:10px;display:grid;gap:8px">
+              <div class="card" style="margin:0;box-shadow:none"><div class="card-b" style="padding:10px 14px">
+                <div style="font-size:13px"><b>Windows 端口排查流程</b> <span class="badge brand">0.82</span></div>
+                <div class="muted" style="font-size:12.5px;margin-top:3px">netstat -ano 找 PID → tasklist 定位进程 → 按需 taskkill…</div>
+              </div></div>
+              <div class="card" style="margin:0;box-shadow:none"><div class="card-b" style="padding:10px 14px">
+                <div style="font-size:13px"><b>用户偏好：PowerShell 环境</b> <span class="badge brand">0.71</span></div>
+                <div class="muted" style="font-size:12.5px;margin-top:3px">命令示例统一给 PowerShell 版本…</div>
+              </div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 诊断 ======== -->
+    <section class="view" id="doctor">
+      <div class="page">
+        <div class="page-head"><h1>诊断</h1><span class="badge dim">GET /doctor</span><span class="spacer"></span>
+          <button class="primary">⟳ 重新体检</button></div>
+        <div class="card"><div class="card-b">
+          <div class="doc-grid">
+            <div class="doc-item pass"><div class="t">✅ 主模型 apiKey</div><div class="d">已配置（sk-3f…9a2c）</div></div>
+            <div class="doc-item pass"><div class="t">✅ 主模型名称</div><div class="d">deepseek-chat</div></div>
+            <div class="doc-item pass"><div class="t">✅ 全局配置文件</div><div class="d">~/.loop-agent/config.json</div></div>
+            <div class="doc-item pass"><div class="t">✅ 工作空间配置文件</div><div class="d">.loop-agent/config.json</div></div>
+            <div class="doc-item missing"><div class="t">⚠️ 全局 skills 目录</div><div class="d">未创建 → ~/.loop-agent/skills</div></div>
+            <div class="doc-item blocker"><div class="t">⛔ 工作空间 skills 目录</div><div class="d">路径被文件占用（blocker 级，需处理）</div></div>
+          </div>
+          <p class="muted" style="font-size:12.5px;margin-top:12px">三态：<b style="color:var(--ok)">pass</b> / <b style="color:var(--warn)">missing</b>（提示创建）/ <b style="color:var(--danger)">blocker</b>（含修复提示）；端点始终 200，<code>ok</code> = 无 blocker。</p>
+        </div></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ======== Token 门 ======== -->
+<div class="modal-mask" id="authMask">
+  <div class="modal">
+    <h2>🔒 需要 API Token</h2>
+    <p>服务端开启了 token 鉴权（401）。输入 <code>api.token</code> 后将以 Bearer 方式携带，保存在浏览器 localStorage。</p>
+    <input type="password" id="authInput" placeholder="api.token">
+    <div class="acts">
+      <button id="authCancel">取消</button>
+      <button class="primary" id="authOk">验证并保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ================= 原型交互脚本（假数据演示） ================= */
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+
+/* ---- toast ---- */
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+/* ---- 主题 ---- */
+$('#themeBtn').onclick = () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+};
+
+/* ---- hash 路由 ---- */
+function route() {
+  const id = (location.hash || '#/chat').replace('#/', '');
+  $$('.view').forEach(v => v.classList.toggle('active', v.id === id));
+  $$('[data-nav]').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#/' + id));
+}
+addEventListener('hashchange', route); route();
+
+/* ---- 确认按钮（动词即确认：二次点击） ---- */
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-confirm]');
+  if (!btn) return;
+  if (!btn.classList.contains('armed')) {
+    btn.classList.add('armed'); btn.dataset.origin = btn.textContent;
+    btn.textContent = '确认？';
+    setTimeout(() => { btn.classList.remove('armed'); btn.textContent = btn.dataset.origin; }, 2600);
+  } else {
+    btn.closest('tr')?.remove();
+    toast('已执行（原型演示）');
+  }
+});
+
+/* ---- 复制按钮 ---- */
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-copy]')) toast('contextNote 已复制到剪贴板');
+});
+
+/* ---- 对话内上传（文件选择框 + POST /uploads/raw） ---- */
+const uploads = [
+  { id: 1, name: '需求清单.xlsx', size: '38 KB', note: '[文件上传] 20261017-101530-需求清单.xlsx · 38KB' },
+  { id: 2, name: '架构图.png', size: '512 KB', note: '[文件上传] 20261017-101602-架构图.png · 512KB' },
+];
+function renderUploads() {
+  $('#upChips').innerHTML = uploads.map(u =>
+    `<span class="chip" title="${u.note}（将随下一条消息注入）">📎 ${u.name}
+       <button data-chip-del="${u.id}" title="移除（不再注入，服务器文件保留）">✕</button></span>`).join('');
+  $('#upList').innerHTML = uploads.length ? uploads.map(u => `
+    <div class="up-item">
+      <span class="n">📎 ${u.name}</span><span class="sz">${u.size}</span>
+      <code style="font-size:11px">${u.note}</code>
+      <button class="ghost" data-copy style="padding:0 4px">复制</button>
+    </div>`).join('') + `
+    <div class="up-item" style="justify-content:flex-end;border-bottom:0">
+      <button class="confirm-btn danger-text" data-confirm data-up-clean style="font-size:12px">清空全部</button>
+    </div>`
+    : '<div class="up-empty">暂无上传文件</div>';
+}
+$('#upBtn').onclick = e => { e.stopPropagation(); $('#upPop').hidden = !$('#upPop').hidden; };
+document.addEventListener('click', e => {
+  if (!e.target.closest('#upPop') && !e.target.closest('#upBtn')) $('#upPop').hidden = true;
+});
+$('#upPick').onclick = () => $('#upFile').click();
+$('#upFile').onchange = () => {
+  for (const f of $('#upFile').files) {
+    const id = Math.max(0, ...uploads.map(u => u.id)) + 1;
+    const size = f.size >= 1048576 ? `${(f.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(f.size / 1024))} KB`;
+    uploads.push({ id, name: f.name, size, note: `[文件上传] ${f.name} · ${size}` });
+    toast(`已上传（POST /uploads/raw）→ ${f.name}`);
+  }
+  $('#upFile').value = '';
+  renderUploads();
+};
+$('#upList').addEventListener('click', e => {
+  const chipDel = e.target.closest('[data-chip-del]');
+  if (chipDel) {
+    const u = uploads.find(x => x.id === Number(chipDel.dataset.chipDel));
+    uploads.splice(uploads.indexOf(u), 1);
+    renderUploads();
+    toast('已从注入列表移除（服务器文件保留）');
+    return;
+  }
+  const clean = e.target.closest('[data-up-clean]');
+  if (clean && clean.classList.contains('armed')) {
+    uploads.length = 0;
+    renderUploads();
+    toast('上传目录已清空（DELETE /uploads）');
+  }
+});
+renderUploads();
+
+/* ---- Token 门 ---- */
+$('#authDemo').onclick = () => $('#authMask').classList.add('show');
+$('#authCancel').onclick = () => $('#authMask').classList.remove('show');
+$('#authOk').onclick = () => {
+  if (!$('#authInput').value.trim()) { toast('token 不能为空'); return; }
+  $('#authMask').classList.remove('show'); toast('token 已验证（原型演示：GET /health 200）');
+};
+
+/* ---- 会话列表（按工作空间分组 · 假数据） ---- */
+/* ws = 工作空间名称（来自 ~/.loop-agent/sessions/<hash>/meta.json 的 workspaceName） */
+const currentWs = 'loop-agent-command';
+const wsColors = { 'loop-agent-command': '#0e9f6e', 'blog-frontend': '#4f46e5', 'data-tools': '#b45309' };
+const wsFull = { 'loop-agent-command': 'd:\\trae_workspace\\loop-agent-command', 'blog-frontend': 'd:\\trae_workspace\\blog-frontend', 'data-tools': 'd:\\scripts\\data-tools' };
+const collapsedWs = new Set();
+let sessKeyword = '';
+const sessions = [
+  { id: 's1', ws: 'loop-agent-command', name: '排查 Windows 端口占用', sub: '3 条消息 · 2 分钟前', active: true },
+  { id: 's2', ws: 'loop-agent-command', name: '重构 config 加载逻辑', sub: '12 条消息 · 昨天', active: false },
+  { id: 's6', ws: 'loop-agent-command', name: '会话持久化分层存储设计', sub: '8 条消息 · 昨天', active: false },
+  { id: 's3', ws: 'blog-frontend', name: '首页改版方案', sub: '1 条消息 · 3 天前', active: false },
+  { id: 's5', ws: 'blog-frontend', name: '评论组件接入', sub: '6 条消息 · 3 天前', active: false },
+  { id: 's4', ws: 'data-tools', name: '清洗 Excel 导出脚本', sub: '5 条消息 · 上周', active: false },
+];
+function renderSessions() {
+  const kw = sessKeyword.trim().toLowerCase();
+  const groups = {};
+  for (const s of sessions) {
+    if (kw && !s.name.toLowerCase().includes(kw) && !s.ws.toLowerCase().includes(kw)) continue;
+    (groups[s.ws] ??= []).push(s);
+  }
+  // 当前工作空间置顶，其余按名称排序
+  const names = Object.keys(groups).sort((a, b) =>
+    a === currentWs ? -1 : b === currentWs ? 1 : a.localeCompare(b));
+  if (kw && names.length === 0) {
+    $('#sessList').innerHTML = '<div class="muted" style="font-size:12px;padding:10px">无匹配会话</div>';
+    return;
+  }
+  $('#sessList').innerHTML = names.map(ws => {
+    const list = groups[ws];
+    const isCur = ws === currentWs;
+    const col = wsColors[ws] ?? 'var(--muted)';
+    return `
+    <div class="ws-group ${collapsedWs.has(ws) ? 'collapsed' : ''}" data-ws="${ws}">
+      <div class="ws-head" data-ws-toggle="${ws}" title="${wsFull[ws] ?? ws}">
+        <span class="arrow">▼</span><span class="dot" style="background:${col}"></span>
+        <span class="nm">${ws}</span>
+        ${isCur ? '<span class="cur">当前</span>' : ''}
+        <span class="cnt">${list.length}</span>
+      </div>
+      ${list.map(s => `
+      <div class="sess ${s.active ? 'active' : ''}" data-id="${s.id}" data-ws="${s.ws}">
+        <div class="t"><div class="n">${s.name}</div><div class="s">${s.sub}</div></div>
+        <button class="del" data-del="${s.id}" title="删除会话">🗑</button>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+}
+$('#sessList').addEventListener('click', e => {
+  const head = e.target.closest('[data-ws-toggle]');
+  if (head) {
+    const ws = head.dataset.wsToggle;
+    collapsedWs.has(ws) ? collapsedWs.delete(ws) : collapsedWs.add(ws);
+    renderSessions();
+    return;
+  }
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    const s = sessions.find(x => x.id === del.dataset.del);
+    if (s.active) { toast('409 会话进行中，禁止删除'); return; }
+    sessions.splice(sessions.indexOf(s), 1); renderSessions(); toast('会话已删除');
+    return;
+  }
+  const item = e.target.closest('.sess');
+  if (item) {
+    const s = sessions.find(x => x.id === item.dataset.id);
+    sessions.forEach(x => x.active = x.id === s.id);
+    $('#chatTitle').textContent = s.name;
+    $('#chatWs').textContent = '📁 ' + s.ws;
+    if (s.ws !== currentWs) toast(`跨工作空间打开：${s.ws}（GET /sessions/:id）`);
+    renderSessions();
+  }
+});
+$('#sessSearch').addEventListener('input', e => { sessKeyword = e.target.value; renderSessions(); });
+$('#newSess').onclick = () => {
+  sessions.forEach(s => s.active = false);
+  sessions.unshift({ id: 's' + Date.now(), ws: currentWs, name: '新会话', sub: '刚刚', active: true });
+  collapsedWs.delete(currentWs);
+  renderSessions(); toast(`已创建会话（POST /sessions，归属 ${currentWs}）`);
+};
+renderSessions();
+
+/* ---- 聊天：假 SSE 流式演示 ---- */
+const msgList = $('#msgList');
+function addUser(text) {
+  msgList.insertAdjacentHTML('beforeend', `
+    <div class="msg user"><div class="ava">你</div><div class="bubble">${text}</div></div>`);
+}
+function addAssistant() {
+  msgList.insertAdjacentHTML('beforeend', `
+    <div class="msg assistant" id="liveMsg"><div class="ava">L</div>
+      <div class="bubble"><span class="live-text"></span><span class="cursor"></span></div></div>`);
+  $('.msgs').scrollTop = 999999;
+  return $('#liveMsg');
+}
+function addToolCall(name, arg, result, ms, ok = true) {
+  $('#liveMsg .bubble').insertAdjacentHTML('beforeend', `
+    <details class="tool-call">
+      <summary><span class="arrow">▶</span>
+        <span class="badge ${ok ? 'ok' : 'err'}">${ok ? '✓' : '✗'} ${ms}</span>
+        <span>${name}</span><span class="muted">${arg}</span></summary>
+      <div class="tc-body">${result}</div>
+    </details>`);
+}
+let streaming = false, streamTimers = [];
+function stopStream() {
+  streamTimers.forEach(clearTimeout); streamTimers = [];
+  if (streaming) {
+    streaming = false;
+    $('#liveMsg .cursor')?.remove();
+    $('#liveMsg')?.removeAttribute('id');
+    $('#stopBtn').style.display = 'none'; $('#sendBtn').style.display = '';
+    toast('已停止生成（AbortController）');
+  }
+}
+$('#stopBtn').onclick = stopStream;
+
+$('#sendBtn').onclick = () => {
+  const text = $('#input').value.trim();
+  if (!text || streaming) return;
+  $('#input').value = '';
+  addUser(text);
+  streaming = true;
+  $('#sendBtn').style.display = 'none'; $('#stopBtn').style.display = '';
+  const el = addAssistant();
+  const live = el.querySelector('.live-text');
+  const reply = '检查到 3000 端口被 PID 12044 占用，进一步确认进程：';
+  let i = 0;
+  const step = () => {
+    if (i < reply.length) {
+      live.textContent = reply.slice(0, ++i);
+      $('.msgs').scrollTop = 999999;
+      streamTimers.push(setTimeout(step, 26));
+    } else {
+      addToolCall('commandRun', 'netstat -ano | findstr :3000',
+        'TCP    0.0.0.0:3000    0.0.0.0:0    LISTENING    12044', '34ms');
+      streamTimers.push(setTimeout(() => {
+        addToolCall('commandRun', 'tasklist /fi "PID eq 12044"',
+          'node.exe    12044    Console    218,404 KB', '58ms');
+        streamTimers.push(setTimeout(() => {
+          live.textContent = reply;
+          el.querySelector('.cursor').remove();
+          live.insertAdjacentHTML('afterend',
+            '<p>占用的 <code>node.exe</code>（PID 12044）是上一次未退出的 <code>--serve</code> 进程。可执行 <code>taskkill /pid 12044 /f</code> 释放端口。</p>');
+          el.removeAttribute('id');
+          streaming = false;
+          $('#stopBtn').style.display = 'none'; $('#sendBtn').style.display = '';
+          $('.msgs').scrollTop = 999999;
+        }, 420));
+      }, 520));
+    }
+  };
+  step();
+};
+$('#input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#sendBtn').click(); }
+});
+
+/* ---- 初始演示消息 ---- */
+msgList.innerHTML = `
+  <div class="msg user"><div class="ava">你</div>
+    <div class="bubble">3000 端口被占用导致 --serve 起不来，帮我排查</div></div>`;
+</script>
+</body>
+</html>

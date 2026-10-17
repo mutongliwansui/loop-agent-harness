@@ -6,7 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
-import { handleCreateSession, handleDeleteSession, handleGetSession, handleListSessions } from './handlers/sessions.js';
+import { handleCreateSession, handleDeleteSession, handleGetSession, handleListSessions, handleListWorkspaces } from './handlers/sessions.js';
 import { handleMessage } from './handlers/messages.js';
 import { uploadRoutes } from './handlers/uploads.js';
 import { configRoutes } from './handlers/config.js';
@@ -75,6 +75,8 @@ export function createRoutes(): Route[] {
     // 会话资源（Task-20261016-001）
     { method: 'POST', path: '/sessions', handler: (ctx, _req, res) => handleCreateSession(ctx, res) },
     { method: 'GET', path: '/sessions', handler: (ctx, _req, res) => handleListSessions(ctx, res) },
+    // 跨工作空间聚合（会话按工作空间分组展示）
+    { method: 'GET', path: '/workspaces', handler: (ctx, _req, res) => handleListWorkspaces(ctx, res) },
     { method: 'POST', path: '/sessions/:id/messages', handler: (ctx, req, res, p) => handleMessage(ctx, req, res, p.id) },
     { method: 'GET', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleGetSession(ctx, res, p.id) },
     { method: 'DELETE', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleDeleteSession(ctx, res, p.id) },

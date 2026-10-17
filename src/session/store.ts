@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   mkdir,
@@ -11,7 +11,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import type { ChatMessage, AgentStep } from '../types.js';
-import type { SessionMeta, SessionData, WorkspaceMeta } from './types.js';
+import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
 
@@ -80,6 +80,7 @@ function isSameMessage(a: ChatMessage, b: ChatMessage): boolean {
 }
 
 export class SessionStore {
+  private workspacePath: string;
   private workspaceId: string;
   private workspaceDir: string;
   private currentSessionId: string | null = null;
@@ -94,6 +95,7 @@ export class SessionStore {
     encryptionEnabled = true,
     userDir: string = join(homedir(), '.loop-agent'),
   ) {
+    this.workspacePath = workspacePath;
     this.workspaceId = workspaceId(workspacePath);
     this.workspaceDir = join(userDir, 'sessions', this.workspaceId);
     this.recentTurns = recentTurns;
@@ -296,18 +298,67 @@ export class SessionStore {
   }
 
   /**
+   * 聚合所有工作空间：扫描 <userDir>/sessions/* 下的 meta.json 与 sessions.json
+   * （两者均为明文索引，无需解密）；当前空间置顶，其余按 lastAccessedAt 降序。
+   * 旧 meta.json 无 workspaceName 时回退为工作路径目录名。
+   */
+  async listAllWorkspaces(): Promise<WorkspaceSummary[]> {
+    const root = dirname(this.workspaceDir);
+    let dirs: string[];
+    try {
+      dirs = (await readdir(root, { withFileTypes: true }))
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+    } catch {
+      return []; // sessions 根目录不存在
+    }
+    const result: WorkspaceSummary[] = [];
+    for (const dir of dirs) {
+      const wsDir = join(root, dir);
+      let meta: WorkspaceMeta;
+      try {
+        meta = JSON.parse(await readFile(join(wsDir, 'meta.json'), 'utf-8')) as WorkspaceMeta;
+      } catch {
+        continue; // meta.json 缺失或损坏：无归属信息，不展示
+      }
+      let sessions: SessionMeta[] = [];
+      try {
+        sessions = JSON.parse(await readFile(join(wsDir, 'sessions.json'), 'utf-8')) as SessionMeta[];
+      } catch {
+        // 索引缺失/损坏：展示空间本身，会话数为 0
+      }
+      result.push({
+        id: dir,
+        name: meta.workspaceName || basename(meta.workspacePath) || dir,
+        path: meta.workspacePath,
+        current: dir === this.workspaceId,
+        createdAt: meta.createdAt,
+        lastAccessedAt: meta.lastAccessedAt,
+        sessions: sessions.sort(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        ),
+      });
+    }
+    return result.sort((a, b) => {
+      if (a.current !== b.current) return a.current ? -1 : 1;
+      return new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime();
+    });
+  }
+
+  /**
    * 删除会话
    */
   async deleteSession(id: string): Promise<void> {
-    const dataFile = join(this.workspaceDir, `${id}${this.sessionFileExt}`);
-    const encFile = join(this.workspaceDir, `${id}.enc`);
-    const jsonFile = join(this.workspaceDir, `${id}.json`);
+    const dir = await this.resolveWorkspaceDir(id);
+    const dataFile = join(dir, `${id}${this.sessionFileExt}`);
+    const encFile = join(dir, `${id}.enc`);
+    const jsonFile = join(dir, `${id}.json`);
     for (const f of [dataFile, encFile, jsonFile]) {
       if (await fileExists(f)) {
         await unlink(f);
       }
     }
-    await this.removeFromIndex(id);
+    await this.removeFromIndex(id, dir);
     if (this.currentSessionId === id) {
       this.currentSessionId = null;
     }
@@ -340,8 +391,32 @@ export class SessionStore {
     return this.encryptionEnabled ? '.enc' : '.json';
   }
 
+  /**
+   * 解析会话文件所在的工作空间目录：先查当前空间，未命中则扫描兄弟空间
+   * （跨工作空间读取/删除用）；都未命中回退当前空间（新会话写入当前空间）。
+   */
+  private async resolveWorkspaceDir(id: string): Promise<string> {
+    if (await fileExists(join(this.workspaceDir, `${id}${this.sessionFileExt}`))) {
+      return this.workspaceDir;
+    }
+    const root = dirname(this.workspaceDir);
+    try {
+      for (const d of await readdir(root, { withFileTypes: true })) {
+        if (!d.isDirectory() || d.name === this.workspaceId) continue;
+        const candidate = join(root, d.name);
+        if (await fileExists(join(candidate, `${id}${this.sessionFileExt}`))) {
+          return candidate;
+        }
+      }
+    } catch {
+      // 根目录不可读：回退当前空间
+    }
+    return this.workspaceDir;
+  }
+
   private async writeSession(data: SessionData): Promise<void> {
-    const filePath = join(this.workspaceDir, `${data.id}${this.sessionFileExt}`);
+    const dir = await this.resolveWorkspaceDir(data.id);
+    const filePath = join(dir, `${data.id}${this.sessionFileExt}`);
     if (this.encryptionEnabled) {
       const key = keychain.getKey();
       if (!key) {
@@ -355,7 +430,8 @@ export class SessionStore {
   }
 
   private async readSession(id: string): Promise<SessionData> {
-    const filePath = join(this.workspaceDir, `${id}${this.sessionFileExt}`);
+    const dir = await this.resolveWorkspaceDir(id);
+    const filePath = join(dir, `${id}${this.sessionFileExt}`);
     if (this.encryptionEnabled) {
       const key = keychain.getKey();
       if (!key) {
@@ -392,19 +468,25 @@ export class SessionStore {
   private async updateIndex(
     id: string,
     updates: Partial<Pick<SessionMeta, 'messageCount' | 'updatedAt'>>,
+    dir: string = this.workspaceDir,
   ): Promise<void> {
-    const sessions = await this.readIndex();
+    const indexFile = join(dir, 'sessions.json');
+    const sessions = (await fileExists(indexFile))
+      ? (JSON.parse(await readFile(indexFile, 'utf-8')) as SessionMeta[])
+      : [];
     const idx = sessions.findIndex((s) => s.id === id);
     if (idx >= 0) {
       sessions[idx] = { ...sessions[idx], ...updates };
-      await this.writeIndex(sessions);
+      await writeFile(indexFile, JSON.stringify(sessions, null, 2), 'utf-8');
     }
   }
 
-  private async removeFromIndex(id: string): Promise<void> {
-    const sessions = await this.readIndex();
+  private async removeFromIndex(id: string, dir: string = this.workspaceDir): Promise<void> {
+    const indexFile = join(dir, 'sessions.json');
+    if (!(await fileExists(indexFile))) return;
+    const sessions = JSON.parse(await readFile(indexFile, 'utf-8')) as SessionMeta[];
     const filtered = sessions.filter((s) => s.id !== id);
-    await this.writeIndex(filtered);
+    await writeFile(indexFile, JSON.stringify(filtered, null, 2), 'utf-8');
   }
 
   private toMeta(data: SessionData, firstMessage: string): SessionMeta {
@@ -425,14 +507,17 @@ export class SessionStore {
 
   private async touchWorkspaceMeta(): Promise<void> {
     const metaFile = join(this.workspaceDir, 'meta.json');
+    const workspaceName = basename(this.workspacePath);
     let meta: WorkspaceMeta;
     if (await fileExists(metaFile)) {
       const content = await readFile(metaFile, 'utf-8');
       meta = JSON.parse(content) as WorkspaceMeta;
       meta.lastAccessedAt = new Date().toISOString();
+      meta.workspaceName = workspaceName;
     } else {
       meta = {
         workspacePath: process.cwd(),
+        workspaceName,
         createdAt: new Date().toISOString(),
         lastAccessedAt: new Date().toISOString(),
       };
