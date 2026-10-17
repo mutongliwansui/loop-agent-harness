@@ -23,10 +23,14 @@ const editValue = ref('');
 const queryKey = ref('');
 const keyResult = ref<{ key: string; value: unknown; scope: string } | null>(null);
 
+/** model/models 与 tools 两节由「模型」（#/models）、「工具」（#/tools）模块独立管理，配置页不展示 */
+const EXCLUDED_SECTIONS = new Set(['model', 'models', 'tools']);
+
 const sections = computed<Section[]>(() => {
   if (!tree.value) return [];
   const out: Section[] = [];
   for (const [name, val] of Object.entries(tree.value)) {
+    if (EXCLUDED_SECTIONS.has(name)) continue;
     const rows: Row[] = [];
     walk(name, val, rows);
     if (rows.length > 0) out.push({ name, rows });
@@ -133,6 +137,7 @@ onMounted(refresh);
       <h1>配置</h1>
       <span v-if="busy" class="spin" title="处理中"></span>
       <StatusBadge kind="dim">GET /config</StatusBadge>
+      <StatusBadge kind="brand">模型/工具配置请前往 <a href="#/models" style="color:inherit;font-weight:600">模型</a> · <a href="#/tools" style="color:inherit;font-weight:600">工具</a> 模块</StatusBadge>
       <span class="spacer"></span>
       <span class="muted">写入 scope：</span>
       <select v-model="scope">
@@ -188,7 +193,7 @@ onMounted(refresh);
       <div class="card-h">单键读取 <StatusBadge kind="dim">GET /config/:key</StatusBadge></div>
       <div class="card-b">
         <div class="form-row">
-          <input v-model="queryKey" class="grow mono" placeholder="配置键，如 model.maxTokens" @keyup.enter="readKey">
+          <input v-model="queryKey" class="grow mono" placeholder="配置键，如 agent.verbose" @keyup.enter="readKey">
           <button class="primary" :disabled="busy || !queryKey.trim()" @click="readKey">读取</button>
         </div>
         <div v-if="keyResult" class="form-row" style="margin-top:10px">

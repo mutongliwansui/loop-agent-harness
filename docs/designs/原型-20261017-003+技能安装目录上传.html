@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web UI 原型 · 20261017-003 · 技能安装目录上传</title>
+<style>
+/* ========== 主题令牌（跟随系统深浅色，与 WebUI 一致） ========== */
+:root {
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f9fafb; --border: #e4e6ea;
+  --text: #1b1f24; --muted: #6b7280;
+  --brand: #0e9f6e; --brand-weak: #e6f6ef; --brand-on: #ffffff;
+  --danger: #dc2626; --danger-weak: #fdecec;
+  --warn: #b45309; --warn-weak: #fef3c7;
+  --info: #4f46e5; --info-weak: #e0e7ff;
+  --code-bg: #f3f4f6;
+  --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+  --radius: 10px;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+    --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+    --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+    --warn-weak: #3a2e10; --info: #a5b4fc; --info-weak: #262a4a; --code-bg: #2a2e35;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+  --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+  --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+  --warn-weak: #3a2e10; --info: #a5b4fc; --info-weak: #262a4a; --code-bg: #2a2e35;
+  --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--sans); background: var(--bg); color: var(--text);
+  font-size: 14px; line-height: 1.55; min-height: 100vh; }
+button { font-family: inherit; font-size: 13px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 12px;
+  transition: background .12s, border-color .12s, color .12s; }
+button:hover { border-color: var(--brand); color: var(--brand); }
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+button.primary:hover { filter: brightness(1.06); color: var(--brand-on); }
+button.primary:disabled { opacity: .55; cursor: not-allowed; filter: none; color: var(--brand-on); border-color: var(--brand); }
+button.ghost { border: none; background: none; color: var(--muted); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+input[type=text], select { font-family: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; outline: none; }
+input:focus, select:focus { border-color: var(--brand); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.ok    { background: var(--brand-weak); color: var(--brand); }
+.badge.warn  { background: var(--warn-weak); color: var(--warn); }
+.badge.err   { background: var(--danger-weak); color: var(--danger); }
+.badge.brand { background: var(--brand-weak); color: var(--brand); }
+.badge.info  { background: var(--info-weak); color: var(--info); }
+.badge.dim   { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 5px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+
+/* ========== 布局 ========== */
+.app { display: flex; min-height: 100vh; }
+.nav { width: 190px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 14px 10px; position: sticky; top: 0; height: 100vh; }
+.nav .logo { font-weight: 700; font-size: 15px; padding: 2px 10px 14px; display: flex; align-items: center; gap: 8px; }
+.nav .logo .dot { width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
+.nav .sec { font-size: 11px; color: var(--muted); padding: 12px 10px 4px; letter-spacing: .5px; }
+.nav a { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px; }
+.nav a:hover { background: var(--surface-2); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico { width: 17px; text-align: center; opacity: .85; }
+.nav .foot { margin-top: auto; padding: 8px 10px 0; border-top: 1px solid var(--border); }
+.main { flex: 1; min-width: 0; }
+.page { padding: 22px 26px 40px; }
+.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.page-head h1 { font-size: 17px; font-weight: 700; }
+.page-head .spacer { flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 14px; }
+.card .card-h { padding: 11px 16px; border-bottom: 1px solid var(--border); display: flex;
+  align-items: center; gap: 10px; font-weight: 600; font-size: 13.5px; flex-wrap: wrap; }
+.card .card-b { padding: 12px 16px; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.tbl th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px;
+  padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.tbl tr:last-child td { border-bottom: none; }
+table.tbl tr:hover td { background: var(--surface-2); }
+label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font-size: 13px; }
+.confirm-btn.armed { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* toast */
+#toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px);
+  background: var(--text); color: var(--bg); padding: 8px 18px; border-radius: 999px;
+  font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 99; max-width: 70vw; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.err { background: var(--danger); color: #fff; }
+#toast.ok { background: var(--brand); color: var(--brand-on); }
+
+/* ========== 原型说明横幅 ========== */
+.proto-note { border: 1px dashed var(--info); background: var(--info-weak); border-radius: var(--radius);
+  padding: 10px 14px; margin-bottom: 14px; font-size: 12.5px; }
+.proto-note b { color: var(--info); }
+.proto-note ul { margin: 6px 0 0 18px; }
+.proto-note li { margin: 2px 0; }
+
+/* ========== 安装卡：目录选择交互 ========== */
+.pick-empty { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pick-empty .hint { width: 100%; margin-top: 2px; font-size: 12px; }
+.pick-sum { display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); flex-wrap: wrap; }
+.pick-sum .f-ico { font-size: 22px; }
+.pick-sum .pm { min-width: 0; }
+.pick-sum .pm .l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pick-sum .pm .l2 { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.flist { margin-top: 8px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: 8px; }
+.fitem { display: flex; align-items: center; gap: 10px; padding: 5px 10px; font-size: 12px;
+  border-bottom: 1px solid var(--border); }
+.fitem:last-child { border-bottom: none; }
+.fitem .p { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fitem .sz { color: var(--muted); font-family: var(--mono); font-size: 11px; flex: none; }
+.fitem .tag { flex: none; }
+.err-bar { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px;
+  background: var(--danger-weak); color: var(--danger); border-radius: 8px; font-size: 12.5px; }
+.install-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.install-row .grow { flex: 1; }
+details.fdetails { margin-top: 8px; }
+details.fdetails summary { cursor: pointer; font-size: 12.5px; color: var(--muted); user-select: none; }
+details.fdetails summary:hover { color: var(--brand); }
+.spin { width: 13px; height: 13px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+  border-radius: 50%; display: inline-block; vertical-align: -2px; margin-right: 6px;
+  animation: rot .7s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+@media (max-width: 900px) {
+  .nav { width: 60px; padding: 12px 6px; }
+  .nav a span.lbl, .nav .sec, .nav .logo .name, .nav .foot { display: none; }
+  .nav a { justify-content: center; padding: 9px 0; }
+  .page { padding: 16px 12px 40px; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ======== 左侧导航（原型聚焦技能页） ======== -->
+  <nav class="nav">
+    <div class="logo"><span class="dot">L</span><span class="name">Loop Agent</span></div>
+    <div class="sec">运维管理</div>
+    <a href="#" data-nav data-name="配置"><span class="ico">⚙️</span><span class="lbl">配置</span></a>
+    <a href="#" data-nav data-name="模型"><span class="ico">🤖</span><span class="lbl">模型</span></a>
+    <a href="#" data-nav data-name="工具"><span class="ico">🔧</span><span class="lbl">工具</span></a>
+    <a href="#" data-nav data-name="MCP 服务器"><span class="ico">🔌</span><span class="lbl">MCP 服务器</span></a>
+    <a href="#" class="active"><span class="ico">🧩</span><span class="lbl">技能</span></a>
+    <a href="#" data-nav data-name="记忆"><span class="ico">🧠</span><span class="lbl">记忆</span></a>
+    <a href="#" data-nav data-name="诊断"><span class="ico">🩺</span><span class="lbl">诊断</span></a>
+    <div class="foot">
+      <div class="row" style="display:flex;align-items:center;justify-content:space-between;padding:4px 0">
+        <span class="muted" style="font-size:12px">主题</span>
+        <button class="ghost" id="themeBtn" title="切换深浅色">🌗</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="page">
+      <div class="page-head">
+        <h1>技能</h1>
+        <span class="badge dim">GET /skills</span>
+        <span class="badge info">原型 20261017-003</span>
+        <span class="spacer"></span>
+        <button id="reloadBtn">⟳ 重载</button>
+        <button id="refreshBtn">⟳ 刷新</button>
+      </div>
+
+      <!-- 原型说明 -->
+      <div class="proto-note">
+        <b>原型说明</b>：安装技能从「手填服务端本地路径」改为「浏览器目录选择框 + 整目录上传」。
+        <ul>
+          <li>点「📁 选择技能目录」可 <b>真实选择本机目录</b>（webkitdirectory，Chrome/Edge/Firefox 支持，含子目录全部文件）；或点「注入示例」快速看各状态</li>
+          <li>选中后自动校验根目录含 <code>SKILL.md</code>（缺失 → 错误条 + 禁用安装），并尝试从 frontmatter 解析 name 预览</li>
+          <li>同名冲突未勾选覆盖 → 模拟 409 toast；勾选覆盖 → 覆盖安装；成功后列表实时可见</li>
+          <li>上传为一次性 JSON（base64）提交 <code>POST /skills/upload</code>，后端落临时目录后复用现有安装校验链（见下方契约）</li>
+        </ul>
+      </div>
+
+      <!-- 技能列表 -->
+      <div class="card">
+        <table class="tbl">
+          <thead>
+            <tr><th>技能</th><th>来源</th><th>描述</th><th>路径</th><th style="width:150px">操作</th></tr>
+          </thead>
+          <tbody id="skillRows"></tbody>
+        </table>
+      </div>
+
+      <!-- 安装卡 -->
+      <div class="card">
+        <div class="card-h">安装技能 <span class="badge dim">POST /skills/upload</span></div>
+        <div class="card-b">
+          <!-- 空态 -->
+          <div class="pick-empty" id="emptyState">
+            <button class="primary" id="pickBtn">📁 选择技能目录</button>
+            <input type="file" id="dirInput" webkitdirectory hidden>
+            <span class="muted">或</span>
+            <button id="demoOk">注入示例（标准）</button>
+            <button id="demoBad">注入示例（缺 SKILL.md）</button>
+            <p class="muted hint">浏览器将递归枚举所选目录的全部文件并整包上传（含子目录）；目录名即安装目录名。拖拽文件夹上传为二期。</p>
+          </div>
+
+          <!-- 已选态 -->
+          <div id="pickedState" hidden>
+            <div class="pick-sum">
+              <span class="f-ico">📂</span>
+              <div class="pm">
+                <div class="l1">
+                  <b class="mono" id="rootName">—</b>
+                  <span class="badge ok" id="mdBadge">SKILL.md ✓</span>
+                  <span class="badge dim" id="fmBadge" hidden>name: —</span>
+                </div>
+                <div class="l2" id="pickMeta">—</div>
+              </div>
+              <div class="grow" style="flex:1"></div>
+              <button id="clearBtn">✕ 重选</button>
+            </div>
+
+            <details class="fdetails" id="fileDetails">
+              <summary>文件清单（<span id="fileCnt">0</span>）</summary>
+              <div class="flist" id="fileList"></div>
+            </details>
+
+            <div class="err-bar" id="errBar" hidden>⚠ <span id="errMsg"></span></div>
+
+            <div class="install-row">
+              <select id="scopeSel" style="width:170px">
+                <option value="workspace">workspace（工作空间）</option>
+                <option value="global">global（全局）</option>
+              </select>
+              <label class="chk"><input type="checkbox" id="overwriteChk"> 同名覆盖</label>
+              <span class="grow"></span>
+              <button class="primary" id="installBtn">⬆ 上传安装</button>
+            </div>
+          </div>
+
+          <p class="muted" style="font-size:12.5px;margin:10px 0 0">
+            安装 / 卸载后自动重载，列表立即可见；同名冲突未勾选覆盖时返回 409。
+          </p>
+        </div>
+      </div>
+
+      <!-- 接口契约 -->
+      <div class="card">
+        <div class="card-h">接口契约（设计稿）<span class="badge dim">新增 POST /skills/upload</span></div>
+        <div class="card-b">
+<pre class="mono" style="font-size:12px;white-space:pre-wrap;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px">POST /skills/upload   Content-Type: application/json
+{
+  "scope": "workspace" | "global",
+  "overwrite": false,
+  "rootName": "my-skill",                                  // 所选目录名（即安装目录名）
+  "files": [ { "path": "SKILL.md", "content": "&lt;base64&gt;" },   // path 为目录内相对路径（含 / 子目录）
+             { "path": "scripts/run.py", "content": "..." } ]
+}
+
+后端：逐文件路径安全校验（拒绝对 .. / 绝对路径 / 盘符）→ 写 os.tmpdir() 临时目录
+     → 复用 installSkillDirs()（SKILL.md/frontmatter 校验 · 同名 409 · overwrite · 护栏）
+     → 删临时目录 → 201 { name, scope, path }
+错误：缺 SKILL.md/frontmatter → 400 · 同名未 overwrite → 409 · 总大小 &gt; 20MB → 413
+保留：POST /skills（sourcePath）不动，供同机 API 调用方；WebUI 不再使用</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ================= 基础 ================= */
+const $ = (id) => document.getElementById(id);
+let toastTimer = null;
+function toast(msg, kind = '') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show ' + kind;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = ''), 2600);
+}
+$('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark';
+};
+document.querySelectorAll('[data-nav]').forEach((a) => {
+  a.onclick = (e) => { e.preventDefault(); toast(`原型聚焦「技能」页，「${a.dataset.name}」不在本期范围`); };
+});
+
+/* ================= 演示数据 ================= */
+const skills = [
+  { name: 'pdf-export', scope: 'workspace', description: '导出 PDF 报告的排版与分页规范', path: 'D:\\trae_workspace\\loop-agent-command\\.loop-agent\\skills\\pdf-export' },
+  { name: 'commit-helper', scope: 'global', description: '生成符合约定的中文提交信息', path: 'C:\\Users\\muton\\.loop-agent\\skills\\commit-helper' },
+];
+function renderSkills() {
+  $('skillRows').innerHTML = skills.map((s, i) => `
+    <tr>
+      <td><b>${s.name}</b></td>
+      <td><span class="badge ${s.scope === 'workspace' ? 'brand' : 'dim'}">${s.scope}</span></td>
+      <td class="muted">${s.description}</td>
+      <td class="mono muted" style="max-width:280px;word-break:break-all">${s.path}</td>
+      <td><button data-view="${i}">查看</button> <button class="danger-text" data-del="${i}">卸载</button></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">暂无已安装技能。</td></tr>';
+}
+$('skillRows').onclick = (e) => {
+  const v = e.target.dataset.view, d = e.target.dataset.del;
+  if (v !== undefined) toast(`「${skills[v].name}」正文查看与现网一致（展开 SKILL.md）`);
+  if (d !== undefined) {
+    const btn = e.target;
+    if (!btn.classList.contains('armed')) { btn.classList.add('armed'); btn.textContent = '确认卸载'; setTimeout(() => { btn.classList.remove('armed'); btn.textContent = '卸载'; }, 2500); return; }
+    const [rm] = skills.splice(d, 1);
+    renderSkills(); toast(`Skill 已删除：${rm.name}（${rm.scope}）`, 'ok');
+  }
+};
+$('reloadBtn').onclick = () => toast(`Skill 已重新扫描：${skills.length} 个`, 'ok');
+$('refreshBtn').onclick = () => toast('列表已刷新（演示）', 'ok');
+renderSkills();
+
+/* ================= 目录选择（真实 webkitdirectory + 注入示例） ================= */
+let picked = null; // { rootName, files: [{path, size, file?}], hasMd, name }
+
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+function parseName(text) {
+  const m = text.match(/^---\s*\n[\s\S]*?^name:\s*(.+?)\s*$/m);
+  return m ? m[1].trim() : null;
+}
+
+async function setPicked(rootName, files) {
+  // files: [{path(相对含根名), size, file?}]
+  const hasMd = files.some((f) => f.path === `${rootName}/SKILL.md`);
+  let name = null;
+  const md = files.find((f) => f.path === `${rootName}/SKILL.md`);
+  if (md) {
+    try { name = parseName(md.file ? await md.file.text() : md.text); } catch { /* 忽略读取失败 */ }
+  }
+  picked = { rootName, files, hasMd, name };
+  renderPicked();
+}
+
+function renderPicked() {
+  const bad = picked && !picked.hasMd;
+  $('emptyState').hidden = !!picked;
+  $('pickedState').hidden = !picked;
+  if (!picked) return;
+  $('rootName').textContent = picked.rootName;
+  const mdB = $('mdBadge');
+  mdB.className = 'badge ' + (picked.hasMd ? 'ok' : 'err');
+  mdB.textContent = picked.hasMd ? 'SKILL.md ✓' : '缺 SKILL.md ✗';
+  const fmB = $('fmBadge');
+  fmB.hidden = !picked.name;
+  fmB.textContent = `name: ${picked.name ?? '—'}`;
+  const total = picked.files.reduce((s, f) => s + f.size, 0);
+  $('pickMeta').textContent = `${picked.files.length} 个文件 · ${fmtSize(total)}${picked.name ? ' · frontmatter 可解析' : ''}`;
+  $('fileCnt').textContent = picked.files.length;
+  $('fileList').innerHTML = picked.files.map((f) => `
+    <div class="fitem">
+      <span class="p" title="${f.path}">${f.path}</span>
+      ${f.path.endsWith('SKILL.md') ? '<span class="tag badge brand">入口</span>' : ''}
+      <span class="sz">${fmtSize(f.size)}</span>
+    </div>`).join('');
+  $('errBar').hidden = !bad;
+  if (bad) $('errMsg').textContent = '所选目录根下缺少 SKILL.md —— skill 必须是含 SKILL.md 的目录，请重新选择';
+  $('installBtn').disabled = bad;
+}
+
+/* 真实目录选择 */
+$('pickBtn').onclick = () => $('dirInput').click();
+$('dirInput').onchange = async () => {
+  const fs = [...$('dirInput').files];
+  if (!fs.length) return;
+  const rootName = fs[0].webkitRelativePath.split('/')[0];
+  await setPicked(rootName, fs.map((f) => ({ path: f.webkitRelativePath, size: f.size, file: f })));
+  $('dirInput').value = '';
+};
+
+/* 注入示例 */
+$('demoOk').onclick = () => {
+  setPicked('my-skill', [
+    { path: 'my-skill/SKILL.md', size: 1284, text: '---\nname: my-skill\ndescription: 演示用技能\n---\n\n# my-skill\n' },
+    { path: 'my-skill/references/api.md', size: 2416 },
+    { path: 'my-skill/scripts/run.py', size: 918 },
+    { path: 'my-skill/assets/logo.png', size: 18322 },
+  ]);
+  toast('已注入示例目录（含 SKILL.md）');
+};
+$('demoBad').onclick = () => {
+  setPicked('broken-skill', [
+    { path: 'broken-skill/README.md', size: 640 },
+    { path: 'broken-skill/src/main.py', size: 1024 },
+  ]);
+  toast('已注入示例目录（缺 SKILL.md）', 'err');
+};
+$('clearBtn').onclick = () => { picked = null; renderPicked(); };
+
+/* 上传安装（模拟 409 / 成功） */
+$('installBtn').onclick = () => {
+  if (!picked || !picked.hasMd) return;
+  const name = picked.name || picked.rootName;
+  const scope = $('scopeSel').value;
+  const overwrite = $('overwriteChk').checked;
+  const existing = skills.find((s) => s.name === name);
+  const btn = $('installBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>上传安装中…';
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.textContent = '⬆ 上传安装';
+    if (existing && !overwrite) {
+      toast(`409 已存在同名 Skill「${name}」，可勾选「同名覆盖」后重试`, 'err');
+      return;
+    }
+    const path = scope === 'global'
+      ? `C:\\Users\\muton\\.loop-agent\\skills\\${picked.rootName}`
+      : `D:\\trae_workspace\\loop-agent-command\\.loop-agent\\skills\\${picked.rootName}`;
+    if (existing) Object.assign(existing, { scope, path });
+    else skills.unshift({ name, scope, description: '（由 frontmatter 解析）刚刚通过目录上传安装', path });
+    renderSkills();
+    picked = null; renderPicked();
+    $('overwriteChk').checked = false;
+    toast(`Skill 已安装：${name}（${scope}）`, 'ok');
+  }, 900);
+};
+</script>
+</body>
+</html>

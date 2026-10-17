@@ -62,14 +62,17 @@ export function readRawBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BY
   });
 }
 
-/** 读取请求体为 UTF-8 字符串（上限 2MB） */
-export async function readBody(req: IncomingMessage): Promise<string> {
-  return (await readRawBody(req)).toString('utf8');
+/** 读取请求体为 UTF-8 字符串（默认上限 2MB，可传更大的 maxBytes） */
+export async function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
+  return (await readRawBody(req, maxBytes)).toString('utf8');
 }
 
-/** 解析 JSON 请求体（空体视为 {}） */
-export async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const raw = await readBody(req);
+/** 解析 JSON 请求体（空体视为 {}；maxBytes 供大体积上传端点放宽） */
+export async function readJsonBody(
+  req: IncomingMessage,
+  maxBytes: number = MAX_BODY_BYTES,
+): Promise<Record<string, unknown>> {
+  const raw = await readBody(req, maxBytes);
   if (!raw.trim()) return {};
   try {
     const parsed: unknown = JSON.parse(raw);

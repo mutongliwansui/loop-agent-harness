@@ -11,6 +11,9 @@ export function parseSkillMd(filePath: string): ParsedSkillMd | null {
     return null;
   }
 
+  // 去 UTF-8 BOM（Windows 编辑器常见，避免 ^--- 匹配失败）
+  if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
+
   // 匹配 --- ... --- 之间的 YAML（兼容 CRLF / LF 换行）
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (!match) return null;
