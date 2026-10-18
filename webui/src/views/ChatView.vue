@@ -1242,6 +1242,25 @@ onMounted(() => {
   padding: 1px 5px;
 }
 .md :deep(pre code) { background: none; padding: 0; }
+/* markdown 表格：长 code 列会把文字列挤成竖排，改为块级横向滚动 */
+.md :deep(table) {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.md :deep(th),
+.md :deep(td) {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.md :deep(th) { background: var(--code-bg); }
+.md :deep(td code) { overflow-wrap: anywhere; }
 /* mermaid 图表容器：工具栏 + 可缩放视口 */
 .md :deep(.mermaid-block) {
   margin: 8px 0;
