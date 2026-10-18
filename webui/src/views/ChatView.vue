@@ -110,6 +110,10 @@ let msgSeq = 0;
 let chipSeq = 0;
 let abortCtrl: AbortController | null = null;
 let composing = false; // 中文输入法组词中的 Enter 不发送
+/** 模板经此函数改写 composing：vue-tsc 对模板内直接赋值顶层 let 存在字面量收窄误报（TS2322） */
+function setComposing(v: boolean): void {
+  composing = v;
+}
 
 function fmtBytes(n: number): string {
   return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -809,8 +813,8 @@ onUnmounted(() => {
               :disabled="foreignActive"
               :placeholder="foreignActive ? '跨工作空间会话仅支持查看与删除' : '输入消息，Enter 发送，Shift+Enter 换行'"
               @keydown.enter="onEnter"
-              @compositionstart="composing = true"
-              @compositionend="composing = false"
+              @compositionstart="setComposing(true)"
+              @compositionend="setComposing(false)"
             ></textarea>
             <button v-if="streaming" class="stop" @click="stopGen">■ 停止</button>
             <button

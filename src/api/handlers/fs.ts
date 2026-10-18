@@ -2,7 +2,8 @@
 //
 // GET /fs/tree   → 工作空间文件树（递归；node_modules/__pycache__ 恒排除；dot 条目默认隐藏）
 // GET /fs/file   → 单文件文本预览（within 工作空间校验；二进制拒绝；超长截断）
-// GET /fs/raw    → 文件原始字节（pdf/docx/xlsx 等二进制文档预览用；大小上限）
+// GET /fs/raw    → 文件原始字节（pdf/docx/xlsx 等二进制文档与图片预览用；大小上限）
+// GET /fs/doc2md → 旧版 .doc 文本提取并转 markdown（word-extractor + 段落启发式；前端复用 md 渲染）
 // GET /fs/search → 关键词全文搜索（逐文件扫描，跳过二进制与大文件；结果上限）
 //
 // 锚定 ctx.deps.sessionStore.path 为当前工作空间根：请求 path 为空间内相对路径
@@ -16,6 +17,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { sendJson } from '../http-utils.js';
+import WordExtractor from 'word-extractor'; // CJS 包，类型见 src/types/word-extractor.d.ts
 
 /** 恒排除的重目录（体积大且对代码浏览无价值；不随 hidden 开关出现） */
 const ALWAYS_SKIP = new Set(['node_modules', '__pycache__']);
@@ -32,9 +34,18 @@ const MAX_SEARCH_RESULTS = 200;
 const BINARY_SNIFF_BYTES = 8000;
 /** /fs/raw 原始输出上限（文档预览用；本地工具放宽到 100MB） */
 const MAX_RAW_BYTES = 100 * 1024 * 1024;
-/** 文档类扩展名 → Content-Type（未识别一律 application/octet-stream） */
+/** 文档/图片类扩展名 → Content-Type（未识别一律 application/octet-stream） */
 const RAW_CONTENT_TYPES: Record<string, string> = {
   pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   ppt: 'application/vnd.ms-powerpoint',
@@ -180,6 +191,52 @@ function extOf(p: string): string {
   return i >= 0 ? p.slice(i + 1).toLowerCase() : '';
 }
 
+/** 纯文本 → markdown：每行一个段落（word-extractor 以 \n 分段且不区分软换行，逐行成段保留原视觉层次） */
+function textToMd(raw: string): string {
+  return raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/** GET /fs/doc2md?path=：旧版 .doc 提取文本并转 markdown（word-extractor；响应结构与 /fs/file 同构，超限按字符截断） */
+async function handleDoc2Md(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
+  const input = query.get('path')?.trim() ?? '';
+  if (!input) throw new ApiHttpError('bad_request', '缺少 path 参数');
+  const root = ctx.deps.sessionStore.path;
+  const abs = resolveInWs(root, input);
+
+  let size: number;
+  try {
+    const st = await stat(abs);
+    if (st.isDirectory()) throw new ApiHttpError('not_found', `是目录不是文件: ${input}`);
+    size = st.size;
+  } catch (e) {
+    if (e instanceof ApiHttpError) throw e;
+    throw new ApiHttpError('not_found', `文件不存在: ${input}`);
+  }
+
+  let raw: string;
+  try {
+    const doc = await new WordExtractor().extract(abs);
+    raw = doc.getBody();
+  } catch {
+    throw new ApiHttpError('bad_request', `doc 解析失败（文件损坏或不是 Word 97-2003 文档）: ${input}`);
+  }
+
+  const body = textToMd(raw);
+  const truncated = body.length > MAX_FILE_BYTES;
+  sendJson(res, 200, {
+    path: toSlash(relative(root, abs)),
+    name: basename(abs),
+    bytes: size,
+    truncated,
+    content: truncated ? body.slice(0, MAX_FILE_BYTES) : body,
+  });
+}
+
 /** GET /fs/raw?path=：文件原始字节输出（二进制文档预览用；超上限拒绝） */
 async function handleRaw(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
@@ -284,6 +341,7 @@ export function fsRoutes(): Route[] {
     { method: 'GET', path: '/fs/tree', handler: handleTree },
     { method: 'GET', path: '/fs/file', handler: handleFile },
     { method: 'GET', path: '/fs/raw', handler: handleRaw },
+    { method: 'GET', path: '/fs/doc2md', handler: handleDoc2Md },
     { method: 'GET', path: '/fs/search', handler: handleSearch },
   ];
 }

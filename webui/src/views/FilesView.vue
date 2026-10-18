@@ -4,8 +4,10 @@
 //       GET /fs/search?q=&hidden=1（搜索）
 // 布局：v-model:open 面板展开态；默认宽度使对话区恰占 1/3（面板 = 容器 2/3 − 会话侧栏 220px），
 //       左缘分割条拖拽调宽（360 ~ 父宽-340），双击复位；左侧预览按类型分流：md 渲染 markdown、
-//       html/htm 沙箱 iframe 预览 + 源码、pdf iframe 原生渲染、csv/tsv 表格 + 源码、xlsx/xls 多 sheet
-//       表格（SheetJS）、docx 转 HTML（mammoth）；doc/ppt/pptx 占位提示；其余按代码高亮文本查看。
+//       html/htm 沙箱 iframe 预览 + 源码、pdf iframe 原生渲染、图片 blob 直显（svg 另附源码模式）、
+//       csv/tsv 表格 + 源码、xlsx/xls 多 sheet 表格（SheetJS）、docx 转 HTML（mammoth）、
+//       pptx 真渲染（@file-viewer/pptx Web Worker，失败降级占位）、doc 复用 md 渲染管线
+//       （后端 word-extractor 提取 + 转 markdown）；ppt 占位提示；其余按代码高亮文本查看。
 //       支持预览/源码切换、文内搜索；md 相对链接在预览区内跳转（含 #锚点），外链新标签打开，
 //       带「← 返回」栈；右侧工具列（搜索 + 隐藏目录开关 + 文件树，默认收起）。
 // 窄屏 ≤900px：浮层 + 遮罩（点击关闭），树列置顶，分割条停用。
@@ -16,6 +18,8 @@ import { api, fetchRaw } from '../api/client.js';
 import { showToast } from '../toast.js';
 import DOMPurify from 'dompurify';
 import { highlightIn, renderMarkdown } from '../markdown.js';
+// pptx Worker 脚本 URL：库默认按 import.meta.url 相对解析 worker 路径，vite 打包后失效，必须显式传入
+import pptxWorkerUrl from '@file-viewer/pptx/worker/pptx.worker.js?url';
 
 interface FsNode {
   name: string;
@@ -106,29 +110,37 @@ function extOf(p: string): string {
   return i >= 0 ? p.slice(i + 1).toLowerCase() : '';
 }
 /** 预览类型分流 */
-type ViewKind = 'md' | 'html' | 'pdf' | 'csv' | 'tsv' | 'xlsx' | 'xls' | 'docx' | 'legacy' | 'text';
-const BINARY_KINDS: ReadonlySet<ViewKind> = new Set(['pdf', 'xlsx', 'xls', 'docx', 'legacy']);
-const MODE_KINDS: ReadonlySet<ViewKind> = new Set(['md', 'html', 'csv', 'tsv']);
+type ViewKind =
+  | 'md' | 'html' | 'pdf' | 'img' | 'svg' | 'csv' | 'tsv' | 'xlsx' | 'xls' | 'docx' | 'doc' | 'pptx' | 'legacy' | 'text';
+const IMG_EXTS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif']);
+const BINARY_KINDS: ReadonlySet<ViewKind> = new Set(['pdf', 'img', 'svg', 'xlsx', 'xls', 'docx', 'pptx', 'legacy']);
+const MODE_KINDS: ReadonlySet<ViewKind> = new Set(['md', 'html', 'svg', 'csv', 'tsv']); // svg：预览 + 源码
 const GRID_KINDS: ReadonlySet<ViewKind> = new Set(['csv', 'tsv', 'xlsx', 'xls']);
-const SEARCHABLE_KINDS: ReadonlySet<ViewKind> = new Set(['md', 'docx', 'csv', 'tsv', 'xlsx', 'xls']);
+const SEARCHABLE_KINDS: ReadonlySet<ViewKind> = new Set(['md', 'docx', 'doc', 'csv', 'tsv', 'xlsx', 'xls']); // svg 预览为图，源码模式自动可搜
 
 function viewKindOf(p: string): ViewKind {
   const e = extOf(p);
   if (e === 'md') return 'md';
   if (e === 'html' || e === 'htm') return 'html';
   if (e === 'pdf') return 'pdf';
+  if (e === 'svg') return 'svg';
+  if (IMG_EXTS.has(e)) return 'img';
   if (e === 'csv') return 'csv';
   if (e === 'tsv') return 'tsv';
   if (e === 'xlsx') return 'xlsx';
   if (e === 'xls') return 'xls';
   if (e === 'docx') return 'docx';
-  if (e === 'doc' || e === 'ppt' || e === 'pptx') return 'legacy';
+  if (e === 'doc') return 'doc';
+  if (e === 'pptx') return 'pptx';
+  if (e === 'ppt') return 'legacy';
   return 'text';
 }
 
 const kind = computed(() => viewKindOf(selected.value));
 const codeLang = computed(() => EXT_LANG[extOf(selected.value)] ?? 'plaintext');
-const mdHtml = computed(() => (kind.value === 'md' && fileData.value ? renderMarkdown(fileData.value.content) : ''));
+const mdHtml = computed(() =>
+  fileData.value && (kind.value === 'md' || kind.value === 'doc') ? renderMarkdown(fileData.value.content) : '',
+); // doc：后端 /fs/doc2md 已把提取文本转成 markdown，复用 md 渲染管线
 const viewMode = ref<'prev' | 'src'>('prev'); // 预览 / 源码 切换（md/html/表格类）
 const hasModes = computed(() => MODE_KINDS.has(kind.value));
 const prevLabel = computed(() => (GRID_KINDS.has(kind.value) ? '表格' : '预览'));
@@ -138,6 +150,7 @@ const searchable = computed(() => SEARCHABLE_KINDS.has(kind.value) || viewMode.v
 /* ---- 二进制文档：/fs/raw 拉取后本地解析（Blob/objectURL 需手动释放） ---- */
 const binData = ref<Blob | null>(null);
 const pdfUrl = ref('');
+const imgUrl = ref(''); // 图片（含 svg 预览）objectURL
 const docxHtml = ref('');
 const sheetNames = ref<string[]>([]);
 const activeSheet = ref('');
@@ -148,11 +161,19 @@ let workbook: import('xlsx').WorkBook | null = null;
 let xlsxMod: typeof import('xlsx') | null = null;
 let openSeq = 0; // 打开请求序号：快速连点文件时丢弃过期响应
 
+/* pptx：@file-viewer/pptx 渲染器（动态 import；容器在 fileLoading 结束后才存在，挂载延迟到 openFile） */
+const pptxContainer = ref<HTMLElement | null>(null);
+const pptxFail = ref(false);
+let pptxViewer: { destroy(): void } | null = null;
+let pptxBuf: ArrayBuffer | null = null;
+
 const headBytes = computed(() => fileData.value?.bytes ?? binData.value?.size ?? 0);
 
 function releaseBinary(): void {
   if (pdfUrl.value) URL.revokeObjectURL(pdfUrl.value);
   pdfUrl.value = '';
+  if (imgUrl.value) URL.revokeObjectURL(imgUrl.value);
+  imgUrl.value = '';
   binData.value = null;
   docxHtml.value = '';
   sheetNames.value = [];
@@ -160,6 +181,10 @@ function releaseBinary(): void {
   grid.value = [];
   gridCapped.value = false;
   workbook = null;
+  pptxViewer?.destroy();
+  pptxViewer = null;
+  pptxBuf = null;
+  pptxFail.value = false;
 }
 
 /** 解析 csv/tsv 文本为表格（RFC4180：支持引号包裹与 "" 转义）；超过上限截断 */
@@ -206,7 +231,7 @@ function selectSheet(name: string): void {
   gridCapped.value = rows.length > MAX_GRID_ROWS;
 }
 
-/** 二进制文档拉取与解析：pdf → objectURL；docx → mammoth 转 HTML；xlsx/xls → SheetJS 出表 */
+/** 二进制文档拉取与解析：pdf/图片 → objectURL；svg → objectURL + 源码文本；docx → mammoth；xlsx/xls → SheetJS */
 async function openBinary(path: string, k: ViewKind, seq: number): Promise<void> {
   const blob = await fetchRaw(path);
   if (seq !== openSeq) return;
@@ -215,7 +240,22 @@ async function openBinary(path: string, k: ViewKind, seq: number): Promise<void>
     pdfUrl.value = URL.createObjectURL(blob);
     return;
   }
+  if (k === 'img' || k === 'svg') {
+    imgUrl.value = URL.createObjectURL(blob);
+    if (k === 'svg') {
+      const text = await blob.text(); // 源码模式复用该文本，免二次请求
+      if (seq !== openSeq) return;
+      const name = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+      fileData.value = { name, bytes: blob.size, truncated: false, content: text };
+    }
+    return;
+  }
   if (k === 'legacy') return; // 仅占位卡 + 大小展示
+  if (k === 'pptx') {
+    pptxBuf = await blob.arrayBuffer(); // 容器未挂载，延迟到 openFile 的 nextTick 后再渲染
+    if (seq !== openSeq) return;
+    return;
+  }
   const buf = await blob.arrayBuffer();
   if (seq !== openSeq) return;
   if (k === 'docx') {
@@ -232,6 +272,26 @@ async function openBinary(path: string, k: ViewKind, seq: number): Promise<void>
   }
 }
 
+/** 挂载 pptx 渲染器：动态加载库（workerUrl 显式注入，默认路径打包后失效）；失败置 pptxFail 降级占位卡 */
+async function mountPptx(seq: number): Promise<void> {
+  if (!pptxBuf || !pptxContainer.value) return;
+  try {
+    const mod = await import('@file-viewer/pptx');
+    if (seq !== openSeq) return;
+    const viewer = await mod.PptxViewer.open(pptxBuf, pptxContainer.value, {
+      fitMode: 'contain',
+      workerUrl: pptxWorkerUrl,
+    });
+    if (seq !== openSeq) {
+      viewer.destroy(); // 打开期间已切换文件：销毁避免泄漏
+      return;
+    }
+    pptxViewer = viewer;
+  } catch {
+    if (seq === openSeq) pptxFail.value = true;
+  }
+}
+
 async function openFile(path: string, anchor = ''): Promise<void> {
   const k = viewKindOf(path);
   selected.value = path;
@@ -244,16 +304,21 @@ async function openFile(path: string, anchor = ''): Promise<void> {
   try {
     if (BINARY_KINDS.has(k)) await openBinary(path, k, seq);
     else {
+      // doc 走后端提取端点（word-extractor + 转 markdown），响应结构与 /fs/file 同构
+      const ep = k === 'doc' ? 'doc2md' : 'file';
       fileData.value = await api<{ name: string; bytes: number; truncated: boolean; content: string }>(
-        `/fs/file?path=${encodeURIComponent(path)}`,
+        `/fs/${ep}?path=${encodeURIComponent(path)}`,
       );
       if (seq !== openSeq) return;
       if (k === 'csv') parseDelimited(fileData.value.content, ',');
       else if (k === 'tsv') parseDelimited(fileData.value.content, '\t');
     }
     if (seq !== openSeq) return;
+    // 先摘 loading 再等一帧：pptx 容器挂在 fileLoading 的 v-else 分支上，不先置 false 拿不到 DOM
+    if (seq === openSeq) fileLoading.value = false;
     await nextTick();
     if (seq !== openSeq) return;
+    if (k === 'pptx') void mountPptx(seq); // 容器已挂载，异步渲染不阻塞
     if (viewerEl.value && !(kind.value === 'md' && viewMode.value === 'prev')) highlightIn(viewerEl.value); // md 预览无需高亮；其余分支（含源码模式）高亮
     if (viewerKw.value.trim()) applyHits(); // 打开新文件后沿用文内搜索关键词
     if (anchor) scrollToAnchor(anchor); // 跨文件锚点：渲染完成后滚动（仅 md）
@@ -579,6 +644,13 @@ function fmtBytes(n: number): string {
           ></iframe>
           <!-- pdf：blob objectURL 交给浏览器原生渲染 -->
           <iframe v-else-if="kind === 'pdf'" class="fv-frame" :src="pdfUrl" title="PDF 预览"></iframe>
+          <!-- 图片（含 svg 预览态）：blob objectURL 直显；svg 另有源码模式（落入底部 pre 兜底） -->
+          <img
+            v-else-if="kind === 'img' || (kind === 'svg' && viewMode === 'prev')"
+            class="fv-img"
+            :src="imgUrl"
+            :alt="selected"
+          >
           <!-- csv/tsv/xlsx/xls 表格；多 sheet 时显示切换条 -->
           <template v-else-if="showGrid">
             <div v-if="sheetNames.length > 1" class="fv-sheets">
@@ -597,10 +669,19 @@ function fmtBytes(n: number): string {
           </template>
           <!-- eslint-disable-next-line vue/no-v-html — mammoth 输出经 DOMPurify 消毒 -->
           <div v-else-if="kind === 'docx'" class="fv-md" v-html="docxHtml" @click="onMdClick"></div>
-          <!-- doc/ppt/pptx 旧版二进制格式：无轻量渲染方案，占位提示 -->
+          <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒 -->
+          <div v-else-if="kind === 'doc'" class="fv-md" v-html="mdHtml"></div>
+          <!-- pptx 渲染失败降级占位 -->
+          <div v-else-if="kind === 'pptx' && pptxFail" class="fv-empty fv-nosup">
+            <div class="big">PPTX 渲染失败</div>
+            <div class="sub">解析组件加载异常，建议用 PowerPoint / WPS 打开或转 PDF 后查看</div>
+          </div>
+          <!-- pptx：@file-viewer/pptx 渲染容器（分页 DOM 与样式由库自动注入） -->
+          <div v-else-if="kind === 'pptx'" ref="pptxContainer" class="fv-pptx"></div>
+          <!-- ppt 旧版二进制格式：纯 JS 生态无可靠轻量解析，占位提示 -->
           <div v-else-if="kind === 'legacy'" class="fv-empty fv-nosup">
-            <div class="big">{{ extOf(selected).toUpperCase() }} 文档暂不支持在线预览</div>
-            <div class="sub">旧版二进制格式缺少轻量渲染方案，建议转换为 docx / pptx / pdf 后查看</div>
+            <div class="big">PPT 文档暂不支持在线预览</div>
+            <div class="sub">旧版二进制格式暂无轻量解析方案，建议另存为 pptx 或转 PDF 后查看</div>
           </div>
           <!-- 源码兜底：md/html/表格类源码与非文档文本（codeLang 已把 md/html 映射高亮） -->
           <pre v-else class="fv-code"><code :class="'language-' + codeLang">{{ fileData?.content }}</code></pre>
@@ -790,6 +871,14 @@ function fmtBytes(n: number): string {
   border-radius: 8px;
   background: #fff;
 }
+/* 图片预览：白底衬托透明像素，限高防超长图撑爆视口 */
+.fv-img {
+  max-width: 100%;
+  max-height: calc(100vh - 260px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
 /* xlsx 多 sheet 切换条 */
 .fv-sheets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
 .fv-sheets button {
@@ -817,7 +906,14 @@ function fmtBytes(n: number): string {
 .fv-nosup { padding: 64px 0; }
 .fv-nosup .big { font-size: 13.5px; font-weight: 600; margin-bottom: 6px; }
 .fv-nosup .sub { font-size: 12px; color: var(--muted); }
-
+/* pptx 渲染容器：白底圆角与其他文档视图一致；分页 DOM 由库注入 */
+.fv-pptx {
+  min-height: 240px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  overflow: auto;
+}
 /* 文内搜索命中：mark 由 JS 动态创建、无 scoped 属性，需 :deep 穿透 */
 .files-viewer :deep(mark.fp-hit) {
   background: rgba(255, 200, 0, 0.4);
