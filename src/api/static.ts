@@ -38,11 +38,19 @@ const MIME: Record<string, string> = {
 
 /**
  * 解析 webRoot 配置：非空取配置值（相对路径按 cwd resolve）；空串自动探测仓库内置 webui/dist。
- * 本文件位于 <repoRoot>/src/api/static.ts → 上两级即仓库根。
+ * ESM 源码运行：本文件位于 <repoRoot>/src/api → 上两级即仓库根。
+ * CJS/SEA 产物中 import.meta 被 esbuild 替换为空对象，new URL('.', undefined) 抛 TypeError：
+ * 兜底回退 cwd（约定 exe 与 webui/dist 同目录部署），探测失败由 createStaticHandler 降级为纯 API。
  */
 export function resolveWebRoot(raw: string): string {
   if (raw.trim()) return resolve(raw.trim());
-  return join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'webui', 'dist');
+  let here: string;
+  try {
+    here = fileURLToPath(new URL('.', import.meta.url));
+  } catch {
+    return join(process.cwd(), 'webui', 'dist');
+  }
+  return join(here, '..', '..', 'webui', 'dist');
 }
 
 /** 静态处理器：消费请求返回 true；返回 false 表示未命中（回落 API 层处理） */
