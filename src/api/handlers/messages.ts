@@ -6,6 +6,7 @@ import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendError, sendJson } from '../http-utils.js';
 import { createSseForwarder, sseFrame } from '../sse.js';
 import type { AgentOptions } from '../../types.js';
+import { switchWorkspace } from './sessions.js';
 
 export async function handleMessage(
   ctx: HandlerContext,
@@ -21,13 +22,16 @@ export async function handleMessage(
   }
   const stream = body.stream !== false; // 默认 true
 
-  // 跨工作空间会话只读：仅当前空间的会话可继续对话（架构上一个 serve 进程只服务一个工作空间）
+  // 跨工作空间会话：自动切换到会话所在空间再对话（查看时 GET 详情已先行切换；此处兜底直接发消息的入口）
   if (!(await deps.sessionStore.listSessions()).some((s) => s.id === id)) {
-    const foreign = (await deps.sessionStore.listAllWorkspaces()).some(
+    const foreign = (await deps.sessionStore.listAllWorkspaces()).find(
       (w) => !w.current && w.sessions.some((s) => s.id === id),
     );
     if (foreign) {
-      throw new ApiHttpError('readonly', '跨工作空间会话仅支持查看与删除，不支持继续对话');
+      if (sessions.hasInFlight()) {
+        throw new ApiHttpError('busy', '存在正在处理的会话，暂不能切换工作空间');
+      }
+      await switchWorkspace(ctx, foreign.path);
     }
   }
 
@@ -70,7 +74,8 @@ export async function handleMessage(
 
       // 持久化（API 层自持 SessionStore；会话已在 ensureEntry/loadSession 阶段确认存在）
       try {
-        await deps.sessionStore.updateSession(id, result.messages, result.steps);
+        // 显式传原始输入供会话标题生成（messages 可能已被 L1 压缩重写，不可靠）
+        await deps.sessionStore.updateSession(id, result.messages, result.steps, message);
       } catch (e) {
         warnings.push(`会话持久化失败（回答不受影响）: ${e instanceof Error ? e.message : String(e)}`);
       }

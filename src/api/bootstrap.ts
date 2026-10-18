@@ -33,6 +33,8 @@ export async function startApiServer(): Promise<ApiServer> {
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
+    // 切换工作空间后重建 agent 实例记忆（L1/L2/L3 重绑新空间，避免旧空间记忆污染回答）
+    reinitMemory: (cwd) => agent.initMemory(cwd),
     // D8：命令资源化运行时依赖（真实单例组装）
     runtime: {
       configLoader,

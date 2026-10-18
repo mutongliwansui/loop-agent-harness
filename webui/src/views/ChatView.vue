@@ -1,15 +1,18 @@
 <script setup lang="ts">
 // ChatView：会话 CRUD + SSE 流式对话 + 停止生成 + 对话内上传（Task-20261017-001 D5/D7）
 // 端点映射：
-//   GET    /workspaces          → 左侧会话列表（按工作空间分组聚合，当前空间置顶）
-//   POST   /sessions            → ＋新建（发送前无会话时也自动创建）
-//   GET    /sessions/:id        → 恢复历史消息（{meta, messages}；支持跨工作空间会话）
+//   GET    /workspaces          → 左侧会话列表（按工作空间分组聚合，顺序稳定：按空间首次使用时间升序）
+//   POST   /sessions            → 新建会话（body 可带 workspacePath 异空间切换；发送前无会话时也自动创建）
+//   GET    /fs/dirs             → 服务端目录浏览（新建弹窗「浏览磁盘」；纯 Web 拿不到本地目录绝对路径）
+//   GET    /sessions/:id        → 恢复历史消息（{meta, messages, workspace}；跨空间会话自动切换到其所在空间）
 //   DELETE /sessions/:id        → 删除（二次确认；in-flight 409；支持跨工作空间会话）
-//   POST   /sessions/:id/messages → 发消息（默认 SSE；stream:false 非流式 JSON；跨空间会话 409）
-// 跨工作空间会话：仅支持查看与删除，不支持继续对话（composer 禁用 + 只读徽标）
+//   POST   /sessions/:id/messages → 发消息（默认 SSE；stream:false 非流式 JSON；跨空间会话自动切换空间）
 //   POST   /uploads/raw         → 📎 文件选择框上传 → chip（contextNote 随下一条消息注入）
 //   DELETE /uploads             → 上传面板「清空全部」（二次确认）
 // 停止生成：AbortController 中断 fetch（服务端照常完成并持久化，停止后刷新列表）
+// mermaid：流式结束/历史加载后对 ```mermaid 代码块后处理渲染为 SVG（动态 import 独立 chunk；
+//          主题跟随 prefers-color-scheme；解析失败保留代码块并标红）
+//          交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放（以视口中心为锚）
 
 import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { marked } from 'marked';
@@ -34,18 +37,31 @@ interface WorkspaceGroup {
   lastAccessedAt: string;
   sessions: SessionMeta[];
 }
-interface ToolCall {
+interface TextSeg {
+  type: 'text';
+  text: string;
+}
+interface ToolSeg {
+  type: 'tool';
   tool: string;
   args: string;
   result: string;
   done: boolean;
 }
+/** 时间线分段：思考/最终答案文本段与工具段按事件到达顺序交错 */
+type Segment = TextSeg | ToolSeg;
+/** GET /sessions/:id 的历史消息（OpenAI 消息序：含带 tool_calls 的 assistant 与带 tool_call_id 的 tool） */
+interface ApiHistoryMsg {
+  role: string;
+  content: string | null;
+  tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
+}
 interface ChatMsg {
   id: number;
   role: 'user' | 'assistant';
-  text: string;
+  segments: Segment[]; // 按序渲染形成 思考→命令→思考→命令→总结 的完整过程
   files?: string[]; // 该消息附带的上传文件名（仅用户消息展示）
-  tools?: ToolCall[]; // 仅助手消息：工具调用折叠块
   streaming?: boolean;
   failed?: boolean;
   failedText?: string; // fatal 终止原因
@@ -73,6 +89,17 @@ const upCleanArmed = ref(false);
 const delArmedId = ref<string | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const msgsEl = ref<HTMLElement | null>(null);
+// 新建会话弹窗（已知空间列表 + 服务端目录浏览器，原型-20261017-004）
+const newPopOpen = ref(false);
+const browseOpen = ref(false);
+const newBusy = ref(false);
+const dirPath = ref('');
+const dirParent = ref<string | null>(null);
+const dirEntries = ref<{ name: string }[]>([]);
+const dirDrives = ref<string[]>([]);
+const dirLoading = ref(false);
+const dirError = ref('');
+const dirJump = ref('');
 
 const activeMeta = computed(() => {
   for (const w of workspaces.value) {
@@ -118,6 +145,164 @@ function renderMarkdown(text: string | null | undefined): string {
   return DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
 }
 
+/* ================= mermaid 后处理渲染 ================= */
+// 流式期间 segments 文本段逐 chunk 变化触发 v-html 重渲，不能边流边渲；
+// 只在流式结束（send finally）或历史加载（selectSession）后，把 marked 输出的
+// <pre><code class="language-mermaid"> 替换为 mermaid SVG。失败保留代码块。
+
+let mermaidPromise: Promise<(typeof import('mermaid'))['default']> | null = null;
+let mermaidSeq = 0;
+let mermaidQueue: Promise<void> = Promise.resolve(); // 串行排队，避免并发调用 mermaid.render
+
+function renderMermaidDiagrams(): Promise<void> {
+  mermaidQueue = mermaidQueue.then(() => renderMermaidInMsgs());
+  return mermaidQueue;
+}
+
+/** 构建 mermaid 图表容器：工具栏（放大/缩小/适应宽度/全屏）+ 滚轮缩放 + 视口滚动 */
+function buildMermaidBox(svgMarkup: string): { el: HTMLDivElement; fit: () => void } {
+  const el = document.createElement('div');
+  el.className = 'mermaid-block';
+  el.innerHTML =
+    '<div class="mmd-bar">' +
+    '<span class="mmd-cap">mermaid</span>' +
+    '<span class="mmd-spring"></span>' +
+    '<button type="button" data-act="in" title="放大">＋</button>' +
+    '<button type="button" data-act="out" title="缩小">－</button>' +
+    '<button type="button" data-act="fit" title="适应宽度">100%</button>' +
+    '<button type="button" data-act="fs" title="全屏">⛶</button>' +
+    '</div>' +
+    '<div class="mmd-view"><div class="mmd-stage">' +
+    svgMarkup +
+    '</div></div>';
+  const view = el.querySelector<HTMLElement>('.mmd-view')!;
+  const svgEl = el.querySelector<SVGSVGElement>('svg')!;
+  const fitBtn = el.querySelector<HTMLButtonElement>('[data-act=fit]')!;
+
+  // 基准尺寸取 viewBox（mermaid 恒有输出；attr width 常为 100% 不可用）
+  const vb = svgEl.viewBox.baseVal;
+  const baseW = vb.width || parseFloat(svgEl.getAttribute('width') || '') || 0;
+  const baseH = vb.height || parseFloat(svgEl.getAttribute('height') || '') || 0;
+  const zoomable = baseW > 0 && baseH > 0;
+  let scale = 1;
+
+  const apply = (s: number): void => {
+    scale = Math.min(5, Math.max(0.2, s));
+    svgEl.style.maxWidth = 'none';
+    svgEl.style.width = `${baseW * scale}px`;
+    svgEl.style.height = `${baseH * scale}px`;
+    fitBtn.textContent = `${Math.round(scale * 100)}%`;
+    // 内容超出视口才可拖拽平移（grab 光标）
+    view.classList.toggle(
+      'pan-able',
+      view.scrollWidth > view.clientWidth || view.scrollHeight > view.clientHeight,
+    );
+  };
+
+  /** 以视口中心为锚缩放，避免缩放后视点漂移 */
+  const zoomTo = (next: number): void => {
+    if (!zoomable) return;
+    const prev = scale;
+    const r = view.getBoundingClientRect();
+    const cx = view.scrollLeft + r.width / 2;
+    const cy = view.scrollTop + r.height / 2;
+    apply(next);
+    view.scrollLeft = (cx * scale) / prev - r.width / 2;
+    view.scrollTop = (cy * scale) / prev - r.height / 2;
+  };
+
+  /** 适应容器宽度（不放大超过 100%） */
+  const fit = (): void => {
+    if (!zoomable) return;
+    apply(Math.min(1, (view.clientWidth - 24) / baseW)); // 24 = .mmd-view 左右 padding
+    view.scrollLeft = 0;
+    view.scrollTop = 0;
+  };
+
+  el.querySelector('[data-act=in]')!.addEventListener('click', () => zoomTo(scale * 1.25));
+  el.querySelector('[data-act=out]')!.addEventListener('click', () => zoomTo(scale / 1.25));
+  fitBtn.addEventListener('click', fit);
+  el.querySelector('[data-act=fs]')!.addEventListener('click', () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void el.requestFullscreen();
+  });
+  el.addEventListener('fullscreenchange', fit); // 进出全屏视口宽度变化，重算适应宽度
+  view.addEventListener(
+    'wheel',
+    (e) => {
+      if (!zoomable) return;
+      e.preventDefault(); // 劫持滚轮用于缩放
+      zoomTo(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    },
+    { passive: false },
+  );
+  // 拖拽平移：按住左键拖动同步视口滚动（grab & pan）；触摸设备走原生滚动
+  view.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (view.scrollWidth <= view.clientWidth && view.scrollHeight <= view.clientHeight) return;
+    e.preventDefault(); // 阻止拖拽选中文本
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const sl = view.scrollLeft;
+    const st = view.scrollTop;
+    view.classList.add('panning');
+    view.setPointerCapture(e.pointerId); // 移出视口仍持续跟踪
+    const onMove = (ev: PointerEvent): void => {
+      view.scrollLeft = sl - (ev.clientX - startX);
+      view.scrollTop = st - (ev.clientY - startY);
+    };
+    const onUp = (): void => {
+      view.classList.remove('panning');
+      view.removeEventListener('pointermove', onMove);
+      view.removeEventListener('pointerup', onUp);
+      view.removeEventListener('pointercancel', onUp);
+    };
+    view.addEventListener('pointermove', onMove);
+    view.addEventListener('pointerup', onUp);
+    view.addEventListener('pointercancel', onUp);
+  });
+  if (!zoomable) {
+    for (const b of el.querySelectorAll<HTMLButtonElement>('[data-act=in],[data-act=out],[data-act=fit]')) {
+      b.disabled = true;
+    }
+  }
+  return { el, fit };
+}
+
+async function renderMermaidInMsgs(): Promise<void> {
+  const root = msgsEl.value;
+  if (!root) return;
+  await nextTick();
+  const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-mermaid')];
+  if (blocks.length === 0) return;
+  try {
+    mermaidPromise ??= import('mermaid').then((m) => m.default);
+    const mermaid = await mermaidPromise;
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+    });
+    for (const code of blocks) {
+      const pre = code.parentElement;
+      if (!pre || pre.tagName !== 'PRE') continue; // v-html 重渲后已被替换/移除
+      const id = `mmd-svg-${++mermaidSeq}`;
+      try {
+        const { svg } = await mermaid.render(id, code.textContent ?? ''); // strict 模式下 mermaid 内部已 sanitize
+        const box = buildMermaidBox(svg);
+        pre.replaceWith(box.el);
+        box.fit(); // 已插入 DOM 后才能测量视口宽度
+      } catch {
+        // mermaid v11 render 失败时会遗留错误占位元素，需手动清理
+        document.getElementById(`d${id}`)?.remove();
+        pre.classList.add('mermaid-err'); // 解析失败：保留代码块并标红
+      }
+    }
+  } catch {
+    // mermaid 动态加载失败：静默保留代码块形态
+  }
+}
+
 function scrollBottom(): void {
   nextTick(() => {
     if (msgsEl.value) msgsEl.value.scrollTop = msgsEl.value.scrollHeight;
@@ -154,24 +339,168 @@ async function loadSessions(): Promise<void> {
   }
 }
 
-async function createSession(): Promise<string | null> {
+/**
+ * 创建会话；带 workspacePath 时可异空间切换（后端同空间自动识别为直建）。
+ * 从弹窗发起（传参）时整体刷新列表——切换后「当前」标记随之移动、分组顺序不变。
+ */
+async function createSession(workspacePath?: string): Promise<string | null> {
+  if (streaming.value) {
+    showToast('正在生成回复，请先停止', 'error');
+    return null;
+  }
+  const fromPop = workspacePath !== undefined;
+  if (fromPop) newBusy.value = true;
   try {
-    const r = await api<SessionMeta>('/sessions', { method: 'POST' });
-    const cur = workspaces.value.find((w) => w.current);
-    if (cur) {
-      cur.sessions.unshift(r);
-      collapsedWs.value = new Set([...collapsedWs.value].filter((id) => id !== cur.id));
-    } else {
-      void loadSessions(); // 当前空间组缺失（异常）：整体重载
-    }
+    const r = await api<SessionMeta & { workspace?: { path: string; id: string; switched: boolean } }>(
+      '/sessions',
+      { method: 'POST', json: fromPop ? { workspacePath } : undefined },
+    );
+    const switched = r.workspace?.switched === true;
+    await loadSessions();
     activeId.value = r.id;
     messages.value = [];
     scrollBottom();
+    if (fromPop) {
+      closeNewPop();
+      showToast(switched ? `已切换工作空间：${r.workspace?.path}` : '会话已创建', 'success');
+    }
     return r.id;
   } catch (e) {
-    if (!(e instanceof AuthError)) showToast(errText(e), 'error');
+    if (e instanceof AuthError) return null;
+    const code = (e as { code?: string }).code;
+    const msg = errText(e);
+    // 目录类错误（404/403/409）在浏览器视图内以错误条展示，保持当前位置可修正
+    if (browseOpen.value && (code === 'not_found' || code === 'forbidden' || code === 'busy')) {
+      dirError.value = msg;
+    } else {
+      showToast(msg, 'error');
+    }
     return null;
+  } finally {
+    newBusy.value = false;
   }
+}
+
+/* ================= 新建会话弹窗（已知空间 + 目录浏览器） ================= */
+
+function openNewPop(): void {
+  newPopOpen.value = true;
+  browseOpen.value = false;
+  dirError.value = '';
+}
+
+function closeNewPop(): void {
+  newPopOpen.value = false;
+  browseOpen.value = false;
+  dirError.value = '';
+  dirJump.value = '';
+}
+
+function openBrowse(): void {
+  browseOpen.value = true;
+  dirError.value = '';
+  if (!dirPath.value) void browseDirs(''); // 缺省 → 服务端当前空间
+}
+
+/** GET /fs/dirs：失败（404/403 等）以错误条展示并保持当前位置 */
+async function browseDirs(path: string): Promise<void> {
+  dirLoading.value = true;
+  dirError.value = '';
+  try {
+    const r = await api<{ path: string; parent: string | null; dirs: { name: string }[]; drives: string[] }>(
+      `/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+    );
+    dirPath.value = r.path;
+    dirParent.value = r.parent;
+    dirEntries.value = r.dirs;
+    dirDrives.value = r.drives;
+  } catch (e) {
+    if (!(e instanceof AuthError)) dirError.value = errText(e);
+  } finally {
+    dirLoading.value = false;
+  }
+}
+
+function joinPath(base: string, name: string): string {
+  return /[\\/]$/.test(base) ? base + name : `${base}\\${name}`;
+}
+
+function jumpTo(): void {
+  const p = dirJump.value.trim();
+  if (!p) return;
+  dirJump.value = '';
+  void browseDirs(p); // 归一化（'D:' → 'D:\'）由后端完成
+}
+
+/** 面包屑：'D:\a\b' → [D:\, a, b]，逐级可点 */
+const dirCrumbs = computed(() => {
+  const p = dirPath.value;
+  const m = p.match(/^([A-Za-z]:\\)(.*)$/);
+  if (!m) return [{ label: p, path: p }];
+  const crumbs = [{ label: m[1], path: m[1] }];
+  let acc = m[1];
+  for (const seg of m[2].split('\\').filter(Boolean)) {
+    acc += seg + '\\';
+    crumbs.push({ label: seg, path: acc });
+  }
+  return crumbs;
+});
+
+/** 当前浏览目录与已知空间的匹配：current=当前空间 known=已知（非当前）空间 fresh=未知目录 */
+const dirTargetKind = computed(() => {
+  const p = dirPath.value.toLowerCase();
+  const cur = workspaces.value.find((w) => w.current);
+  if (cur && cur.path.toLowerCase() === p) return 'current';
+  return workspaces.value.some((w) => !w.current && w.path.toLowerCase() === p) ? 'known' : 'fresh';
+});
+
+const createInDirLabel = computed(() => {
+  if (newBusy.value) return '创建中…';
+  if (dirTargetKind.value === 'current') return '＋ 在此新建会话';
+  if (dirTargetKind.value === 'known') {
+    const w = workspaces.value.find((x) => !x.current && x.path.toLowerCase() === dirPath.value.toLowerCase());
+    return `切换到 ${w?.name ?? '该空间'} 并新建会话`;
+  }
+  return '切换到此目录并新建会话';
+});
+
+/**
+ * GET messages（OpenAI 消息序）→ ChatMsg 时间线：
+ * user 消息开新一轮；assistant(content+tool_calls) 拆成文本段+工具段；tool 消息按 tool_call_id 回填结果。
+ * 与流式渲染的 segments 模型对齐——重进会话同样还原 思考→工具→思考→总结 的完整过程。
+ */
+function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
+  const out: ChatMsg[] = [];
+  let pending: Segment[] = [];
+  const toolSegById = new Map<string, ToolSeg>();
+  const flush = (): void => {
+    if (pending.length > 0) out.push({ id: ++msgSeq, role: 'assistant', segments: pending });
+    pending = [];
+  };
+  for (const m of list) {
+    if (m.role === 'user') {
+      flush();
+      out.push({ id: ++msgSeq, role: 'user', segments: [{ type: 'text', text: m.content ?? '' }] });
+    } else if (m.role === 'assistant') {
+      if (m.content) pending.push({ type: 'text', text: m.content });
+      for (const tc of m.tool_calls ?? []) {
+        let args = tc.function.arguments;
+        try {
+          args = JSON.stringify(JSON.parse(args)); // 历史存的是 JSON 串，重排与流式路径展示一致
+        } catch {
+          /* 非法 JSON 保留原串 */
+        }
+        const seg: ToolSeg = { type: 'tool', tool: tc.function.name, args, result: '', done: true };
+        pending.push(seg);
+        toolSegById.set(tc.id, seg);
+      }
+    } else if (m.role === 'tool') {
+      const seg = toolSegById.get(m.tool_call_id ?? '');
+      if (seg) seg.result = m.content ?? '';
+    }
+  }
+  flush();
+  return out;
 }
 
 async function selectSession(id: string): Promise<void> {
@@ -181,14 +510,19 @@ async function selectSession(id: string): Promise<void> {
     return;
   }
   try {
-    const r = await api<{ meta: SessionMeta; messages: { role: string; content: string }[] }>(
-      `/sessions/${encodeURIComponent(id)}`,
-    );
+    const r = await api<{
+      meta: SessionMeta;
+      messages: ApiHistoryMsg[];
+      workspace?: { path: string; id: string; switched: boolean };
+    }>(`/sessions/${encodeURIComponent(id)}`);
+    // 跨空间会话：后端已自动切换服务端工作空间——先刷新列表（「当前」标记移动、只读徽标消失，分组顺序不变）再恢复消息
+    const switched = r.workspace?.switched === true;
+    if (switched) await loadSessions();
     activeId.value = id;
-    messages.value = r.messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ id: ++msgSeq, role: m.role as ChatMsg['role'], text: m.content }));
+    messages.value = rebuildChatMsgs(r.messages);
     scrollBottom();
+    void renderMermaidDiagrams();
+    if (switched) showToast(`已切换工作空间：${r.workspace?.path}`, 'success');
   } catch (e) {
     if (!(e instanceof AuthError)) showToast(errText(e), 'error');
   }
@@ -230,13 +564,18 @@ function onDelSession(s: SessionMeta): void {
 function handleEvent(ev: SseEvent, asst: ChatMsg): void {
   const d = (ev.data ?? {}) as Record<string, unknown>;
   switch (ev.event) {
-    case 'llm_stream':
-      asst.text += String(d.text ?? '');
+    case 'llm_stream': {
+      // 思考/最终答案 delta：上一段是工具段时开新文本段，天然形成 思考→工具→思考 交错
+      const last = asst.segments[asst.segments.length - 1];
+      const seg = last && last.type === 'text' ? last : { type: 'text' as const, text: '' };
+      if (seg !== last) asst.segments.push(seg);
+      seg.text += String(d.text ?? '');
       scrollBottom();
       break;
+    }
     case 'tool_start':
-      asst.tools ??= [];
-      asst.tools.push({
+      asst.segments.push({
+        type: 'tool',
         tool: String(d.tool ?? ''),
         args: JSON.stringify(d.args ?? null),
         result: '',
@@ -245,17 +584,27 @@ function handleEvent(ev: SseEvent, asst: ChatMsg): void {
       scrollBottom();
       break;
     case 'tool_end': {
-      const tc = [...(asst.tools ?? [])].reverse().find((t) => !t.done && t.tool === String(d.tool ?? ''));
-      if (tc) {
-        tc.result = typeof d.result === 'string' ? d.result : JSON.stringify(d.result ?? null);
-        tc.done = true;
+      // 从尾部反查第一个未完成同名工具段回填结果
+      for (let i = asst.segments.length - 1; i >= 0; i--) {
+        const s = asst.segments[i];
+        if (s.type === 'tool' && !s.done && s.tool === String(d.tool ?? '')) {
+          s.result = typeof d.result === 'string' ? d.result : JSON.stringify(d.result ?? null);
+          s.done = true;
+          break;
+        }
       }
       scrollBottom();
       break;
     }
-    case 'final': // 定稿覆盖流式累积文本
-      asst.text = String(d.answer ?? '');
+    case 'final': {
+      // 最终答案已随最后一轮 llm_stream 流入末尾文本段，覆盖会把前面各轮思考全部抹掉；
+      // 仅在末尾没有文本段（异常路径）或其为空时兜底写入
+      const answer = String(d.answer ?? '');
+      const last = asst.segments[asst.segments.length - 1];
+      if (!last || last.type !== 'text') asst.segments.push({ type: 'text', text: answer });
+      else if (!last.text) last.text = answer;
       break;
+    }
     case 'error':
       showToast(`模型错误: ${String(d.message ?? d.name ?? '')}`, 'error');
       break;
@@ -304,12 +653,12 @@ async function send(): Promise<void> {
   const userMsg: ChatMsg = {
     id: ++msgSeq,
     role: 'user',
-    text,
+    segments: [{ type: 'text', text }],
     files: chipsSnapshot.map((u) => u.fileName),
   };
   // 必须 reactive：流式期间 handleEvent 持有此引用做 += 累加，若为普通对象，
   // 写入绕过响应式代理不触发渲染 → 表现为“全部生成完后才一次性出现”
-  const asst = reactive<ChatMsg>({ id: ++msgSeq, role: 'assistant', text: '', tools: [], streaming: true });
+  const asst = reactive<ChatMsg>({ id: ++msgSeq, role: 'assistant', segments: [], streaming: true });
   if (streamChk.value) messages.value.push(userMsg, asst);
   else messages.value.push(userMsg);
 
@@ -338,7 +687,7 @@ async function send(): Promise<void> {
         method: 'POST',
         json: { message: full, stream: false },
       });
-      asst.text = r.answer;
+      asst.segments = [{ type: 'text', text: r.answer }];
       asst.streaming = false;
       asst.meta = `${(r.durationMs / 1000).toFixed(1)}s · ${r.iterations} 轮`;
       for (const w of r.warnings ?? []) showToast(w, 'error');
@@ -361,6 +710,7 @@ async function send(): Promise<void> {
     streaming.value = false;
     abortCtrl = null;
     scrollBottom();
+    void renderMermaidDiagrams(); // 流式/非流式/停止/失败统一在此渲染 mermaid
     void loadSessions(); // 刷新 messageCount / updatedAt
   }
 }
@@ -437,7 +787,7 @@ onMounted(() => {
     <aside class="sess-panel">
       <div class="h">
         <b>会话</b>
-        <button class="primary new" :disabled="streaming" @click="createSession">＋ 新建</button>
+        <button class="primary new" :disabled="streaming" @click="openNewPop">＋ 新建</button>
       </div>
       <div class="sess-filter">
         <span class="ico">🔍</span>
@@ -504,16 +854,18 @@ onMounted(() => {
             <div class="ava">{{ m.role === 'user' ? '你' : 'L' }}</div>
             <div class="bubble">
               <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
-              <details v-for="(t, i) in m.tools" :key="i" class="tool-call">
-                <summary>
-                  <span class="arrow">▶</span>
-                  <span class="tc-badge" :class="t.done ? 'ok' : 'run'">{{ t.done ? '✓' : '⟳' }} {{ t.tool }}</span>
-                  <span class="tc-args">{{ t.args }}</span>
-                </summary>
-                <div class="tc-body">{{ t.result || '（执行中…）' }}</div>
-              </details>
-              <div v-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(m.text)"></div>
-              <div v-else class="plain">{{ m.text }}</div>
+              <template v-for="(seg, i) in m.segments" :key="i">
+                <details v-if="seg.type === 'tool'" class="tool-call">
+                  <summary>
+                    <span class="arrow">▶</span>
+                    <span class="tc-badge" :class="seg.done ? 'ok' : 'run'">{{ seg.done ? '✓' : '⟳' }} {{ seg.tool }}</span>
+                    <span class="tc-args">{{ seg.args }}</span>
+                  </summary>
+                  <div class="tc-body">{{ seg.result || '（执行中…）' }}</div>
+                </details>
+                <div v-else-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(seg.text)"></div>
+                <div v-else class="plain">{{ seg.text }}</div>
+              </template>
               <span v-if="m.streaming" class="cursor"></span>
               <div v-if="m.failed" class="fatal">⚠ {{ m.failedText }}</div>
               <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
@@ -577,6 +929,75 @@ onMounted(() => {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== 新建会话弹窗（已知工作空间 + 服务端目录浏览器） ===== -->
+    <div v-if="newPopOpen" class="np-mask" @click.self="closeNewPop">
+      <div class="np-card">
+        <div class="np-head">
+          <b>新建会话</b>
+          <button class="np-x" title="关闭" @click="closeNewPop">✕</button>
+        </div>
+
+        <!-- 步骤 1：已知工作空间列表 -->
+        <template v-if="!browseOpen">
+          <p class="np-cap">在已有工作空间新建</p>
+          <div class="np-ws-list">
+            <button v-for="w in workspaces" :key="w.id" class="np-ws" :title="w.path" @click="createSession(w.path)">
+              <span class="dot" :style="{ background: wsColor(w.name) }"></span>
+              <span class="nm">{{ w.name }}</span>
+              <span class="pth">{{ w.path }}</span>
+              <span class="act">{{ w.current ? '新建会话' : '切换并新建' }}</span>
+            </button>
+            <div v-if="workspaces.length === 0" class="np-empty">暂无已知工作空间</div>
+          </div>
+          <div class="np-foot">
+            <span></span>
+            <button class="browse-btn" @click="openBrowse">📁 浏览磁盘选择目录…</button>
+          </div>
+        </template>
+
+        <!-- 步骤 2：服务端目录浏览器 -->
+        <template v-else>
+          <div class="crumbs">
+            <template v-for="(c, i) in dirCrumbs" :key="c.path">
+              <span v-if="i > 0" class="sep">›</span>
+              <button class="crumb" @click="browseDirs(c.path)">{{ c.label }}</button>
+            </template>
+            <button class="crumb up" :disabled="!dirParent" title="上一级" @click="dirParent && browseDirs(dirParent)">
+              ↑ 上一级
+            </button>
+          </div>
+          <div class="drive-chips">
+            <button v-for="d in dirDrives" :key="d" class="drive" @click="browseDirs(d)">💽 {{ d }}</button>
+          </div>
+          <div class="jump-row">
+            <input v-model="dirJump" type="text" placeholder="输入路径，如 D:\data" @keydown.enter="jumpTo">
+            <button class="jump-go" :disabled="!dirJump.trim()" @click="jumpTo">跳转</button>
+          </div>
+          <div v-if="dirError" class="dir-err">⚠ {{ dirError }}</div>
+          <div class="dir-list">
+            <div v-if="dirLoading" class="dir-empty">加载中…</div>
+            <template v-else>
+              <button
+                v-for="e in dirEntries"
+                :key="e.name"
+                class="dir-item"
+                @click="browseDirs(joinPath(dirPath, e.name))"
+              >
+                📁 {{ e.name }}
+              </button>
+              <div v-if="dirEntries.length === 0" class="dir-empty">（无子目录）</div>
+            </template>
+          </div>
+          <div class="np-foot">
+            <button class="browse-btn ghost" @click="browseOpen = false">← 返回工作空间列表</button>
+            <button class="primary" :disabled="newBusy || !dirPath" @click="createSession(dirPath)">
+              {{ createInDirLabel }}
+            </button>
+          </div>
+        </template>
       </div>
     </div>
   </div>
@@ -802,7 +1223,8 @@ onMounted(() => {
 .msg .bubble p:last-child { margin-bottom: 0; }
 .md :first-child { margin-top: 0; }
 .md :last-child { margin-bottom: 0; }
-.md pre {
+/* v-html 注入内容无 scoped 属性，pre/code 需 :deep 穿透（含 mermaid 失败回退的代码块） */
+.md :deep(pre) {
   background: var(--code-bg);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -812,14 +1234,67 @@ onMounted(() => {
   font-size: 12.5px;
   margin: 8px 0;
 }
-.md code {
+.md :deep(code) {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12.5px;
   background: var(--code-bg);
   border-radius: 4px;
   padding: 1px 5px;
 }
-.md pre code { background: none; padding: 0; }
+.md :deep(pre code) { background: none; padding: 0; }
+/* mermaid 图表容器：工具栏 + 可缩放视口 */
+.md :deep(.mermaid-block) {
+  margin: 8px 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.md :deep(.mermaid-block .mmd-bar) {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.md :deep(.mmd-cap) {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  margin-left: 4px;
+}
+.md :deep(.mmd-spring) { flex: 1; }
+.md :deep(.mmd-bar button) {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.md :deep(.mmd-bar button:hover:not(:disabled)) { background: var(--code-bg); }
+.md :deep(.mmd-bar button:disabled) { opacity: 0.4; cursor: default; }
+.md :deep(.mermaid-block .mmd-view) {
+  padding: 10px 12px;
+  overflow: auto;
+  max-height: 60vh;
+}
+.md :deep(.mmd-stage) { min-width: max-content; margin: 0 auto; user-select: none; }
+.md :deep(.mmd-view.pan-able) { cursor: grab; }
+.md :deep(.mmd-view.panning) { cursor: grabbing; }
+.md :deep(.mmd-stage svg) { display: block; }
+.md :deep(.mermaid-block:fullscreen) {
+  border: none;
+  border-radius: 0;
+  background: var(--bg);
+}
+.md :deep(.mermaid-block:fullscreen .mmd-view) { max-height: none; flex: 1; }
+.md :deep(pre.mermaid-err) { border-color: var(--danger); }
 .msg-files { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .meta-line { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .fatal {
@@ -953,6 +1428,136 @@ onMounted(() => {
   padding: 4px 8px;
 }
 .up-actions .clean.armed { background: var(--danger); color: #fff; border-radius: 6px; }
+
+/* ===== 新建会话弹窗 ===== */
+.np-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.np-card {
+  width: 480px;
+  max-width: calc(100vw - 40px);
+  max-height: 72vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+  padding: 14px 16px 16px;
+}
+.np-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.np-head b { font-size: 14px; }
+.np-x { border: none; background: none; color: var(--muted); font-size: 14px; padding: 2px 6px; cursor: pointer; }
+.np-x:hover { color: var(--danger); }
+.np-cap { font-size: 11.5px; color: var(--muted); margin: 0 2px 6px; }
+.np-ws-list { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
+.np-ws {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 9px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.np-ws:hover { border-color: var(--brand); background: var(--brand-weak); }
+.np-ws .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.np-ws .nm {
+  font-size: 13px;
+  font-weight: 600;
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.np-ws .pth {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.np-ws .act { font-size: 11.5px; color: var(--brand); flex: none; }
+.np-empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 14px 0; }
+.np-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; }
+.browse-btn {
+  border: 1px dashed var(--line);
+  background: none;
+  color: var(--muted);
+  border-radius: 8px;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.browse-btn:hover { color: var(--brand); border-color: var(--brand); }
+.browse-btn.ghost { border-style: solid; }
+.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; margin-bottom: 8px; font-size: 12px; }
+.crumb {
+  border: none;
+  background: none;
+  color: var(--brand);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+  font-size: 12px;
+  word-break: break-all;
+}
+.crumb:hover { background: var(--brand-weak); }
+.crumb:disabled { color: var(--muted); opacity: 0.55; cursor: default; }
+.crumb.up { margin-left: auto; color: var(--muted); flex: none; }
+.crumbs .sep { color: var(--muted); }
+.drive-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.drive {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 999px;
+  font-size: 11.5px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.drive:hover { border-color: var(--brand); color: var(--brand); }
+.jump-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.jump-row input { flex: 1; min-width: 0; font-size: 12.5px; padding: 5px 9px; border-radius: 7px; }
+.jump-go { font-size: 12px; padding: 0 12px; }
+.dir-err {
+  color: var(--danger);
+  background: var(--danger-weak);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.dir-list {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.dir-item {
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 12.5px;
+  padding: 7px 11px;
+  cursor: pointer;
+}
+.dir-item:hover { background: var(--brand-weak); }
+.dir-item + .dir-item { border-top: 1px solid var(--line); }
+.dir-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0; }
 
 /* ===== 窄屏 ===== */
 @media (max-width: 900px) {

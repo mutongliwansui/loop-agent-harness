@@ -5,6 +5,7 @@ import type { SkillMetadata } from '../skill/types.js';
 import type { MemorySearchResult } from './types.js';
 import { CuratedMemory } from './curated.js';
 import { EpisodicMemory } from './episodic.js';
+import { withMemorySection } from './memory-section.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { debug } from '../debug.js';
 
@@ -210,16 +211,16 @@ export class ContextAssembler {
     ];
 
     if (memoryBlock) {
-      const memorySection = `## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n${memoryBlock}\n\n`;
+      // 拼接/剥离格式约定见 memory-section.ts（SessionStore 生成会话标题时依赖哨兵剥离前缀）
       const lastUserIdx = rawMessages.reduceRight(
         (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
         -1,
       );
-      if (lastUserIdx >= 0) {
+      if (lastUserIdx >= 0 && rawMessages[lastUserIdx].role === 'user') {
         const lastUser = rawMessages[lastUserIdx];
         rawMessages[lastUserIdx] = {
           ...lastUser,
-          content: `${memorySection}${lastUser.content}`,
+          content: withMemorySection(memoryBlock, lastUser.content),
         };
       }
     }

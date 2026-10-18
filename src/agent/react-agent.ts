@@ -177,7 +177,7 @@ export class ReActAgent {
   }
 
   /**
-   * 初始化记忆系统（在启动时调用一次）
+   * 初始化记忆系统（启动时调用；切换工作空间时可重入重建——先释放旧实例的 sqlite 句柄）
    */
   async initMemory(cwd: string): Promise<void> {
     const { config: cfg } = this._configLoader.load();
@@ -216,6 +216,9 @@ export class ReActAgent {
         }
       }
     }
+
+    // 重入支持：旧实例的 FTS/向量索引持 sqlite 句柄，重建前先释放（首次调用时为 no-op）
+    this._episodicMemory?.closeIndex();
 
     const curatedDir = cwd;
     // 全局 Curated 目录：SOUL/USER 存用户目录，MEMORY.md 留项目目录
@@ -490,9 +493,12 @@ export class ReActAgent {
         }
 
         // ===== 记忆管理：Context Assembly（L3 + L2 + L1 组装） =====
+        // 组装结果仅作为本次 LLM 调用的视图（llmMessages），不覆盖工作数组 messages——
+        // 否则 L2 记忆前缀会随 result.messages 持久化（前端渲染出记忆内容）并残留到后续轮次
+        let llmMessages = messages;
         if (this._contextAssembler && this._memoryEnabled) {
           try {
-            messages = await this._contextAssembler.assemble(
+            llmMessages = await this._contextAssembler.assemble(
               userInput,
               messages,
               skills,
@@ -514,7 +520,7 @@ export class ReActAgent {
 
         // 1. 流式调用 LLM，累积完整响应
         const llmStartTs = Date.now();
-        const resp = await this.streamLLM(messages, openaiTools, { model, temperature }, events);
+        const resp = await this.streamLLM(llmMessages, openaiTools, { model, temperature }, events);
 
         await safeEvents.onLLMEnd(resp, i);
 
@@ -527,7 +533,7 @@ export class ReActAgent {
         const usage = resp.usage;
         const workingConfig = this._workingMemory?.getConfig();
         const contextTokens =
-          usage?.prompt_tokens ?? (this._workingMemory?.estimateTokens(messages) ?? 0);
+          usage?.prompt_tokens ?? (this._workingMemory?.estimateTokens(llmMessages) ?? 0);
         this._lastContextTokens = contextTokens;
         const maxTokens = workingConfig?.maxTokens ?? 0;
         const stats: LLMStats = {

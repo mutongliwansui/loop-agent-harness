@@ -96,3 +96,8 @@ export function defaultMemoryKitFactory(): Promise<MemoryKit> {
   cachedKit ??= createMemoryKit(process.cwd(), configLoader);
   return cachedKit;
 }
+
+/** 切换工作空间后重置单例：记忆目录含 workspaceId(cwd)，必须按新 cwd 重新组装 */
+export function resetMemoryKitCache(): void {
+  cachedKit = null;
+}

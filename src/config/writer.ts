@@ -26,6 +26,11 @@ export class ConfigWriter {
     return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
+  /** 切换工作空间后更新工作空间根目录（workspace 层写盘路径随之切换） */
+  setWorkspacePath(path: string): void {
+    this.workspacePath = path;
+  }
+
   get globalConfigPath(): string {
     return join(this.globalDir, 'config.json');
   }

@@ -39,3 +39,6 @@ analyze_logo.py
 
 # 下载的依赖包（离线安装用，体积大不入库）
 wheels/
+
+# IDE 产物（Trae HTML 分享打包缓存）
+.trae-html-share-packages/

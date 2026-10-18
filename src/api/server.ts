@@ -59,6 +59,8 @@ export interface ApiServerDeps {
   version?: string;
   /** 日志输出（默认静默；startApiServer 注入 console.log） */
   log?: (msg: string) => void;
+  /** 切换工作空间后重建 agent 实例记忆（serve 注入 agent.initMemory；缺省时切换仅重置 memory-kit 缓存） */
+  reinitMemory?: (cwd: string) => Promise<void>;
   /** 命令资源化运行时依赖（D8）；缺省字段回落全局单例 */
   runtime?: Partial<ApiRuntimeDeps>;
 }
@@ -90,6 +92,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     sessions,
     log,
     version: deps.version,
+    reinitMemory: deps.reinitMemory,
     configLoader: rt.configLoader ?? configLoader,
     configWriter: rt.configWriter ?? configWriter,
     mcpManager: rt.mcpManager ?? mcpManager,

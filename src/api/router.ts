@@ -6,7 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
-import { handleCreateSession, handleDeleteSession, handleGetSession, handleListSessions, handleListWorkspaces } from './handlers/sessions.js';
+import { handleCreateSession, handleDeleteSession, handleGetSession, handleListDirs, handleListSessions, handleListWorkspaces } from './handlers/sessions.js';
 import { handleMessage } from './handlers/messages.js';
 import { uploadRoutes } from './handlers/uploads.js';
 import { configRoutes } from './handlers/config.js';
@@ -35,6 +35,8 @@ export interface HandlerContext {
   log: (msg: string) => void;
   /** 服务版本号（/health 返回） */
   version?: string;
+  /** 切换工作空间后重建 agent 实例记忆（serve 注入 agent.initMemory；单测缺省则跳过） */
+  reinitMemory?: (cwd: string) => Promise<void>;
   /** 分层配置加载器（/config 组读取 + 来源解析；Task-20261016-002 D8） */
   configLoader: ConfigLoader;
   /** 配置写入器（PUT/DELETE /config/:key） */
@@ -73,8 +75,10 @@ export function createRoutes(): Route[] {
   return [
     { method: 'GET', path: '/health', handler: handleHealth },
     // 会话资源（Task-20261016-001）
-    { method: 'POST', path: '/sessions', handler: (ctx, _req, res) => handleCreateSession(ctx, res) },
+    { method: 'POST', path: '/sessions', handler: (ctx, req, res) => handleCreateSession(ctx, req, res) },
     { method: 'GET', path: '/sessions', handler: (ctx, _req, res) => handleListSessions(ctx, res) },
+    // 服务端目录浏览（新建会话选择工作空间；静态段，无 :param 冲突）
+    { method: 'GET', path: '/fs/dirs', handler: (ctx, req, res) => handleListDirs(ctx, req, res) },
     // 跨工作空间聚合（会话按工作空间分组展示）
     { method: 'GET', path: '/workspaces', handler: (ctx, _req, res) => handleListWorkspaces(ctx, res) },
     { method: 'POST', path: '/sessions/:id/messages', handler: (ctx, req, res, p) => handleMessage(ctx, req, res, p.id) },

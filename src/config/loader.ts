@@ -61,6 +61,11 @@ export class ConfigLoader {
     return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
+  /** 切换工作空间后更新工作空间根目录（load 的 workspace 层随之指向新空间；全局层不变） */
+  setWorkspacePath(path: string): void {
+    this.workspacePath = path;
+  }
+
   get globalConfigPath(): string {
     return join(this.globalDir, 'config.json');
   }
@@ -262,7 +267,8 @@ function layerHas(cfg: PartialAgentConfig, path: string[]): boolean {
 async function readJsonSafe<T>(path: string): Promise<T> {
   try {
     const content = await readFile(path, 'utf-8');
-    return JSON.parse(content) as T;
+    // 剥 BOM：部分编辑器（如 PowerShell UTF8、记事本）写入带 \uFEFF，会导致 JSON.parse 失败
+    return JSON.parse(content.replace(/^\uFEFF/, '')) as T;
   } catch {
     return {} as T;
   }
@@ -271,7 +277,7 @@ async function readJsonSafe<T>(path: string): Promise<T> {
 function readJsonSafeSync<T>(path: string): T {
   try {
     const content = readFileSync(path, 'utf-8') as string;
-    return JSON.parse(content) as T;
+    return JSON.parse(content.replace(/^\uFEFF/, '')) as T;
   } catch {
     return {} as T;
   }

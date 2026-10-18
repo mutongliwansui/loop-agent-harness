@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web UI 原型 · 20261017-004 · 新建会话选择工作空间</title>
+<style>
+/* ========== 主题令牌（跟随系统深浅色，与 WebUI 一致） ========== */
+:root {
+  --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f9fafb; --border: #e4e6ea;
+  --text: #1b1f24; --muted: #6b7280;
+  --brand: #0e9f6e; --brand-weak: #e6f6ef; --brand-on: #ffffff;
+  --danger: #dc2626; --danger-weak: #fdecec;
+  --warn: #b45309; --warn-weak: #fef3c7;
+  --info: #4f46e5; --info-weak: #e0e7ff;
+  --code-bg: #f3f4f6;
+  --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+  --radius: 10px;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+    --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+    --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+    --warn-weak: #3a2e10; --info: #a5b4fc; --info-weak: #262a4a; --code-bg: #2a2e35;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+  --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+  --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+  --warn-weak: #3a2e10; --info: #a5b4fc; --info-weak: #262a4a; --code-bg: #2a2e35;
+  --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; } /* author display:flex 会覆盖 UA 的 [hidden]，需显式压回 */
+body { font-family: var(--sans); background: var(--bg); color: var(--text);
+  font-size: 14px; line-height: 1.55; min-height: 100vh; }
+button { font-family: inherit; font-size: 13px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 12px;
+  transition: background .12s, border-color .12s, color .12s; }
+button:hover { border-color: var(--brand); color: var(--brand); }
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+button.primary:hover { filter: brightness(1.06); color: var(--brand-on); }
+button.primary:disabled { opacity: .55; cursor: not-allowed; filter: none; color: var(--brand-on); border-color: var(--brand); }
+button.ghost { border: none; background: none; color: var(--muted); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+input[type=text] { font-family: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; outline: none; }
+input:focus { border-color: var(--brand); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.ok    { background: var(--brand-weak); color: var(--brand); }
+.badge.warn  { background: var(--warn-weak); color: var(--warn); }
+.badge.err   { background: var(--danger-weak); color: var(--danger); }
+.badge.brand { background: var(--brand-weak); color: var(--brand); }
+.badge.info  { background: var(--info-weak); color: var(--info); }
+.badge.dim   { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 5px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+
+/* ========== 布局 ========== */
+.app { display: flex; min-height: 100vh; }
+.nav { width: 190px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 14px 10px; position: sticky; top: 0; height: 100vh; }
+.nav .logo { font-weight: 700; font-size: 15px; padding: 2px 10px 14px; display: flex; align-items: center; gap: 8px; }
+.nav .logo .dot { width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
+.nav .sec { font-size: 11px; color: var(--muted); padding: 12px 10px 4px; letter-spacing: .5px; }
+.nav a { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px; }
+.nav a:hover { background: var(--surface-2); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico { width: 17px; text-align: center; opacity: .85; }
+.nav .foot { margin-top: auto; padding: 8px 10px 0; border-top: 1px solid var(--border); }
+.main { flex: 1; min-width: 0; }
+.page { padding: 22px 26px 40px; }
+.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.page-head h1 { font-size: 17px; font-weight: 700; }
+.page-head .spacer { flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); margin-bottom: 14px; }
+.card .card-h { padding: 11px 16px; border-bottom: 1px solid var(--border); display: flex;
+  align-items: center; gap: 10px; font-weight: 600; font-size: 13.5px; flex-wrap: wrap; }
+.card .card-b { padding: 12px 16px; }
+
+/* toast */
+#toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px);
+  background: var(--text); color: var(--bg); padding: 8px 18px; border-radius: 999px;
+  font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 99; max-width: 70vw; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.err { background: var(--danger); color: #fff; }
+#toast.ok { background: var(--brand); color: var(--brand-on); }
+
+/* ========== 原型说明横幅 ========== */
+.proto-note { border: 1px dashed var(--info); background: var(--info-weak); border-radius: var(--radius);
+  padding: 10px 14px; margin-bottom: 14px; font-size: 12.5px; }
+.proto-note b { color: var(--info); }
+.proto-note ul { margin: 6px 0 0 18px; }
+.proto-note li { margin: 2px 0; }
+
+/* ========== ChatView 侧栏 mock ========== */
+.chatmock { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }
+.sidebar { width: 250px; flex: none; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); padding: 10px; }
+.new-btn { width: 100%; margin-bottom: 10px; padding: 7px 0; }
+.wsg { margin-bottom: 10px; }
+.wsg-h { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12.5px; }
+.wsg-h .wsg-cnt { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; }
+.wsg-path { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; direction: rtl; text-align: left; margin: 1px 0 4px; }
+.sess { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 4px 8px;
+  border-radius: 7px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess:hover { background: var(--surface); }
+.sess.empty { color: var(--muted); cursor: default; font-size: 12px; }
+.sess.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.chatpane { flex: 1; min-width: 260px; border: 1px dashed var(--border); border-radius: 10px;
+  display: flex; flex-direction: column; background: var(--surface); }
+.chatpane .cp-h { padding: 9px 14px; border-bottom: 1px solid var(--border); display: flex;
+  align-items: center; gap: 8px; font-size: 12.5px; flex-wrap: wrap; }
+.chatpane .cp-b { flex: 1; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 12.5px; padding: 24px; text-align: center; }
+
+/* ========== 弹窗 ========== */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex;
+  align-items: center; justify-content: center; z-index: 50; }
+.dialog { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); width: min(560px, 94vw); max-height: 84vh; display: flex; flex-direction: column; }
+.dialog.wide { width: min(640px, 94vw); }
+.dialog .d-h { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex;
+  align-items: center; gap: 10px; font-weight: 600; font-size: 13.5px; }
+.dialog .d-h .x { margin-left: auto; }
+.dialog .d-b { padding: 14px 16px; overflow-y: auto; }
+.dialog .d-f { padding: 10px 16px; border-top: 1px solid var(--border); display: flex;
+  align-items: center; gap: 10px; }
+.d-f .grow { flex: 1; }
+.d-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+/* 已知工作空间列表 */
+.wsrow { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border);
+  border-radius: 10px; margin-bottom: 8px; cursor: pointer; transition: border-color .12s, background .12s; }
+.wsrow:hover { border-color: var(--brand); background: var(--surface-2); }
+.wsrow .wi { font-size: 19px; }
+.wsrow .wm { min-width: 0; flex: 1; }
+.wsrow .wm .l1 { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; flex-wrap: wrap; }
+.wsrow .wm .l2 { font-size: 11.5px; color: var(--muted); font-family: var(--mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wsrow .go { flex: none; }
+
+/* 目录浏览器 */
+.crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-family: var(--mono); font-size: 12.5px; }
+.crumbs button { border: none; background: none; color: var(--brand); padding: 2px 5px; border-radius: 6px; font-size: 12.5px; }
+.crumbs button:hover { background: var(--brand-weak); }
+.crumbs .sep { color: var(--muted); }
+.crumbs .here { padding: 2px 5px; font-weight: 700; }
+.quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.quick .chip { font-family: inherit; color: var(--text); font-size: 12px; padding: 3px 10px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); cursor: pointer; }
+.quick .chip:hover { border-color: var(--brand); color: var(--brand); }
+.dlist { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; max-height: 260px; overflow-y: auto; }
+.drow { display: flex; align-items: center; gap: 10px; padding: 7px 12px; font-size: 13px;
+  width: 100%; background: none; border: none; border-bottom: 1px solid var(--border);
+  text-align: left; font-family: inherit; color: var(--text); cursor: pointer; }
+.drow:last-child { border-bottom: none; }
+.drow:hover { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+.drow .dn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drow .dmeta { font-size: 11px; color: var(--muted); flex: none; }
+.dempty { padding: 18px; text-align: center; color: var(--muted); font-size: 12.5px; }
+.dbar { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.dbar input { flex: 1; min-width: 200px; font-family: var(--mono); font-size: 12px; }
+.err-bar { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px;
+  background: var(--danger-weak); color: var(--danger); border-radius: 8px; font-size: 12.5px; }
+.spin { width: 13px; height: 13px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+  border-radius: 50%; display: inline-block; vertical-align: -2px; margin-right: 6px;
+  animation: rot .7s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+@media (max-width: 900px) {
+  .nav { width: 60px; padding: 12px 6px; }
+  .nav a span.lbl, .nav .sec, .nav .logo .name, .nav .foot { display: none; }
+  .nav a { justify-content: center; padding: 9px 0; }
+  .page { padding: 16px 12px 40px; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ======== 左侧导航（原型聚焦对话页） ======== -->
+  <nav class="nav">
+    <div class="logo"><span class="dot">L</span><span class="name">Loop Agent</span></div>
+    <div class="sec">工作台</div>
+    <a href="#" class="active"><span class="ico">💬</span><span class="lbl">对话</span></a>
+    <div class="sec">运维管理</div>
+    <a href="#" data-nav data-name="配置"><span class="ico">⚙️</span><span class="lbl">配置</span></a>
+    <a href="#" data-nav data-name="模型"><span class="ico">🤖</span><span class="lbl">模型</span></a>
+    <a href="#" data-nav data-name="工具"><span class="ico">🔧</span><span class="lbl">工具</span></a>
+    <a href="#" data-nav data-name="MCP 服务器"><span class="ico">🔌</span><span class="lbl">MCP 服务器</span></a>
+    <a href="#" data-nav data-name="技能"><span class="ico">🧩</span><span class="lbl">技能</span></a>
+    <a href="#" data-nav data-name="记忆"><span class="ico">🧠</span><span class="lbl">记忆</span></a>
+    <a href="#" data-nav data-name="诊断"><span class="ico">🩺</span><span class="lbl">诊断</span></a>
+    <div class="foot">
+      <div class="row" style="display:flex;align-items:center;justify-content:space-between;padding:4px 0">
+        <span class="muted" style="font-size:12px">主题</span>
+        <button class="ghost" id="themeBtn" title="切换深浅色">🌗</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="page">
+      <div class="page-head">
+        <h1>对话</h1>
+        <span class="badge dim">GET /workspaces</span>
+        <span class="badge info">原型 20261017-004</span>
+        <span class="spacer"></span>
+        <button id="resetBtn">⟳ 重置演示</button>
+      </div>
+
+      <!-- 原型说明 -->
+      <div class="proto-note">
+        <b>原型说明</b>：新建会话时支持选择工作空间目录——优先从已知工作空间一键选择，也可「浏览磁盘」挑选任意目录。
+        <ul>
+          <li><b>为什么不是操作系统原生选择框</b>：浏览器安全限制拿不到目录的<b>绝对路径</b>（<code>showDirectoryPicker()</code> 只给目录名、<code>webkitdirectory</code> 只有相对路径），而工作空间必须是服务端可访问的绝对路径。因此采用业界同款方案（code-server / Jupyter）：服务端提供目录浏览接口 <code>GET /fs/dirs</code>，WebUI 内置目录浏览器（面包屑 + 目录列表 + 盘符快捷入口）</li>
+          <li>交互路径：点「＋ 新建会话」→ 弹窗上半是 <b>已知工作空间</b>（<code>GET /workspaces</code>，当前置顶，一键切换）→ 点「📁 浏览磁盘…」打开<b>目录浏览器</b>逐级进入，最后「在此新建会话」</li>
+          <li>可演示的边界：<code>D:\secure-vault</code> → 403 无权限；跳转输入 <code>D:\nope</code> → 404 目录不存在；<code>D:\data</code> → 空目录提示</li>
+          <li>切换语义：serve 当前工作空间随之切换（旧空间会话转为<b>只读</b>，与现有跨空间只读模型一致）；新空间自动创建 <code>.loop-agent</code> 配置并置顶展示</li>
+        </ul>
+      </div>
+
+      <!-- ChatView 侧栏 mock -->
+      <div class="card">
+        <div class="card-h">ChatView · 会话侧栏（mock）<span class="badge dim">＋ 新建会话入口</span></div>
+        <div class="card-b">
+          <div class="chatmock">
+            <div class="sidebar">
+              <button class="primary new-btn" id="newBtn">＋ 新建会话</button>
+              <div id="sideGroups"></div>
+            </div>
+            <div class="chatpane">
+              <div class="cp-h">
+                <b id="cpWsName">—</b>
+                <span class="mono muted" id="cpWsPath" style="font-size:11.5px">—</span>
+              </div>
+              <div class="cp-b">（会话内容省略 —— 本原型聚焦「新建会话 → 选择工作空间」链路，点左侧「＋ 新建会话」开始体验）</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 接口契约 -->
+      <div class="card">
+        <div class="card-h">接口契约（设计稿）<span class="badge dim">新增 GET /fs/dirs</span><span class="badge dim">扩展 POST /sessions</span></div>
+        <div class="card-b">
+<pre class="mono" style="font-size:12px;white-space:pre-wrap;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">GET /fs/dirs?path=D:\trae_workspace          （path 缺省 → 服务端默认目录；Windows 盘根自动列盘符）
+→ 200 {
+    "path":   "D:\\trae_workspace",        // 规范化后的绝对路径
+    "parent": "D:\\",                       // 根目录时为 null（隐藏「上级」）
+    "dirs":   [ { "name": "loop-agent-command" }, { "name": "demo-blog" } ]   // 仅子目录，不含文件
+  }
+错误：400 路径非法（相对路径 / 含 .. 等） · 404 目录不存在 · 403 无权限 / 非目录
+实现：fs.promises.readdir(path, { withFileTypes: true }) 过滤.isDirectory()，逐项 try/catch 忽略无权限子项</pre>
+<pre class="mono" style="font-size:12px;white-space:pre-wrap;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px">POST /sessions    { "title": "", "workspacePath": "D:\\new\\proj" }     （workspacePath 省略 → 行为同现状，用当前空间）
+→ 校验目录存在且可访问 → 与当前空间相同：直接建会话
+                    不同：切换当前工作空间（SessionStore 重绑 workspacePath，写 &lt;userDir&gt;/sessions/&lt;wsId&gt;/meta.json）
+→ 201 { "session": {…}, "workspace": { "id", "name", "path", "current": true } }
+错误：400 非法路径 · 404 目录不存在 · 403 无权限</pre>
+        </div>
+      </div>
+
+      <!-- 切换语义说明 -->
+      <div class="card">
+        <div class="card-h">切换语义与只读模型</div>
+        <div class="card-b">
+          <ul style="margin-left:18px;font-size:13px">
+            <li><b>进程级单空间</b>：SessionStore 构造时绑定一个 workspacePath；切换 = 重绑当前空间，<b>不并行多空间执行</b>（agent 的 cwd、<code>.loop-agent</code> 配置、memory 分桶均随空间走）</li>
+            <li><b>旧空间会话只读</b>：切换后原空间会话保留完整历史可查看，但输入框禁用（与现有跨空间只读徽标一致）；切回即恢复可写</li>
+            <li><b>已知空间聚合</b>：列表来自现有 <code>listAllWorkspaces()</code>（扫描 <code>&lt;userDir&gt;/sessions/*</code> 的 meta.json），无需新增存储</li>
+            <li>备选增强（不在本期）：目录浏览器记忆最近使用位置；新空间检测到非空 <code>.agent-config.json</code> 时提示复用</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== 弹窗 1：新建会话 ======== -->
+<div class="overlay" id="newModal" hidden>
+  <div class="dialog">
+    <div class="d-h">新建会话 <button class="ghost x" data-close="newModal">✕</button></div>
+    <div class="d-b">
+      <div class="muted" style="font-size:12px;margin-bottom:8px">选择工作空间（当前空间置顶；选择其他空间将切换当前工作空间，旧空间会话转为只读）</div>
+      <div id="wsRows"></div>
+      <div class="d-note">💡 浏览器无法弹出可返回<b>绝对路径</b>的原生目录选择框（安全限制），任意新目录请用「浏览磁盘」由服务端代为列举。</div>
+    </div>
+    <div class="d-f">
+      <button id="browseBtn">📁 浏览磁盘…</button>
+      <span class="grow"></span>
+      <button data-close="newModal">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======== 弹窗 2：目录浏览器 ======== -->
+<div class="overlay" id="dirModal" hidden>
+  <div class="dialog wide">
+    <div class="d-h">选择工作空间目录 <button class="ghost x" data-close="dirModal">✕</button></div>
+    <div class="d-b">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="quick" id="quickChips"></div>
+      <div class="dlist" id="dirList"></div>
+      <div class="err-bar" id="dirErr" hidden>⚠ <span id="dirErrMsg"></span></div>
+      <div class="dbar">
+        <span class="muted" style="font-size:12px">跳转：</span>
+        <input type="text" id="jumpInput" placeholder="输入绝对路径，如 D:\projects" spellcheck="false">
+        <button id="jumpBtn">前往</button>
+      </div>
+    </div>
+    <div class="d-f">
+      <span class="mono muted" id="curPath" style="font-size:11.5px;flex:1;word-break:break-all">—</span>
+      <button data-close="dirModal">取消</button>
+      <button class="primary" id="confirmBtn">在此新建会话</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ================= 基础 ================= */
+const $ = (id) => document.getElementById(id);
+let toastTimer = null;
+function toast(msg, kind = '') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show ' + kind;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = ''), 2600);
+}
+$('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark';
+};
+document.querySelectorAll('[data-nav]').forEach((a) => {
+  a.onclick = (e) => { e.preventDefault(); toast(`原型聚焦「对话」页新建会话链路，「${a.dataset.name}」不在本期范围`); };
+});
+document.querySelectorAll('[data-close]').forEach((b) => {
+  b.onclick = () => { $(b.dataset.close).hidden = true; };
+});
+
+/* ================= 演示状态 ================= */
+const INIT = () => ({
+  seq: 4,
+  workspaces: [
+    { id: '9f2c', name: 'loop-agent-command', path: 'D:\\trae_workspace\\loop-agent-command', current: true },
+    { id: '3ab7', name: 'demo-app', path: 'D:\\projects\\demo-app', current: false },
+    { id: '7e01', name: 'notes', path: 'E:\\notes', current: false },
+  ],
+  sessions: [
+    { id: 's1', ws: '9f2c', title: 'WebUI mermaid 渲染增强' },
+    { id: 's2', ws: '9f2c', title: '修复登录超时问题' },
+    { id: 's3', ws: '3ab7', title: '首页性能优化' },
+    { id: 's4', ws: '7e01', title: '周报整理' },
+  ],
+});
+let state = INIT();
+$('resetBtn').onclick = () => { state = INIT(); renderSide(); toast('演示状态已重置', 'ok'); };
+
+/* ================= 侧栏渲染 ================= */
+function renderSide() {
+  const cur = state.workspaces.find((w) => w.current);
+  $('cpWsName').textContent = '📁 ' + cur.name;
+  $('cpWsPath').textContent = cur.path;
+  const groups = [...state.workspaces].sort((a, b) => (b.current ? 1 : 0) - (a.current ? 1 : 0));
+  $('sideGroups').innerHTML = groups.map((w) => {
+    const ss = state.sessions.filter((s) => s.ws === w.id);
+    return `<div class="wsg">
+      <div class="wsg-h">
+        <span>📁 ${w.name}</span>
+        ${w.current ? '<span class="badge ok">当前</span>' : '<span class="badge dim">只读</span>'}
+        <span class="wsg-cnt">${ss.length} 会话</span>
+      </div>
+      <div class="wsg-path mono" title="${w.path}">${w.path}</div>
+      ${ss.map((s) => `<div class="sess" data-sess="${s.id}">💬 ${s.title}</div>`).join('')
+        || '<div class="sess empty">（无会话）</div>'}
+    </div>`;
+  }).join('');
+}
+$('sideGroups').onclick = (e) => {
+  const el = e.target.closest('[data-sess]');
+  if (el) toast('会话内容与现网一致（原型省略）');
+};
+
+/* ================= 新建会话弹窗 ================= */
+function openNewModal() {
+  renderWsRows();
+  $('newModal').hidden = false;
+}
+function renderWsRows() {
+  const groups = [...state.workspaces].sort((a, b) => (b.current ? 1 : 0) - (a.current ? 1 : 0));
+  $('wsRows').innerHTML = groups.map((w) => {
+    const n = state.sessions.filter((s) => s.ws === w.id).length;
+    return `<div class="wsrow" data-ws="${w.id}">
+      <span class="wi">${w.current ? '📂' : '📁'}</span>
+      <div class="wm">
+        <div class="l1">${w.name}
+          ${w.current ? '<span class="badge ok">当前</span>' : '<span class="badge dim">只读切换</span>'}
+        </div>
+        <div class="l2" title="${w.path}">${w.path}</div>
+      </div>
+      <span class="badge dim">${n} 会话</span>
+      <button class="go">${w.current ? '新建' : '切换并新建'}</button>
+    </div>`;
+  }).join('');
+}
+$('wsRows').onclick = (e) => {
+  const row = e.target.closest('[data-ws]');
+  if (!row) return;
+  chooseWorkspace(state.workspaces.find((w) => w.id === row.dataset.ws).path, null);
+};
+$('newBtn').onclick = openNewModal;
+
+/* ================= 选定工作空间（模拟 POST /sessions { workspacePath }） ================= */
+let wsSeq = 0;
+function chooseWorkspace(path, doneBtn) {
+  const cur = state.workspaces.find((w) => w.current);
+  const apply = () => {
+    if (doneBtn) { doneBtn.disabled = false; doneBtn.textContent = '在此新建会话'; }
+    let ws = state.workspaces.find((w) => w.path === path);
+    if (!ws) {
+      ws = { id: 'nw' + (++wsSeq), name: baseName(path), path, current: false };
+      state.workspaces.push(ws);
+    }
+    const switched = ws !== cur && ws.path !== cur.path;
+    state.workspaces.forEach((w) => (w.current = w === ws));
+    state.sessions.push({ id: 's' + state.seq++, ws: ws.id, title: '新会话 ' + (state.seq - 4) });
+    $('newModal').hidden = true;
+    $('dirModal').hidden = true;
+    renderSide();
+    toast(switched ? `已切换工作空间并创建会话：${ws.name}（${ws.path}）` : `已在当前工作空间创建会话`, 'ok');
+  };
+  if (doneBtn) {
+    doneBtn.disabled = true;
+    doneBtn.innerHTML = '<span class="spin"></span>切换中…';
+    setTimeout(apply, 700);
+  } else apply();
+}
+function baseName(p) {
+  const n = p.replace(/[\\]+$/, '');
+  return n.includes('\\') ? n.slice(n.lastIndexOf('\\') + 1) : n;
+}
+
+/* ================= 目录浏览器（模拟 GET /fs/dirs） ================= */
+const mockFs = {
+  'C:': { dirs: ['Users', 'Program Files', 'Windows'] },
+  'C:\\Users': { dirs: ['muton', 'Public'] },
+  'C:\\Users\\muton': { dirs: ['Desktop', 'Documents', 'Downloads', '.trae-cn'] },
+  'C:\\Users\\muton\\Desktop': { dirs: ['截图'] },
+  'C:\\Users\\muton\\Documents': { dirs: [] },
+  'C:\\Users\\muton\\Downloads': { dirs: ['skills-packs'] },
+  'C:\\Users\\muton\\.trae-cn': { dirs: ['plugins', 'mcps'] },
+  'C:\\Program Files': { dirs: ['nodejs'] },
+  'C:\\Windows': { dirs: ['Fonts'] },
+  'D:': { dirs: ['trae_workspace', 'projects', 'data', 'secure-vault'] },
+  'D:\\trae_workspace': { dirs: ['loop-agent-command', 'demo-blog', 'docs'] },
+  'D:\\trae_workspace\\loop-agent-command': { dirs: ['webui', 'src', 'docs', 'output'] },
+  'D:\\trae_workspace\\loop-agent-command\\webui': { dirs: ['src', 'node_modules'] },
+  'D:\\trae_workspace\\loop-agent-command\\src': { dirs: ['api', 'session', 'agent'] },
+  'D:\\trae_workspace\\demo-blog': { dirs: [] },
+  'D:\\trae_workspace\\docs': { dirs: [] },
+  'D:\\projects': { dirs: ['demo-app', 'sandbox'] },
+  'D:\\projects\\demo-app': { dirs: ['frontend', 'backend'] },
+  'D:\\projects\\sandbox': { dirs: [] },
+  'D:\\data': { dirs: [] },
+  'D:\\secure-vault': { locked: true },
+  'E:': { dirs: ['notes', 'media'] },
+  'E:\\notes': { dirs: ['2026'] },
+  'E:\\notes\\2026': { dirs: [] },
+  'E:\\media': { dirs: [] },
+};
+
+function normPath(p) {
+  p = p.trim();
+  const m = p.match(/^([A-Za-z]:)\\?$/);
+  if (m) return m[1].toUpperCase(); // 捕获组已含冒号（'D:'），不能再拼 ':'
+  return p.replace(/[\\]+$/, '');
+}
+function parentOf(p) {
+  const rest = p.slice(2);
+  if (!rest) return null; // 盘根
+  const cut = rest.lastIndexOf('\\');
+  return cut === -1 ? p.slice(0, 2) + '\\' : p.slice(0, cut);
+}
+function listDirs(rawPath) {
+  const p = normPath(rawPath);
+  const node = mockFs[p];
+  if (!node) return { status: 404, msg: '目录不存在：' + p };
+  if (node.locked) return { status: 403, msg: '无权限访问该目录（403）' };
+  return { status: 200, path: p, parent: parentOf(p), dirs: node.dirs };
+}
+
+let cur = { path: 'D:\\trae_workspace' };
+
+function showErr(msg) { $('dirErr').hidden = false; $('dirErrMsg').textContent = msg; }
+function hideErr() { $('dirErr').hidden = true; }
+
+function renderBrowser(res) {
+  $('curPath').textContent = res.path + (res.path.endsWith(':') ? '\\' : '');
+  // 面包屑
+  const parts = [];
+  const drive = res.path.slice(0, 2); // 'D:'（已含冒号）
+  parts.push({ label: drive + '\\', path: drive });
+  res.path.slice(3).split('\\').filter(Boolean).reduce((acc, seg) => {
+    const p = acc + '\\' + seg;
+    parts.push({ label: seg, path: p });
+    return p;
+  }, drive);
+  $('crumbs').innerHTML = parts.map((c, i) => {
+    const last = i === parts.length - 1;
+    return `${last ? `<span class="here">${c.label}</span>`
+      : `<button data-crumb="${c.path}">${c.label}</button>`}<span class="sep">${last ? '' : ' › '}</span>`;
+  }).join('');
+  // 快捷入口：盘符 + 主目录
+  const drives = Object.keys(mockFs).filter((k) => /^[A-Z]:$/.test(k));
+  $('quickChips').innerHTML =
+    `<button class="chip" data-chip="C:\\Users\\muton">🏠 主目录</button>` +
+    drives.map((d) => `<button class="chip" data-chip="${d + '\\'}">💽 ${d}</button>`).join('');
+  // 目录列表
+  $('dirList').innerHTML = res.dirs.length
+    ? res.dirs.map((d) => {
+        const locked = !!mockFs[res.path + '\\' + d]?.locked;
+        return `<button class="drow" data-dir="${d}">
+          <span>📁</span><span class="dn">${d}</span>
+          ${locked ? '<span class="badge err">🔒 403</span>' : ''}
+          <span class="dmeta">进入 ›</span>
+        </button>`;
+      }).join('')
+    : '<div class="dempty">此目录下没有子目录 —— 可直接点右下角「在此新建会话」选这里</div>';
+}
+function navigate(rawPath, jumpBtn) {
+  const res = listDirs(rawPath);
+  if (res.status !== 200) {
+    showErr(res.msg + (res.status === 404 ? '（演示提示：路径必须存在于 mock 文件系统）' : '（演示：serve 进程对该目录无读取权限）'));
+    if (jumpBtn) { jumpBtn.disabled = false; jumpBtn.textContent = '前往'; }
+    toast(`${res.status} ${res.msg}`, 'err');
+    return;
+  }
+  cur = { path: res.path };
+  hideErr();
+  renderBrowser(res);
+  $('jumpInput').value = '';
+  if (jumpBtn) { jumpBtn.disabled = false; jumpBtn.textContent = '前往'; }
+}
+
+$('browseBtn').onclick = () => {
+  $('newModal').hidden = true;
+  $('dirModal').hidden = false;
+  navigate(cur.path);
+};
+$('crumbs').onclick = (e) => { const b = e.target.dataset.crumb; if (b) navigate(b); };
+$('quickChips').onclick = (e) => { const c = e.target.dataset.chip; if (c) navigate(c); };
+$('dirList').onclick = (e) => {
+  const row = e.target.closest('[data-dir]');
+  if (row) navigate(cur.path + '\\' + row.dataset.dir);
+};
+$('jumpBtn').onclick = () => {
+  const v = $('jumpInput').value.trim();
+  if (!v) return;
+  $('jumpBtn').disabled = true;
+  $('jumpBtn').textContent = '…';
+  setTimeout(() => navigate(v, $('jumpBtn')), 350);
+};
+$('jumpInput').onkeydown = (e) => { if (e.key === 'Enter') $('jumpBtn').click(); };
+$('confirmBtn').onclick = () => chooseWorkspace(cur.path.endsWith(':') ? cur.path + '\\' : cur.path, $('confirmBtn'));
+
+/* ================= 启动 ================= */
+renderSide();
+navigate('D:\\trae_workspace');
+</script>
+</body>
+</html>

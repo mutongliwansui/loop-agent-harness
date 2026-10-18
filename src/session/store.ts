@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import type { ChatMessage, AgentStep } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
+import { stripMemorySection } from '../memory/memory-section.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
 
@@ -83,6 +84,7 @@ export class SessionStore {
   private workspacePath: string;
   private workspaceId: string;
   private workspaceDir: string;
+  private readonly userDir: string;
   private currentSessionId: string | null = null;
   /** 保存最近 N 轮对话（每轮 = user + assistant + tool） */
   private readonly recentTurns: number;
@@ -95,6 +97,7 @@ export class SessionStore {
     encryptionEnabled = true,
     userDir: string = join(homedir(), '.loop-agent'),
   ) {
+    this.userDir = userDir;
     this.workspacePath = workspacePath;
     this.workspaceId = workspaceId(workspacePath);
     this.workspaceDir = join(userDir, 'sessions', this.workspaceId);
@@ -115,6 +118,23 @@ export class SessionStore {
   /** 是否启用加密存储 */
   get isEncrypted(): boolean {
     return this.encryptionEnabled;
+  }
+
+  /** 当前工作空间路径 */
+  get path(): string {
+    return this.workspacePath;
+  }
+
+  /**
+   * 原地重绑到新工作空间路径（切换空间）：更新空间三元组并重新初始化（建目录 + 写 meta）。
+   * 需配合 process.chdir(path) 使用，使 agent / skills 等 cwd 依赖跟随新空间。
+   */
+  async rebindWorkspace(path: string): Promise<void> {
+    this.workspacePath = path;
+    this.workspaceId = workspaceId(path);
+    this.workspaceDir = join(this.userDir, 'sessions', this.workspaceId);
+    this.currentSessionId = null;
+    await this.init();
   }
 
   /**
@@ -164,11 +184,14 @@ export class SessionStore {
    * - recentMessages 只保留最近 N 轮（N = recentTurns）
    * - 超出部分迁移到 archivedMessages
    * - 当 archivedMessages 超过阈值时，生成摘要到 lastSummary
+   * @param firstUserMessage 调用方持有的本次原始用户输入（可选）。会话标题缺失时优先用它生成——
+   *   messages 可能已被 L1 压缩重写（首问被摘要替换），从消息推断不可靠。
    */
   async updateSession(
     id: string,
     messages: ChatMessage[],
     steps: AgentStep[],
+    firstUserMessage?: string,
   ): Promise<void> {
     const data = await this.readSession(id);
 
@@ -225,10 +248,21 @@ export class SessionStore {
     data.recentTurns = recentTurns;
 
     await this.writeSession(data);
-    await this.updateIndex(id, {
+    // 会话标题：WebUI「先建空会话、后发消息」时 createSession 的 title 为空——用首条用户消息补生成（已有 title 不覆盖）
+    const updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>> = {
       messageCount: messages.length,
       updatedAt: data.updatedAt,
-    });
+    };
+    const current = (await this.readIndex()).find((m) => m.id === id);
+    if (current && !current.title) {
+      // 标题来源优先级：调用方显式传入的原始输入 > 消息推断（首条 user 可能带 L2 记忆前缀，需剥离；
+      // 且 L1 压缩后首问可能已被摘要替换，故推断仅作 fallback）
+      const explicit = firstUserMessage?.trim();
+      const firstUser = messages.find((m) => m.role === 'user');
+      const text = explicit || (firstUser ? stripMemorySection(firstUser.content).trim() : '');
+      if (text) updates.title = text.slice(0, 50);
+    }
+    await this.updateIndex(id, updates);
   }
 
   /**
@@ -299,7 +333,8 @@ export class SessionStore {
 
   /**
    * 聚合所有工作空间：扫描 <userDir>/sessions/* 下的 meta.json 与 sessions.json
-   * （两者均为明文索引，无需解密）；当前空间置顶，其余按 lastAccessedAt 降序。
+   * （两者均为明文索引，无需解密）；按空间首次使用时间（createdAt）升序——顺序稳定，
+   * 切换当前空间不影响排列，仅「当前」标记随空间移动。
    * 旧 meta.json 无 workspaceName 时回退为工作路径目录名。
    */
   async listAllWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -339,10 +374,10 @@ export class SessionStore {
         ),
       });
     }
-    return result.sort((a, b) => {
-      if (a.current !== b.current) return a.current ? -1 : 1;
-      return new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime();
-    });
+    // 顺序稳定：按空间首次使用时间升序（新空间追加在末尾），切换不改变排列
+    return result.sort(
+      (a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime(),
+    );
   }
 
   /**
@@ -467,7 +502,7 @@ export class SessionStore {
 
   private async updateIndex(
     id: string,
-    updates: Partial<Pick<SessionMeta, 'messageCount' | 'updatedAt'>>,
+    updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>>,
     dir: string = this.workspaceDir,
   ): Promise<void> {
     const indexFile = join(dir, 'sessions.json');
@@ -516,7 +551,7 @@ export class SessionStore {
       meta.workspaceName = workspaceName;
     } else {
       meta = {
-        workspacePath: process.cwd(),
+        workspacePath: this.workspacePath,
         workspaceName,
         createdAt: new Date().toISOString(),
         lastAccessedAt: new Date().toISOString(),

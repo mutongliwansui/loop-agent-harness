@@ -45,6 +45,14 @@ export class SessionManager {
     this.sessions.delete(id);
   }
 
+  /** 是否存在任意会话的 in-flight run（切换工作空间前须确认全局空闲） */
+  hasInFlight(): boolean {
+    for (const entry of this.sessions.values()) {
+      if (entry.inFlight) return true;
+    }
+    return false;
+  }
+
   /** 取会话条目；缓存 miss 时从 SessionStore 恢复历史（不存在 → 404） */
   async ensureEntry(id: string): Promise<SessionEntry> {
     const cached = this.sessions.get(id);
