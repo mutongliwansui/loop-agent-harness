@@ -105,22 +105,25 @@ onMounted(refresh);
           <tr><th>名称</th><th>说明</th><th style="width:70px">启用</th><th style="width:70px">操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="t in builtin" :key="t.name">
-            <td class="mono">{{ t.name }}</td>
-            <td class="muted">{{ t.description }}</td>
-            <td>
-              <label class="tgl" :title="t.enabled ? '点击禁用' : '点击启用'">
-                <input type="checkbox" :checked="t.enabled" :disabled="busy" @change="toggle(t)">
-                <span class="tk"></span>
-              </label>
-            </td>
-            <td><button @click="view(t)">{{ expanded === t.name ? '收起' : 'Schema' }}</button></td>
-          </tr>
-          <tr v-if="expanded && detail" :key="detail.name">
-            <td colspan="4" style="padding:8px 10px">
-              <JsonViewer :value="detail.schema" label="parameters schema" />
-            </td>
-          </tr>
+          <template v-for="t in builtin" :key="t.name">
+            <tr>
+              <td class="mono">{{ t.name }}</td>
+              <td class="muted">{{ t.description }}</td>
+              <td>
+                <label class="tgl" :title="t.enabled ? '点击禁用' : '点击启用'">
+                  <input type="checkbox" :checked="t.enabled" :disabled="busy" @change="toggle(t)">
+                  <span class="tk"></span>
+                </label>
+              </td>
+              <td><button @click="view(t)">{{ expanded === t.name ? '收起' : 'Schema' }}</button></td>
+            </tr>
+            <!-- schema 展开行紧跟所属工具行，而非固定在表格末尾 -->
+            <tr v-if="expanded === t.name && detail">
+              <td colspan="4" style="padding:8px 10px">
+                <JsonViewer :value="detail.schema" label="parameters schema" />
+              </td>
+            </tr>
+          </template>
           <tr v-if="builtin.length === 0">
             <td colspan="4" class="muted">暂无内置工具。</td>
           </tr>
