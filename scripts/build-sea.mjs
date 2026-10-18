@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { relative, resolve, sep } from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { build } = require('tsup');
@@ -48,6 +48,30 @@ await build({
 });
 
 const seaConfigPath = resolve(root, 'sea-config.json');
+
+// 递归枚举 webui/dist 内嵌为 SEA assets（单文件分发：exe 自带 WebUI；dist 未构建则纯后端）
+function walkFiles(dir) {
+  const out = [];
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const full = resolve(dir, ent.name);
+    if (ent.isDirectory()) out.push(...walkFiles(full));
+    else out.push(full);
+  }
+  return out;
+}
+
+const webuiDist = resolve(root, 'webui/dist');
+const assets = {};
+if (existsSync(webuiDist)) {
+  for (const f of walkFiles(webuiDist)) {
+    const key = relative(webuiDist, f).split(sep).join('/');
+    assets[key] = relative(root, f).split(sep).join('/');
+  }
+  console.log(`[build:sea] 内嵌 WebUI 资源: ${Object.keys(assets).length} 个文件`);
+} else {
+  console.log('[build:sea] webui/dist 不存在，跳过前端内嵌（纯后端 exe）');
+}
+
 writeFileSync(
   seaConfigPath,
   JSON.stringify(
@@ -55,6 +79,7 @@ writeFileSync(
       main: 'dist-sea/index.cjs',
       output: 'dist-sea/sea-prep.blob',
       disableExperimentalSEAWarning: true,
+      assets,
     },
     null,
     2,

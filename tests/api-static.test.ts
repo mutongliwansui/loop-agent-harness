@@ -12,14 +12,32 @@
  * 夹具：三个独立 server 实例（无 token 已构建 / 无 token 未构建 / 有 token），webRoot 注入临时目录。
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createApiServer, type ApiServer } from '../src/api/server.js';
+import { createEmbeddedStaticHandler, type StaticHandler } from '../src/api/static.js';
 import { SessionStore } from '../src/session/store.js';
 import { DEFAULT_CONFIG, type AgentConfig } from '../src/config/schema.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+
+// mock process.getBuiltinModule('node:sea')：embeddedAssets 非空模拟 SEA 运行时
+// （static.ts 运行时经 getBuiltinModule 取 node:sea；getAsset 缺失资源抛错，语义同真实 API）
+const embeddedAssets = new Map<string, Buffer>();
+function mockGetBuiltinModule(id: string): object | undefined {
+  if (id !== 'node:sea') return undefined;
+  return {
+    isSea: (): boolean => embeddedAssets.size > 0,
+    getAsset: (key: string): ArrayBuffer => {
+      const buf = embeddedAssets.get(key);
+      if (!buf) throw new Error(`Asset not found: ${key}`);
+      const ab = new ArrayBuffer(buf.length);
+      new Uint8Array(ab).set(buf);
+      return ab;
+    },
+  };
+}
 
 const TEST_DIR = join(tmpdir(), 'loop-agent-tests', 'test-api-static');
 const TEST_WORKSPACE = join(TEST_DIR, 'workspace');
@@ -172,5 +190,116 @@ describe('静态托管（token 模式：静态页免鉴权）', () => {
   it('GET /nope（无扩展名 + 无 token）→ 401（回落未命中保持鉴权语义）', async () => {
     const res = await fetch(`${baseToken}/nope`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe('SEA 内嵌资源托管（mock node:sea）', () => {
+  const EMB_INDEX = '<!doctype html><html lang="zh-CN"><body>sea-webui</body></html>';
+  const EMB_CSS = 'body { color: red; }';
+  const EMB_JS = 'console.log("sea");';
+  const servers: http.Server[] = [];
+
+  /** 用内嵌 handler 起独立 http server（未命中回落 404 JSON，模拟 API 层语义） */
+  async function makeEmbeddedServer(): Promise<string> {
+    const handler = createEmbeddedStaticHandler() as StaticHandler;
+    expect(handler).not.toBeNull();
+    const srv = http.createServer((req, res) => {
+      void handler(req, res).then((hit) => {
+        if (!hit && !res.writableEnded) {
+          res.statusCode = 404;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.end(JSON.stringify({ error: { code: 'not_found' } }));
+        }
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    servers.push(srv);
+    const addr = srv.address() as { port: number };
+    return `http://127.0.0.1:${addr.port}`;
+  }
+
+  beforeAll(async () => {
+    vi.spyOn(process, 'getBuiltinModule').mockImplementation(
+      ((id: string) => mockGetBuiltinModule(id)) as never,
+    );
+    embeddedAssets.set('index.html', Buffer.from(EMB_INDEX, 'utf-8'));
+    embeddedAssets.set('app.css', Buffer.from(EMB_CSS, 'utf-8'));
+    embeddedAssets.set('assets/app-sea123.js', Buffer.from(EMB_JS, 'utf-8'));
+  });
+
+  afterAll(async () => {
+    vi.restoreAllMocks();
+    embeddedAssets.clear(); // 还原非 SEA 语义，避免影响其他文件用例
+    for (const s of servers) await new Promise<void>((r) => s.close(() => r()));
+  });
+
+  it('非 SEA 运行时（无内嵌 index.html）→ handler 为 null（降级）', () => {
+    const saved = new Map(embeddedAssets);
+    embeddedAssets.clear();
+    expect(createEmbeddedStaticHandler()).toBeNull();
+    for (const [k, v] of saved) embeddedAssets.set(k, v);
+  });
+
+  it('GET / → 200 内嵌 index.html（no-cache）', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(res.headers.get('cache-control')).toBe('no-cache');
+    expect(await res.text()).toBe(EMB_INDEX);
+  });
+
+  it('GET /app.css → 200 text/css + max-age=300', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/app.css`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/css');
+    expect(await res.text()).toBe(EMB_CSS);
+  });
+
+  it('GET /assets/app-sea123.js → 200 immutable 缓存', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/assets/app-sea123.js`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(EMB_JS);
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+  });
+
+  it('GET /missing.css → 回落 404 JSON', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/missing.css`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('not_found');
+  });
+
+  it('GET /nope（无扩展名）→ 回落 404 JSON', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/nope`);
+    expect(res.status).toBe(404);
+  });
+
+  it('HEAD / → 200 空 body', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/`, { method: 'HEAD' });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('');
+  });
+
+  it('POST / → 回落 404 JSON', async () => {
+    const base = await makeEmbeddedServer();
+    const res = await fetch(`${base}/`, { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('路径穿越 → 拒绝（%2e%2e 被 URL 规范化消除，反斜杠/绝对路径 403）', async () => {
+    const base = await makeEmbeddedServer();
+    // %2e%2e 在 new URL 规范化时即被当作 .. 段消耗 → /secret.txt 不存在的 key 回落 API 404
+    const dotdot = await fetch(`${base}/%2e%2e/secret.txt`);
+    expect(dotdot.status).toBe(404);
+    // 反斜杠编码 / 绝对路径编码 → handler 403
+    for (const p of ['/a%5Cb.js', '/%2fsecret.css']) {
+      const res = await fetch(`${base}${p}`);
+      expect(res.status, p).toBe(403);
+    }
   });
 });

@@ -18,7 +18,7 @@ import { ApiHttpError } from './errors.js';
 import { LOOPBACK_HOST, isAuthorized, sendError } from './http-utils.js';
 import { SessionManager } from './session-manager.js';
 import { createRoutes, matchRoute, type HandlerContext } from './router.js';
-import { createStaticHandler, resolveWebRoot, type StaticHandler } from './static.js';
+import { resolveStaticHandler, type StaticHandler } from './static.js';
 import { SessionStore } from '../session/index.js';
 import type { AgentConfig } from '../config/schema.js';
 import type { AgentOptions, AgentResult } from '../types.js';
@@ -157,8 +157,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
         );
       }
 
-      // D3：按 webRoot 构建静态处理器（webRoot 为空 → 自动探测内置 webui/dist；未构建则整体降级）
-      staticHandler = createStaticHandler(resolveWebRoot(cfg.api.webRoot));
+      // D3：webRoot 显式配置走磁盘；空串自动探测磁盘 webui/dist → SEA 内嵌资源 → 降级纯 API
+      staticHandler = resolveStaticHandler(cfg.api.webRoot);
 
       const server = http.createServer((req, res) => {
         void handleRequest(req, res).catch(() => {});

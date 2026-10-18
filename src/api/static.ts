@@ -125,3 +125,98 @@ async function serveFile(res: ServerResponse, filePath: string, method: string, 
   });
   return true;
 }
+
+/**
+ * 读 SEA 内嵌资源（build-sea.mjs 以 assets 注入 exe）；非 SEA 运行时或资源缺失返回 null。
+ * 用 process.getBuiltinModule 而非静态 import：esbuild 打 CJS 会剥掉 node: 前缀
+ * （require("sea") 不存在），SEA 运行时 embedder require 会抛 ERR_UNKNOWN_BUILTIN_MODULE。
+ */
+function readEmbedded(key: string): Buffer | null {
+  const sea = process.getBuiltinModule('node:sea') as
+    | typeof import('node:sea')
+    | undefined;
+  if (!sea?.isSea()) return null;
+  try {
+    return Buffer.from(sea.getAsset(key));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SEA 内嵌 WebUI 静态处理器：资源从 exe 内部读取（单文件分发）。
+ * 路由/缓存语义与磁盘版一致（/ 回落 index.html no-cache、assets/ 一年 immutable、
+ * 无扩展名回落 API、穿越拒绝）；无内嵌 index.html（非 SEA / 纯后端 exe）返回 null。
+ */
+export function createEmbeddedStaticHandler(): StaticHandler | null {
+  if (readEmbedded('index.html') === null) return null;
+
+  return async (req, res) => {
+    const method = req.method ?? 'GET';
+    if (method !== 'GET' && method !== 'HEAD') return false;
+
+    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (pathname === '') return false;
+
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname.slice(1)); // 去前导 / 得 SEA assets key
+    } catch {
+      res.statusCode = 400;
+      res.end('Bad Request');
+      return true;
+    }
+    if (decoded === '') return await serveEmbedded(res, 'index.html', method, 'no-cache');
+    if (!extname(decoded)) return false; // 无扩展名 → API 404（保既有测试语义）
+    // SEA assets key 为扁平字符串：拒绝绝对路径 / 反斜杠 / .. 段 / 空字节
+    if (
+      decoded.startsWith('/') ||
+      decoded.includes('\\') ||
+      decoded.includes('\0') ||
+      decoded.split('/').includes('..')
+    ) {
+      res.statusCode = 403;
+      res.end('Forbidden');
+      return true;
+    }
+    const immutable = decoded.startsWith('assets/');
+    return await serveEmbedded(
+      res,
+      decoded,
+      method,
+      immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=300',
+    );
+  };
+}
+
+/** 发送单个内嵌资源：缺失 → false（回落 API）；成功 → true */
+async function serveEmbedded(res: ServerResponse, key: string, method: string, cacheControl: string): Promise<boolean> {
+  const buf = readEmbedded(key);
+  if (buf === null) return false;
+  const mime = MIME[extname(key).toLowerCase()] ?? 'application/octet-stream';
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Length': buf.length,
+    'Cache-Control': cacheControl,
+  });
+  res.end(method === 'HEAD' ? undefined : buf);
+  return true;
+}
+
+/** 降级处理器：所有请求回落 API 层（未构建前端时的纯 API 模式） */
+async function neverStatic(): Promise<boolean> {
+  return false;
+}
+
+/**
+ * 静态处理器总入口：
+ * - webRoot 显式配置 → 纯磁盘托管（index.html 缺失即整体降级，不回退内嵌）
+ * - webRoot 空 → 自动探测：磁盘优先（ESM 仓库内置 / SEA exe 同目录 webui/dist 部署），
+ *   SEA 内嵌资源兜底（单文件分发），均无 → 永远回落 API
+ */
+export function resolveStaticHandler(raw: string): StaticHandler {
+  if (raw.trim()) return createStaticHandler(resolve(raw.trim()));
+  const disk = resolveWebRoot('');
+  if (existsSync(join(disk, 'index.html'))) return createStaticHandler(disk);
+  return createEmbeddedStaticHandler() ?? neverStatic;
+}
