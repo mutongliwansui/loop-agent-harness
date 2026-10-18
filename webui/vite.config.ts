@@ -13,6 +13,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/sessions': 'http://127.0.0.1:3000',
+      '/workspaces': 'http://127.0.0.1:3000',
       '/health': 'http://127.0.0.1:3000',
       '/status': 'http://127.0.0.1:3000',
       '/config': 'http://127.0.0.1:3000',

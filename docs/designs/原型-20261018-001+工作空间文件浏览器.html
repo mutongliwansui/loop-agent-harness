@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web UI 原型 · 工作空间文件浏览器 · 20261018-001</title>
+<style>
+/* ========== 主题令牌（与 原型-20261017-001 保持一致） ========== */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --border: #e4e6ea;
+  --text: #1b1f24;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --info-weak: #e0e7ff;
+  --info: #4f46e5;
+  --code-bg: #f3f4f6;
+  --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+  --radius: 10px;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  /* 语法高亮 token（light） */
+  --tok-kw: #8250df; --tok-str: #0a7d33; --tok-num: #b35400;
+  --tok-com: #8b949e; --tok-key: #0550ae; --tok-hit: #fff3ad;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+    --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+    --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+    --warn-weak: #3a2e10; --ok: #34d399; --ok-weak: #143528; --info: #a5b4fc;
+    --info-weak: #262a4a; --code-bg: #2a2e35;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+    --tok-kw: #c39bff; --tok-str: #7ee2a8; --tok-num: #ffb457;
+    --tok-com: #7d8590; --tok-key: #79c0ff; --tok-hit: #4a3f10;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+  --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+  --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+  --warn-weak: #3a2e10; --ok: #34d399; --ok-weak: #143528; --info: #a5b4fc;
+  --info-weak: #262a4a; --code-bg: #2a2e35;
+  --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+  --tok-kw: #c39bff; --tok-str: #7ee2a8; --tok-num: #ffb457;
+  --tok-com: #7d8590; --tok-key: #79c0ff; --tok-hit: #4a3f10;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--sans); background: var(--bg); color: var(--text);
+  font-size: 14px; line-height: 1.55; height: 100vh; overflow: hidden;
+}
+button { font-family: inherit; font-size: 13px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 12px;
+  transition: background .12s, border-color .12s, color .12s; }
+button:hover { border-color: var(--brand); color: var(--brand); }
+button.ghost { border: none; background: none; color: var(--muted); }
+button.ghost:hover { color: var(--brand); }
+input[type=text] { font-family: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; outline: none; }
+input:focus { border-color: var(--brand); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.brand { background: var(--brand-weak); color: var(--brand); }
+.badge.info  { background: var(--info-weak); color: var(--info); }
+.badge.warn  { background: var(--warn-weak); color: var(--warn); }
+.badge.dim   { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 5px; }
+
+/* ========== 滚动条（新版设计：悬浮式细圆角，hover 增粗加深） ========== */
+:root {
+  --scroll-thumb: rgba(27, 31, 36, .28);
+  --scroll-thumb-hover: rgba(27, 31, 36, .45);
+  --scroll-thumb-active: rgba(27, 31, 36, .6);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --scroll-thumb: rgba(230, 232, 235, .26);
+    --scroll-thumb-hover: rgba(230, 232, 235, .44);
+    --scroll-thumb-active: rgba(230, 232, 235, .6);
+  }
+}
+:root[data-theme="dark"] {
+  --scroll-thumb: rgba(230, 232, 235, .26);
+  --scroll-thumb-hover: rgba(230, 232, 235, .44);
+  --scroll-thumb-active: rgba(230, 232, 235, .6);
+}
+/* WebKit（Chrome/Edge/Safari）：12px 命中区，thumb 两侧 4px 透明边 → 视觉 4px 细条悬浮于透明轨道 */
+*::-webkit-scrollbar { width: 12px; height: 12px; }
+*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scroll-thumb);
+  border-radius: 999px;
+  border: 4px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { border-width: 3px; background-color: var(--scroll-thumb-hover); }
+*::-webkit-scrollbar-thumb:active { border-width: 2px; background-color: var(--scroll-thumb-active); }
+/* Firefox：thin + 颜色令牌 */
+* { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+
+/* ========== 整体布局：左导航 + 主区（与 001 相同壳） ========== */
+.app { display: flex; height: 100vh; }
+.nav {
+  width: 224px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 14px 10px;
+}
+.nav .logo { font-weight: 700; font-size: 15px; padding: 2px 10px 14px; display: flex; align-items: center; gap: 8px; }
+.nav .logo .dot { width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
+.nav .new-chat {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; margin-bottom: 12px;
+  border-radius: 8px; border: 1px solid var(--border); background: var(--brand-weak); color: var(--brand);
+  font-size: 13.5px; font-weight: 600; cursor: pointer;
+}
+.nav .new-chat:hover { border-color: var(--brand); }
+.nav .new-chat .ico { font-weight: 700; }
+.nav a, .nav .theme-item {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px;
+}
+.nav .theme-item { border: none; background: none; width: 100%; text-align: left; cursor: pointer; }
+.nav a:hover { background: var(--surface-2); }
+.nav .theme-item:hover { background: var(--surface-2); color: var(--text); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico, .nav .theme-item .ico, .nav .grp-head .ico { width: 17px; text-align: center; opacity: .85; }
+.nav .sess-list { flex: 1; overflow-y: auto; padding: 2px 0 8px; }
+.nav .sess-filter { position: relative; margin: 2px 0 8px; }
+.nav .sess-filter .ico { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); font-size: 11px; opacity: .7; pointer-events: none; }
+.nav .sess-filter input { width: 100%; box-sizing: border-box; padding: 5px 9px 5px 26px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--surface); color: var(--text); font-size: 12.5px; outline: none; }
+.nav .sess-filter input:focus { border-color: var(--brand); }
+.nav .ws-group { margin-bottom: 4px; }
+.nav .ws-head { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 3px; border-radius: 7px; cursor: pointer; user-select: none; }
+.nav .ws-head:hover { background: var(--surface-2); }
+.nav .ws-head .arrow { font-size: 9px; color: var(--muted); transition: transform .15s; }
+.nav .ws-group.collapsed .ws-head .arrow { transform: rotate(-90deg); }
+.nav .ws-head .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.nav .ws-head .nm { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav .ws-head .cur { flex: none; font-size: 10px; color: var(--brand); background: var(--brand-weak); padding: 1px 6px; border-radius: 999px; }
+.nav .ws-head .cnt { flex: none; font-size: 10.5px; color: var(--muted); background: var(--surface-2); padding: 1px 6px; border-radius: 999px; }
+.nav .ws-group.collapsed .sess { display: none; }
+.nav .nav-bottom { margin-top: auto; border-top: 1px solid var(--border); padding-top: 6px; }
+.nav .grp-head {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px;
+  font-size: 13.5px; cursor: pointer; user-select: none;
+}
+.nav .grp-head:hover { background: var(--surface-2); }
+.nav .grp-head .arrow { margin-left: auto; font-size: 11px; color: var(--muted); transition: transform .15s; }
+.nav .grp.open .grp-head .arrow { transform: rotate(90deg); }
+.nav .grp-body { display: none; }
+.nav .grp.open .grp-body { display: block; }
+.main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.view { display: none; flex: 1; overflow: hidden; }
+.view.active { display: flex; }
+#toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px);
+  background: var(--text); color: var(--bg); padding: 8px 18px; border-radius: 999px;
+  font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 99; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ========== 聊天视图（会话列表已并入左侧菜单，无独立会话栏）========== */
+.nav .sess { padding: 7px 8px; border-radius: 8px; cursor: pointer; display: flex;
+  align-items: center; gap: 6px; margin: 0 0 2px 10px; }
+.nav .sess:hover { background: var(--surface-2); }
+.nav .sess.active { background: var(--brand-weak); }
+.nav .sess .t { flex: 1; min-width: 0; }
+.nav .sess .t .n { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav .sess .t .s { font-size: 11px; color: var(--muted); }
+.nav .sess .del { flex: none; border: 0; background: transparent; cursor: pointer; font-size: 11px;
+  color: var(--muted); padding: 2px 4px; border-radius: 6px; visibility: hidden; }
+.nav .sess:hover .del, .nav .sess .del.armed { visibility: visible; }
+.nav .sess .del:hover { background: var(--danger-weak); }
+.nav .sess .del.armed { color: var(--danger); font-weight: 600; }
+.nav .sess-empty { font-size: 12.5px; color: var(--muted); text-align: center; padding: 14px 0; }
+.chat-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.chat-head { padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
+  display: flex; align-items: center; gap: 10px;
+  /* 容器查询基准：按对话区实际宽度做窄容器兼容 */
+  container-type: inline-size; }
+.chat-head b { font-size: 14px; min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-head .sid { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: none; white-space: nowrap; }
+.chat-head .ws-badge { font-size: 11.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px 8px; white-space: nowrap; max-width: 180px; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.chat-head .ro-badge { font-size: 11px; font-weight: 600; color: var(--warn); background: var(--warn-weak);
+  border-radius: 999px; padding: 2px 8px; flex: none; }
+.chat-head .spacer { flex: 1; }
+.chat-head .muted-hint { font-size: 12px; color: var(--muted); flex: none; white-space: nowrap; }
+/* 面板开合图标按钮（自绘 SVG：圆角外框 + 偏右分隔线，展开时右子面板着色） */
+.chat-head .icon-toggle { border: 1px solid var(--border); background: var(--surface); border-radius: 7px;
+  padding: 4px 6px; line-height: 0; display: inline-flex; align-items: center; cursor: pointer; color: var(--muted); flex: none; }
+.chat-head .icon-toggle:hover { color: var(--text); }
+.chat-head .icon-toggle.on { color: var(--brand); border-color: var(--brand); background: var(--brand-weak); }
+.chat-head .icon-toggle .fill { opacity: 0; }
+.chat-head .icon-toggle.on .fill { opacity: .35; }
+/* 窄容器兼容（对话区收窄时）：标题栏隐藏次要信息，保证标题可读 */
+@container (max-width: 520px) {
+  .chat-head .sid, .chat-head .muted-hint { display: none; }
+  .chat-head .ws-badge { max-width: 120px; }
+}
+@container (max-width: 380px) {
+  .chat-head .ws-badge { display: none; }
+}
+.msgs { flex: 1; overflow-y: auto; padding: 20px 0; }
+.msg-wrap { max-width: 800px; margin: 0 auto; padding: 0 20px; }
+.msg { margin-bottom: 18px; }
+.msg .ava { width: 22px; height: 22px; border-radius: 6px; flex: none; display: flex;
+  align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+  background: var(--brand); color: var(--brand-on); }
+/* 用户消息：无头像，右对齐气泡 */
+.msg.user { display: flex; justify-content: flex-end; }
+.msg.user .bubble { max-width: 76%; padding: 9px 14px; border-radius: 12px;
+  background: var(--brand-weak); border-top-right-radius: 4px; }
+/* 助手消息：头像+名称在消息上方，正文平铺（无气泡卡片） */
+.msg.assistant .m-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.msg.assistant .m-role { font-size: 12px; font-weight: 600; color: var(--muted); }
+.msg.assistant .body p { margin: 0 0 8px; }
+.msg.assistant .body p:last-child { margin-bottom: 0; }
+.composer { border-top: 1px solid var(--border); background: var(--surface); padding: 12px 20px 14px;
+  /* 容器查询基准：按对话区实际宽度做窄容器兼容 */
+  container-type: inline-size; }
+.composer-inner { max-width: 800px; margin: 0 auto; }
+/* 上传 chip 行（对齐实现：随下一条消息注入 contextNote 的文件） */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips:not(:empty) { margin-bottom: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 6px 3px 10px; font-size: 12px; max-width: 100%; }
+.chip button { border: none; background: none; padding: 0 3px; color: var(--muted); font-size: 12px; }
+.chip button:hover { color: var(--danger); }
+.composer .box { display: flex; gap: 10px; align-items: flex-end; }
+.composer textarea { flex: 1; min-width: 0; resize: none; height: 44px; line-height: 1.5; padding: 10px 12px; }
+.composer .attach { flex: none; height: 44px; padding: 0 12px; font-size: 16px; }
+.composer .send { flex: none; height: 44px; padding: 0 18px;
+  background: var(--brand); border-color: var(--brand); color: var(--brand-on); }
+.composer .stop { flex: none; height: 44px; padding: 0 14px; color: var(--danger); border-color: var(--danger); }
+.composer .meta { display: flex; align-items: center; gap: 14px; margin-top: 7px; font-size: 12px; color: var(--muted);
+  flex-wrap: wrap; min-width: 0; }
+.composer label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; flex: none; }
+.composer .hint { font-size: 11.5px; }
+/* 窄容器兼容（对话区收窄时）：隐藏次要提示、收窄按钮 */
+@container (max-width: 520px) {
+  .composer .hint { display: none; }
+}
+@container (max-width: 380px) {
+  .composer .send { padding: 0 12px; }
+  .composer .attach { padding: 0 9px; }
+}
+/* 助手消息里的文件引用 chip：点击展开右侧面板并打开文件 */
+.fref { display: inline-flex; align-items: center; gap: 5px; margin: 2px 6px 0 0; padding: 2px 9px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--brand); cursor: pointer; user-select: none; }
+.fref:hover { border-color: var(--brand); }
+
+/* ========== 右侧工作空间：与对话并排，默认按 2/3 : 1/3 拆分（扣除分割条 5px），拖拽可调 ========== */
+.files-panel { /* 对话行宽度的 2/3（与实现一致：--fpw = (100% - 5px) * 2 / 3） */
+  --fpw: calc((100% - 5px) * 2 / 3);
+  width: var(--fpw); flex: none; overflow: hidden; border-left: 1px solid var(--border);
+  background: var(--surface); transition: width .18s ease; min-width: 0; }
+.files-panel:not(.open) { width: 0; border-left: none; }
+.files-panel.dragging { transition: none; }
+.files-inner { width: 100%; height: 100%; display: flex; min-width: 0; }
+/* 拖拽分割条：悬停/拖拽高亮，双击复位默认占比 */
+.splitter { width: 5px; flex: none; cursor: col-resize; background: transparent; transition: background .15s; touch-action: none; }
+.splitter:hover, body.resizing .splitter { background: var(--brand-weak); }
+body.resizing { cursor: col-resize; user-select: none; }
+/* 窄屏浮层遮罩（仅 ≤900px 展开时显示） */
+.files-mask { position: fixed; inset: 0; background: rgba(0,0,0,.32); z-index: 40;
+  opacity: 0; pointer-events: none; transition: opacity .2s; }
+.files-mask.show { opacity: 1; pointer-events: auto; }
+
+/* ---- 面板内右栏：工作空间树 + 搜索（树靠右，查看器靠左） ---- */
+.files-side { width: 240px; flex: none; background: var(--surface); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; min-height: 0; }
+.files-side .h { padding: 12px 12px 8px; display: flex; align-items: center; justify-content: space-between; flex: none; }
+.files-side .h b { font-size: 13px; }
+.ws-name { margin: 0 10px 8px; padding: 7px 10px; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; font-size: 12.5px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ws-name .n { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-row { padding: 0 10px 8px; position: relative; flex: none; }
+.search-row input { width: 100%; padding-left: 28px; }
+.search-row .ico { position: absolute; left: 19px; top: 7px; font-size: 12px; opacity: .6; }
+.opt-row { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 8px;
+  font-size: 12px; color: var(--muted); flex: none; }
+/* 开关（与 001 相同） */
+.tgl { position: relative; width: 34px; height: 19px; flex: none; }
+.tgl input { opacity: 0; width: 100%; height: 100%; position: absolute; cursor: pointer; z-index: 2; margin: 0; }
+.tgl .tk { position: absolute; inset: 0; background: var(--border); border-radius: 999px; transition: background .15s; }
+.tgl .tk::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+  background: #fff; border-radius: 50%; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.tgl input:checked + .tk { background: var(--brand); }
+.tgl input:checked + .tk::after { transform: translateX(15px); }
+/* 搜索结果 */
+.search-res { flex: none; max-height: 220px; overflow-y: auto; border-bottom: 1px solid var(--border);
+  padding: 2px 8px 8px; }
+.search-res:empty { display: none; }
+.sr-head { font-size: 11px; color: var(--muted); padding: 4px 4px 2px; display: flex; justify-content: space-between; }
+.sr-item { padding: 5px 8px; border-radius: 7px; cursor: pointer; font-size: 12px; }
+.sr-item:hover { background: var(--surface-2); }
+.sr-item .loc { font-family: var(--mono); font-size: 11px; color: var(--brand); }
+.sr-item .tx { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.sr-item mark { background: var(--warn-weak); color: var(--warn); border-radius: 3px; padding: 0 1px; }
+/* 文件树 */
+.tree { flex: 1; overflow-y: auto; padding: 2px 8px 12px; }
+.tn { display: flex; align-items: center; gap: 6px; height: 27px; padding-right: 6px; border-radius: 7px;
+  cursor: pointer; font-size: 13px; white-space: nowrap; user-select: none; }
+.tn:hover { background: var(--surface-2); }
+.tn.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.tn .arr { width: 12px; flex: none; text-align: center; font-size: 9px; color: var(--muted);
+  transition: transform .14s; }
+.tn.open .arr { transform: rotate(90deg); }
+.tn .nm { overflow: hidden; text-overflow: ellipsis; }
+.tn.dimmed .nm, .tn.dimmed .ico { opacity: .45; }
+.tn .cnt { margin-left: auto; font-size: 10.5px; color: var(--muted); }
+.side-foot { flex: none; padding: 6px 12px 10px; border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+
+/* 左查看器（order:-1 使其位于树左侧，树靠右） */
+.files-viewer { order: -1; flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.fv-head { padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
+  display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; overflow-x: auto; }
+.fv-head b { font-size: 14px; white-space: nowrap; }
+.fv-head .badge { white-space: nowrap; }
+.fv-head .path { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+.fv-head .spacer { flex: 1; }
+/* 预览/源码分段切换 */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: none; }
+.seg button { border: none; border-radius: 0; padding: 4px 14px; font-size: 12.5px; background: var(--surface); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.fv-body { flex: 1; overflow: auto; min-height: 0; }
+
+/* ---- Markdown 预览（面板内宽度有限，去掉居中上限） ---- */
+.md-wrap { padding: 20px 22px 40px; }
+.md-wrap h1 { font-size: 22px; margin: 4px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.md-wrap h2 { font-size: 17px; margin: 22px 0 10px; }
+.md-wrap p { margin: 0 0 10px; }
+.md-wrap ul { margin: 0 0 10px 20px; }
+.md-wrap li { margin-bottom: 4px; }
+.md-wrap code { font-size: 12px; }
+.md-wrap .codeblock { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; margin: 10px 0; }
+.md-wrap blockquote { border-left: 3px solid var(--brand); background: var(--brand-weak);
+  padding: 8px 14px; border-radius: 0 8px 8px 0; margin: 10px 0; font-size: 13px; }
+/* mermaid 渲染卡（对应实现里的缩放工具栏） */
+.mmd-card { border: 1px solid var(--border); border-radius: 10px; margin: 12px 0; overflow: hidden;
+  background: var(--surface); box-shadow: var(--shadow); }
+.mmd-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: 11.5px; color: var(--muted); }
+.mmd-bar .sp { flex: 1; }
+.mmd-bar button { padding: 2px 9px; font-size: 12px; }
+.mmd-view { padding: 18px 16px; overflow: auto; display: flex; justify-content: center; }
+.mmd-view svg { max-width: 100%; height: auto; }
+.mmd-err { margin: 0; padding: 10px 14px; font-family: var(--mono); font-size: 12px;
+  color: var(--danger); background: var(--danger-weak); white-space: pre-wrap; }
+
+/* ---- 代码 / 源码视图（行号 + 语法高亮） ---- */
+.codebox { font-family: var(--mono); font-size: 12.5px; padding: 12px 0 32px; min-width: max-content; }
+.cl { display: flex; line-height: 1.6; }
+.cl:hover { background: var(--surface-2); }
+.cl .ln { flex: none; width: 52px; text-align: right; padding-right: 14px; color: var(--muted);
+  opacity: .7; user-select: none; }
+.cl code { flex: 1; padding-right: 24px; background: none; white-space: pre; }
+.cl.hit { animation: hitfade 2.4s ease-out; }
+.cl.hit code { background: var(--tok-hit); border-radius: 4px; }
+@keyframes hitfade { 0%, 55% { background: var(--warn-weak); } 100% { background: transparent; } }
+.tok-kw  { color: var(--tok-kw); }
+.tok-str { color: var(--tok-str); }
+.tok-num { color: var(--tok-num); }
+.tok-com { color: var(--tok-com); font-style: italic; }
+.tok-key { color: var(--tok-key); }
+
+/* ---- 二进制 / 边界提示 ---- */
+.fv-empty { max-width: 460px; margin: 60px auto; text-align: center; }
+.fv-empty .box { border: 1px dashed var(--border); border-radius: 12px; padding: 30px 26px; background: var(--surface); }
+.fv-empty .em { font-size: 34px; margin-bottom: 10px; }
+.fv-empty b { display: block; margin-bottom: 6px; }
+.fv-empty p { font-size: 12.5px; color: var(--muted); }
+
+/* ========== 窄屏适配 ========== */
+@media (max-width: 900px) {
+  .nav { width: 60px; padding: 12px 6px; }
+  .nav a span.lbl, .nav .logo .name, .nav .new-chat .lbl,
+  .nav .sess-list, .nav .grp-head .lbl, .nav .grp-head .arrow, .nav .grp-body { display: none; }
+  .nav a, .nav .new-chat, .nav .grp-head { justify-content: center; padding: 9px 0; }
+  .splitter { display: none; }
+  /* 工作空间窄屏改为右侧浮层覆盖（同 002 抽屉惯例），内部上下堆叠（树在上）整体滚动 */
+  .files-panel { --fpw: min(440px, 92vw); }
+  .files-panel.open { position: fixed; right: 0; top: 0; bottom: 0; z-index: 50;
+    width: var(--fpw); border-left: 1px solid var(--border); box-shadow: var(--shadow); }
+  .files-inner { flex-direction: column; overflow-y: auto; }
+  .files-side { order: -2; width: auto; flex: none; border-left: none; border-bottom: 1px solid var(--border); }
+  .tree { flex: none; min-height: 100px; max-height: 180px; }
+  .files-viewer { flex: 1; min-height: 52vh; }
+  .fv-body { overflow: visible; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ======== 左侧菜单：新建对话 + 会话列表 + 底部管理分组（默认收起）；原独立会话栏取消 ======== -->
+  <nav class="nav">
+    <div class="logo"><span class="dot">L</span><span class="name">Loop Agent</span></div>
+    <button class="new-chat" id="newSessBtn"><span class="ico">＋</span><span class="lbl">新建对话</span></button>
+    <div class="sess-list" id="sessList">
+      <div class="sess-filter"><span class="ico">🔍</span><input id="sessKw" type="text" placeholder="搜索会话 / 工作空间"></div>
+      <div class="ws-group">
+        <div class="ws-head" title="d:\trae_workspace\loop-agent-command"><span class="arrow">▼</span><span class="dot" style="background:#6366f1"></span><span class="nm">loop-agent-command</span><span class="cur">当前</span><span class="cnt">3</span></div>
+        <div class="sess active"><div class="t"><div class="n">排查 Windows 端口占用</div><div class="s">12 条 · 10-18 09:12</div></div><button class="del" title="删除会话">🗑</button></div>
+        <div class="sess"><div class="t"><div class="n">重构 fs.ts 工作空间校验</div><div class="s">8 条 · 10-17 20:31</div></div><button class="del" title="删除会话">🗑</button></div>
+        <div class="sess"><div class="t"><div class="n">生成 mermaid 架构图</div><div class="s">5 条 · 10-16 18:47</div></div><button class="del" title="删除会话">🗑</button></div>
+      </div>
+      <div class="ws-group collapsed">
+        <div class="ws-head" title="d:\trae_workspace\gwsk-search"><span class="arrow">▼</span><span class="dot" style="background:#f59e0b"></span><span class="nm">gwsk-search</span><span class="cnt">2</span></div>
+        <div class="sess"><div class="t"><div class="n">检索接口联调排错</div><div class="s">6 条 · 10-15 14:02</div></div><button class="del" title="删除会话">🗑</button></div>
+        <div class="sess"><div class="t"><div class="n">补充索引字段映射</div><div class="s">4 条 · 10-14 11:26</div></div><button class="del" title="删除会话">🗑</button></div>
+      </div>
+      <div class="sess-empty" id="sessEmpty" style="display:none">无匹配会话</div>
+    </div>
+    <div class="nav-bottom">
+      <div class="grp" id="mgrp">
+        <div class="grp-head" id="mgrpHead" title="展开 / 收起管理菜单"><span class="ico">🗂️</span><span class="lbl">管理</span><span class="arrow">▸</span></div>
+        <div class="grp-body">
+          <a href="#" data-other="配置（见 原型-20261017-001）"><span class="ico">⚙️</span><span class="lbl">配置</span></a>
+          <a href="#" data-other="模型（见 原型-20261017-001）"><span class="ico">🤖</span><span class="lbl">模型</span></a>
+          <a href="#" data-other="工具（见 原型-20261017-001）"><span class="ico">🔧</span><span class="lbl">工具</span></a>
+          <a href="#" data-other="MCP（见 原型-20261017-001）"><span class="ico">🔌</span><span class="lbl">MCP 服务器</span></a>
+          <a href="#" data-other="技能（见 原型-20261017-001）"><span class="ico">🧩</span><span class="lbl">技能</span></a>
+          <a href="#" data-other="记忆（见 原型-20261017-001）"><span class="ico">🧠</span><span class="lbl">记忆</span></a>
+          <a href="#" data-other="诊断（见 原型-20261017-001）"><span class="ico">🩺</span><span class="lbl">诊断</span></a>
+          <button class="theme-item" id="themeBtn" title="切换深浅色"><span class="ico">🌗</span><span class="lbl">主题</span></button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <!-- ======== 对话视图：聊天主体 + 右侧文件面板（默认收起） ======== -->
+    <section class="view active" id="chat">
+
+      <div class="chat-main">
+        <div class="chat-head">
+          <b>排查 Windows 端口占用</b>
+          <span class="sid">#20261018-0912-ab32</span>
+          <span class="ws-badge" title="d:\trae_workspace\loop-agent-command">📁 loop-agent-command</span>
+          <span class="spacer"></span>
+          <span class="muted-hint" id="streamHint">SSE 流式</span>
+          <button id="filesToggle" class="icon-toggle on" title="收起 / 展开工作空间面板（也可拖拽中间分割条调比例）">
+            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+              <rect x="2.6" y="3.6" width="14.8" height="12.8" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="12.9" y1="3.6" x2="12.9" y2="16.4" stroke="currentColor" stroke-width="1.5"/>
+              <rect class="fill" x="13.65" y="4.35" width="3" height="11.3" rx="1.2" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+        <div class="msgs"><div class="msg-wrap" id="msgList">
+          <div class="msg user"><div class="bubble"><p>项目里 mermaid 图是怎么渲染的？涉及哪些文件？</p></div></div>
+          <div class="msg assistant">
+            <div class="m-head"><div class="ava">L</div><span class="m-role">Loop Agent</span></div>
+            <div class="body">
+            <p>正文在 <code>ChatView.vue</code> 里经 marked 解析后，对 <code>mermaid</code> 代码块单独调用 <code>mermaid.render()</code>，失败时回退保留源码并标红。</p>
+            <p>相关文件（点击在右侧打开）：</p>
+            <div><span class="fref" data-open="README.md">📝 README.md</span><span class="fref" data-open="grep.ts">🟦 grep.ts</span></div>
+            </div>
+          </div>
+        </div></div>
+        <div class="composer">
+          <div class="composer-inner">
+            <div class="chips" id="chips"></div>
+            <div class="box">
+              <button class="attach" id="attachBtn" title="上传文件">📎</button>
+              <textarea id="chatInput" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+              <button id="sendBtn" class="send">发送</button>
+            </div>
+            <div class="meta">
+              <label class="chk"><input type="checkbox" id="streamChk" checked> 流式</label>
+              <span class="hint">发送后自动附带 📎 文件的 contextNote</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 拖拽分割条：对话 / 工作空间占比 -->
+      <div class="splitter" id="splitter" title="拖拽调整占比 · 双击复位"></div>
+
+      <aside class="files-panel open" id="filesPanel">
+        <div class="files-inner">
+          <div class="files-side">
+            <div class="h">
+              <b>工作空间</b>
+              <button class="ghost" id="refreshBtn" title="刷新（GET /fs/tree）" style="padding:2px 8px">⟳</button>
+            </div>
+            <div class="ws-name"><span>📁</span><span class="n">loop-agent-command</span></div>
+            <div class="search-row">
+              <span class="ico">🔍</span>
+              <input type="text" id="searchBox" placeholder="全局搜索内容，如 mermaid">
+            </div>
+            <div class="opt-row">
+              <span>显示隐藏文件</span>
+              <label class="tgl"><input type="checkbox" id="hiddenChk"><span class="tk"></span></label>
+            </div>
+            <div class="search-res" id="searchRes"></div>
+            <div class="tree" id="tree"></div>
+            <div class="side-foot">GET /fs/tree · /fs/search<br>只读 · 限当前工作空间</div>
+          </div>
+
+          <div class="files-viewer">
+            <div class="fv-head">
+              <span id="fvIcon" style="font-size:16px">📝</span>
+              <b id="fvName">README.md</b>
+              <span class="path" id="fvPath">/README.md</span>
+              <span class="badge brand" id="fvLang">Markdown</span>
+              <span class="badge dim" id="fvMeta">4.2 KB · 10-17 20:31</span>
+              <span class="badge dim" title="本期仅支持查看，不支持修改">👁 只读</span>
+              <span class="spacer"></span>
+              <div class="seg" id="mdSeg" hidden>
+                <button data-md="preview" class="active">预览</button>
+                <button data-md="source">源码</button>
+              </div>
+              <span class="badge dim mono">GET /fs/file</span>
+            </div>
+            <div class="fv-body" id="fvBody"></div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </div>
+</div>
+
+<div class="files-mask" id="filesMask"></div>
+<div id="toast"></div>
+
+<script>
+/* ================= 原型交互脚本（假数据演示） ================= */
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+$('#themeBtn').onclick = () => {
+  const cur = document.documentElement.dataset.theme ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+};
+$$('[data-other]').forEach(a => a.onclick = () => toast('原型聚焦：工作空间文件浏览器（' + a.dataset.other + '）'));
+$('#refreshBtn').onclick = () => { openDirs.clear(); renderTree(); toast('已刷新（GET /fs/tree）'); };
+$('#attachBtn').onclick = () => toast('原型演示：上传文件面板（POST /uploads/raw，contextNote 随下一条消息注入）');
+$('#streamChk').onchange = e => { $('#streamHint').textContent = e.target.checked ? 'SSE 流式' : '非流式'; };
+
+/* ---- 假数据：示例文件注册表 ---- */
+const FILES = {
+  'README.md': { icon:'📝', name:'README.md', path:'/README.md', lang:'Markdown', size:'4.2 KB', mtime:'10-17 20:31', kind:'md',
+    md: `
+      <h1>Loop Agent</h1>
+      <p>单文件可执行的大模型工作台：<code>聊天 · 工具 · MCP · 技能 · 记忆</code> 一站式运行在工作空间内。</p>
+      <blockquote>提示：mermaid 图在预览模式下由前端渲染（marked + mermaid），失败时回退保留源码块并标红。</blockquote>
+      <h2>架构</h2>
+      <div class="mmd-card">
+        <div class="mmd-bar"><span class="badge info">mermaid</span><span>graph LR</span><span class="sp"></span>
+          <button title="缩放（原型示意）">＋</button><button title="缩放（原型示意）">－</button><button title="适应窗口">⤢</button></div>
+        <div class="mmd-view">
+          <svg viewBox="0 -26 680 178" width="620" xmlns="http://www.w3.org/2000/svg" font-family="inherit">
+            <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+            <g font-size="13" fill="var(--text)" text-anchor="middle">
+              <rect x="20" y="55" width="86" height="40" rx="6" fill="var(--surface-2)" stroke="var(--border)"/>
+              <text x="63" y="79">用户</text>
+              <line x1="106" y1="75" x2="143" y2="75" stroke="var(--muted)" marker-end="url(#arr)"/>
+              <rect x="150" y="55" width="96" height="40" rx="20" fill="var(--brand-weak)" stroke="var(--brand)"/>
+              <text x="198" y="79">Agent</text>
+              <line x1="246" y1="75" x2="275" y2="75" stroke="var(--muted)" marker-end="url(#arr)"/>
+              <polygon points="340,42 402,75 340,108 278,75" fill="var(--warn-weak)" stroke="var(--warn)"/>
+              <text x="340" y="79" font-size="12">需要工具?</text>
+              <line x1="399" y1="63" x2="434" y2="35" stroke="var(--muted)" marker-end="url(#arr)"/>
+              <text x="405" y="40" font-size="11" fill="var(--muted)">是</text>
+              <rect x="440" y="8" width="112" height="40" rx="6" fill="var(--surface-2)" stroke="var(--border)"/>
+              <text x="496" y="32">工具调用</text>
+              <line x1="399" y1="87" x2="434" y2="115" stroke="var(--muted)" marker-end="url(#arr)"/>
+              <text x="405" y="118" font-size="11" fill="var(--muted)">否</text>
+              <rect x="440" y="102" width="112" height="40" rx="6" fill="var(--surface-2)" stroke="var(--border)"/>
+              <text x="496" y="126">回答</text>
+              <path d="M 496 8 C 496 -22, 198 -22, 198 48" fill="none" stroke="var(--muted)" marker-end="url(#arr)"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+      <h2>快速开始</h2>
+      <div class="codeblock">loop-agent --workspace .<br># 打开 WebUI → http://127.0.0.1:3000</div>
+      <h2>目录约定</h2>
+      <ul>
+        <li><code>src/</code> 服务端（TypeScript → 单文件 exe）</li>
+        <li><code>webui/</code> 前端（Vue 3 + Vite，可内嵌进 exe）</li>
+        <li><code>.loop-agent/</code> 会话与记忆数据（默认隐藏）</li>
+      </ul>`,
+    src: `# Loop Agent
+
+单文件可执行的大模型工作台：\`聊天 · 工具 · MCP · 技能 · 记忆\` 一站式运行在工作空间内。
+
+> 提示：mermaid 图在预览模式下由前端渲染（marked + mermaid），失败时回退保留源码块并标红。
+
+## 架构
+
+\`\`\`mermaid
+graph LR
+  U[用户] --> A[Agent]
+  A -->|思考| T{需要工具?}
+  T -->|是| C[工具调用]
+  T -->|否| R[回答]
+  C --> A
+\`\`\`
+
+## 快速开始
+
+\`\`\`bash
+loop-agent --workspace .
+# 打开 WebUI → http://127.0.0.1:3000
+\`\`\`
+
+## 目录约定
+
+- \`src/\` 服务端（TypeScript → 单文件 exe）
+- \`webui/\` 前端（Vue 3 + Vite，可内嵌进 exe）
+- \`.loop-agent/\` 会话与记忆数据（默认隐藏）` },
+
+  'agent.py': { icon:'🐍', name:'agent.py', path:'/src/agent.py', lang:'Python', size:'1.8 KB', mtime:'10-17 18:02', kind:'py',
+    src: `import asyncio
+from pathlib import Path
+
+SKIP_DIRS = {"node_modules", ".git", "dist", ".loop-agent"}
+
+async def search(root: Path, keyword: str) -> list[str]:
+    """全文搜索：跳过依赖与隐藏目录，结果封顶 200 条。"""
+    hits: list[str] = []
+    for f in root.rglob("*"):
+        if f.is_dir() or f.parent.name in SKIP_DIRS:
+            continue
+        try:
+            text = f.read_text("utf-8")
+        except UnicodeDecodeError:  # 二进制文件跳过
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if keyword in line:
+                hits.append(f"{f.relative_to(root)}:{i}: {line.strip()}")
+        if len(hits) >= 200:
+            break
+    return hits[:200]
+
+if __name__ == "__main__":
+    print(asyncio.run(search(Path("."), "mermaid")))` },
+
+  'grep.ts': { icon:'🟦', name:'grep.ts', path:'/src/tools/grep.ts', lang:'TypeScript', size:'1.2 KB', mtime:'10-16 11:47', kind:'ts',
+    src: `export const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
+
+/** 全局文本搜索：返回 path:line: content 形式的命中列表。 */
+export async function search(root: string, kw: string): Promise<string[]> {
+  const hits: string[] = [];
+  for await (const file of walk(root, 5)) {
+    if (SKIP_DIRS.has(basename(file))) continue;
+    const text = await readFile(file, "utf-8");
+    text.split("\\n").forEach((line, i) => {
+      if (line.includes(kw)) hits.push(\`\${file}:\${i + 1}: \${line.trim()}\`);
+    });
+  }
+  return hits.slice(0, 200); // 与工具版约定一致：结果封顶
+}` },
+
+  'package.json': { icon:'🧾', name:'package.json', path:'/webui/package.json', lang:'JSON', size:'0.5 KB', mtime:'10-15 09:20', kind:'json',
+    src: `{
+  "name": "loop-agent-webui",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13",
+    "marked": "^15.0.7",
+    "mermaid": "^12.2.0",
+    "dompurify": "^3.2.4"
+  }
+}` },
+
+  'index.html': { icon:'🌐', name:'index.html', path:'/webui/index.html', lang:'HTML', size:'0.4 KB', mtime:'10-15 09:20', kind:'html',
+    src: `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Loop Agent</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"><\/script>
+</body>
+</html>` },
+
+  'config.toml': { icon:'⚙️', name:'config.toml', path:'/config.toml', lang:'TOML', size:'0.3 KB', mtime:'10-14 16:55', kind:'toml',
+    src: `[api]
+port = 3000
+host = "127.0.0.1"
+token = ""            # 留空则不鉴权
+
+[model]
+baseUrl = "https://api.deepseek.com/v1"
+maxTokens = 8192
+
+[workspace]
+root = "."            # 启动时 chdir 跟随` },
+
+  'run.log': { icon:'📜', name:'run.log', path:'/logs/run.log', lang:'纯文本', size:'2.1 KB', mtime:'10-18 09:14', kind:'log',
+    src: `2026-10-18 09:12:01 [INFO] server started on 127.0.0.1:3000
+2026-10-18 09:12:01 [INFO] workspace = d:/trae_workspace/loop-agent-command
+2026-10-18 09:12:03 [INFO] llm ready: deepseek-chat
+2026-10-18 09:14:20 [TOOL] grep("mermaid") -> 12 hits (42ms)
+2026-10-18 09:14:22 [INFO] session 20261018-0912-ab32 stream done (3.2s)
+2026-10-18 09:15:40 [WARN] mcp server "fs" slow ping 812ms` },
+
+  'state.json': { icon:'🧾', name:'state.json', path:'/.loop-agent/state.json', lang:'JSON', size:'0.2 KB', mtime:'10-18 09:12', kind:'json', hidden:true,
+    src: `{
+  "currentWorkspace": "D:/trae_workspace/loop-agent-command",
+  "lastSession": "20261018-0912-ab32",
+  "pendingTasks": 0
+}` },
+
+  'memory.json': { icon:'🧾', name:'memory.json', path:'/.loop-agent/memory.json', lang:'JSON', size:'0.3 KB', mtime:'10-18 09:14', kind:'json', hidden:true,
+    src: `{
+  "facts": [
+    "用户偏好简体中文交流",
+    "提交信息遵循 conventional commits"
+  ],
+  "updated": "2026-10-18T09:14:00+08:00"
+}` },
+
+  '.gitignore': { icon:'📄', name:'.gitignore', path:'/.gitignore', lang:'纯文本', size:'0.1 KB', mtime:'10-10 10:00', kind:'text', hidden:true,
+    src: `node_modules/
+dist/
+__pycache__/
+*.log` },
+
+  'api-design.md': { icon:'📝', name:'api-design.md', path:'/docs/designs/api-design.md', lang:'Markdown', size:'1.1 KB', mtime:'10-16 21:08', kind:'md',
+    md: `
+      <h1>文件浏览器 API 设计</h1>
+      <p>三个只读端点，全部限定在当前工作空间内（<code>resolve</code> 后强制前缀校验，穿越返回 403）：</p>
+      <ul>
+        <li><code>GET /fs/tree?path=</code> — 懒加载单层目录</li>
+        <li><code>GET /fs/file?path=</code> — 读文件（2MB 上限，NUL 采样判二进制）</li>
+        <li><code>GET /fs/search?q=</code> — 全局文本搜索（结果 200 封顶）</li>
+      </ul>
+      <h2>安全</h2>
+      <div class="codeblock">samePath(resolved, within(root)) → 200 | 403</div>`,
+    src: `# 文件浏览器 API 设计
+
+三个只读端点，全部限定在当前工作空间内（\`resolve\` 后强制前缀校验，穿越返回 403）：
+
+- \`GET /fs/tree?path=\` — 懒加载单层目录
+- \`GET /fs/file?path=\` — 读文件（2MB 上限，NUL 采样判二进制）
+- \`GET /fs/search?q=\` — 全局文本搜索（结果 200 封顶）
+
+## 安全
+
+\`\`\`
+samePath(resolved, within(root)) → 200 | 403
+\`\`\`` },
+
+  'logo.png': { icon:'🖼', name:'logo.png', path:'/assets/logo.png', lang:'image/png', size:'24 KB', mtime:'10-12 14:30', kind:'bin' },
+};
+
+/* ---- 假数据：文件树（hidden 节点受「显示隐藏文件」开关控制） ---- */
+const TREE = [
+  { n:'.loop-agent', dir:true, hidden:true, c:[
+    { n:'state.json', f:'state.json' }, { n:'memory.json', f:'memory.json' } ] },
+  { n:'assets', dir:true, c:[ { n:'logo.png', f:'logo.png' } ] },
+  { n:'docs', dir:true, c:[
+    { n:'designs', dir:true, c:[ { n:'api-design.md', f:'api-design.md' } ] } ] },
+  { n:'logs', dir:true, c:[ { n:'run.log', f:'run.log' } ] },
+  { n:'src', dir:true, c:[
+    { n:'agent.py', f:'agent.py' },
+    { n:'tools', dir:true, c:[ { n:'grep.ts', f:'grep.ts' } ] } ] },
+  { n:'webui', dir:true, c:[
+    { n:'index.html', f:'index.html' }, { n:'package.json', f:'package.json' } ] },
+  { n:'.gitignore', f:'.gitignore', hidden:true },
+  { n:'README.md', f:'README.md' },
+  { n:'config.toml', f:'config.toml' },
+];
+const openDirs = new Set(['src']);
+
+/* ---- 文件树渲染 ---- */
+function renderTree() {
+  const showHidden = $('#hiddenChk').checked;
+  const current = window.__curFile || 'README.md';
+  const html = [];
+  (function walk(nodes, depth) {
+    for (const node of nodes) {
+      if (node.hidden && !showHidden) continue;
+      const pad = `padding-left:${10 + depth * 15}px`;
+      if (node.dir) {
+        const isOpen = openDirs.has(node.n);
+        const cnt = node.c.filter(x => showHidden || !x.hidden).length;
+        html.push(`<div class="tn dir ${isOpen ? 'open' : ''} ${node.hidden ? 'dimmed' : ''}" style="${pad}"
+          data-dir="${node.n}"><span class="arr">▶</span><span class="ico">${isOpen ? '📂' : '📁'}</span>
+          <span class="nm">${node.n}</span><span class="cnt">${cnt}</span></div>`);
+        if (isOpen) walk(node.c, depth + 1);
+      } else {
+        const file = FILES[node.f];
+        html.push(`<div class="tn file ${node.f === current ? 'active' : ''} ${node.hidden ? 'dimmed' : ''}" style="${pad}"
+          data-file="${node.f}"><span class="arr" style="visibility:hidden">▶</span>
+          <span class="ico">${file.icon}</span><span class="nm">${file.name}</span></div>`);
+      }
+    }
+  })(TREE, 0);
+  $('#tree').innerHTML = html.join('');
+}
+/* 展开选中文件所在的祖先目录（目录名在原型数据中唯一） */
+function expandTo(id) {
+  (function walk(nodes, chain) {
+    for (const node of nodes) {
+      if (node.f === id) { chain.forEach(n => openDirs.add(n)); return true; }
+      if (node.dir && walk(node.c, [...chain, node.n])) return true;
+    }
+    return false;
+  })(TREE, []);
+}
+function hasActive(node) { return node.c?.some(x => x.f === window.__curFile || (x.dir && hasActive(x))); }
+
+$('#tree').addEventListener('click', e => {
+  const dir = e.target.closest('[data-dir]');
+  if (dir) {
+    const n = dir.dataset.dir;
+    openDirs.has(n) ? openDirs.delete(n) : openDirs.add(n);
+    renderTree(); return;
+  }
+  const file = e.target.closest('[data-file]');
+  if (file) openFile(file.dataset.file);
+});
+$('#hiddenChk').onchange = () => { renderTree(); toast($('#hiddenChk').checked ? '已显示隐藏文件（含 . 开头目录）' : '已隐藏 . 开头文件与目录'); };
+
+/* ---- 迷你语法高亮（原型示意，实现版建议 highlight.js） ---- */
+const GRAMMAR = {
+  py: [
+    [/#.*$/g, 'com'],
+    [/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, 'str'],
+    [/\b(?:import|from|async|await|def|return|for|in|if|continue|break|class|not|with|as|None|True|False|try|except|print)\b/g, 'kw'],
+    [/\b\d+(?:\.\d+)?\b/g, 'num'],
+  ],
+  ts: [
+    [/\/\/.*$/g, 'com'],
+    [/`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, 'str'],
+    [/\b(?:import|from|export|const|let|function|return|if|for|of|new|async|await|class|Set|Promise|string|number)\b/g, 'kw'],
+    [/\b\d+\b/g, 'num'],
+  ],
+  json: [
+    [/"(?:[^"\\]|\\.)*"(?=\s*:)/g, 'key'],
+    [/"(?:[^"\\]|\\.)*"/g, 'str'],
+    [/\b(?:true|false|null)\b/g, 'kw'],
+    [/-?\b\d+(?:\.\d+)?\b/g, 'num'],
+  ],
+  html: [
+    [/<!--.*?-->|<!DOCTYPE[^>]*>/gi, 'com'],
+    [/<\/?[\w-]+|\/?>/g, 'kw'],
+    [/"[^"]*"/g, 'str'],
+  ],
+  toml: [
+    [/#.*$/g, 'com'],
+    [/^\[[^\]]*\]/g, 'kw'],
+    [/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, 'str'],
+    [/\b\d+(?:\.\d+)?\b/g, 'num'],
+  ],
+  log: [
+    [/\[\w+\]/g, 'kw'],
+    [/\b\d{4}-\d{2}-\d{2}\b|\b\d{2}:\d{2}:\d{2}\b/g, 'num'],
+    [/\b(?:INFO|WARN|ERROR|TOOL)\b/g, 'key'],
+  ],
+};
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function hiLine(line, kind) {
+  const g = GRAMMAR[kind];
+  if (!g) return esc(line);
+  const re = new RegExp(g.map(r => '(' + r[0].source + ')').join('|'), 'g' + (kind === 'toml' ? 'm' : ''));
+  let out = '', last = 0, m;
+  while ((m = re.exec(line))) {
+    out += esc(line.slice(last, m.index));
+    const gi = m.slice(1).findIndex(x => x !== undefined);
+    out += `<span class="tok-${g[gi][1]}">${esc(m[0])}</span>`;
+    last = m.index + m[0].length;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return out + esc(line.slice(last));
+}
+function codebox(src, kind, hitLine) {
+  const lines = src.split('\n');
+  return `<div class="codebox">` + lines.map((l, i) =>
+    `<div class="cl ${i + 1 === hitLine ? 'hit' : ''}" data-ln="${i + 1}">
+       <span class="ln">${i + 1}</span><code>${hiLine(l, kind) || ' '}</code></div>`).join('') + `</div>`;
+}
+
+/* ---- 打开文件（按类型分发渲染） ---- */
+let mdMode = 'preview';
+function openFile(id, opts = {}) {
+  const f = FILES[id];
+  if (!f) return;
+  window.__curFile = id;
+  expandTo(id);
+  mdMode = opts.mdMode || 'preview';
+  $('#fvIcon').textContent = f.icon;
+  $('#fvName').textContent = f.name;
+  $('#fvPath').textContent = f.path;
+  $('#fvLang').textContent = f.lang;
+  $('#fvMeta').textContent = `${f.size} · ${f.mtime}`;
+  $('#mdSeg').hidden = f.kind !== 'md';
+  $$('#mdSeg button').forEach(b => b.classList.toggle('active', b.dataset.md === mdMode));
+  renderBody(f, opts.line);
+  renderTree();
+  if (opts.line) toast(`已跳转到 ${f.name} 第 ${opts.line} 行`);
+}
+function renderBody(f, hitLine) {
+  const body = $('#fvBody');
+  if (f.kind === 'bin') {
+    body.innerHTML = `<div class="fv-empty"><div class="box">
+      <div class="em">🖼</div><b>二进制文件暂不支持预览</b>
+      <p>${f.path} · ${f.lang} · ${f.size}<br>本期仅支持文本类文件查看，可「用系统默认程序打开」（实现时评估）。</p></div></div>`;
+    return;
+  }
+  if (f.kind === 'md' && mdMode === 'preview') { body.innerHTML = `<div class="md-wrap">${f.md}</div>`; return; }
+  body.innerHTML = codebox(f.src, f.kind === 'md' || f.kind === 'text' ? null : f.kind, hitLine);
+  if (hitLine) $('.cl.hit')?.scrollIntoView({ block: 'center' });
+}
+$('#mdSeg').addEventListener('click', e => {
+  const b = e.target.closest('[data-md]');
+  if (!b) return;
+  mdMode = b.dataset.md;
+  $$('#mdSeg button').forEach(x => x.classList.toggle('active', x === b));
+  renderBody(FILES[window.__curFile]);
+});
+
+/* ---- 全局内容搜索（防抖 300ms · 结果点击跳转） ---- */
+const INDEX = Object.entries(FILES).filter(([, f]) => f.src).map(([id, f]) => ({
+  id, lines: f.src.split('\n').map((t, i) => ({ t, ln: i + 1 })),
+}));
+let searchTimer;
+$('#searchBox').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 300);
+});
+function runSearch() {
+  const q = $('#searchBox').value.trim();
+  const box = $('#searchRes');
+  if (q.length < 2) { box.innerHTML = ''; return; }
+  const hits = [];
+  outer: for (const it of INDEX)
+    for (const { t, ln } of it.lines)
+      if (t.includes(q)) { hits.push({ id: it.id, ln, t }); if (hits.length >= 8) break outer; }
+  box.innerHTML = hits.length
+    ? `<div class="sr-head"><span>${hits.length} 条命中</span><span class="mono">GET /fs/search</span></div>` +
+      hits.map(h => `<div class="sr-item" data-sr="${h.id}" data-ln="${h.ln}">
+        <div class="loc">📄 ${FILES[h.id].name} : ${h.ln}</div>
+        <div class="tx">${esc(h.t).replaceAll(esc(q), `<mark>${esc(q)}</mark>`)}</div></div>`).join('')
+    : `<div class="sr-head"><span>无匹配（跳过 node_modules / .git / dist）</span></div>`;
+}
+$('#searchRes').addEventListener('click', e => {
+  const item = e.target.closest('[data-sr]');
+  if (!item) return;
+  const id = item.dataset.sr;
+  const isMd = FILES[id].kind === 'md';
+  openFile(id, { line: Number(item.dataset.ln), mdMode: isMd ? 'source' : undefined });
+});
+
+/* ---- 右侧工作空间：默认展开 2/3，「� 工作空间」开关；窄屏浮层 + 遮罩 ---- */
+const panel = $('#filesPanel'), mask = $('#filesMask'), tglBtn = $('#filesToggle'), splitter = $('#splitter');
+const isNarrow = () => matchMedia('(max-width: 900px)').matches;
+let savedW = '';  // 收起前的工作空间宽度（'' = 默认 2/3）
+function setPanel(open) {
+  panel.classList.toggle('open', open);
+  tglBtn.classList.toggle('on', open);
+  mask.classList.toggle('show', open && isNarrow());
+  if (isNarrow()) return;
+  if (open) panel.style.width = savedW;
+  else { savedW = panel.style.width; panel.style.width = '0'; }
+}
+tglBtn.onclick = () => setPanel(!panel.classList.contains('open'));
+mask.onclick = () => setPanel(false);
+addEventListener('resize', () => {
+  if (isNarrow()) panel.style.width = '';
+  else mask.classList.remove('show');
+});
+
+/* ---- 拖拽分割条：调整对话 / 工作空间占比（双击复位 2/3） ---- */
+let drag = null;
+splitter.addEventListener('pointerdown', e => {
+  if (isNarrow() || !panel.classList.contains('open')) return;
+  drag = { x: e.clientX, w: panel.getBoundingClientRect().width };
+  try { splitter.setPointerCapture(e.pointerId); } catch {}
+  document.body.classList.add('resizing');
+  panel.classList.add('dragging');
+});
+splitter.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const total = $('#chat').getBoundingClientRect().width;
+  const w = Math.max(360, Math.min(total - 340, drag.w + drag.x - e.clientX));
+  panel.style.width = w + 'px'; savedW = panel.style.width;
+});
+const endDrag = () => { if (drag) { drag = null; document.body.classList.remove('resizing'); panel.classList.remove('dragging'); } };
+splitter.addEventListener('pointerup', endDrag);
+splitter.addEventListener('pointercancel', endDrag);
+splitter.addEventListener('dblclick', () => { panel.style.width = ''; savedW = ''; toast('已恢复默认占比（工作空间 2/3）'); });
+
+/* 助手消息里的文件引用 chip：展开面板并打开文件 */
+document.addEventListener('click', e => {
+  const ref = e.target.closest('[data-open]');
+  if (!ref) return;
+  setPanel(true);
+  openFile(ref.dataset.open);
+});
+
+/* ---- 会话列表 / 发送（演示） ---- */
+$('#newSessBtn').onclick = () => toast('原型演示：新建对话（会话创建见 原型-20261017-001）');
+$('#mgrpHead').onclick = () => $('#mgrp').classList.toggle('open');
+// 会话列表：搜索过滤（对齐 ChatView.vue sessKw / filteredGroups）
+$('#sessKw').oninput = (e) => {
+  const kw = e.target.value.trim().toLowerCase();
+  let any = false;
+  $$('#sessList .ws-group').forEach(g => {
+    const gName = (g.querySelector('.nm').textContent || '').toLowerCase();
+    let gHit = false;
+    $$('.sess', g).forEach(s => {
+      const hit = !kw || (gName + ' ' + $('.n', s).textContent).toLowerCase().includes(kw);
+      s.style.display = hit ? '' : 'none';
+      if (hit) gHit = true;
+    });
+    g.style.display = gHit ? '' : 'none';
+    if (gHit) any = true;
+  });
+  $('#sessEmpty').style.display = any ? 'none' : '';
+};
+// 会话列表：分组折叠 + 删除二次确认（对齐 ChatView.vue toggleWs / onDelSession）
+$('#sessList').addEventListener('click', (e) => {
+  const del = e.target.closest('.del');
+  if (del) {
+    e.stopPropagation();
+    if (del.classList.contains('armed')) {
+      toast('原型演示：删除会话');
+      del.classList.remove('armed'); del.textContent = '🗑';
+    } else {
+      del.classList.add('armed'); del.textContent = '确认？';
+      setTimeout(() => { del.classList.remove('armed'); del.textContent = '🗑'; }, 3000);
+    }
+    return;
+  }
+  const head = e.target.closest('.ws-head');
+  if (head) head.parentElement.classList.toggle('collapsed');
+});
+$('#sessList').addEventListener('click', e => {
+  const s = e.target.closest('.sess');
+  if (s && !s.classList.contains('active')) toast('原型聚焦：文件面板集成（会话切换见 原型-20261017-001）');
+});
+$('#sendBtn').onclick = () => {
+  const inp = $('#chatInput'), text = inp.value.trim();
+  if (!text) return;
+  $('#msgList').insertAdjacentHTML('beforeend',
+    `<div class="msg user"><div class="bubble"><p>${esc(text)}</p></div></div>`);
+  inp.value = '';
+  const box = $('.msgs'); box.scrollTop = box.scrollHeight;
+  setTimeout(() => {
+    $('#msgList').insertAdjacentHTML('beforeend',
+      `<div class="msg assistant">
+        <div class="m-head"><div class="ava">L</div><span class="m-role">Loop Agent</span></div>
+        <div class="body">
+        <p>（原型演示）收到：${esc(text)}</p>
+        <p>也可点引用直接打开：<span class="fref" data-open="agent.py">🐍 agent.py</span></p></div></div>`);
+    box.scrollTop = box.scrollHeight;
+  }, 500);
+};
+$('#chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#sendBtn').click(); }
+});
+
+/* ---- 初始：桌面默认展开（占 2/3），窄屏收起为浮层；预载 README.md ---- */
+openFile('README.md');
+if (isNarrow()) setPanel(false);
+</script>
+</body>
+</html>

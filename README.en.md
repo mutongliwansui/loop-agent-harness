@@ -11,7 +11,7 @@
 
 > 🧠 **Core idea**: a **Thought → Action → Observation** reasoning loop — "think, act, observe" like a human, solving problems step by step until a final answer is reached.
 
-[中文](README.md) | [✨ Features](#-features) | [🚀 Quick Start](#-quick-start) | [📚 Documentation](#-documentation)
+[中文](README.md) | [Français](README.fr.md) | [✨ Features](#-features) | [🚀 Quick Start](#-quick-start) | [📚 Documentation](#-documentation)
 
 </div>
 

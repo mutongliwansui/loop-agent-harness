@@ -77,6 +77,13 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
   return (await res.json()) as T;
 }
 
+/** 原始文件下载（GET /fs/raw：自动注入 Bearer；供 pdf iframe / Office 文档前端解析） */
+export async function fetchRaw(path: string): Promise<Blob> {
+  const res = await fetch(`/fs/raw?path=${encodeURIComponent(path)}`, { headers: authHeaders() });
+  if (!res.ok) await throwFor(res);
+  return await res.blob();
+}
+
 /** 原始字节上传（POST /uploads/raw：body=文件字节，X-File-Name=encodeURIComponent 文件名） */
 export async function uploadRaw(
   file: File,

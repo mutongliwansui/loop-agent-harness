@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // ChatView：会话 CRUD + SSE 流式对话 + 停止生成 + 对话内上传（Task-20261017-001 D5/D7）
 // 端点映射：
-//   GET    /workspaces          → 左侧会话列表（按工作空间分组聚合，顺序稳定：按空间首次使用时间升序）
+//   GET    /workspaces          → 左侧菜单会话列表（sessions.ts 共享 store；按工作空间分组聚合）
 //   POST   /sessions            → 新建会话（body 可带 workspacePath 异空间切换；发送前无会话时也自动创建）
 //   GET    /fs/dirs             → 服务端目录浏览（新建弹窗「浏览磁盘」；纯 Web 拿不到本地目录绝对路径）
 //   GET    /sessions/:id        → 恢复历史消息（{meta, messages, workspace}；跨空间会话自动切换到其所在空间）
@@ -14,29 +14,25 @@
 //          主题跟随 prefers-color-scheme；解析失败保留代码块并标红）
 //          交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放（以视口中心为锚）
 
-import { computed, nextTick, onMounted, reactive, ref } from 'vue';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
 import { api, AuthError, uploadRaw } from '../api/client.js';
 import { sseFetch, type SseEvent } from '../api/sse.js';
 import { showToast } from '../toast.js';
-
-interface SessionMeta {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-  messageCount: number;
-}
-interface WorkspaceGroup {
-  id: string;
-  name: string;
-  path: string;
-  current: boolean;
-  createdAt: string;
-  lastAccessedAt: string;
-  sessions: SessionMeta[];
-}
+import { renderMarkdown, highlightIn } from '../markdown.js';
+import FilesView from './FilesView.vue';
+import {
+  workspaces,
+  activeId,
+  chatStreaming,
+  foreignActive,
+  currentWsPath,
+  wsColor,
+  loadSessions,
+  registerChatBridge,
+  consumePendingNewPop,
+  consumePendingSelect,
+  type SessionMeta,
+} from '../sessions.js';
 interface TextSeg {
   type: 'text';
   text: string;
@@ -74,10 +70,6 @@ interface UploadChip {
   contextNote: string;
 }
 
-const workspaces = ref<WorkspaceGroup[]>([]);
-const collapsedWs = ref<Set<string>>(new Set());
-const sessKw = ref('');
-const activeId = ref<string | null>(null);
 const messages = ref<ChatMsg[]>([]);
 const draft = ref('');
 const streaming = ref(false);
@@ -86,7 +78,6 @@ const uploads = ref<UploadChip[]>([]);
 const upPopOpen = ref(false);
 const upBusy = ref(false);
 const upCleanArmed = ref(false);
-const delArmedId = ref<string | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const msgsEl = ref<HTMLElement | null>(null);
 // 新建会话弹窗（已知空间列表 + 服务端目录浏览器，原型-20261017-004）
@@ -101,6 +92,7 @@ const dirLoading = ref(false);
 const dirError = ref('');
 const dirJump = ref('');
 
+// 会话标题徽标（chat-head）：从共享 store 取活跃会话元信息
 const activeMeta = computed(() => {
   for (const w of workspaces.value) {
     const s = w.sessions.find((x) => x.id === activeId.value);
@@ -111,18 +103,8 @@ const activeMeta = computed(() => {
 const activeWs = computed(
   () => workspaces.value.find((w) => w.sessions.some((s) => s.id === activeId.value)) ?? null,
 );
-const foreignActive = computed(() => activeWs.value !== null && !activeWs.value.current);
-const filteredGroups = computed(() => {
-  const kw = sessKw.value.trim().toLowerCase();
-  if (!kw) return workspaces.value;
-  return workspaces.value
-    .map((w) => {
-      if (w.name.toLowerCase().includes(kw) || w.path.toLowerCase().includes(kw)) return w;
-      const hit = w.sessions.filter((s) => (s.title || '').toLowerCase().includes(kw));
-      return hit.length > 0 ? { ...w, sessions: hit } : null;
-    })
-    .filter((w): w is WorkspaceGroup => w !== null);
-});
+// 工作空间文件浏览器（原型-20261018-001）：右侧面板默认展开
+const filesOpen = ref(true);
 
 let msgSeq = 0;
 let chipSeq = 0;
@@ -133,22 +115,17 @@ function fmtBytes(n: number): string {
   return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
-}
-
-function renderMarkdown(text: string | null | undefined): string {
-  if (!text) return '';
-  return DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
-}
-
-/* ================= mermaid 后处理渲染 ================= */
+/* ================= 消息后处理：代码高亮 + mermaid ================= */
 // 流式期间 segments 文本段逐 chunk 变化触发 v-html 重渲，不能边流边渲；
-// 只在流式结束（send finally）或历史加载（selectSession）后，把 marked 输出的
-// <pre><code class="language-mermaid"> 替换为 mermaid SVG。失败保留代码块。
+// 只在流式结束（send finally）或历史加载（selectSession）后统一后处理：
+// 先 highlight.js 高亮代码块，再把 marked 输出的 <pre><code class="language-mermaid">
+// 替换为 mermaid SVG。失败保留代码块。
+
+async function postRenderMsgs(): Promise<void> {
+  await nextTick();
+  if (msgsEl.value) highlightIn(msgsEl.value); // 高亮在 mermaid 前：mermaid 块被跳过
+  await renderMermaidDiagrams();
+}
 
 let mermaidPromise: Promise<(typeof import('mermaid'))['default']> | null = null;
 let mermaidSeq = 0;
@@ -281,7 +258,11 @@ async function renderMermaidInMsgs(): Promise<void> {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',
-      theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default',
+      // 主题跟随全局：手动 data-theme 优先（App.vue 主题按钮），否则跟随系统
+      theme: (() => {
+        const t = document.documentElement.dataset.theme;
+        return (t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'default';
+      })(),
     });
     for (const code of blocks) {
       const pre = code.parentElement;
@@ -313,31 +294,7 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/* ================= 会话列表（按工作空间分组） ================= */
-
-const WS_COLORS = ['#0e9f6e', '#4f46e5', '#b45309', '#0e7490', '#be185d', '#7c3aed'];
-
-function wsColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = h * 31 + name.charCodeAt(i);
-  return WS_COLORS[Math.abs(h) % WS_COLORS.length];
-}
-
-function toggleWs(id: string): void {
-  const next = new Set(collapsedWs.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  collapsedWs.value = next;
-}
-
-async function loadSessions(): Promise<void> {
-  try {
-    const r = await api<{ workspaces: WorkspaceGroup[] }>('/workspaces');
-    workspaces.value = r.workspaces;
-  } catch (e) {
-    if (!(e instanceof AuthError)) showToast(errText(e), 'error');
-  }
-}
+/* ================= 会话创建与切换（列表数据见 sessions.ts 共享 store） ================= */
 
 /**
  * 创建会话；带 workspacePath 时可异空间切换（后端同空间自动识别为直建）。
@@ -504,11 +461,12 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
 }
 
 async function selectSession(id: string): Promise<void> {
-  if (id === activeId.value) return;
   if (streaming.value) {
     showToast('正在生成回复，请先停止', 'error');
     return;
   }
+  // 同会话且消息已在场（含从管理页返回重挂载场景）不重复拉取；消息为空则视为需恢复
+  if (id === activeId.value && messages.value.length > 0) return;
   try {
     const r = await api<{
       meta: SessionMeta;
@@ -521,42 +479,11 @@ async function selectSession(id: string): Promise<void> {
     activeId.value = id;
     messages.value = rebuildChatMsgs(r.messages);
     scrollBottom();
-    void renderMermaidDiagrams();
+    void postRenderMsgs();
     if (switched) showToast(`已切换工作空间：${r.workspace?.path}`, 'success');
   } catch (e) {
     if (!(e instanceof AuthError)) showToast(errText(e), 'error');
   }
-}
-
-function onDelSession(s: SessionMeta): void {
-  if (delArmedId.value !== s.id) {
-    delArmedId.value = s.id; // 动词即确认：二次点击
-    setTimeout(() => {
-      if (delArmedId.value === s.id) delArmedId.value = null;
-    }, 2600);
-    return;
-  }
-  delArmedId.value = null;
-  void (async () => {
-    try {
-      await api(`/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
-      for (const w of workspaces.value) {
-        const i = w.sessions.findIndex((x) => x.id === s.id);
-        if (i >= 0) {
-          w.sessions.splice(i, 1);
-          break;
-        }
-      }
-      if (activeId.value === s.id) {
-        activeId.value = null;
-        messages.value = [];
-      }
-      showToast('会话已删除', 'success');
-    } catch (e) {
-      if (e instanceof AuthError) return;
-      showToast((e as { code?: string }).code === 'busy' ? '会话正在处理消息，暂不能删除' : errText(e), 'error');
-    }
-  })();
 }
 
 /* ================= 消息发送与 SSE 渲染 ================= */
@@ -710,7 +637,7 @@ async function send(): Promise<void> {
     streaming.value = false;
     abortCtrl = null;
     scrollBottom();
-    void renderMermaidDiagrams(); // 流式/非流式/停止/失败统一在此渲染 mermaid
+    void postRenderMsgs(); // 流式/非流式/停止/失败统一在此做代码高亮 + mermaid
     void loadSessions(); // 刷新 messageCount / updatedAt
   }
 }
@@ -776,64 +703,42 @@ function onCleanUploads(): void {
   })();
 }
 
+// 与共享 store 双向联动：
+//   写 —— streaming 状态同步给 App「新建对话」按钮禁用态
+//   读 —— store 删除活跃会话后 activeId 置 null，这里清空消息区
+watchEffect(() => {
+  chatStreaming.value = streaming.value;
+});
+watch(activeId, (v) => {
+  if (v === null) messages.value = [];
+});
+
+// Esc 关闭新建会话弹窗（window 级监听：焦点可能落在弹窗内输入框，元素级 @keydown 不可靠）
+function onGlobalKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape' && newPopOpen.value) closeNewPop();
+}
+
 onMounted(() => {
+  // 会话切换/新建弹窗依赖本组件的流式与消息状态，注册给 App 侧栏委托调用
+  registerChatBridge({ select: (id) => void selectSession(id), openNewPop });
+  window.addEventListener('keydown', onGlobalKeydown);
   void loadSessions();
+  // 消费从其他管理页跳转过来的意图；无意图时若仍有活跃会话（从管理页返回）恢复其消息
+  if (consumePendingNewPop()) openNewPop();
+  const pend = consumePendingSelect();
+  if (pend) void selectSession(pend);
+  else if (activeId.value) void selectSession(activeId.value);
+});
+
+onUnmounted(() => {
+  registerChatBridge(null);
+  window.removeEventListener('keydown', onGlobalKeydown);
 });
 </script>
 
 <template>
   <div class="chat">
-    <!-- ===== 会话侧栏 ===== -->
-    <aside class="sess-panel">
-      <div class="h">
-        <b>会话</b>
-        <button class="primary new" :disabled="streaming" @click="openNewPop">＋ 新建</button>
-      </div>
-      <div class="sess-filter">
-        <span class="ico">🔍</span>
-        <input v-model="sessKw" type="text" placeholder="搜索会话 / 工作空间">
-      </div>
-      <div class="sess-list">
-        <div
-          v-for="w in filteredGroups"
-          :key="w.id"
-          class="ws-group"
-          :class="{ collapsed: collapsedWs.has(w.id) }"
-        >
-          <div class="ws-head" :title="w.path" @click="toggleWs(w.id)">
-            <span class="arrow">▼</span>
-            <span class="dot" :style="{ background: wsColor(w.name) }"></span>
-            <span class="nm">{{ w.name }}</span>
-            <span v-if="w.current" class="cur">当前</span>
-            <span class="cnt">{{ w.sessions.length }}</span>
-          </div>
-          <div
-            v-for="s in w.sessions"
-            :key="s.id"
-            class="sess"
-            :class="{ active: s.id === activeId }"
-            @click="selectSession(s.id)"
-          >
-            <div class="t">
-              <div class="n">{{ s.title || '新会话' }}</div>
-              <div class="s">{{ s.messageCount }} 条 · {{ fmtTime(s.updatedAt) }}</div>
-            </div>
-            <button
-              class="del"
-              :class="{ armed: delArmedId === s.id }"
-              :title="delArmedId === s.id ? '再次点击确认删除' : '删除会话'"
-              @click.stop="onDelSession(s)"
-            >
-              {{ delArmedId === s.id ? '确认？' : '🗑' }}
-            </button>
-          </div>
-        </div>
-        <div v-if="filteredGroups.length === 0" class="empty">
-          {{ sessKw.trim() ? '无匹配会话' : '暂无会话' }}
-        </div>
-      </div>
-    </aside>
-
+    <!-- 会话列表已并入左侧菜单（App.vue，原型-20261018-001） -->
     <!-- ===== 主区 ===== -->
     <div class="chat-main">
       <div class="chat-head">
@@ -843,16 +748,31 @@ onMounted(() => {
         <span v-if="foreignActive" class="ro-badge">只读</span>
         <span class="spacer"></span>
         <span class="muted-hint">{{ streamChk ? 'SSE 流式' : '非流式' }}</span>
+        <button
+          class="icon-toggle"
+          :class="{ on: filesOpen }"
+          :title="filesOpen ? '收起工作空间面板' : '展开工作空间面板'"
+          @click="filesOpen = !filesOpen"
+        >
+          <!-- 自绘右侧面板开合图标：圆角外框 + 偏右分隔线，展开时右子面板着色 -->
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+            <rect x="2.6" y="3.6" width="14.8" height="12.8" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <line x1="12.9" y1="3.6" x2="12.9" y2="16.4" stroke="currentColor" stroke-width="1.5" />
+            <rect v-if="filesOpen" x="13.65" y="4.35" width="3" height="11.3" rx="1.2" fill="currentColor" opacity="0.35" />
+          </svg>
+        </button>
       </div>
 
       <div ref="msgsEl" class="msgs">
         <div class="msg-wrap">
           <div v-if="!activeId && messages.length === 0" class="chat-empty">
-            选择左侧会话，或点击「＋ 新建」开始对话
+            选择左侧会话，或点击「＋ 新建对话」开始
           </div>
           <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
-            <div class="ava">{{ m.role === 'user' ? '你' : 'L' }}</div>
-            <div class="bubble">
+            <div v-if="m.role === 'assistant'" class="m-head">
+              <div class="ava">L</div><span class="m-role">Loop Agent</span>
+            </div>
+            <div :class="m.role === 'user' ? 'bubble' : 'body'">
               <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
               <template v-for="(seg, i) in m.segments" :key="i">
                 <details v-if="seg.type === 'tool'" class="tool-call">
@@ -931,6 +851,9 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- ===== 工作空间文件浏览器（对话右侧，v-model 控制展开） ===== -->
+    <FilesView v-model:open="filesOpen" :ws-path="currentWsPath" />
 
     <!-- ===== 新建会话弹窗（已知工作空间 + 服务端目录浏览器） ===== -->
     <div v-if="newPopOpen" class="np-mask" @click.self="closeNewPop">
@@ -1011,131 +934,6 @@ onMounted(() => {
   overflow: hidden;
 }
 
-/* ===== 会话侧栏 ===== */
-.sess-panel {
-  width: 220px;
-  flex: none;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-}
-.sess-panel .h {
-  padding: 12px 12px 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.sess-panel .h b { font-size: 13px; }
-.sess-panel .h .new { padding: 4px 10px; font-size: 12.5px; }
-.sess-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 8px;
-}
-.sess {
-  padding: 8px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
-}
-.sess:hover { background: var(--bg); }
-.sess.active { background: var(--brand-weak); }
-.sess .t { flex: 1; min-width: 0; }
-.sess .t .n {
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sess .t .s { font-size: 11px; color: var(--muted); }
-.sess .del {
-  visibility: hidden;
-  border: none;
-  background: none;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 0 3px;
-}
-.sess:hover .del { visibility: visible; }
-.sess .del:hover, .sess .del.armed { color: var(--danger); }
-.sess-list .empty { color: var(--muted); font-size: 12.5px; padding: 10px; text-align: center; }
-
-/* ===== 会话过滤与工作空间分组 ===== */
-.sess-filter {
-  position: relative;
-  margin: 0 12px 6px;
-}
-.sess-filter .ico {
-  position: absolute;
-  left: 9px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 11px;
-  opacity: 0.55;
-  pointer-events: none;
-}
-.sess-filter input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 5px 9px 5px 26px;
-  font-size: 12.5px;
-  border-radius: 7px;
-}
-.ws-group { margin-bottom: 2px; }
-.ws-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 6px 6px 3px;
-  cursor: pointer;
-  border-radius: 7px;
-  user-select: none;
-}
-.ws-head:hover { background: var(--bg); }
-.ws-head .arrow {
-  font-size: 9px;
-  color: var(--muted);
-  transition: transform 0.15s;
-  flex: none;
-}
-.ws-group.collapsed .ws-head .arrow { transform: rotate(-90deg); }
-.ws-head .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-}
-.ws-head .nm {
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-.ws-head .cur {
-  font-size: 10px;
-  color: var(--brand);
-  background: var(--brand-weak);
-  border-radius: 999px;
-  padding: 1px 6px;
-  flex: none;
-}
-.ws-head .cnt {
-  font-size: 10.5px;
-  color: var(--muted);
-  background: var(--bg);
-  border-radius: 999px;
-  padding: 1px 6px;
-  flex: none;
-}
-.ws-group.collapsed .sess { display: none; }
-.ws-group .sess { margin-left: 10px; }
 .chat-head .ws-badge {
   font-size: 11.5px;
   color: var(--muted);
@@ -1147,6 +945,7 @@ onMounted(() => {
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: none;
 }
 .chat-head .ro-badge {
   font-size: 11px;
@@ -1173,54 +972,93 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* 容器查询基准：按对话区实际宽度做窄容器兼容 */
+  container-type: inline-size;
 }
-.chat-head b { font-size: 14px; }
+.chat-head b {
+  font-size: 14px;
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .chat-head .sid {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 11px;
   color: var(--muted);
+  flex: none;
+  white-space: nowrap;
 }
 .chat-head .spacer { flex: 1; }
+.chat-head .icon-toggle {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 4px 6px;
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--muted);
+  flex: none;
+}
+.chat-head .icon-toggle:hover { color: var(--text); }
+.chat-head .icon-toggle.on {
+  color: var(--brand);
+  border-color: var(--brand);
+  background: var(--brand-weak);
+}
 .muted-hint { font-size: 12px; color: var(--muted); }
+.chat-head .muted-hint { flex: none; white-space: nowrap; }
+
+/* 窄容器兼容（对话区收窄时）：标题栏隐藏次要信息，保证标题可读 */
+@container (max-width: 520px) {
+  .chat-head .sid,
+  .chat-head .muted-hint { display: none; }
+  .chat-head .ws-badge { max-width: 120px; }
+}
+@container (max-width: 380px) {
+  .chat-head .ws-badge { display: none; }
+}
 
 /* ===== 消息流 ===== */
 .msgs { flex: 1; overflow-y: auto; padding: 20px 0; }
-.msg-wrap { max-width: 780px; margin: 0 auto; padding: 0 20px; }
+.msg-wrap { max-width: 800px; margin: 0 auto; padding: 0 20px; }
 .chat-empty {
   text-align: center;
   color: var(--muted);
   padding: 48px 0;
   font-size: 13.5px;
 }
-.msg { margin-bottom: 18px; display: flex; gap: 10px; }
+/* 用户消息：无头像，右对齐气泡；助手消息：头像+名称在上，正文平铺 */
+.msg { margin-bottom: 18px; }
 .msg .ava {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
+  background: var(--brand);
+  color: var(--brand-on);
 }
-.msg.user { flex-direction: row-reverse; }
-.msg.user .ava { background: var(--bg); border: 1px solid var(--line); }
-.msg.assistant .ava { background: var(--brand); color: var(--brand-on); }
-.bubble { max-width: 76%; padding: 9px 14px; border-radius: 12px; }
+.msg.user { display: flex; justify-content: flex-end; }
 .msg.user .bubble {
+  max-width: 76%;
+  padding: 9px 14px;
+  border-radius: 12px;
   background: var(--brand-weak);
   border-top-right-radius: 4px;
 }
 .msg.user .plain { white-space: pre-wrap; word-break: break-word; }
-.msg.assistant .bubble {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-top-left-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-}
-.msg .bubble p { margin: 0 0 8px; }
-.msg .bubble p:last-child { margin-bottom: 0; }
+.msg.assistant .m-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.msg.assistant .m-role { font-size: 12px; font-weight: 600; color: var(--muted); }
+.msg .bubble p, .msg .body p { margin: 0 0 8px; }
+.msg .bubble p:last-child, .msg .body p:last-child { margin-bottom: 0; }
 .md :first-child { margin-top: 0; }
 .md :last-child { margin-bottom: 0; }
 /* v-html 注入内容无 scoped 属性，pre/code 需 :deep 穿透（含 mermaid 失败回退的代码块） */
@@ -1384,19 +1222,22 @@ onMounted(() => {
   border-top: 1px solid var(--line);
   background: var(--panel);
   padding: 12px 20px 14px;
+  /* 容器查询基准：按对话区实际宽度做窄容器兼容 */
+  container-type: inline-size;
 }
-.composer-inner { max-width: 780px; margin: 0 auto; position: relative; }
+.composer-inner { max-width: 800px; margin: 0 auto; position: relative; }
 .composer .box { display: flex; gap: 10px; align-items: flex-end; }
 .composer textarea {
   flex: 1;
+  min-width: 0;
   resize: none;
   height: 44px;
   line-height: 1.5;
   padding: 10px 12px;
 }
-.composer .attach { height: 44px; padding: 0 12px; font-size: 16px; }
-.composer .send { height: 44px; padding: 0 18px; }
-.composer .stop { height: 44px; padding: 0 14px; color: var(--danger); border-color: var(--danger); }
+.composer .attach { flex: none; height: 44px; padding: 0 12px; font-size: 16px; }
+.composer .send { flex: none; height: 44px; padding: 0 18px; }
+.composer .stop { flex: none; height: 44px; padding: 0 14px; color: var(--danger); border-color: var(--danger); }
 .composer .meta {
   display: flex;
   align-items: center;
@@ -1404,9 +1245,20 @@ onMounted(() => {
   margin-top: 7px;
   font-size: 12px;
   color: var(--muted);
+  flex-wrap: wrap;
+  min-width: 0;
 }
-.composer label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.composer label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; flex: none; }
 .composer .hint { font-size: 11.5px; }
+
+/* 窄容器兼容（对话区收窄时）：隐藏次要提示、收窄按钮 */
+@container (max-width: 520px) {
+  .composer .hint { display: none; }
+}
+@container (max-width: 380px) {
+  .composer .send { padding: 0 12px; }
+  .composer .attach { padding: 0 9px; }
+}
 
 /* ===== 上传 chip 与面板 ===== */
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1577,9 +1429,4 @@ onMounted(() => {
 .dir-item:hover { background: var(--brand-weak); }
 .dir-item + .dir-item { border-top: 1px solid var(--line); }
 .dir-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0; }
-
-/* ===== 窄屏 ===== */
-@media (max-width: 900px) {
-  .sess-panel { display: none; }
-}
 </style>

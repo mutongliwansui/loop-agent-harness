@@ -9,6 +9,7 @@ import { sendJson } from './http-utils.js';
 import { handleCreateSession, handleDeleteSession, handleGetSession, handleListDirs, handleListSessions, handleListWorkspaces } from './handlers/sessions.js';
 import { handleMessage } from './handlers/messages.js';
 import { uploadRoutes } from './handlers/uploads.js';
+import { fsRoutes } from './handlers/fs.js';
 import { configRoutes } from './handlers/config.js';
 import { statusRoutes } from './handlers/status.js';
 import { toolsRoutes } from './handlers/tools.js';
@@ -79,6 +80,8 @@ export function createRoutes(): Route[] {
     { method: 'GET', path: '/sessions', handler: (ctx, _req, res) => handleListSessions(ctx, res) },
     // 服务端目录浏览（新建会话选择工作空间；静态段，无 :param 冲突）
     { method: 'GET', path: '/fs/dirs', handler: (ctx, req, res) => handleListDirs(ctx, req, res) },
+    // 工作空间文件浏览器（原型-20261018-001）：树 / 文件预览 / 全文搜索（均静态段）
+    ...fsRoutes(),
     // 跨工作空间聚合（会话按工作空间分组展示）
     { method: 'GET', path: '/workspaces', handler: (ctx, _req, res) => handleListWorkspaces(ctx, res) },
     { method: 'POST', path: '/sessions/:id/messages', handler: (ctx, req, res, p) => handleMessage(ctx, req, res, p.id) },

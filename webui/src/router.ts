@@ -15,9 +15,8 @@ export interface NavItem {
   icon: string;
 }
 
-/** 左侧导航 8 项（与原型一致） */
-export const navItems: readonly NavItem[] = [
-  { path: '#/chat', label: '聊天', icon: '💬' },
+/** 底部「管理」分组 7 项（原型-20261018-001：聊天即主页由「新建对话」+ 会话列表承载） */
+export const adminItems: readonly NavItem[] = [
   { path: '#/config', label: '配置', icon: '⚙️' },
   { path: '#/models', label: '模型', icon: '🤖' },
   { path: '#/tools', label: '工具', icon: '🔧' },
