@@ -224,6 +224,30 @@ export class SessionStore {
     data.steps = steps;
     data.updatedAt = new Date().toISOString();
 
+    // === 方案 A：fullHistory 全量历史（每次 updateSession 合并追加、不去头） ===
+    // L1 WorkingMemory.compact 会把 result.messages 截断成 [system, ephemeral_placeholder, 最近 N 轮]，
+    // 直接写 messages 会导致早期轮次永久丢失。fullHistory 存"未截断"的完整对话链，作为展示层/restore 的唯一真源。
+    {
+      const nonEphemeralNew = messages.filter((m) => !isEphemeral(m)); // fullHistory 也过滤 ephemeral（是 L1 压缩瞬间的临时占位，不落盘）
+      if (!data.fullHistory) data.fullHistory = [];
+      for (const msg of nonEphemeralNew) {
+        if (msg.role === 'system') continue; // fullHistory 存原始对话，不含 system
+        const exists = data.fullHistory.some((m) => isSameMessage(m, msg));
+        if (!exists) data.fullHistory.push(msg);
+      }
+      // 防膨胀：fullHistory 封顶 2000 条（极端情况保护）
+      if (data.fullHistory.length > 2000) {
+        data.fullHistory = data.fullHistory.slice(-2000);
+      }
+    }
+
+    // === 方案 C 兜底：如果 fullHistory 已够长但 lastSummary 仍空，store 层自己生成一个 ===
+    // 正常情况下 agent 压缩成功会主动调 saveLastSummary（方案 B）；但万一 agent 还没压缩过、
+    // 或者异常退出没走到压缩分支，这里兜底生成一个，避免 restore 时 summary 占位缺失。
+    if (!data.lastSummary && data.fullHistory && data.fullHistory.length > 20) {
+      data.lastSummary = buildSummary(data.fullHistory);
+    }
+
     // === 分层存储逻辑 ===
     const recentTurns = data.recentTurns ?? this.recentTurns;
     const turnSize = 4; // 每轮约 4 条：system + user + assistant + tool
@@ -328,9 +352,14 @@ export class SessionStore {
    *     有配对起点的连续对话
    */
   static getAllAvailableMessages(data: SessionData): ChatMessage[] {
+    // 方案 A 优先：fullHistory 是 updateSession 每次合并追加不去头的完整链
+    if (data.fullHistory && data.fullHistory.length > 0) {
+      // fullHistory 本身不含 system，直接返回（展示层/restore 都不需要 system）
+      return data.fullHistory;
+    }
+    // 旧 session / 无 fullHistory：从 archived + messages + recent 三路重建
     const seen = new Set<string>();
     const merged: ChatMessage[] = [];
-    // 时间顺序：归档（最早）→ messages 直接存的 → recent（最新）
     const sources: ChatMessage[][] = [
       data.archivedMessages ?? [],
       data.messages ?? [],
@@ -354,9 +383,8 @@ export class SessionStore {
         }
       }
     }
-    // 从第一条 user 开始截：修复前旧 session 头部可能有孤立的 assistant/tool 残留
     let firstUserIdx = merged.findIndex((m) => m.role === 'user');
-    if (firstUserIdx < 0) firstUserIdx = 0; // 极端无 user 的 session，保留全部避免空
+    if (firstUserIdx < 0) firstUserIdx = 0;
     return merged.slice(firstUserIdx);
   }
 
@@ -380,6 +408,27 @@ export class SessionStore {
       keepRecentTurns: opts?.keepRecentTurns ?? DEFAULT_WORKING_CONFIG.keepRecentTurns,
       summaryText: data.lastSummary || undefined,
     });
+  }
+
+  /**
+   * 方案 B：L1 压缩成功时，agent 调用此方法把 preCompactionFlush 提炼出的结构化摘要写盘。
+   * 正常链路：agent.run → compact(messages, extracted) → saveLastSummary(id, extracted)
+   * restoreSession 读 data.lastSummary 并注入 buildCompactedView 占位，整条链打通。
+   */
+  async saveLastSummary(id: string, summary: string): Promise<void> {
+    if (!summary?.trim()) return; // 空摘要不写
+    const data = await this.readSession(id);
+    // 拼接并限长（跨轮次累积）
+    const combined = data.lastSummary
+      ? `${data.lastSummary}\n${summary}`
+      : summary;
+    if (combined.length > MAX_SUMMARY_CHARS) {
+      data.lastSummary = combined.slice(-MAX_SUMMARY_CHARS);
+    } else {
+      data.lastSummary = combined;
+    }
+    data.updatedAt = new Date().toISOString();
+    await this.writeSession(data);
   }
 
   /**

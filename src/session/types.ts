@@ -41,6 +41,10 @@ export interface SessionData {
   archivedCount?: number;
   /** 保存时的最近轮数配置 */
   recentTurns?: number;
+
+  /** 全量历史（修复前旧 session 的 messages 可能被 L1 截断覆盖丢失；
+   *  updateSession 每次合并追加、不去头；展示层与 restore 优先用它） */
+  fullHistory?: ChatMessage[];
 }
 
 /** 工作空间元信息 */

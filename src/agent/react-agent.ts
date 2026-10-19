@@ -436,6 +436,10 @@ export class ReActAgent {
                 debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
                 // 同一份笔记既写 L2，也作为摘要占位注入内存视图，否则压缩后头部轮次直接从 LLM 视野消失
                 messages = this._workingMemory.compact(messages, extracted);
+                // 方案 B：让磁盘层也知道这次压缩的摘要（restore 时 buildCompactedView 有 summaryText 注入占位）
+                if (this._sessionStore && this._currentSessionId) {
+                  void this._sessionStore.saveLastSummary(this._currentSessionId, extracted);
+                }
                 debug.log(`压缩完成，保留 ${messages.length} 条消息`);
                 await safeEvents.onCompaction?.({
                   threshold,
@@ -457,6 +461,10 @@ export class ReActAgent {
                 debug.log(`flush 失败，降级存档 ${rawContent.length} 字符到 L2（compaction_fallback）`);
                 // 降级存档文本同样作为摘要占位注入，避免压缩后上下文断裂
                 messages = this._workingMemory.compact(messages, rawContent);
+                // 降级分支也把摘要写盘（长度可能很大，saveLastSummary 内部有 MAX_SUMMARY_CHARS 限长）
+                if (this._sessionStore && this._currentSessionId) {
+                  void this._sessionStore.saveLastSummary(this._currentSessionId, rawContent);
+                }
                 debug.log(`压缩完成，保留 ${messages.length} 条消息`);
                 await safeEvents.onCompaction?.({
                   threshold,
