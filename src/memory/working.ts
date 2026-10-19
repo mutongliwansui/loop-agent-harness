@@ -4,6 +4,94 @@ import type { ChatMessage } from '../types.js';
 import type { WorkingMemoryConfig, ILLMClient } from './types.js';
 import { DEFAULT_WORKING_CONFIG } from './types.js';
 
+/** 摘要占位消息的固定前缀（内存压缩与磁盘恢复共用的临时上下文占位） */
+export const SUMMARY_PLACEHOLDER_PREFIX = '[历史摘要]';
+
+/** 摘要占位注入时的最大字符数（避免占位长期占用上下文 token） */
+export const SUMMARY_PLACEHOLDER_MAX_CHARS = 500;
+
+/**
+ * 判断是否为临时占位消息。
+ * 占位消息只在「给 LLM 的视图」中出现，写盘时必须过滤（见 SessionStore.updateSession）。
+ */
+export function isEphemeral(msg: ChatMessage): boolean {
+  return msg.role === 'user' && msg.ephemeral === true;
+}
+
+export interface CompactedViewOptions {
+  /** 保留最近多少轮（每轮 = 一条 user 及其后的 assistant/tool 消息） */
+  keepRecentTurns: number;
+  /** 头部被裁剪部分的摘要文本；为空则不注入占位 */
+  summaryText?: string;
+  /** 消息里没有 system 时的兜底 system prompt */
+  systemPrompt?: string;
+}
+
+/**
+ * 从后向前按 user 切轮，返回保留的轮次与被丢弃的消息数。
+ * 与旧 compact() 语义一致：凑满 keepRecentTurns 轮即停止（头部轮次丢弃）；
+ * 循环自然结束时剩余的头部残片保留（头部可能以 tool 开头），避免丢消息。
+ */
+function pickRecentTurns(
+  messages: ChatMessage[],
+  keepRecentTurns: number,
+): { turns: ChatMessage[][]; droppedCount: number } {
+  const turns: ChatMessage[][] = [];
+  let currentTurn: ChatMessage[] = [];
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    currentTurn.unshift(messages[i]);
+    if (messages[i].role === 'user' && currentTurn.length > 1) {
+      turns.unshift(currentTurn);
+      currentTurn = [];
+      if (turns.length >= keepRecentTurns) break;
+    }
+  }
+  if (currentTurn.length > 0) {
+    turns.unshift(currentTurn);
+  }
+
+  const keptCount = turns.reduce((n, t) => n + t.length, 0);
+  return { turns, droppedCount: messages.length - keptCount };
+}
+
+/**
+ * 统一压缩视图：内存压缩与磁盘恢复共用同一形态。
+ * 输出 = [system, (摘要占位 · ephemeral), 最近 N 轮]
+ *
+ * 单一出处的意义：避免「L1 压缩结果」与「磁盘恢复视图」两套参数、两种形态。
+ */
+export function buildCompactedView(
+  messages: ChatMessage[],
+  opts: CompactedViewOptions,
+): ChatMessage[] {
+  const systemMsg =
+    messages.find((m) => m.role === 'system') ??
+    (opts.systemPrompt ? { role: 'system' as const, content: opts.systemPrompt } : undefined);
+
+  // 1) 清掉旧占位（多次压缩不堆积），system 不参与切轮
+  const nonSystem = messages.filter((m) => m.role !== 'system' && !isEphemeral(m));
+
+  // 2) 从后向前按 user 切轮，保留最近 N 轮
+  const { turns, droppedCount } = pickRecentTurns(nonSystem, opts.keepRecentTurns);
+
+  const result: ChatMessage[] = [];
+  if (systemMsg) result.push(systemMsg);
+
+  // 3) 头部确实被裁掉且有摘要 → 注入临时占位（截断后注入，避免长期吃 token）
+  const summary = opts.summaryText?.trim();
+  if (droppedCount > 0 && summary) {
+    result.push({
+      role: 'user',
+      content: `${SUMMARY_PLACEHOLDER_PREFIX} ${summary.slice(0, SUMMARY_PLACEHOLDER_MAX_CHARS)}`,
+      ephemeral: true,
+    });
+  }
+
+  result.push(...turns.flat());
+  return result;
+}
+
 export class WorkingMemory {
   private config: WorkingMemoryConfig;
 
@@ -61,31 +149,11 @@ export class WorkingMemory {
    * 压缩：保留 system + 最近 N 轮对话
    * 每轮 = user 消息及其对应的 assistant/tool 消息
    */
-  compact(messages: ChatMessage[]): ChatMessage[] {
-    const systemMsg = messages.find((m) => m.role === 'system');
-    const nonSystem = messages.filter((m) => m.role !== 'system');
-
-    // 从后向前分轮：以 user 消息为一轮的起点
-    const turns: ChatMessage[][] = [];
-    let currentTurn: ChatMessage[] = [];
-
-    for (let i = nonSystem.length - 1; i >= 0; i--) {
-      currentTurn.unshift(nonSystem[i]);
-      if (nonSystem[i].role === 'user' && currentTurn.length > 1) {
-        turns.unshift(currentTurn);
-        currentTurn = [];
-        if (turns.length >= this.config.keepRecentTurns) break;
-      }
-    }
-    // 处理剩余的不成轮消息
-    if (currentTurn.length > 0) {
-      turns.unshift(currentTurn);
-    }
-
-    const result: ChatMessage[] = [];
-    if (systemMsg) result.push(systemMsg);
-    result.push(...turns.flat());
-    return result;
+  compact(messages: ChatMessage[], summaryText?: string): ChatMessage[] {
+    return buildCompactedView(messages, {
+      keepRecentTurns: this.config.keepRecentTurns,
+      summaryText,
+    });
   }
 
   /** 获取当前配置 */

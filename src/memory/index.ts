@@ -1,5 +1,10 @@
 // 记忆管理模块聚合入口（Phase 1-5 已实现）
-export { WorkingMemory } from './working.js';
+export {
+  WorkingMemory,
+  buildCompactedView,
+  isEphemeral,
+  SUMMARY_PLACEHOLDER_PREFIX,
+} from './working.js';
 export { EpisodicMemory } from './episodic.js';
 export { CuratedMemory } from './curated.js';
 export { ContextAssembler, repairMessageSequence } from './context.js';

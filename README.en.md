@@ -11,7 +11,7 @@
 
 > 🧠 **Core idea**: a **Thought → Action → Observation** reasoning loop — "think, act, observe" like a human, solving problems step by step until a final answer is reached.
 
-[中文](README.md) | [Français](README.fr.md) | [✨ Features](#-features) | [🚀 Quick Start](#-quick-start) | [📚 Documentation](#-documentation)
+[中文](README.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [✨ Features](#-features) | [🚀 Quick Start](#-quick-start) | [📚 Documentation](#-documentation)
 
 </div>
 
@@ -32,11 +32,12 @@
 | 👁️ **Vision Understanding** | Integrates multimodal vision models (OpenAI-protocol `image_url` format): four tools for image description / targeted Q&A / structured extraction / OCR; local images auto-converted to base64; LRU result caching and usage stats; `/vision` command for management and connectivity testing |
 | 🌐 **MCP Support** | Connect external tool services via the Model Context Protocol (stdio / SSE / Streamable HTTP) |
 | 🧩 **Skills** | SKILL.md spec + progressive loading; the `activate_skill` tool activates domain instructions on demand |
-| 🧠 **Three-tier Memory** | L1 Working (token compaction) / L2 Episodic (daily journal) / L3 Curated (always injected) |
+| 🧠 **Three-tier Memory** | L1 Working (token compaction: flush extracts notes to L2 + a `[历史摘要]` ephemeral placeholder is injected into context, never persisted) / L2 Episodic (daily journal) / L3 Curated (always injected); unified three-view session context: on-disk full history is the single source of truth, in-memory compaction and on-disk restore share one `buildCompactedView` generator — restore yields the recent N turns + summary |
 | 🔧 **Layered Config** | CLI > workspace > global > .env > defaults, with multiple layers of overrides and traceable sources |
 | 🧭 **First-run Bootstrap** | On startup, the model config and global/workspace directories are checked automatically: if config is missing, an interactive wizard starts (baseUrl → masked apiKey input → model name → connectivity check → choose write scope) and directories are scaffolded with defaults; `--no-setup` skips it, while `/setup` re-runs it and `/doctor` performs a read-only check inside the REPL |
 | 🎛️ **Runtime Config Management** | Built-in `/config`, `/mcp`, `/tools`, `/skill`, `/memory`, `/vision` commands with hot modification |
 | 🖥️ **Web UI** | Open the browser and go: multi-session chat (SSE streaming / stop generation / in-chat upload) plus a config/models/tools/MCP/skills/memory/doctor console, hosted on the same port as `--serve`, reusing the REST endpoints entirely |
+| ⌨️ **Tab Autocompletion** | In the REPL, typing `/con` and pressing Tab completes to `/config`; both commands and subcommands are completable, and multiple candidates are listed automatically |
 | 💾 **Session Persistence** | Conversation history stored with AES-256-GCM encryption; auto-saved across processes / manually restorable |
 | 📝 **Debug Logging** | File logs of LLM requests/responses, tool calls and agent iterations, with automatic rotation |
 | 🎯 **Event Hooks** | 15 lifecycle hooks, inspired by LangChain callbacks, for easy extension |
@@ -90,8 +91,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 # Model name (optional, defaults to gpt-4o-mini)
 MODEL_NAME=gpt-4o-mini
 
-# Max agent iterations (optional, defaults to 10)
-MAX_ITERATIONS=10
+# Max agent iterations (optional, defaults to 100)
+MAX_ITERATIONS=100
 
 # Debug logging (optional, off by default; when enabled, outputs to ~/.loop-agent/logs)
 DEBUG=true

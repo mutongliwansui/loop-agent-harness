@@ -11,7 +11,7 @@
 
 > 🧠 **核心思想**：**Thought → Action → Observation** 循环推理，像人类一样"思考-行动-观察"，逐步解决问题，直到得出最终答案。
 
-[English](README.en.md) | [Français](README.fr.md) | [✨ 特性](#-特性) | [🚀 快速开始](#-快速开始) | [📚 详细文档](#-详细文档)
+[English](README.en.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [✨ 特性](#-特性) | [🚀 快速开始](#-快速开始) | [📚 详细文档](#-详细文档)
 
 </div>
 
@@ -32,7 +32,7 @@
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE / Streamable HTTP） |
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
-| 🧠 **三层记忆管理** | L1 Working（token 压缩）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入） |
+| 🧠 **三层记忆管理** | L1 Working（token 超阈值压缩：flush 提取笔记写 L2 + `[历史摘要]` 临时占位注入上下文，`ephemeral` 标记不落盘）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入）；会话上下文三视图统一：磁盘全量历史为唯一真源，内存压缩与磁盘恢复共用同一 `buildCompactedView` 生成器，恢复即得最近 N 轮 + 摘要 |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
 | 🧭 **首次启动引导** | 启动时自动检测模型配置与全局/工作空间目录：缺配置进入交互式向导（baseUrl → apiKey 遮蔽输入 → 模型名 → 连通性校验 → 选择写入层级），目录按默认结构补建；`--no-setup` 跳过，REPL 内 `/setup` 重跑、`/doctor` 只读体检 |
 | 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/mcp`、`/tools`、`/skill`、`/memory`、`/vision` 命令，支持热修改 |
@@ -91,8 +91,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 # 模型名称（可选，默认 gpt-4o-mini）
 MODEL_NAME=gpt-4o-mini
 
-# Agent 最大迭代次数（可选，默认 10）
-MAX_ITERATIONS=10
+# Agent 最大迭代次数（可选，默认 100）
+MAX_ITERATIONS=100
 
 # 调试日志（可选，默认关闭，开启后输出到 ~/.loop-agent/logs）
 DEBUG=true

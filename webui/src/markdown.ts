@@ -2,7 +2,7 @@
 //
 // renderMarkdown(text) → 安全 HTML（marked.parse + DOMPurify.sanitize）
 // highlightIn(root)    → 对 root 下 <pre><code class="language-*"> 代码块做 hljs 高亮；
-//                        跳过 language-mermaid（由 ChatView mermaid 后处理接管）与已高亮块；
+//                        跳过 language-mermaid（由 ../mermaid.ts 后处理渲染接管）与已高亮块；
 //                        单块失败静默保留原样，不影响其余块。配色见 style.css 的 .hljs-* 规则。
 
 import DOMPurify from 'dompurify';

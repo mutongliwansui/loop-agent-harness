@@ -100,7 +100,7 @@ describe('MemoryIndex FTS5（4.1/4.2/4.3）', () => {
     await epi.appendToday('全局知识：华锐是重点客户', {
       sessionId: 'sess_A',
       scope: 'global',
-      tag: 'compaction',
+      tag: 'knowledge', // 非压缩类 tag（压缩笔记 tag: compaction 不参与检索）
     });
 
     // Session B 只能看到 global 级

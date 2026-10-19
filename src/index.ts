@@ -142,8 +142,10 @@ async function main() {
           // 使用 restoreSession 方法（支持分层存储）
           agent.restoreSession(data, systemPrompt);
 
-          // 获取恢复消息用于后续渲染
-          restoredMessages = SessionStore.getRestoreMessages(data);
+          // 获取完整历史用于渲染展示（前台展示走全量字段，避免只显示恢复视图的裁剪结果）
+          restoredMessages = data.messages?.length
+            ? data.messages
+            : SessionStore.getRestoreMessages(data);
         }
       }
 

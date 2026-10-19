@@ -12,7 +12,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { SessionStore } from '../src/session/store.js';
 import { EpisodicMemory } from '../src/memory/episodic.js';
-import { WorkingMemory } from '../src/memory/working.js';
+import { WorkingMemory, isEphemeral } from '../src/memory/working.js';
+import { ContextAssembler } from '../src/memory/context.js';
+import { CuratedMemory } from '../src/memory/curated.js';
 import { ReActAgent } from '../src/agent/react-agent.js';
 import { keychain } from '../src/session/keychain.js';
 import { tmpdir } from 'node:os';
@@ -85,7 +87,7 @@ describe('Session 分层存储和恢复', () => {
   });
 
   // ===== 2. Session 分层恢复 =====
-  it('1.12/1.13 Session 分层恢复：只加载 recentMessages，lastSummary 注入 system', async () => {
+  it('1.12/1.13 Session 分层恢复：统一压缩视图（system + 摘要占位 + 最近 3 轮）', async () => {
     const messages = makeMessages(50);
     const meta = await store.createSession('分层恢复测试', messages, []);
     await store.updateSession(meta.id, messages, []);
@@ -97,20 +99,21 @@ describe('Session 分层存储和恢复', () => {
 
     const restored = agent.getSessionMessages();
 
-    // 只恢复 system + lastSummary + recentMessages（远小于全量 100 条）
-    expect(restored.length).toBeLessThanOrEqual(14);
+    // 统一压缩视图：system + (摘要占位) + 最近 3 轮（远小于全量 100 条）
+    expect(restored.length).toBeLessThanOrEqual(8);
     expect(restored.length).toBeLessThan(messages.length);
     expect(restored[0].role).toBe('system');
     expect(restored[0].content).toContain(systemPrompt);
 
-    // lastSummary 作为首条 user 消息注入（不污染 system，保留前缀缓存）
+    // lastSummary 以 ephemeral 占位注入首条 user 消息（不污染 system，也不写盘）
     if (data.lastSummary) {
       expect(restored[1].role).toBe('user');
-      expect(restored[1].content).toContain('会话历史摘要');
+      expect(isEphemeral(restored[1])).toBe(true);
+      expect(restored[1].content).toContain('[历史摘要]');
     }
   });
 
-  it('SessionStore.getRestoreMessages 只含 system + lastSummary + recentMessages', async () => {
+  it('SessionStore.getRestoreMessages：统一压缩视图，与 compact 产出同形态', async () => {
     const messages = makeMessages(50);
     const meta = await store.createSession('静态恢复测试', messages, []);
     await store.updateSession(meta.id, messages, []);
@@ -120,11 +123,58 @@ describe('Session 分层存储和恢复', () => {
 
     expect(restoreMsgs[0].role).toBe('system');
     expect(restoreMsgs.length).toBeLessThan(messages.length);
-    expect(
-      restoreMsgs.some(
-        (m) => typeof m.content === 'string' && m.content.includes('会话历史摘要'),
-      ),
-    ).toBe(true);
+    // 摘要占位为 ephemeral（LLM 可见、不落盘），且只注入一次
+    const placeholders = restoreMsgs.filter((m) => isEphemeral(m));
+    expect(placeholders.length).toBe(1);
+    expect(placeholders[0].content).toContain('[历史摘要]');
+
+    // === 一致性断言：内存压缩与磁盘恢复产出同一形态 ===
+    const wm = new WorkingMemory();
+    const compacted = wm.compact(
+      [
+        { role: 'system', content: '系统提示' },
+        ...data.messages!.filter((m) => m.role !== 'system'),
+      ],
+      data.lastSummary || undefined,
+    );
+    expect(compacted.map((m) => m.role)).toEqual(restoreMsgs.map((m) => m.role));
+    expect(compacted.map((m) => m.content)).toEqual(restoreMsgs.map((m) => m.content));
+  });
+
+  // ===== 6. 全量 messages 头部保留（L1 压缩不丢头） =====
+  it('1.15 L1 压缩后 updateSession 不丢全量头部：data.messages 合并而非覆盖', async () => {
+    const full = makeMessages(10); // 20 条
+    const withSystem: ChatMessage[] = [
+      { role: 'system', content: '测试 system' },
+      ...full,
+    ];
+    const meta = await store.createSession('头部保留测试', withSystem, []);
+    await store.updateSession(meta.id, withSystem, []);
+
+    // 模拟 L1 压缩：传入视图只剩 system + 最近 2 轮（头部轮次被 WorkingMemory.compact 丢弃）
+    const compacted = [withSystem[0], ...full.slice(-4)];
+    await store.updateSession(meta.id, compacted, []);
+
+    let data = await store.loadSession(meta.id);
+    // 全量字段头部完整：system + 首轮 user 仍在
+    expect(data.messages![0].role).toBe('system');
+    expect(data.messages![1].role).toBe('user');
+    expect(data.messages![1].content).toContain('用户问题 0');
+    // 压缩传入不引入重复，长度不回缩
+    expect(data.messages!.length).toBe(withSystem.length);
+
+    // 正常追加回归：新增一轮只追加 2 条
+    const nextTurn: ChatMessage[] = [
+      ...compacted,
+      { role: 'user', content: '用户问题 追加轮：这是一条较长的测试消息。' },
+      { role: 'assistant', content: '助手回复 追加轮。' },
+    ];
+    await store.updateSession(meta.id, nextTurn, []);
+    data = await store.loadSession(meta.id);
+    expect(data.messages!.length).toBe(withSystem.length + 2);
+    expect(data.messages!.at(-1)?.content).toContain('追加轮');
+    // 头部不受追加影响
+    expect(data.messages![1].content).toContain('用户问题 0');
   });
 
   // ===== 3. L2 Episodic Memory Session 隔离 =====
@@ -150,7 +200,7 @@ describe('Session 分层存储和恢复', () => {
     await episodic.appendToday('项目知识：本项目使用 TypeScript + Node.js 技术栈', {
       sessionId: 'sess_A',
       scope: 'global',
-      tag: 'compaction',
+      tag: 'knowledge', // 非压缩类 tag（压缩笔记 tag: compaction 已被检索侧过滤）
     });
 
     const fromB = await episodic.search('TypeScript', 5, { sessionId: 'sess_B' });
@@ -175,10 +225,10 @@ describe('Session 分层存储和恢复', () => {
     const agent = new ReActAgent();
     agent.restoreSession(data, '系统提示');
 
-    // 关键断言：只加载 recentMessages，不加载全部 500 条
+    // 关键断言：只恢复统一压缩视图（最近 3 轮），不加载全部 500 条
     const restored = agent.getSessionMessages();
     expect(restored.length).toBeLessThan(messages.length);
-    expect(restored.length).toBeLessThanOrEqual(14);
+    expect(restored.length).toBeLessThanOrEqual(8);
 
     // 首轮 = 恢复后的上下文 + 用户新消息，不应触发 L1 压缩
     // （若错误加载全量 500 条，估算 token 约 2.5w+，必触发 8000*0.8=6400 阈值）
@@ -191,5 +241,93 @@ describe('Session 分层存储和恢复', () => {
     expect(wm.estimateTokens(firstRound)).toBeLessThan(
       wm.getConfig().maxTokens * wm.getConfig().compactionThreshold,
     );
+  });
+
+  // ===== 7. 三视图统一：写盘过滤 + 双通道防护 =====
+  it('1.16 写盘过滤 ephemeral：临时占位不进入全量历史与 recentMessages', async () => {
+    const base: ChatMessage[] = [
+      { role: 'system', content: '测试 system' },
+      ...makeMessages(3),
+    ];
+    const meta = await store.createSession('占位过滤测试', base, []);
+    await store.updateSession(meta.id, base, []);
+
+    // 模拟恢复/压缩后的内存视图：含一条 ephemeral 摘要占位
+    const withPlaceholder: ChatMessage[] = [
+      { role: 'system', content: '测试 system' },
+      { role: 'user', content: '[历史摘要] 早前的决定：store 采用合并写', ephemeral: true },
+      ...makeMessages(3),
+    ];
+    await store.updateSession(meta.id, withPlaceholder, []);
+
+    const data = await store.loadSession(meta.id);
+    // 全量历史：占位被过滤，长度不受影响
+    expect(data.messages!.some((m) => isEphemeral(m))).toBe(false);
+    expect(
+      data.messages!.some(
+        (m) => typeof m.content === 'string' && m.content.startsWith('[历史摘要]'),
+      ),
+    ).toBe(false);
+    expect(data.messages!.length).toBe(base.length);
+    // 分层原材料同样不含占位
+    expect(data.recentMessages!.some((m) => isEphemeral(m))).toBe(false);
+  });
+
+  it('1.17 防护 B：L2 检索跳过 tag: compaction 的压缩笔记（避免双通道重复注入）', async () => {
+    await episodic.appendToday('压缩笔记：当前进度是修复 store 合并写', {
+      sessionId: 'sess_C',
+      scope: 'session',
+      tag: 'compaction',
+    });
+    await episodic.appendToday('压缩笔记：跨会话的压缩内容', {
+      sessionId: 'sess_C',
+      scope: 'global',
+      tag: 'compaction',
+    });
+
+    const hit = await episodic.search('压缩笔记', 5, { sessionId: 'sess_C' });
+    expect(hit.length).toBe(0);
+
+    // 同前缀的非压缩类条目仍可检索（确认过滤只针对 compaction tag）
+    await episodic.appendToday('普通笔记：压缩相关但不是压缩笔记', {
+      sessionId: 'sess_C',
+      scope: 'session',
+      tag: 'note',
+    });
+    const hit2 = await episodic.search('普通笔记', 5, { sessionId: 'sess_C' });
+    expect(hit2.length).toBe(1);
+  });
+
+  it('1.18 防护 C：查询增强拼接检索词时排除 ephemeral 占位', async () => {
+    const queries: string[] = [];
+    const fakeEpisodic = {
+      search: async (q: string) => {
+        queries.push(q);
+        return [];
+      },
+    } as unknown as EpisodicMemory;
+
+    mkdirSync(join(TEST_DIR, 'curated-empty'), { recursive: true });
+    const assembler = new ContextAssembler(
+      new CuratedMemory(join(TEST_DIR, 'curated-empty')),
+      fakeEpisodic,
+    );
+
+    const current: ChatMessage[] = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: '[历史摘要] 早前决定：store 改用合并写', ephemeral: true },
+      { role: 'user', content: '继续改 session 恢复逻辑' },
+    ];
+    await assembler.assemble('继续改 session 恢复逻辑', current, [], {
+      queryEnhanceRounds: 3,
+      sessionId: 'sess_D',
+    });
+
+    expect(queries.length).toBeGreaterThan(0);
+    // 占位文本不得进入检索词，真实用户消息必须进入
+    for (const q of queries) {
+      expect(q).not.toContain('[历史摘要]');
+    }
+    expect(queries.some((q) => q.includes('继续改 session 恢复逻辑'))).toBe(true);
   });
 });

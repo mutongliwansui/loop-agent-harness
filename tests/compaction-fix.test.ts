@@ -56,8 +56,8 @@ function writeWorkspaceConfig(wsDir: string, flushFailure: 'skip' | 'archive'): 
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
-      model: { name: 'test-model', baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'test', temperature: 0, maxIterations: 5 },
-      agent: { verbose: false, showTokenStats: false, llmLogEnabled: false },
+      model: { name: 'test-model', baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'test', temperature: 0 },
+      agent: { verbose: false, showTokenStats: false, llmLogEnabled: false, maxIterations: 5 },
       memory: {
         enabled: true,
         working: { maxTokens: 500, compactionThreshold: 0.8, keepRecentTurns: 1, flushFailure },

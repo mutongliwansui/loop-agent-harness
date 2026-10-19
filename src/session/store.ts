@@ -13,6 +13,8 @@ import {
 import type { ChatMessage, AgentStep } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
+import { buildCompactedView, isEphemeral } from '../memory/working.js';
+import { DEFAULT_WORKING_CONFIG } from '../memory/types.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
 
@@ -195,8 +197,30 @@ export class SessionStore {
   ): Promise<void> {
     const data = await this.readSession(id);
 
-    // 保存原始全量消息用于兼容
-    data.messages = messages;
+    // 保存全量消息用于兼容——合并而非覆盖：
+    // 传入 messages 可能已被 L1 压缩重写（WorkingMemory.compact 只保留 system + 最近 N 轮，
+    // 头部轮次被丢弃），直接覆盖会让磁盘上的全量历史也跟着丢头（首轮 user 消失、
+    // system 后紧跟悬空 tool）。以已有 data.messages 为底，只去重追加新消息。
+    const prevMessages = data.messages ?? [];
+    const incomingSystem = messages.find((m) => m.role === 'system');
+    const mergedMessages: ChatMessage[] = [];
+    // system 只保留一条：优先用传入的最新 system，否则沿用旧的
+    if (incomingSystem) {
+      mergedMessages.push(incomingSystem);
+    } else {
+      const prevSystem = prevMessages.find((m) => m.role === 'system');
+      if (prevSystem) mergedMessages.push(prevSystem);
+    }
+    for (const msg of prevMessages) {
+      if (msg.role !== 'system') mergedMessages.push(msg);
+    }
+    for (const msg of messages) {
+      // system 只保留一条；ephemeral 是恢复/压缩注入的临时占位，不写入全量历史
+      if (msg.role === 'system' || isEphemeral(msg)) continue;
+      const exists = mergedMessages.some((m) => isSameMessage(m, msg));
+      if (!exists) mergedMessages.push(msg);
+    }
+    data.messages = mergedMessages;
     data.steps = steps;
     data.updatedAt = new Date().toISOString();
 
@@ -207,8 +231,8 @@ export class SessionStore {
 
     // 当前 recentMessages（不含 system）
     let currentRecent = data.recentMessages ?? [];
-    // 新的非 system 消息
-    const nonSystemMessages = messages.filter((m) => m.role !== 'system');
+    // 新的非 system 消息（同样排除临时占位，保持磁盘原材料干净）
+    const nonSystemMessages = messages.filter((m) => m.role !== 'system' && !isEphemeral(m));
 
     // 合并当前 recent + 新消息
     let mergedRecent = [...currentRecent];
@@ -250,7 +274,7 @@ export class SessionStore {
     await this.writeSession(data);
     // 会话标题：WebUI「先建空会话、后发消息」时 createSession 的 title 为空——用首条用户消息补生成（已有 title 不覆盖）
     const updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>> = {
-      messageCount: messages.length,
+      messageCount: mergedMessages.length,
       updatedAt: data.updatedAt,
     };
     const current = (await this.readIndex()).find((m) => m.id === id);
@@ -294,34 +318,26 @@ export class SessionStore {
   }
 
   /**
-   * 获取用于恢复对话的消息（仅 recentMessages + system 提示）
-   * 不含 archivedMessages，控制上下文大小
+   * 获取用于恢复对话的消息
+   * 与 L1 压缩共用 buildCompactedView：输出 = [system（可选）, (摘要占位 · ephemeral), 最近 N 轮]
+   * 不含 archivedMessages（其内容已并入 lastSummary），控制上下文大小
    */
-  static getRestoreMessages(data: SessionData, systemPrompt?: string): ChatMessage[] {
-    const messages: ChatMessage[] = [];
+  static getRestoreMessages(
+    data: SessionData,
+    systemPrompt?: string,
+    opts?: { keepRecentTurns?: number },
+  ): ChatMessage[] {
+    // 原材料：优先全量历史；旧格式会话兜底 recentMessages。
+    // 丢弃存储的 system，由 systemPrompt 决定（避免旧 prompt 覆盖当前配置）
+    const full = (data.messages?.length ? data.messages : data.recentMessages ?? []).filter(
+      (m) => m.role !== 'system',
+    );
 
-    // 1. 添加 system 提示（可选）
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-
-    // 2. 添加 lastSummary 作为历史上下文
-    if (data.lastSummary) {
-      messages.push({
-        role: 'user',
-        content: `[会话历史摘要] ${data.lastSummary}`,
-      });
-    }
-
-    // 3. 添加 recentMessages（恢复最近对话）
-    if (data.recentMessages && data.recentMessages.length > 0) {
-      messages.push(...data.recentMessages);
-    } else if (data.messages) {
-      // 兼容旧格式
-      messages.push(...data.messages);
-    }
-
-    return messages;
+    return buildCompactedView(full, {
+      systemPrompt,
+      keepRecentTurns: opts?.keepRecentTurns ?? DEFAULT_WORKING_CONFIG.keepRecentTurns,
+      summaryText: data.lastSummary || undefined,
+    });
   }
 
   /**

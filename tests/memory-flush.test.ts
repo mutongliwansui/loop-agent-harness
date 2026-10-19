@@ -3,12 +3,12 @@
  *
  * 覆盖验收项：
  * - 2.1 Pre-compaction flush：压缩前 LLM 提取关键信息写入 L2
- * - 2.2 压缩信息保留：压缩后关键信息在 L2 中可检索
+ * - 2.2 压缩信息保留：压缩后关键信息以 ephemeral 摘要占位保留在上下文（L2 原文不再参与检索，避免双通道重复注入）
  * - 2.5 压缩后对话延续：压缩后 Agent 能正常继续对话
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { WorkingMemory } from '../src/memory/working.js';
+import { WorkingMemory, isEphemeral } from '../src/memory/working.js';
 import { EpisodicMemory } from '../src/memory/episodic.js';
 import { ToolMemoryCallback } from '../src/memory/callback.js';
 import type { ChatMessage } from '../src/types.js';
@@ -48,7 +48,7 @@ describe('Phase 2.4 压缩质量验证', () => {
     rmSync(MEMORY_DIR, { recursive: true, force: true });
   });
 
-  it('2.1+2.2 flush 提取关键信息写入 L2，压缩后可在 L2 检索到', async () => {
+  it('2.1+2.2 flush 提取关键信息，压缩后以 ephemeral 摘要占位保留在上下文中', async () => {
     const wm = new WorkingMemory({
       // 小阈值便于触发：maxTokens=500, 阈值 80% → 400 token 触发
       maxTokens: 500,
@@ -70,31 +70,33 @@ describe('Phase 2.4 压缩质量验证', () => {
     const extracted = await wm.preCompactionFlush(history, flushLLM);
     expect(extracted.length).toBeGreaterThan(0);
 
-    // 2. 写入 L2（模拟 ReActAgent 行为：scope=global, tag=compaction）
+    // 2. 写入 L2（模拟 ReActAgent 行为：scope=session, tag=compaction）
     await episodic.appendToday(extracted, {
       sessionId: 'sess_flush',
-      scope: 'global',
+      scope: 'session',
       tag: 'compaction',
     });
 
-    // 3. 压缩：只保留最近 2 轮
-    const compacted = wm.compact(history);
+    // 3. 压缩：只保留最近 2 轮，并把同一份笔记作为 ephemeral 摘要占位注入视图
+    const compacted = wm.compact(history, extracted);
     expect(compacted.length).toBeLessThan(history.length);
-    expect(compacted.length).toBeLessThanOrEqual(5); // system + 2 轮*2
+    expect(compacted.length).toBeLessThanOrEqual(6); // system + 占位 + 2 轮*2
+    expect(compacted[0]).toEqual(msg('system', 'sys'));
+    // 占位紧随 system：LLM 可见，但不会写入磁盘历史
+    expect(isEphemeral(compacted[1])).toBe(true);
+    expect(compacted[1].content).toContain('华锐报价');
 
-    // 4. 关键信息在 L2 中可检索（验收 2.2）
+    // 4. 笔记已落盘 L2（读回原文可见），但不再参与语义检索
+    //    （防护 B：同一份内容已由 L1 占位注入，检索召回会造成双通道重复注入）
+    const day = new Date().toISOString().split('T')[0];
+    expect(await episodic.readDay(day)).toContain('华锐报价');
     const results = await episodic.search('华锐报价', 5, { sessionId: 'sess_flush' });
-    expect(results.length).toBeGreaterThan(0);
-    expect(results[0].content).toContain('华锐报价');
-
-    const results2 = await episodic.search('采购负责人', 5, { sessionId: 'sess_flush' });
-    expect(results2.length).toBeGreaterThan(0);
+    expect(results.length).toBe(0);
   });
 
-  it('2.2b flush 写入的 global 级记忆可被其他会话检索到', async () => {
-    // scope=global → 其他会话也能检索到（模拟跨会话知识积累）
+  it('2.2b 压缩笔记不再被其他会话召回（scope: session + 检索侧过滤 compaction）', async () => {
     const results = await episodic.search('华锐报价', 5, { sessionId: 'sess_other' });
-    expect(results.length).toBeGreaterThan(0);
+    expect(results.length).toBe(0);
   });
 
   it('2.5 压缩后对话可延续（保留最近轮次 + system）', async () => {

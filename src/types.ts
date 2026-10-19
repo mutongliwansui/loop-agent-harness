@@ -43,13 +43,14 @@ export interface ToolCall {
 
 /**
  * 聊天消息联合类型：
- * - system/user：仅 content
+ * - system/user：仅 content；user 可带 ephemeral 标记，表示恢复/压缩注入的临时占位
+ *   （LLM 可见，但不写入磁盘全量历史）
  * - assistant：纯文本回复 或 带 tool_calls 的回复
  * - tool：工具执行结果，附 tool_call_id
  */
 export type ChatMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string; ephemeral?: boolean }
   | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
 
@@ -169,7 +170,7 @@ export interface AgentResult {
  * Agent 运行选项
  */
 export interface AgentOptions {
-  /** 最大迭代次数，默认读取 config.maxIterations */
+  /** 最大迭代次数，默认读取 config.agent.maxIterations */
   maxIterations?: number;
   /** 采样温度，默认 0（确定性推理） */
   temperature?: number;

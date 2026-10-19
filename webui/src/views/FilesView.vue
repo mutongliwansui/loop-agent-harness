@@ -18,6 +18,7 @@ import { api, fetchRaw } from '../api/client.js';
 import { showToast } from '../toast.js';
 import DOMPurify from 'dompurify';
 import { highlightIn, renderMarkdown } from '../markdown.js';
+import { renderMermaidIn } from '../mermaid.js';
 // pptx Worker 脚本 URL：库默认按 import.meta.url 相对解析 worker 路径，vite 打包后失效，必须显式传入
 import pptxWorkerUrl from '@file-viewer/pptx/worker/pptx.worker.js?url';
 
@@ -40,6 +41,7 @@ const open = defineModel<boolean>('open', { default: true });
 
 const panelEl = ref<HTMLElement | null>(null);
 const viewerEl = ref<HTMLElement | null>(null);
+const mdEl = ref<HTMLElement | null>(null); // md 预览容器（mermaid 后处理目标）
 
 /* ================= 树 ================= */
 const tree = ref<FsNode[]>([]);
@@ -320,6 +322,7 @@ async function openFile(path: string, anchor = ''): Promise<void> {
     if (seq !== openSeq) return;
     if (k === 'pptx') void mountPptx(seq); // 容器已挂载，异步渲染不阻塞
     if (viewerEl.value && !(kind.value === 'md' && viewMode.value === 'prev')) highlightIn(viewerEl.value); // md 预览无需高亮；其余分支（含源码模式）高亮
+    if (k === 'md' && viewMode.value === 'prev' && mdEl.value) void renderMermaidIn(mdEl.value); // md 预览：mermaid 图表后处理（../mermaid.ts 共享模块）
     if (viewerKw.value.trim()) applyHits(); // 打开新文件后沿用文内搜索关键词
     if (anchor) scrollToAnchor(anchor); // 跨文件锚点：渲染完成后滚动（仅 md）
   } catch (e) {
@@ -461,6 +464,8 @@ function applyHits(): void {
   if (!root || !kw) return;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(n) {
+      // mermaid 不参与搜索：已渲染 SVG 插 mark 会破坏图形；未渲染源码块稍后被整体替换（mark 会丢、计数会虚高）
+      if (n.parentElement?.closest('svg, code.language-mermaid')) return NodeFilter.FILTER_REJECT;
       const tag = n.parentElement?.tagName;
       if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') return NodeFilter.FILTER_REJECT;
       return n.nodeValue?.toLowerCase().includes(kw) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
@@ -515,6 +520,7 @@ watch(viewerKw, () => {
 watch(viewMode, async (m) => {
   await nextTick(); // 等 v-if 分支重建 DOM
   if (m === 'src' && viewerEl.value) highlightIn(viewerEl.value); // 源码模式上高亮
+  if (m === 'prev' && kind.value === 'md' && mdEl.value) void renderMermaidIn(mdEl.value); // 切回预览：重跑 mermaid
   if (viewerKw.value.trim()) applyHits(); // 分支切换会丢掉 mark，重扫
 });
 
@@ -634,7 +640,7 @@ function fmtBytes(n: number): string {
           <div v-if="fileLoading" class="fv-empty">加载中…</div>
           <div v-else-if="fileError" class="fv-err">⚠ {{ fileError }}</div>
           <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒 -->
-          <div v-else-if="kind === 'md' && viewMode === 'prev'" class="fv-md" v-html="mdHtml" @click="onMdClick"></div>
+          <div v-else-if="kind === 'md' && viewMode === 'prev'" ref="mdEl" class="fv-md" v-html="mdHtml" @click="onMdClick"></div>
           <!-- html 预览：沙箱 iframe（孤立 origin：脚本可运行，无法触达主页面/存储） -->
           <iframe
             v-else-if="kind === 'html' && viewMode === 'prev'"

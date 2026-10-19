@@ -92,6 +92,12 @@ export interface SearchOptions {
   recencyHalfLifeDays?: number;
 }
 
+/**
+ * 压缩类笔记的 tag：这类条目是 L1 压缩时提取的会话上下文，
+ * 已作为摘要占位（ephemeral）注入内存视图，不再参与语义检索，避免双通道重复注入
+ */
+const COMPACTION_TAGS = ['compaction', 'compaction_fallback'];
+
 export class EpisodicMemory {
   private memoryDir: string;
   /** SQLite FTS5 索引（可选；初始化失败或查询报错时自动降级为文件检索） */
@@ -418,6 +424,12 @@ export class EpisodicMemory {
 
     const entryScope = scopeMatch?.[1] as MemoryScope | undefined;
     const entrySessionId = sessionMatch?.[1];
+
+    // 0. 压缩笔记（tag: compaction）不参与语义检索：
+    //    同一份内容已作为 L1 摘要占位注入内存视图，再被检索召回会造成双通道重复注入
+    if (COMPACTION_TAGS.some((tag) => header.includes(`[tag: ${tag}]`))) {
+      return false;
+    }
 
     // 1. 如果指定了 scope 过滤
     if (options.scope) {

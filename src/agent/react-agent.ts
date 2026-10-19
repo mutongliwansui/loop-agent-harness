@@ -20,6 +20,8 @@ import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
 import type { CuratedFileKey } from '../memory/types.js';
 import {
   WorkingMemory,
+  buildCompactedView,
+  DEFAULT_WORKING_CONFIG,
   EpisodicMemory,
   CuratedMemory,
   ContextAssembler,
@@ -124,34 +126,20 @@ export class ReActAgent {
       this._memoryCallback.setSessionId(data.id);
     }
 
-    const restored: ChatMessage[] = [];
-
-    // 1. system prompt 保持原样（摘要不注入，避免破坏前缀缓存）
-    restored.push({ role: 'system', content: systemPrompt });
-
-    // 2. 会话摘要作为首条 user 消息注入
-    if (data.lastSummary) {
-      restored.push({
-        role: 'user',
-        content: `【会话历史摘要】以下是你之前与用户的对话摘要，请在回答时参考上下文：\n${data.lastSummary}`,
-      });
-    }
-
-    // 3. 添加 recentMessages + 修复损坏的 tool-assistant 配对
-    let restoredMessages: ChatMessage[];
-    if (data.recentMessages && data.recentMessages.length > 0) {
-      restoredMessages = [...data.recentMessages];
-    } else if (data.messages) {
-      // 兼容旧格式
-      restoredMessages = data.messages.filter((m) => m.role !== 'system');
-    } else {
-      restoredMessages = [];
-    }
+    // 统一恢复视图：与 L1 压缩共用 buildCompactedView（同一逻辑/参数/形态）。
+    // system 用当前配置的 prompt（丢弃历史 system，避免旧 prompt 覆盖当前配置）；
+    // 摘要以 ephemeral 占位注入，只对 LLM 可见，不会写入磁盘全量历史。
+    const base = (data.messages?.length ? data.messages : data.recentMessages ?? []).filter(
+      (m) => m.role !== 'system',
+    );
+    const restored = buildCompactedView(base, {
+      systemPrompt,
+      keepRecentTurns: DEFAULT_WORKING_CONFIG.keepRecentTurns,
+      summaryText: data.lastSummary || undefined,
+    });
 
     // 持久化/恢复过程中可能导致 tool-assistant 配对损坏，统一修复
-    restored.push(...repairMessageSequence(restoredMessages));
-
-    this._chatHistory = restored;
+    this._chatHistory = repairMessageSequence(restored);
     debug.log(`Session 恢复: ${data.id}, recentMessages=${data.recentMessages?.length ?? 0}, archivedCount=${data.archivedCount ?? 0}`);
   }
 
@@ -358,13 +346,13 @@ export class ReActAgent {
     // 构建 CLI override：从 AgentOptions 提取能映射的字段
     const cliOverride: PartialAgentConfig = {};
     if (options.model !== undefined) cliOverride.model = { name: options.model };
-    if (options.maxIterations !== undefined) cliOverride.model = { ...cliOverride.model, maxIterations: options.maxIterations };
+    if (options.maxIterations !== undefined) cliOverride.agent = { ...cliOverride.agent, maxIterations: options.maxIterations };
     if (options.temperature !== undefined) cliOverride.model = { ...cliOverride.model, temperature: options.temperature };
-    if (options.verbose !== undefined) cliOverride.agent = { verbose: options.verbose };
+    if (options.verbose !== undefined) cliOverride.agent = { ...cliOverride.agent, verbose: options.verbose };
 
     const { config: cfg } = this._configLoader.load(cliOverride);
 
-    const maxIterations = cfg.model.maxIterations;
+    const maxIterations = cfg.agent.maxIterations;
     const model = cfg.model.name;
     const temperature = cfg.model.temperature;
     const verbose = cfg.agent.verbose;
@@ -437,14 +425,16 @@ export class ReActAgent {
               const llmAdapter = createLLMAdapter(model, temperature);
               const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter);
               if (extracted && this._episodicMemory) {
-                // pre-compaction flush 的内容标记为 global（跨会话知识）
+                // 压缩笔记属会话内上下文语义：scope 改为 session，
+                // 避免跨会话可见，也避免与 L1 摘要占位形成「同一份信息双通道注入」
                 await this._episodicMemory.appendToday(extracted, {
                   sessionId: this._currentSessionId ?? undefined,
-                  scope: 'global',
+                  scope: 'session',
                   tag: 'compaction',
                 });
                 debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
-                messages = this._workingMemory.compact(messages);
+                // 同一份笔记既写 L2，也作为摘要占位注入内存视图，否则压缩后头部轮次直接从 LLM 视野消失
+                messages = this._workingMemory.compact(messages, extracted);
                 debug.log(`压缩完成，保留 ${messages.length} 条消息`);
                 await safeEvents.onCompaction?.({
                   threshold,
@@ -464,7 +454,8 @@ export class ReActAgent {
                   tag: 'compaction_fallback',
                 });
                 debug.log(`flush 失败，降级存档 ${rawContent.length} 字符到 L2（compaction_fallback）`);
-                messages = this._workingMemory.compact(messages);
+                // 降级存档文本同样作为摘要占位注入，避免压缩后上下文断裂
+                messages = this._workingMemory.compact(messages, rawContent);
                 debug.log(`压缩完成，保留 ${messages.length} 条消息`);
                 await safeEvents.onCompaction?.({
                   threshold,

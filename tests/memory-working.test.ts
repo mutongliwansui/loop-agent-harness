@@ -9,7 +9,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { WorkingMemory } from '../src/memory/working.js';
+import {
+  WorkingMemory,
+  buildCompactedView,
+  isEphemeral,
+  SUMMARY_PLACEHOLDER_PREFIX,
+} from '../src/memory/working.js';
 import type { ChatMessage } from '../src/types.js';
 import type { ILLMClient } from '../src/memory/types.js';
 
@@ -102,5 +107,111 @@ describe('L1 WorkingMemory', () => {
     };
     const extracted = await wm.preCompactionFlush([msg('user', 'hi')], failingLLM);
     expect(extracted).toBe('');
+  });
+});
+
+describe('buildCompactedView 统一压缩视图', () => {
+  const chain = (): ChatMessage[] => [
+    msg('system', 'sys'),
+    msg('user', 'u1'),
+    msg('assistant', 'a1'),
+    msg('user', 'u2'),
+    msg('assistant', 'a2'),
+    msg('user', 'u3'),
+    msg('assistant', 'a3'),
+  ];
+
+  it('保留最近 N 轮，system 只保留一条', () => {
+    const result = buildCompactedView(chain(), { keepRecentTurns: 2 });
+    expect(result.map((m) => m.content)).toEqual(['sys', 'u2', 'a2', 'u3', 'a3']);
+  });
+
+  it('头部被裁且有摘要 → 注入 ephemeral 占位，位置在 system 之后', () => {
+    const result = buildCompactedView(chain(), {
+      keepRecentTurns: 2,
+      summaryText: '- 已修复 store 合并写',
+    });
+    expect(result[1].role).toBe('user');
+    expect(isEphemeral(result[1])).toBe(true);
+    expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} - 已修复 store 合并写`);
+  });
+
+  it('占位内容截断到 500 字符，避免长期占用 token', () => {
+    const result = buildCompactedView(chain(), {
+      keepRecentTurns: 1,
+      summaryText: 'x'.repeat(600),
+    });
+    expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} ${'x'.repeat(500)}`);
+  });
+
+  it('无摘要不注入占位；全部轮次都在保留范围内也不注入', () => {
+    // 有头部被裁，但没摘要 → 无占位
+    const withoutSummary = buildCompactedView(chain(), { keepRecentTurns: 2 });
+    expect(withoutSummary.some((m) => isEphemeral(m))).toBe(false);
+
+    // 没有头部被裁（保留 3 轮即全部）→ 即使给了摘要也不注入
+    const noDrop = buildCompactedView(chain(), {
+      keepRecentTurns: 3,
+      summaryText: '不该出现',
+    });
+    expect(noDrop.some((m) => isEphemeral(m))).toBe(false);
+    expect(noDrop.length).toBe(7);
+  });
+
+  it('已含旧占位时再次压缩：旧占位被清除，不堆积', () => {
+    const withOld: ChatMessage[] = [
+      msg('system', 'sys'),
+      { role: 'user', content: `${SUMMARY_PLACEHOLDER_PREFIX} 旧摘要`, ephemeral: true },
+      ...chain().slice(1),
+    ];
+    const result = buildCompactedView(withOld, {
+      keepRecentTurns: 2,
+      summaryText: '新摘要',
+    });
+    const placeholders = result.filter((m) => isEphemeral(m));
+    expect(placeholders.length).toBe(1);
+    expect(placeholders[0].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} 新摘要`);
+    // 切轮不受旧占位影响（旧占位不参与分轮）
+    expect(result.map((m) => m.content)).toEqual([
+      'sys',
+      `${SUMMARY_PLACEHOLDER_PREFIX} 新摘要`,
+      'u2',
+      'a2',
+      'u3',
+      'a3',
+    ]);
+  });
+
+  it('无 user 消息时循环自然结束：头部残片保留，不注入占位', () => {
+    const messages: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('assistant', 'a1'),
+      msg('tool', 'tool-result'),
+    ];
+    const result = buildCompactedView(messages, {
+      keepRecentTurns: 3,
+      summaryText: '不该出现',
+    });
+    expect(result.length).toBe(3);
+    expect(result.some((m) => isEphemeral(m))).toBe(false);
+  });
+
+  it('消息里无 system 时用 systemPrompt 兜底', () => {
+    const result = buildCompactedView([msg('user', 'u1'), msg('assistant', 'a1')], {
+      keepRecentTurns: 1,
+      systemPrompt: '兜底提示',
+    });
+    expect(result[0]).toEqual({ role: 'system', content: '兜底提示' });
+  });
+
+  it('compact() 与 buildCompactedView 行为一致（同一生成器）', () => {
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 2 });
+    const summary = '- 关键决策：统一压缩视图';
+    const viaCompact = wm.compact(chain(), summary);
+    const viaGenerator = buildCompactedView(chain(), {
+      keepRecentTurns: wm.getConfig().keepRecentTurns,
+      summaryText: summary,
+    });
+    expect(viaCompact).toEqual(viaGenerator);
   });
 });

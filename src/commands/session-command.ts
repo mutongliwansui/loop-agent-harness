@@ -91,7 +91,10 @@ export const sessionCommand: CommandHandler = {
         const skills = loadCfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
         const systemPrompt = loadCfg.agent.systemPrompt ?? buildSystemPrompt(skills);
         agent.restoreSession(data, systemPrompt);
-        const restoreMessages = SessionStore.getRestoreMessages(data);
+        // 渲染用完整历史（前台展示走全量字段；恢复视图只保留最近 N 轮，不适合直接展示）
+        const restoreMessages = data.messages?.length
+          ? data.messages
+          : SessionStore.getRestoreMessages(data);
         renderMessages(restoreMessages);
       } catch (e) {
         out.error(`${COLORS.red}✗ 加载失败: ${e instanceof Error ? e.message : String(e)}${COLORS.reset}`);

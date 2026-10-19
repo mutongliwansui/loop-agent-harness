@@ -6,6 +6,7 @@ import type { MemorySearchResult } from './types.js';
 import { CuratedMemory } from './curated.js';
 import { EpisodicMemory } from './episodic.js';
 import { withMemorySection } from './memory-section.js';
+import { isEphemeral } from './working.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { debug } from '../debug.js';
 
@@ -162,7 +163,9 @@ export class ContextAssembler {
       let searchQuery = userMessage;
       if (queryEnhanceRounds > 0) {
         const recentMsgs = currentMessages
-          .filter(m => m.role === 'user' || m.role === 'assistant')
+          // 排除语义检索用的临时占位（ephemeral）：占位 role 为 user，
+          // 若拼进检索词会把摘要文本当查询内容，污染召回结果
+          .filter(m => (m.role === 'user' || m.role === 'assistant') && !isEphemeral(m))
           .slice(-queryEnhanceRounds * 2);
         if (recentMsgs.length > 0) {
           const contextStr = recentMsgs

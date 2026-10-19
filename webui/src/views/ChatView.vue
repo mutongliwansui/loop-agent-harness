@@ -10,15 +10,16 @@
 //   POST   /uploads/raw         → 📎 文件选择框上传 → chip（contextNote 随下一条消息注入）
 //   DELETE /uploads             → 上传面板「清空全部」（二次确认）
 // 停止生成：AbortController 中断 fetch（服务端照常完成并持久化，停止后刷新列表）
-// mermaid：流式结束/历史加载后对 ```mermaid 代码块后处理渲染为 SVG（动态 import 独立 chunk；
-//          主题跟随 prefers-color-scheme；解析失败保留代码块并标红）
-//          交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放（以视口中心为锚）
+// mermaid：流式结束/历史加载后对 ```mermaid 代码块后处理渲染为 SVG（../mermaid.ts 共享模块，
+//          FilesView md 预览同款；动态 import 独立 chunk，主题跟随 prefers-color-scheme；
+//          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
 
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
 import { api, AuthError, uploadRaw } from '../api/client.js';
 import { sseFetch, type SseEvent } from '../api/sse.js';
 import { showToast } from '../toast.js';
 import { renderMarkdown, highlightIn } from '../markdown.js';
+import { renderMermaidIn } from '../mermaid.js';
 import FilesView from './FilesView.vue';
 import {
   workspaces,
@@ -71,6 +72,8 @@ interface UploadChip {
 }
 
 const messages = ref<ChatMsg[]>([]);
+// 会话压缩状态：历史已被压缩为摘要时，顶部提示条告知用户早期轮次未在消息流中
+const compaction = ref<{ compacted: boolean; archivedCount: number; hasSummary: boolean } | null>(null);
 const draft = ref('');
 const streaming = ref(false);
 const streamChk = ref(true);
@@ -127,166 +130,12 @@ function fmtBytes(n: number): string {
 
 async function postRenderMsgs(): Promise<void> {
   await nextTick();
-  if (msgsEl.value) highlightIn(msgsEl.value); // 高亮在 mermaid 前：mermaid 块被跳过
-  await renderMermaidDiagrams();
+  if (!msgsEl.value) return;
+  highlightIn(msgsEl.value); // 高亮在 mermaid 前：mermaid 块被跳过
+  await renderMermaidIn(msgsEl.value); // mermaid 图表后处理（../mermaid.ts 共享模块）
 }
 
-let mermaidPromise: Promise<(typeof import('mermaid'))['default']> | null = null;
-let mermaidSeq = 0;
-let mermaidQueue: Promise<void> = Promise.resolve(); // 串行排队，避免并发调用 mermaid.render
-
-function renderMermaidDiagrams(): Promise<void> {
-  mermaidQueue = mermaidQueue.then(() => renderMermaidInMsgs());
-  return mermaidQueue;
-}
-
-/** 构建 mermaid 图表容器：工具栏（放大/缩小/适应宽度/全屏）+ 滚轮缩放 + 视口滚动 */
-function buildMermaidBox(svgMarkup: string): { el: HTMLDivElement; fit: () => void } {
-  const el = document.createElement('div');
-  el.className = 'mermaid-block';
-  el.innerHTML =
-    '<div class="mmd-bar">' +
-    '<span class="mmd-cap">mermaid</span>' +
-    '<span class="mmd-spring"></span>' +
-    '<button type="button" data-act="in" title="放大">＋</button>' +
-    '<button type="button" data-act="out" title="缩小">－</button>' +
-    '<button type="button" data-act="fit" title="适应宽度">100%</button>' +
-    '<button type="button" data-act="fs" title="全屏">⛶</button>' +
-    '</div>' +
-    '<div class="mmd-view"><div class="mmd-stage">' +
-    svgMarkup +
-    '</div></div>';
-  const view = el.querySelector<HTMLElement>('.mmd-view')!;
-  const svgEl = el.querySelector<SVGSVGElement>('svg')!;
-  const fitBtn = el.querySelector<HTMLButtonElement>('[data-act=fit]')!;
-
-  // 基准尺寸取 viewBox（mermaid 恒有输出；attr width 常为 100% 不可用）
-  const vb = svgEl.viewBox.baseVal;
-  const baseW = vb.width || parseFloat(svgEl.getAttribute('width') || '') || 0;
-  const baseH = vb.height || parseFloat(svgEl.getAttribute('height') || '') || 0;
-  const zoomable = baseW > 0 && baseH > 0;
-  let scale = 1;
-
-  const apply = (s: number): void => {
-    scale = Math.min(5, Math.max(0.2, s));
-    svgEl.style.maxWidth = 'none';
-    svgEl.style.width = `${baseW * scale}px`;
-    svgEl.style.height = `${baseH * scale}px`;
-    fitBtn.textContent = `${Math.round(scale * 100)}%`;
-    // 内容超出视口才可拖拽平移（grab 光标）
-    view.classList.toggle(
-      'pan-able',
-      view.scrollWidth > view.clientWidth || view.scrollHeight > view.clientHeight,
-    );
-  };
-
-  /** 以视口中心为锚缩放，避免缩放后视点漂移 */
-  const zoomTo = (next: number): void => {
-    if (!zoomable) return;
-    const prev = scale;
-    const r = view.getBoundingClientRect();
-    const cx = view.scrollLeft + r.width / 2;
-    const cy = view.scrollTop + r.height / 2;
-    apply(next);
-    view.scrollLeft = (cx * scale) / prev - r.width / 2;
-    view.scrollTop = (cy * scale) / prev - r.height / 2;
-  };
-
-  /** 适应容器宽度（不放大超过 100%） */
-  const fit = (): void => {
-    if (!zoomable) return;
-    apply(Math.min(1, (view.clientWidth - 24) / baseW)); // 24 = .mmd-view 左右 padding
-    view.scrollLeft = 0;
-    view.scrollTop = 0;
-  };
-
-  el.querySelector('[data-act=in]')!.addEventListener('click', () => zoomTo(scale * 1.25));
-  el.querySelector('[data-act=out]')!.addEventListener('click', () => zoomTo(scale / 1.25));
-  fitBtn.addEventListener('click', fit);
-  el.querySelector('[data-act=fs]')!.addEventListener('click', () => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void el.requestFullscreen();
-  });
-  el.addEventListener('fullscreenchange', fit); // 进出全屏视口宽度变化，重算适应宽度
-  view.addEventListener(
-    'wheel',
-    (e) => {
-      if (!zoomable) return;
-      e.preventDefault(); // 劫持滚轮用于缩放
-      zoomTo(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
-    },
-    { passive: false },
-  );
-  // 拖拽平移：按住左键拖动同步视口滚动（grab & pan）；触摸设备走原生滚动
-  view.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'mouse' || e.button !== 0) return;
-    if (view.scrollWidth <= view.clientWidth && view.scrollHeight <= view.clientHeight) return;
-    e.preventDefault(); // 阻止拖拽选中文本
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const sl = view.scrollLeft;
-    const st = view.scrollTop;
-    view.classList.add('panning');
-    view.setPointerCapture(e.pointerId); // 移出视口仍持续跟踪
-    const onMove = (ev: PointerEvent): void => {
-      view.scrollLeft = sl - (ev.clientX - startX);
-      view.scrollTop = st - (ev.clientY - startY);
-    };
-    const onUp = (): void => {
-      view.classList.remove('panning');
-      view.removeEventListener('pointermove', onMove);
-      view.removeEventListener('pointerup', onUp);
-      view.removeEventListener('pointercancel', onUp);
-    };
-    view.addEventListener('pointermove', onMove);
-    view.addEventListener('pointerup', onUp);
-    view.addEventListener('pointercancel', onUp);
-  });
-  if (!zoomable) {
-    for (const b of el.querySelectorAll<HTMLButtonElement>('[data-act=in],[data-act=out],[data-act=fit]')) {
-      b.disabled = true;
-    }
-  }
-  return { el, fit };
-}
-
-async function renderMermaidInMsgs(): Promise<void> {
-  const root = msgsEl.value;
-  if (!root) return;
-  await nextTick();
-  const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-mermaid')];
-  if (blocks.length === 0) return;
-  try {
-    mermaidPromise ??= import('mermaid').then((m) => m.default);
-    const mermaid = await mermaidPromise;
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      // 主题跟随全局：手动 data-theme 优先（App.vue 主题按钮），否则跟随系统
-      theme: (() => {
-        const t = document.documentElement.dataset.theme;
-        return (t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'default';
-      })(),
-    });
-    for (const code of blocks) {
-      const pre = code.parentElement;
-      if (!pre || pre.tagName !== 'PRE') continue; // v-html 重渲后已被替换/移除
-      const id = `mmd-svg-${++mermaidSeq}`;
-      try {
-        const { svg } = await mermaid.render(id, code.textContent ?? ''); // strict 模式下 mermaid 内部已 sanitize
-        const box = buildMermaidBox(svg);
-        pre.replaceWith(box.el);
-        box.fit(); // 已插入 DOM 后才能测量视口宽度
-      } catch {
-        // mermaid v11 render 失败时会遗留错误占位元素，需手动清理
-        document.getElementById(`d${id}`)?.remove();
-        pre.classList.add('mermaid-err'); // 解析失败：保留代码块并标红
-      }
-    }
-  } catch {
-    // mermaid 动态加载失败：静默保留代码块形态
-  }
-}
+// mermaid 容器构建（缩放/平移/全屏）与渲染排队逻辑见 ../mermaid.ts，样式见 ../mermaid.css
 
 function scrollBottom(): void {
   nextTick(() => {
@@ -320,6 +169,7 @@ async function createSession(workspacePath?: string): Promise<string | null> {
     await loadSessions();
     activeId.value = r.id;
     messages.value = [];
+    compaction.value = null;
     scrollBottom();
     if (fromPop) {
       closeNewPop();
@@ -474,6 +324,7 @@ async function selectSession(id: string): Promise<void> {
   try {
     const r = await api<{
       meta: SessionMeta;
+      compaction?: { compacted: boolean; archivedCount: number; hasSummary: boolean };
       messages: ApiHistoryMsg[];
       workspace?: { path: string; id: string; switched: boolean };
     }>(`/sessions/${encodeURIComponent(id)}`);
@@ -481,6 +332,7 @@ async function selectSession(id: string): Promise<void> {
     const switched = r.workspace?.switched === true;
     if (switched) await loadSessions();
     activeId.value = id;
+    compaction.value = r.compaction ?? null;
     messages.value = rebuildChatMsgs(r.messages);
     scrollBottom();
     void postRenderMsgs();
@@ -714,7 +566,10 @@ watchEffect(() => {
   chatStreaming.value = streaming.value;
 });
 watch(activeId, (v) => {
-  if (v === null) messages.value = [];
+  if (v === null) {
+    messages.value = [];
+    compaction.value = null;
+  }
 });
 
 // Esc 关闭新建会话弹窗（window 级监听：焦点可能落在弹窗内输入框，元素级 @keydown 不可靠）
@@ -771,6 +626,15 @@ onUnmounted(() => {
         <div class="msg-wrap">
           <div v-if="!activeId && messages.length === 0" class="chat-empty">
             选择左侧会话，或点击「＋ 新建对话」开始
+          </div>
+          <!-- 历史压缩提示：早期轮次已被摘要替换，当前消息流只保留最近 N 轮（三视图统一方案 P1.3） -->
+          <div v-if="compaction?.compacted" class="compact-hint">
+            <span class="ch-icon">🧠</span>
+            <span class="ch-text">
+              本会话早期 {{ compaction.archivedCount }} 条消息已压缩为摘要
+              <span v-if="compaction.hasSummary">（已生成摘要）</span>
+              ，当前仅展示最近若干轮；完整历史仍保留在磁盘，重新提问时摘要会随上下文注入模型。
+            </span>
           </div>
           <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
             <div v-if="m.role === 'assistant'" class="m-head">
@@ -1035,6 +899,22 @@ onUnmounted(() => {
   padding: 48px 0;
   font-size: 13.5px;
 }
+/* 历史压缩提示条：告知用户早期轮次已被摘要替换（三视图统一方案 P1.3） */
+.compact-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--brand-weak);
+  border: 1px solid var(--brand);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.55;
+}
+.compact-hint .ch-icon { flex: none; font-size: 16px; line-height: 1.3; }
+.compact-hint .ch-text { flex: 1; min-width: 0; }
 /* 用户消息：无头像，右对齐气泡；助手消息：头像+名称在上，正文平铺 */
 .msg { margin-bottom: 18px; }
 .msg .ava {
@@ -1103,59 +983,7 @@ onUnmounted(() => {
 }
 .md :deep(th) { background: var(--code-bg); }
 .md :deep(td code) { overflow-wrap: anywhere; }
-/* mermaid 图表容器：工具栏 + 可缩放视口 */
-.md :deep(.mermaid-block) {
-  margin: 8px 0;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.md :deep(.mermaid-block .mmd-bar) {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px 6px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
-}
-.md :deep(.mmd-cap) {
-  font-size: 10.5px;
-  color: var(--muted);
-  font-family: ui-monospace, Consolas, monospace;
-  margin-left: 4px;
-}
-.md :deep(.mmd-spring) { flex: 1; }
-.md :deep(.mmd-bar button) {
-  border: none;
-  background: none;
-  color: inherit;
-  font-size: 11.5px;
-  padding: 2px 8px;
-  border-radius: 5px;
-  cursor: pointer;
-  font-family: ui-monospace, Consolas, monospace;
-}
-.md :deep(.mmd-bar button:hover:not(:disabled)) { background: var(--code-bg); }
-.md :deep(.mmd-bar button:disabled) { opacity: 0.4; cursor: default; }
-.md :deep(.mermaid-block .mmd-view) {
-  padding: 10px 12px;
-  overflow: auto;
-  max-height: 60vh;
-}
-.md :deep(.mmd-stage) { min-width: max-content; margin: 0 auto; user-select: none; }
-.md :deep(.mmd-view.pan-able) { cursor: grab; }
-.md :deep(.mmd-view.panning) { cursor: grabbing; }
-.md :deep(.mmd-stage svg) { display: block; }
-.md :deep(.mermaid-block:fullscreen) {
-  border: none;
-  border-radius: 0;
-  background: var(--bg);
-}
-.md :deep(.mermaid-block:fullscreen .mmd-view) { max-height: none; flex: 1; }
-.md :deep(pre.mermaid-err) { border-color: var(--danger); }
+/* mermaid 图表容器样式已全局化至 ../mermaid.css（与 FilesView 共用） */
 .msg-files { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .meta-line { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .fatal {
