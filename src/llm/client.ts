@@ -55,6 +55,30 @@ export class LLMClient {
   constructor() {}
 
   /**
+   * 发送给 OpenAI-compatible API 前清洗 messages：
+   * assistant 消息的 tool_calls 空数组会触发 API 400（API 要求 tool_calls
+   * 要么不存在，要么长度 ≥ 1），这里统一归一为 undefined。
+   * 还顺便过滤掉 ephemeral 占位——占位只对本进程 LLM 可见，跨 API 调用不应透出。
+   * 泛型接受 ChatMessage / VisionMessage 等任意结构兼容消息数组。
+   */
+  private static normalizeMessages<T extends { role: string; tool_calls?: unknown; ephemeral?: boolean }>(
+    messages: T[],
+  ): T[] {
+    const out: T[] = [];
+    for (const m of messages) {
+      if (m.role === 'user' && m.ephemeral === true) continue;
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length === 0) {
+        // 构造一个去掉 tool_calls 的新对象（TS 不允许在 ChatMessage 联合上直接解构 tool_calls）
+        const { tool_calls: _empty, ...rest } = m as unknown as Record<string, unknown>;
+        out.push(rest as T);
+      } else {
+        out.push(m);
+      }
+    }
+    return out;
+  }
+
+  /**
    * 获取当前配置对应的 OpenAI 客户端
    * 如果配置（apiKey/baseUrl）发生变化，自动重新创建客户端
    */
@@ -103,9 +127,11 @@ export class LLMClient {
     const startMs = Date.now();
     return this.retry(async () => {
       const client = this.getClient();
+      // normalizeMessages 确保 assistant.tool_calls 不为空数组、ephemeral 占位不透出
+      const cleanMessages = LLMClient.normalizeMessages(messages);
       const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
         model,
-        messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+        messages: cleanMessages as OpenAI.Chat.ChatCompletionMessageParam[],
         temperature,
       };
       if (tools && tools.length > 0) {
@@ -196,9 +222,11 @@ export class LLMClient {
     debug.llmRequest(model, messages.length, 0);
 
     const buildParams = (jsonMode: boolean): OpenAI.Chat.ChatCompletionCreateParamsNonStreaming => {
+      // normalizeMessages 确保 assistant.tool_calls 不为空数组
+      const cleanMessages = LLMClient.normalizeMessages(messages);
       const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
         model,
-        messages: messages as unknown as OpenAI.Chat.ChatCompletionMessageParam[],
+        messages: cleanMessages as unknown as OpenAI.Chat.ChatCompletionMessageParam[],
         temperature,
       };
       if (options.maxTokens !== undefined) {
@@ -296,9 +324,11 @@ export class LLMClient {
 
     const streamStartMs = Date.now();
 
+    // normalizeMessages 确保 assistant.tool_calls 不为空数组、ephemeral 占位不透出
+    const cleanMessages = LLMClient.normalizeMessages(messages);
     const params: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
       model,
-      messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages: cleanMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       temperature,
       stream: true,
       stream_options: { include_usage: true },
