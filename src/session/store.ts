@@ -320,11 +320,16 @@ export class SessionStore {
   /**
    * 汇总所有可用消息源为完整历史（修复前旧 session 的 data.messages 可能被覆盖截断，
    * 需从 archivedMessages + recentMessages 重建；修复后新 session 的 data.messages 永远完整）。
-   * 三个来源按时间顺序（archived 最早 → recent 最新）去重合并，作为展示层与恢复链的唯一入口。
+   *
+   * 两个步骤：
+   *  1. 三个来源按时间顺序（archived 最早 → recent 最新）去重合并
+   *  2. 从第一条 user 开始截：修复前旧 session 的 archivedMessages 可能残留孤立的
+   *     assistant/tool 片段（对应的 user 已被覆盖丢掉），把它们剔掉，只保留
+   *     有配对起点的连续对话
    */
   static getAllAvailableMessages(data: SessionData): ChatMessage[] {
     const seen = new Set<string>();
-    const result: ChatMessage[] = [];
+    const merged: ChatMessage[] = [];
     // 时间顺序：归档（最早）→ messages 直接存的 → recent（最新）
     const sources: ChatMessage[][] = [
       data.archivedMessages ?? [],
@@ -333,7 +338,6 @@ export class SessionStore {
     ];
     for (const pool of sources) {
       for (const m of pool) {
-        // 生成去重键：role + content + tool_call_id / tool_calls 签名
         let key: string;
         if (m.role === 'tool') key = `tool:${m.tool_call_id}`;
         else if (m.role === 'assistant') {
@@ -346,11 +350,14 @@ export class SessionStore {
         }
         if (!seen.has(key)) {
           seen.add(key);
-          result.push(m);
+          merged.push(m);
         }
       }
     }
-    return result;
+    // 从第一条 user 开始截：修复前旧 session 头部可能有孤立的 assistant/tool 残留
+    let firstUserIdx = merged.findIndex((m) => m.role === 'user');
+    if (firstUserIdx < 0) firstUserIdx = 0; // 极端无 user 的 session，保留全部避免空
+    return merged.slice(firstUserIdx);
   }
 
   /**
