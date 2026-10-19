@@ -189,19 +189,15 @@ export async function handleGetSession(ctx: HandlerContext, res: ServerResponse,
     }
   }
 
-  // 压缩状态：lastSummary 存在或 archivedCount > 0 表示历史已被压缩，恢复视图只保留最近 N 轮
-  const compacted = Boolean(data.lastSummary) || (data.archivedCount ?? 0) > 0;
+  // 展示层：始终从 getAllAvailableMessages 取所有可用消息（修复前旧 session 的 data.messages 可能被
+  // 覆盖截断，需从 archivedMessages + recentMessages 重建；修复后新 session 的 data.messages 永远完整）。
+  // 展示层永不显示压缩提示条——压缩只对 LLM 上下文生效，前端永远展示磁盘全量历史（三视图方案 4.3 修正）。
+  const all = SessionStore.getAllAvailableMessages(data);
   sendJson(res, 200, {
     meta,
-    compaction: {
-      compacted,
-      archivedCount: data.archivedCount ?? 0,
-      hasSummary: Boolean(data.lastSummary),
-    },
-    // 完整历史供前端渲染（data.messages 为全量字段，updateSession 每轮持久化；异常缺失时兜底恢复视图）。
-    // 展示层永不渲染 ephemeral 占位（兜底恢复视图会带出「历史摘要」占位，见三视图统一方案 4.3）。
-    // user 消息统一剥离 L2 记忆前缀：修复前的存量数据已把前缀写进持久化历史，展示层清洗一次到位
-    messages: (data.messages?.length ? data.messages : SessionStore.getRestoreMessages(data))
+    // 展示层过滤 ephemeral（兜底恢复视图会带出「历史摘要」占位，但 getAllAvailableMessages 本身
+    // 不包含占位——占位是 buildCompactedView 动态生成的，磁盘永远没有；这里保留过滤作防御）
+    messages: all
       .filter((m) => !isEphemeral(m))
       .map((m) =>
         m.role === 'user' && typeof m.content === 'string'

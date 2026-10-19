@@ -318,18 +318,53 @@ export class SessionStore {
   }
 
   /**
+   * 汇总所有可用消息源为完整历史（修复前旧 session 的 data.messages 可能被覆盖截断，
+   * 需从 archivedMessages + recentMessages 重建；修复后新 session 的 data.messages 永远完整）。
+   * 三个来源按时间顺序（archived 最早 → recent 最新）去重合并，作为展示层与恢复链的唯一入口。
+   */
+  static getAllAvailableMessages(data: SessionData): ChatMessage[] {
+    const seen = new Set<string>();
+    const result: ChatMessage[] = [];
+    // 时间顺序：归档（最早）→ messages 直接存的 → recent（最新）
+    const sources: ChatMessage[][] = [
+      data.archivedMessages ?? [],
+      data.messages ?? [],
+      data.recentMessages ?? [],
+    ];
+    for (const pool of sources) {
+      for (const m of pool) {
+        // 生成去重键：role + content + tool_call_id / tool_calls 签名
+        let key: string;
+        if (m.role === 'tool') key = `tool:${m.tool_call_id}`;
+        else if (m.role === 'assistant') {
+          const calls = (m.tool_calls ?? [])
+            .map((c) => `${c.id}:${c.function.name}`)
+            .join(',');
+          key = `assistant:${m.content ?? ''}:${calls}`;
+        } else {
+          key = `${m.role}:${m.content ?? ''}`;
+        }
+        if (!seen.has(key)) {
+          seen.add(key);
+          result.push(m);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
    * 获取用于恢复对话的消息
    * 与 L1 压缩共用 buildCompactedView：输出 = [system（可选）, (摘要占位 · ephemeral), 最近 N 轮]
-   * 不含 archivedMessages（其内容已并入 lastSummary），控制上下文大小
+   * 原材料用 getAllAvailableMessages（覆盖修复前被截断的旧 session）；
+   * 输出不含 system（由调用方的 systemPrompt 决定）
    */
   static getRestoreMessages(
     data: SessionData,
     systemPrompt?: string,
     opts?: { keepRecentTurns?: number },
   ): ChatMessage[] {
-    // 原材料：优先全量历史；旧格式会话兜底 recentMessages。
-    // 丢弃存储的 system，由 systemPrompt 决定（避免旧 prompt 覆盖当前配置）
-    const full = (data.messages?.length ? data.messages : data.recentMessages ?? []).filter(
+    const full = SessionStore.getAllAvailableMessages(data).filter(
       (m) => m.role !== 'system',
     );
 

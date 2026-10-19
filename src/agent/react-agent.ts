@@ -14,7 +14,7 @@ import { createToolCallGenTracker, dispatchStreamChunk } from './stream-forward.
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import { skillLoader } from '../skill/loader.js';
-import { type SessionStore, workspaceId } from '../session/store.js';
+import { SessionStore, workspaceId } from '../session/store.js';
 import type { SessionData } from '../session/types.js';
 import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
 import type { CuratedFileKey } from '../memory/types.js';
@@ -127,9 +127,10 @@ export class ReActAgent {
     }
 
     // 统一恢复视图：与 L1 压缩共用 buildCompactedView（同一逻辑/参数/形态）。
+    // 原材料用 SessionStore.getAllAvailableMessages（覆盖修复前被截断的旧 session）；
     // system 用当前配置的 prompt（丢弃历史 system，避免旧 prompt 覆盖当前配置）；
     // 摘要以 ephemeral 占位注入，只对 LLM 可见，不会写入磁盘全量历史。
-    const base = (data.messages?.length ? data.messages : data.recentMessages ?? []).filter(
+    const base = SessionStore.getAllAvailableMessages(data).filter(
       (m) => m.role !== 'system',
     );
     const restored = buildCompactedView(base, {

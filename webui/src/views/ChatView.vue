@@ -72,8 +72,6 @@ interface UploadChip {
 }
 
 const messages = ref<ChatMsg[]>([]);
-// 会话压缩状态：历史已被压缩为摘要时，顶部提示条告知用户早期轮次未在消息流中
-const compaction = ref<{ compacted: boolean; archivedCount: number; hasSummary: boolean } | null>(null);
 const draft = ref('');
 const streaming = ref(false);
 const streamChk = ref(true);
@@ -169,7 +167,6 @@ async function createSession(workspacePath?: string): Promise<string | null> {
     await loadSessions();
     activeId.value = r.id;
     messages.value = [];
-    compaction.value = null;
     scrollBottom();
     if (fromPop) {
       closeNewPop();
@@ -324,7 +321,6 @@ async function selectSession(id: string): Promise<void> {
   try {
     const r = await api<{
       meta: SessionMeta;
-      compaction?: { compacted: boolean; archivedCount: number; hasSummary: boolean };
       messages: ApiHistoryMsg[];
       workspace?: { path: string; id: string; switched: boolean };
     }>(`/sessions/${encodeURIComponent(id)}`);
@@ -332,7 +328,6 @@ async function selectSession(id: string): Promise<void> {
     const switched = r.workspace?.switched === true;
     if (switched) await loadSessions();
     activeId.value = id;
-    compaction.value = r.compaction ?? null;
     messages.value = rebuildChatMsgs(r.messages);
     scrollBottom();
     void postRenderMsgs();
@@ -566,10 +561,7 @@ watchEffect(() => {
   chatStreaming.value = streaming.value;
 });
 watch(activeId, (v) => {
-  if (v === null) {
-    messages.value = [];
-    compaction.value = null;
-  }
+  if (v === null) messages.value = [];
 });
 
 // Esc 关闭新建会话弹窗（window 级监听：焦点可能落在弹窗内输入框，元素级 @keydown 不可靠）
@@ -626,15 +618,6 @@ onUnmounted(() => {
         <div class="msg-wrap">
           <div v-if="!activeId && messages.length === 0" class="chat-empty">
             选择左侧会话，或点击「＋ 新建对话」开始
-          </div>
-          <!-- 历史压缩提示：早期轮次已被摘要替换，当前消息流只保留最近 N 轮（三视图统一方案 P1.3） -->
-          <div v-if="compaction?.compacted" class="compact-hint">
-            <span class="ch-icon">🧠</span>
-            <span class="ch-text">
-              本会话早期 {{ compaction.archivedCount }} 条消息已压缩为摘要
-              <span v-if="compaction.hasSummary">（已生成摘要）</span>
-              ，当前仅展示最近若干轮；完整历史仍保留在磁盘，重新提问时摘要会随上下文注入模型。
-            </span>
           </div>
           <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
             <div v-if="m.role === 'assistant'" class="m-head">
@@ -899,22 +882,6 @@ onUnmounted(() => {
   padding: 48px 0;
   font-size: 13.5px;
 }
-/* 历史压缩提示条：告知用户早期轮次已被摘要替换（三视图统一方案 P1.3） */
-.compact-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: var(--brand-weak);
-  border: 1px solid var(--brand);
-  border-radius: 10px;
-  padding: 10px 14px;
-  margin-bottom: 18px;
-  font-size: 12.5px;
-  color: var(--text);
-  line-height: 1.55;
-}
-.compact-hint .ch-icon { flex: none; font-size: 16px; line-height: 1.3; }
-.compact-hint .ch-text { flex: 1; min-width: 0; }
 /* 用户消息：无头像，右对齐气泡；助手消息：头像+名称在上，正文平铺 */
 .msg { margin-bottom: 18px; }
 .msg .ava {

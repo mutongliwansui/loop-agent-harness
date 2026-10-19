@@ -142,10 +142,9 @@ async function main() {
           // 使用 restoreSession 方法（支持分层存储）
           agent.restoreSession(data, systemPrompt);
 
-          // 获取完整历史用于渲染展示（前台展示走全量字段，避免只显示恢复视图的裁剪结果）
-          restoredMessages = data.messages?.length
-            ? data.messages
-            : SessionStore.getRestoreMessages(data);
+          // 展示层：始终从 getAllAvailableMessages 取所有可用消息（修复前旧 session 的 data.messages
+          // 可能被覆盖截断，需从 archivedMessages + recentMessages 重建）。
+          restoredMessages = SessionStore.getAllAvailableMessages(data);
         }
       }
 
