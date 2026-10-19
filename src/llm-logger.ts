@@ -1,6 +1,23 @@
-// LLM 调用日志：独立于 debug 日志，记录每次模型调用的输入参数与响应
-// 用途：排查缓存命中率（前缀缓存依赖 system prompt 稳定）、上下文组装、token 消耗等
-// 输出：~/.loop-agent/logs/llm-YYYY-MM-DD.log（默认开启，受 agent.llmLogEnabled 控制）
+// LLM 调用日志：JSONL 格式，每次调用一行，包含请求报文、响应耗时、响应结果、usage
+// 用途：排查缓存命中率、上下文组装、token 消耗、API 行为（tool_calls 空数组等）
+// 输出：~/.loop-agent/logs/llm-YYYY-MM-DD.jsonl（默认开启，受 config.llmLogEnabled 控制）
+//
+// 每条 JSON 结构：
+// {
+//   "ts": "2026-10-19T14:48:23.123Z",
+//   "id": 42,
+//   "stream": true,
+//   "model": "deepseek-chat",
+//   "temperature": 0,
+//   "toolsCount": 5,
+//   "maxTokens": 8192,
+//   "durationMs": 2340,
+//   "messages": [...],        // 完整输入报文（normalize 后）
+//   "requestMessagesCount": 8,
+//   "response": { ... },      // content / tool_calls / finish_reason / usage
+//   "error": "超时"           // 失败时有此字段
+// }
+
 import { appendFileSync, existsSync, mkdirSync, statSync, unlinkSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -16,10 +33,30 @@ const MAX_LOG_SIZE = 10 * 1024 * 1024;
 /** 保留的历史日志文件数量 */
 const MAX_LOG_FILES = 5;
 
-/** 获取当前日志文件路径（按日期命名） */
+/** 一次调用的完整请求上下文（response 时合并成 JSONL 记录） */
+interface PendingCall {
+  callId: number;
+  stream: boolean;
+  model: string;
+  temperature: number;
+  toolsCount: number;
+  maxTokens?: number;
+  messages: ChatMessage[];
+  startedAt: number; // Date.now()，用于超时清理
+  /** 超时定时器 ID，避免 pending 永远堆积 */
+  timeoutId?: NodeJS.Timeout;
+}
+
+/** 正在等待 response 的调用（request 存 → response 合并写 → 清） */
+const pending = new Map<number, PendingCall>();
+
+/** 超时清理（2 分钟还没 response，可能是 retry 死循环或进程崩溃；写一条 error 行兜底） */
+const PENDING_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** 当前日期的日志路径 */
 function getLogPath(): string {
   const date = new Date().toISOString().split('T')[0];
-  return join(LOG_DIR, `llm-${date}.log`);
+  return join(LOG_DIR, `llm-${date}.jsonl`);
 }
 
 /** 确保日志目录存在 */
@@ -47,30 +84,16 @@ function rotateIfNeeded(): void {
   } catch {}
 }
 
-/** 写入日志（独立开关：agent.llmLogEnabled） */
-function write(line: string): void {
+/** 写一行 JSONL（独立开关：agent.llmLogEnabled） */
+function writeJsonl(obj: unknown): void {
   if (!config.llmLogEnabled) return;
   try {
     ensureDir();
     rotateIfNeeded();
-    appendFileSync(getLogPath(), line + '\n', 'utf-8');
+    appendFileSync(getLogPath(), JSON.stringify(obj) + '\n', 'utf-8');
   } catch {
     // 静默失败，不影响主流程
   }
-}
-
-/** 单条消息格式化：role、长度、完整内容（全量输出，不截断） */
-function formatMessage(msg: ChatMessage, index: number): string {
-  const content = msg.content ?? '';
-  const line = `    [${index}] ${msg.role} (${content.length} 字符): ${content}`;
-  if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-    const names = msg.tool_calls.map((tc) => tc.function?.name ?? '?').join(', ');
-    return line + ` | tool_calls=[${names}]`;
-  }
-  if (msg.role === 'tool') {
-    return line + ` | tool_call_id=${msg.tool_call_id ?? '?'}`;
-  }
-  return line;
 }
 
 /** 调用序号（进程内自增，便于 request/response 配对） */
@@ -79,65 +102,127 @@ function nextId(): number {
   return ++seq;
 }
 
+/** 发起一次模型调用（返回 callId 供 response 配对） */
+export function beginLLMCall(): number {
+  return nextId();
+}
+
+/**
+ * 记录一次 LLM 调用请求（request 在 API 调用前调用，暂存数据等待 response）。
+ * response 在 API 调用后调用，合并成完整 JSONL 记录写入文件。
+ */
 export interface LLMCallRequest {
-  id: number;
+  callId: number;
+  stream: boolean;
   model: string;
   temperature: number;
   toolsCount: number;
   maxTokens?: number;
+  /** normalize 后实际发送给 API 的 messages */
   messages: ChatMessage[];
 }
 
-export interface LLMCallResponse {
-  id: number;
+export interface LLMCallSuccess {
+  callId: number;
   response: LLMResponse;
   elapsedMs: number;
 }
 
-/** LLM 调用日志 */
+export interface LLMCallError {
+  callId: number;
+  error: unknown;
+  elapsedMs: number;
+}
+
 export const llmLogger = {
-  /** 记录模型调用请求（输入参数 + 完整消息列表，全量输出） */
+  /** 记录请求（API 调用前） */
   request(req: LLMCallRequest): void {
-    const lines = [
-      `════════ LLM 调用 #${req.id} ${new Date().toISOString()} ════════`,
-      `请求: model=${req.model} temperature=${req.temperature} tools=${req.toolsCount}${req.maxTokens !== undefined ? ` maxTokens=${req.maxTokens}` : ''}`,
-      `输入消息 (${req.messages.length} 条):`,
-    ];
-    req.messages.forEach((m, i) => lines.push(formatMessage(m, i)));
-    write(lines.join('\n'));
+    const timeoutId = setTimeout(() => {
+      const pc = pending.get(req.callId);
+      if (!pc) return;
+      pending.delete(req.callId);
+      writeJsonl(buildRecord(pc, undefined, { error: 'pending_timeout' }));
+    }, PENDING_TIMEOUT_MS);
+    pending.set(req.callId, {
+      ...req,
+      startedAt: Date.now(),
+      timeoutId,
+    });
   },
 
-  /** 记录模型调用响应（完整内容 + usage，含缓存命中率） */
-  response(res: LLMCallResponse): void {
-    const { response, elapsedMs } = res;
-    const lines = [
-      `── 响应 #${res.id} (${elapsedMs}ms) ──`,
-      `  完成原因: ${response.finish_reason}`,
-    ];
-    if (response.content) {
-      lines.push(`  内容: ${response.content}`);
-    } else if (response.tool_calls && response.tool_calls.length > 0) {
-      for (const tc of response.tool_calls) {
-        lines.push(`  工具调用: ${tc.function?.name ?? '?'}(${tc.function?.arguments ?? ''})`);
-      }
+  /** 记录成功响应（API 调用后） */
+  response(res: LLMCallSuccess): void {
+    const pc = pending.get(res.callId);
+    if (pc) {
+      pending.delete(res.callId);
+      if (pc.timeoutId) clearTimeout(pc.timeoutId);
+      writeJsonl(buildRecord(pc, res.response, undefined, res.elapsedMs));
     } else {
-      lines.push('  (空响应)');
+      // pending 已被超时清理掉（极罕见）；兜底写一条简略行
+      writeJsonl({
+        ts: new Date().toISOString(),
+        id: res.callId,
+        error: 'pending_missing',
+        durationMs: res.elapsedMs,
+      });
     }
-    if (response.usage) {
-      const u = response.usage;
-      const hit = u.prompt_cache_hit_tokens ?? 0;
-      const miss = u.prompt_cache_miss_tokens ?? 0;
-      const rate = u.prompt_tokens > 0 ? ((hit / u.prompt_tokens) * 100).toFixed(1) : '0.0';
-      lines.push(
-        `  Usage: prompt=${u.prompt_tokens} hit=${hit} miss=${miss} 命中率=${rate}% | completion=${u.completion_tokens} total=${u.total_tokens}`,
-      );
+  },
+
+  /** 记录失败响应（retry 穷尽后抛错，或中途捕获的异常） */
+  error(err: LLMCallError): void {
+    const pc = pending.get(err.callId);
+    if (pc) {
+      pending.delete(err.callId);
+      if (pc.timeoutId) clearTimeout(pc.timeoutId);
+      writeJsonl(buildRecord(pc, undefined, err.error, err.elapsedMs));
+    } else {
+      writeJsonl({
+        ts: new Date().toISOString(),
+        id: err.callId,
+        error: err.error instanceof Error ? err.error.message : String(err.error),
+        durationMs: err.elapsedMs,
+      });
     }
-    lines.push('');
-    write(lines.join('\n'));
   },
 };
 
-/** 便捷入口：发起一次调用（返回 callId 供 response 配对） */
-export function beginLLMCall(): number {
-  return nextId();
+/**
+ * 把 pending 请求 + response/error 合并成一条 JSONL 记录。
+ * 每次调用只写一行——grep 某个 id 或某个 model 就是完整的一次调用视图。
+ */
+function buildRecord(
+  pc: PendingCall,
+  response: LLMResponse | undefined,
+  error: unknown,
+  durationMs?: number,
+): Record<string, unknown> {
+  const elapsed = durationMs ?? Date.now() - pc.startedAt;
+  const record: Record<string, unknown> = {
+    ts: new Date(pc.startedAt).toISOString(),
+    id: pc.callId,
+    stream: pc.stream,
+    model: pc.model,
+    temperature: pc.temperature,
+    toolsCount: pc.toolsCount,
+    ...(pc.maxTokens !== undefined ? { maxTokens: pc.maxTokens } : {}),
+    durationMs: elapsed,
+    requestMessagesCount: pc.messages.length,
+    messages: pc.messages,
+  };
+
+  if (response) {
+    // response.tool_calls 是 LLM 原生结构，直接透传给下游消费（避免二次转换信息丢失）
+    record.response = {
+      content: response.content,
+      tool_calls: response.tool_calls,
+      finish_reason: response.finish_reason,
+      usage: response.usage,
+    };
+  }
+
+  if (error !== undefined) {
+    record.error = error instanceof Error ? error.message : String(error);
+  }
+
+  return record;
 }

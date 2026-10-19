@@ -111,76 +111,82 @@ export class LLMClient {
     const model = options.model ?? config.modelName;
     const temperature = options.temperature ?? 0;
 
-    // 独立 LLM 调用日志（输入参数 + 消息列表，用于排查缓存命中率等）
+    // 独立 LLM 调用日志（JSONL 格式，每次调用一行）
     const callId = beginLLMCall();
     llmLogger.request({
-      id: callId,
+      callId,
+      stream: false,
       model,
       temperature,
       toolsCount: tools?.length ?? 0,
       maxTokens: options.maxTokens,
-      messages,
+      messages: LLMClient.normalizeMessages(messages),
     });
 
     debug.llmRequest(model, messages.length, tools?.length ?? 0);
 
     const startMs = Date.now();
-    return this.retry(async () => {
-      const client = this.getClient();
-      // normalizeMessages 确保 assistant.tool_calls 不为空数组、ephemeral 占位不透出
-      const cleanMessages = LLMClient.normalizeMessages(messages);
-      const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-        model,
-        messages: cleanMessages as OpenAI.Chat.ChatCompletionMessageParam[],
-        temperature,
-      };
-      if (tools && tools.length > 0) {
-        params.tools = tools as OpenAI.Chat.ChatCompletionTool[];
-        params.tool_choice = 'auto';
-      }
-      if (options.maxTokens !== undefined) {
-        params.max_tokens = options.maxTokens;
-      }
+    try {
+      return await this.retry(async () => {
+        const client = this.getClient();
+        // normalizeMessages 确保 assistant.tool_calls 不为空数组、ephemeral 占位不透出
+        const cleanMessages = LLMClient.normalizeMessages(messages);
+        const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+          model,
+          messages: cleanMessages as OpenAI.Chat.ChatCompletionMessageParam[],
+          temperature,
+        };
+        if (tools && tools.length > 0) {
+          params.tools = tools as OpenAI.Chat.ChatCompletionTool[];
+          params.tool_choice = 'auto';
+        }
+        if (options.maxTokens !== undefined) {
+          params.max_tokens = options.maxTokens;
+        }
 
-      const resp = await client.chat.completions.create(params);
-      const choice = resp.choices[0];
-      if (!choice) {
-        throw new Error('LLM 返回为空：choices 为空数组');
-      }
+        const resp = await client.chat.completions.create(params);
+        const choice = resp.choices[0];
+        if (!choice) {
+          throw new Error('LLM 返回为空：choices 为空数组');
+        }
 
-      const msg = choice.message;
-      const toolCalls = msg.tool_calls?.map((tc) => ({
-        id: tc.id,
-        type: 'function' as const,
-        function: {
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        },
-      }));
+        const msg = choice.message;
+        const toolCalls = msg.tool_calls?.map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: {
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          },
+        }));
 
-      const response: LLMResponse = {
-        content: msg.content ?? null,
-        tool_calls: toolCalls,
-        finish_reason: choice.finish_reason ?? 'stop',
-        usage: resp.usage ? {
-          prompt_tokens: resp.usage.prompt_tokens ?? 0,
-          prompt_cache_hit_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_hit_tokens as number | undefined,
-          prompt_cache_miss_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_miss_tokens as number | undefined,
-          completion_tokens: resp.usage.completion_tokens ?? 0,
-          total_tokens: resp.usage.total_tokens ?? 0,
-        } : undefined,
-      };
+        const response: LLMResponse = {
+          content: msg.content ?? null,
+          tool_calls: toolCalls,
+          finish_reason: choice.finish_reason ?? 'stop',
+          usage: resp.usage ? {
+            prompt_tokens: resp.usage.prompt_tokens ?? 0,
+            prompt_cache_hit_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_hit_tokens as number | undefined,
+            prompt_cache_miss_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_miss_tokens as number | undefined,
+            completion_tokens: resp.usage.completion_tokens ?? 0,
+            total_tokens: resp.usage.total_tokens ?? 0,
+          } : undefined,
+        };
 
-      debug.llmResponse(
-        response.content,
-        response.tool_calls?.map((tc) => ({ name: tc.function.name, arguments: tc.function.arguments })),
-        Date.now() - startMs,
-        response.usage,
-      );
-      llmLogger.response({ id: callId, response, elapsedMs: Date.now() - startMs });
+        debug.llmResponse(
+          response.content,
+          response.tool_calls?.map((tc) => ({ name: tc.function.name, arguments: tc.function.arguments })),
+          Date.now() - startMs,
+          response.usage,
+        );
+        llmLogger.response({ callId, response, elapsedMs: Date.now() - startMs });
 
-      return response;
-    });
+        return response;
+      });
+    } catch (e) {
+      llmLogger.error({ callId, error: e, elapsedMs: Date.now() - startMs });
+      throw e;
+    }
   }
 
   /**
@@ -212,12 +218,13 @@ export class LLMClient {
 
     const callId = beginLLMCall();
     llmLogger.request({
-      id: callId,
+      callId,
+      stream: false,
       model,
       temperature,
       toolsCount: 0,
       maxTokens: options.maxTokens,
-      messages: messages as unknown as ChatMessage[],
+      messages: LLMClient.normalizeMessages(messages) as unknown as ChatMessage[],
     });
     debug.llmRequest(model, messages.length, 0);
 
@@ -260,11 +267,15 @@ export class LLMClient {
     try {
       response = await this.retry(() => invoke(options.jsonMode === true));
     } catch (firstErr) {
-      if (options.jsonMode !== true) throw this.rewriteVisionError(firstErr, model);
+      if (options.jsonMode !== true) {
+        llmLogger.error({ callId, error: firstErr, elapsedMs: Date.now() - startMs });
+        throw this.rewriteVisionError(firstErr, model);
+      }
       debug.log(`JSON 模式调用失败，降级为普通模式重试: ${firstErr instanceof Error ? firstErr.message : String(firstErr)}`);
       try {
         response = await this.retry(() => invoke(false));
       } catch (secondErr) {
+        llmLogger.error({ callId, error: secondErr, elapsedMs: Date.now() - startMs });
         throw this.rewriteVisionError(secondErr, model);
       }
     }
@@ -275,7 +286,7 @@ export class LLMClient {
       Date.now() - startMs,
       response.usage,
     );
-    llmLogger.response({ id: callId, response, elapsedMs: Date.now() - startMs });
+    llmLogger.response({ callId, response, elapsedMs: Date.now() - startMs });
 
     return { content: response.content ?? '', usage: response.usage, elapsedMs: Date.now() - startMs };
   }
@@ -309,15 +320,16 @@ export class LLMClient {
     const model = options.model ?? config.modelName;
     const temperature = options.temperature ?? 0;
 
-    // 独立 LLM 调用日志（输入参数 + 消息列表）
+    // 独立 LLM 调用日志（JSONL 格式，每次调用一行）
     const callId = beginLLMCall();
     llmLogger.request({
-      id: callId,
+      callId,
+      stream: true,
       model,
       temperature,
       toolsCount: tools?.length ?? 0,
       maxTokens: options.maxTokens,
-      messages,
+      messages: LLMClient.normalizeMessages(messages),
     });
 
     debug.llmRequest(model, messages.length, tools?.length ?? 0);
@@ -342,9 +354,8 @@ export class LLMClient {
     }
 
     const client = this.getClient();
-    const stream = await client.chat.completions.create(params);
 
-    // 累积器：按 index 聚合 tool_calls，最后组装成完整 LLMResponse
+    // 累积器（在 try 块外声明，catch 后仍可访问用于组装响应 / 抛错）
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
     let contentBuf = '';
     let finishReason: LLMResponse['finish_reason'] = 'stop';
@@ -352,6 +363,8 @@ export class LLMClient {
     let streamUsage: LLMResponse['usage'] | undefined;
 
     try {
+      const stream = await client.chat.completions.create(params);
+
       for await (const chunk of stream) {
         const choice = chunk.choices[0];
         if (!choice) continue;
@@ -434,6 +447,7 @@ export class LLMClient {
         debug.log(`流连接异常关闭，但已累积 ${contentBuf.length} 字符和 ${toolCallMap.size} 个工具调用，继续处理`);
       } else {
         // 没有任何内容，抛出原始错误
+        llmLogger.error({ callId, error: streamError, elapsedMs: Date.now() - streamStartMs });
         throw streamError;
       }
     }
@@ -444,7 +458,7 @@ export class LLMClient {
       Date.now() - streamStartMs,
       response.usage,
     );
-    llmLogger.response({ id: callId, response, elapsedMs: Date.now() - streamStartMs });
+    llmLogger.response({ callId, response, elapsedMs: Date.now() - streamStartMs });
 
     yield { type: 'done', response };
   }
