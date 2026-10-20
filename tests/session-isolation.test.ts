@@ -194,6 +194,173 @@ describe('Session 分层存储和恢复', () => {
     expect(data.messages[1].content).toContain('用户问题 0');
   });
 
+  // ===== 7. 压缩边界锚点对齐（P1/P2 回归） =====
+  it('1.16 压缩轮次：重复内容不吞新消息、边界不早于上一轮 recent（P1-a/P1-b）', async () => {
+    // 10 轮，首轮用户输入与最后一轮相同（"继续"），制造「同内容跨归档边界」
+    const history: ChatMessage[] = [];
+    for (let i = 0; i < 10; i++) {
+      history.push({ role: 'user', content: i === 0 ? '继续' : `问题 ${i}` });
+      history.push({ role: 'assistant', content: `回复 ${i}` });
+    }
+    // keepRecentTurns=1：压缩后 kept 首条恰好是重复内容，旧实现会命中首条归档副本
+    const wm = new WorkingMemory({
+      maxTokens: 102400,
+      compactionThreshold: 0.8,
+      keepRecentTurns: 1,
+      flushFailure: 'skip',
+    });
+
+    const meta = await store.createSession('重复内容边界测试', history);
+    await store.updateSession(meta.id, history);
+
+    // 第一轮压缩：折叠前 9 轮（18 条），保留最后 1 轮
+    await store.updateSession(meta.id, wm.compact(history, '摘要1'));
+    let data = await store.loadSession(meta.id);
+    expect(data.messages.filter((m) => m.is_compact === true).length).toBe(18);
+
+    // 第二轮压缩：新用户输入与已归档的首条消息同内容
+    const summary = data.messages.find((m) => m.role !== 'system' && m.is_show === false)!;
+    const recent = data.messages.filter((m) => m.is_compact !== true && m.is_show !== false);
+    const view2 = wm.compact(
+      [
+        summary,
+        ...recent,
+        { role: 'user', content: '继续' },
+        { role: 'assistant', content: '回复 新' },
+      ],
+      '摘要2',
+    );
+    await store.updateSession(meta.id, view2);
+
+    data = await store.loadSession(meta.id);
+    // P1-a：旧归档不会被复活成 recent
+    expect(data.messages.filter((m) => m.is_compact === true).length).toBeGreaterThanOrEqual(18);
+    // P1-b：重复内容的合法新消息没有被去重吞掉（归档旧条 + recent 新条）
+    expect(data.messages.filter((m) => m.role === 'user' && m.content === '继续').length).toBe(2);
+    // 新一轮完整保留在尾部且为 recent
+    expect(data.messages.at(-2)).toMatchObject({
+      role: 'user',
+      content: '继续',
+      is_compact: false,
+    });
+    expect(data.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: '回复 新',
+      is_compact: false,
+    });
+    // 总结消息仍只有一条，且被新摘要取代
+    const summaries = data.messages.filter((m) => m.role !== 'system' && m.is_show === false);
+    expect(summaries.length).toBe(1);
+    expect(summaries[0].content).toBe('摘要2');
+  });
+
+  it('1.17 压缩轮次：锚点未命中时保守归档旧历史，不把 kept 一起折叠（P2-a）', async () => {
+    const history = makeMessages(6); // 12 条
+    const meta = await store.createSession('锚点未命中测试', history);
+    await store.updateSession(meta.id, history);
+
+    // 模拟 kept 与已有历史完全不重叠（内容被外部改写/替换）
+    await store.updateSession(meta.id, [
+      { role: 'user', content: '[历史摘要] 摘要', is_show: false },
+      { role: 'user', content: '全新消息 A' },
+      { role: 'assistant', content: '全新回复 A' },
+    ]);
+
+    const data = await store.loadSession(meta.id);
+    // 旧历史按压缩意图归档
+    expect(data.messages.filter((m) => m.is_compact === true).length).toBe(history.length);
+    // kept 不被一起折叠：最近消息仍在 recent 区，可被恢复进上下文
+    const restore = SessionStore.getRestoreMessages(data).filter((m) => m.role !== 'system');
+    expect(restore.map((m) => m.content)).toEqual(['摘要', '全新消息 A', '全新回复 A']);
+    expect(data.messages.filter((m) => m.is_compact === false && m.is_show !== false).length).toBe(2);
+  });
+
+  it('1.18 未压缩轮次：重复内容消息正常落盘，重复写入不膨胀（P1-b）', async () => {
+    const firstTurn: ChatMessage[] = [
+      { role: 'user', content: '继续' },
+      { role: 'assistant', content: '好的' },
+    ];
+    const meta = await store.createSession('重复内容落盘测试', firstTurn);
+    await store.updateSession(meta.id, firstTurn);
+    expect((await store.loadSession(meta.id)).messages.length).toBe(2);
+
+    // 用户重发同样内容：属于合法消息，必须落盘
+    const secondTurn = [...firstTurn, { role: 'user', content: '继续' }, { role: 'assistant', content: '好的' }];
+    await store.updateSession(meta.id, secondTurn);
+    expect((await store.loadSession(meta.id)).messages.length).toBe(4);
+
+    // 同一快照重复写入：锚点全命中，不产生重复
+    await store.updateSession(meta.id, secondTurn);
+    expect((await store.loadSession(meta.id)).messages.length).toBe(4);
+  });
+
+  it('1.19 封顶：优先丢弃最老的非总结消息，保留总结消息（P2-b）', async () => {
+    // 4000 条 = 1 条总结 + 3999 条普通消息；追加 2 条后触发 4000 条封顶
+    const bulk: ChatMessage[] = [{ role: 'user', content: '历史摘要文本', is_show: false }];
+    for (let i = 0; i < 3999; i++) {
+      bulk.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `批量消息 ${i}` });
+    }
+    const meta = await store.createSession('封顶测试', bulk);
+    // 传入不含总结消息的窗口 → 走未压缩分支，由封顶逻辑处理超限
+    await store.updateSession(meta.id, [
+      ...bulk.slice(1),
+      { role: 'user', content: '新增消息 A' },
+      { role: 'assistant', content: '新增回复 A' },
+    ]);
+
+    const data = await store.loadSession(meta.id);
+    expect(data.messages.length).toBe(4000);
+    const summaries = data.messages.filter((m) => m.role !== 'system' && m.is_show === false);
+    expect(summaries.length).toBe(1);
+    expect(summaries[0].content).toBe('历史摘要文本');
+    expect(data.messages.at(-1)?.content).toBe('新增回复 A');
+  });
+
+  it('1.20 总结消息显式落盘 kind=summary，判据优先于 is_show（P3）', async () => {
+    const history = makeMessages(6); // 12 条
+    const meta = await store.createSession('kind 标记测试', history);
+    await store.updateSession(meta.id, history);
+
+    // 传入的总结消息只带 kind='summary'（is_show 故意给 true），验证显式种类优先
+    await store.updateSession(meta.id, [
+      { role: 'user', content: '摘要文本', kind: 'summary', is_show: true },
+      { role: 'user', content: '全新消息 B' },
+      { role: 'assistant', content: '全新回复 B' },
+    ]);
+
+    const data = await store.loadSession(meta.id);
+    const summaries = data.messages.filter((m) => m.kind === 'summary');
+    expect(summaries.length).toBe(1);
+    expect(summaries[0]).toMatchObject({
+      role: 'user',
+      content: '摘要文本',
+      is_show: false,
+      is_compact: false,
+      kind: 'summary',
+    });
+    // 旧历史全部归档，总结与 kept 保持 recent
+    expect(data.messages.filter((m) => m.is_compact === true).length).toBe(history.length);
+    const restore = SessionStore.getRestoreMessages(data).filter((m) => m.role !== 'system');
+    expect(restore.map((m) => m.content)).toEqual(['摘要文本', '全新消息 B', '全新回复 B']);
+  });
+
+  it('1.21 非总结的隐藏消息不会被误判成总结消息（P3）', async () => {
+    // 旧判据 role!=='system' && is_show===false 会把这条 assistant 当成总结消息转写成 user
+    const turn: ChatMessage[] = [
+      { role: 'user', content: '开始' },
+      { role: 'assistant', content: '隐藏回复', is_show: false },
+    ];
+    const meta = await store.createSession('隐藏消息测试', turn);
+    await store.updateSession(meta.id, turn);
+
+    const data = await store.loadSession(meta.id);
+    expect(data.messages.length).toBe(2);
+    const hidden = data.messages.find((m) => m.content === '隐藏回复');
+    expect(hidden?.role).toBe('assistant');
+    expect(hidden?.kind).toBeUndefined();
+    expect(hidden?.is_compact).toBe(false);
+  });
+
   // ===== 3. L2 Episodic Memory Session 隔离 =====
   it('1.4/1.7 L2 Session 隔离：session 级条目只对来源会话可见', async () => {
     const sessionA = 'sess_A';

@@ -160,7 +160,7 @@ Semantic conventions:
 
 ### SSE Streaming Events
 
-`POST /sessions/:id/messages` returns `text/event-stream` by default, forwarding all 15 Agent event hooks frame by frame (`onXxx` → snake_case event names), followed by a synthetic terminal event from the API layer:
+`POST /sessions/:id/messages` returns `text/event-stream` by default, forwarding all 16 Agent event hooks frame by frame (`onXxx` → snake_case event names), followed by a synthetic terminal event from the API layer:
 
 | Event | Payload | Description |
 |-------|---------|-------------|
@@ -173,6 +173,7 @@ Semantic conventions:
 | `tool_start` / `tool_end` | `{tool, args}` / `{tool, result}` | Tool call start / end |
 | `tool_progress` | `{tool, elapsedMs}` | Long-running tool heartbeat |
 | `tool_call_delta` | `{tool, accumulatedBytes, elapsedMs}` | Streaming tool-argument deltas |
+| `compaction_start` | `{info}` | L1 compaction starts (pre-compaction flush in progress) |
 | `compaction` | `{info}` | L1 context compaction |
 | `final` | `{answer}` | Final answer |
 | `error` | `{name, message}` | Non-fatal error (may repeat; not terminal) |

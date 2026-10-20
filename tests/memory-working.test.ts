@@ -26,6 +26,40 @@ function msg(role: ChatMessage['role'], content: string): ChatMessage {
   return { role, content } as ChatMessage;
 }
 
+/** 4 轮历史：默认 keepRecentTurns=3 时第 1 轮会被丢弃（flush 才有内容可总结） */
+function historyWithDroppable(): ChatMessage[] {
+  return [
+    msg('user', 'q1'),
+    msg('assistant', 'a1'),
+    msg('user', 'q2'),
+    msg('assistant', 'a2'),
+    msg('user', 'q3'),
+    msg('assistant', 'a3'),
+    msg('user', 'q4'),
+    msg('assistant', 'a4'),
+  ];
+}
+
+/** 单轮内多轮工具迭代：按 user 切轮无法丢弃任何消息 */
+function singleTurnHistory(): ChatMessage[] {
+  const toolCall = (id: string): ChatMessage => ({
+    role: 'assistant',
+    content: '',
+    tool_calls: [{ id, type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+  });
+  return [
+    msg('system', 'sys'),
+    msg('user', '任务开始'),
+    toolCall('c1'),
+    { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(40) },
+    toolCall('c2'),
+    { role: 'tool', tool_call_id: 'c2', content: 'r'.repeat(40) },
+    toolCall('c3'),
+    { role: 'tool', tool_call_id: 'c3', content: 'r'.repeat(40) },
+    msg('assistant', '完成'),
+  ];
+}
+
 describe('L1 WorkingMemory', () => {
   it('2.1a token 估算：字符数/4 向上取整', () => {
     const wm = new WorkingMemory();
@@ -75,27 +109,32 @@ describe('L1 WorkingMemory', () => {
     expect(contents).toEqual(['sys', '问题2', '回答2', '问题3', '回答3']);
   });
 
-  it('2.1b preCompactionFlush：调用 LLM 提取关键信息', async () => {
+  it('2.1b preCompactionFlush：请求固定 2 条消息（system + 将被丢弃消息的 JSON）', async () => {
     const wm = new WorkingMemory();
-    let calledWith = '';
+    let calledWith: ChatMessage[] = [];
     const fakeLLM: ILLMClient = {
       async chat(messages: ChatMessage[]) {
-        calledWith = messages[messages.length - 1].content as string;
+        calledWith = messages;
         return { content: '- 用户偏好：华锐\n- 报价：12.5 元/股' };
       },
     };
 
-    const history: ChatMessage[] = [
-      msg('user', '帮我查华锐报价'),
-      msg('assistant', '好的，正在查询'),
-    ];
+    const history = historyWithDroppable();
     const extracted = await wm.preCompactionFlush(history, fakeLLM);
 
     // 提取出结构化笔记
     expect(extracted).toContain('华锐');
     expect(extracted).toContain('12.5');
-    // 最后一条消息传入 LLM
-    expect(calledWith).toBe('好的，正在查询');
+    // 固定 2 条：system 指令 + JSON 载荷
+    expect(calledWith.length).toBe(2);
+    expect(calledWith[0].role).toBe('system');
+    expect(calledWith[0].content).toContain('压缩对话历史');
+    // 只包含本次将被丢弃的第 1 轮
+    const payload = JSON.parse(calledWith[1].content as string);
+    expect(payload.messages).toEqual([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ]);
   });
 
   it('2.1c preCompactionFlush 失败时返回空串（不阻塞主流程）', async () => {
@@ -105,7 +144,7 @@ describe('L1 WorkingMemory', () => {
         throw new Error('LLM 不可用');
       },
     };
-    const extracted = await wm.preCompactionFlush([msg('user', 'hi')], failingLLM);
+    const extracted = await wm.preCompactionFlush(historyWithDroppable(), failingLLM);
     expect(extracted).toBe('');
   });
 
@@ -123,10 +162,68 @@ describe('L1 WorkingMemory', () => {
         return { content: '- 流式提取结果' };
       },
     };
-    const extracted = await wm.preCompactionFlush([msg('user', 'hi')], fakeLLM);
+    const extracted = await wm.preCompactionFlush(historyWithDroppable(), fakeLLM);
     expect(streamCalled).toBe(true);
     expect(chatCalled).toBe(false);
     expect(extracted).toBe('- 流式提取结果');
+  });
+
+  it('2.1e 本次无可丢弃消息：planCompaction.droppedCount=0 且不调用 LLM', () => {
+    const wm = new WorkingMemory();
+    const history: ChatMessage[] = [msg('user', 'hi'), msg('assistant', 'hello')];
+    const plan = wm.planCompaction(history);
+    expect(plan.droppedCount).toBe(0);
+    expect(plan.droppable).toEqual([]);
+  });
+
+  it('2.1e2 无消息可丢弃时 preCompactionFlush 直接返回空串（不调用 LLM）', async () => {
+    const wm = new WorkingMemory();
+    let called = false;
+    const fakeLLM: ILLMClient = {
+      async chat() {
+        called = true;
+        return { content: '不该被调用' };
+      },
+    };
+    const extracted = await wm.preCompactionFlush([msg('user', 'hi')], fakeLLM);
+    expect(extracted).toBe('');
+    expect(called).toBe(false);
+  });
+
+  it('2.1f 单轮内 token 截尾：切轮丢弃为 0 时按消息预算保留尾部', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const history = singleTurnHistory();
+    // 只有一个 user：切轮窗口必然装下全部消息，默认计划不丢弃任何消息
+    expect(wm.planCompaction(history).droppedCount).toBe(0);
+
+    const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
+    expect(plan.withinTurnTrim).toBe(true);
+    expect(plan.droppedCount).toBeGreaterThan(0);
+    // 丢弃 + 保留 = 全部非 system 消息，二者不重不漏
+    expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
+    // 保留后缀起点不是 tool，工具调用/结果配对完整
+    expect(plan.kept[0].role).toBe('assistant');
+    expect(plan.droppable[plan.droppable.length - 1].role).toBe('tool');
+
+    // compact 使用 plan.kept 作为后缀，而不是重新按 user 切轮
+    const compacted = wm.compact(history, '- 摘要', plan);
+    expect(compacted[0]).toEqual(msg('system', 'sys'));
+    expect(isSummaryPlaceholder(compacted[1])).toBe(true);
+    expect(compacted.slice(2)).toEqual(plan.kept);
+  });
+
+  it('2.1g 单轮内未超预算：不截尾', () => {
+    const wm = new WorkingMemory();
+    const plan = wm.planCompaction(singleTurnHistory(), { messageTokensBudget: 1000 });
+    expect(plan.droppedCount).toBe(0);
+    expect(plan.withinTurnTrim).toBe(false);
+  });
+
+  it('2.1h 多轮历史优先按轮切分，即使消息超预算也不走单轮截尾', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 2 });
+    const plan = wm.planCompaction(historyWithDroppable(), { messageTokensBudget: 1 });
+    expect(plan.droppedCount).toBe(4);
+    expect(plan.withinTurnTrim).toBe(false);
   });
 });
 

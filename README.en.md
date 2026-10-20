@@ -40,7 +40,7 @@
 | ⌨️ **Tab Autocompletion** | In the REPL, typing `/con` and pressing Tab completes to `/config`; both commands and subcommands are completable, and multiple candidates are listed automatically |
 | 💾 **Session Persistence** | Conversation history stored with AES-256-GCM encryption; auto-saved across processes / manually restorable |
 | 📝 **Debug Logging** | File logs of LLM requests/responses, tool calls and agent iterations, with automatic rotation |
-| 🎯 **Event Hooks** | 15 lifecycle hooks, inspired by LangChain callbacks, for easy extension |
+| 🎯 **Event Hooks** | 16 lifecycle hooks, inspired by LangChain callbacks, for easy extension |
 | 💬 **Multi-turn Conversation** | Message history persisted across `run()` calls; context is seamlessly continued |
 | ⚡ **Parallel Tools per Round** | Supports multiple `tool_calls` returned in a single round, executed concurrently via `Promise.all` |
 | 🛡️ **Failure Isolation** | A single tool failure doesn't affect other tools; a missing tool returns an error Observation so the agent keeps reasoning |
@@ -76,7 +76,18 @@ Later you can re-run the wizard with `/setup` (`--global` / `--workspace` to cho
 **Option B: Manual .env config** — copy `.env.example` to `.env` and fill in your configuration:
 
 ```bash
+# macOS / Linux
 cp .env.example .env
+```
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
+```
+
+```bat
+:: Windows CMD
+copy .env.example .env
 ```
 
 ```env
@@ -143,7 +154,7 @@ Each section's details have been split into [docs/readme/en/](docs/readme/en/) (
 | [🧩 Tool Extension](docs/readme/en/tool-extension.md) | Writing custom tools and connecting external MCP tools (five ways) |
 | [🎯 Skills](docs/readme/en/skills.md) | SKILL.md spec, directory structure and progressive loading workflow |
 | [⚙️ Configuration](docs/readme/en/configuration.md) | Config layers, full config structure, environment variables and the runtime `/config` command |
-| [🎧 Event Listeners](docs/readme/en/event-listeners.md) | 15 lifecycle hooks and multi-listener stacking example |
+| [🎧 Event Listeners](docs/readme/en/event-listeners.md) | 16 lifecycle hooks and multi-listener stacking example |
 | [💬 Multi-turn Conversation](docs/readme/en/multi-turn-conversation.md) | Message history persistence rules across `run()` calls with examples |
 | [💾 Session Persistence](docs/readme/en/session-persistence.md) | Encrypted storage structure, auto-save/restore and key management |
 | [🧠 Memory Management](docs/readme/en/memory-management.md) | L1/L2/L3 memory tiers, Promotion Gate and Dreaming |

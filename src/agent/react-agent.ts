@@ -74,6 +74,11 @@ export class ReActAgent {
   private _currentSessionId: string | null = null;
   /** 最近一次 LLM 调用的真实 prompt_tokens（供 /status 展示） */
   private _lastContextTokens: number | null = null;
+  /**
+   * 固定开销估算 = prompt_tokens - 消息本地估算（system prompt、工具 schema、L2 注入等）。
+   * 压缩只裁 messages，触发判定必须扣除这部分，否则固定开销一大就永远压不下来。
+   */
+  private _promptOverheadTokens = 0;
 
   /** 记忆模块（可选，根据配置启用） */
   private _workingMemory: WorkingMemory | null = null;
@@ -115,6 +120,7 @@ export class ReActAgent {
     this._chatHistory = [];
     this._currentSessionId = null;
     this._lastContextTokens = null;
+    this._promptOverheadTokens = 0;
     // 同步清理记忆回调的 sessionId
     if (this._memoryCallback) {
       this._memoryCallback.setSessionId(null);
@@ -122,10 +128,10 @@ export class ReActAgent {
   }
 
   /**
-   * 从 SessionData 恢复对话（使用分层存储）
-   * - recentMessages → 加载到 _chatHistory
-   * - lastSummary → 作为首条 user 消息注入（不污染 system prompt，保持前缀缓存可命中）
-   * - archivedMessages → 不加载，由 L2 检索覆盖
+   * 从 SessionData 恢复对话（单一真源：data.messages）
+   * - is_compact!==true 的消息加载到 _chatHistory（含 kind='summary' 的压缩总结消息）
+   * - is_compact===true 的归档消息不加载（已折叠进摘要，由 L2 检索覆盖）
+   * - system 不恢复历史版本，改用当前配置重建（保持前缀缓存可命中）
    */
   restoreSession(data: SessionData, systemPrompt: string): void {
     this._currentSessionId = data.id;
@@ -417,13 +423,23 @@ export class ReActAgent {
           const threshold = Math.round(
             wmConfig.maxTokens * wmConfig.compactionThreshold,
           );
-          // 优先使用上一轮 LLM 返回的真实 prompt_tokens（含 system/工具/L2/L3 注入），
-          // 缺失时回退本地估算（长度/4，对中文会低估，可能导致压缩不触发）
-          const overThreshold = this._lastContextTokens !== null
-            ? this._lastContextTokens >= threshold
-            : this._workingMemory.needsCompaction(messages);
+          // 压缩只裁 messages，而 prompt_tokens 还含 system/工具 schema/L2 注入等固定开销，
+          // 因此触发口径改为「消息 token 是否超过消息预算 = 阈值 - 固定开销」，
+          // 否则固定开销一大，消息侧永远压不到阈值以下。
+          // 0.2×阈值 是下限：固定开销接近/超过阈值时仍保留可压缩空间，避免压缩后立刻再次触发。
+          const messageTokens = this._workingMemory.estimateTokens(messages);
+          const messageBudget = Math.max(
+            Math.floor(threshold * 0.2),
+            threshold - this._promptOverheadTokens,
+          );
+          const overThreshold = messageTokens >= messageBudget;
           if (overThreshold) {
-            debug.log('L1 超阈值，触发 pre-compaction flush');
+            debug.log(
+              `L1 超阈值，触发 pre-compaction flush` +
+                `（contextTokens=${this._lastContextTokens ?? '未知'}, messages=${messages.length}条, ` +
+                `消息=${messageTokens}/${messageBudget} tokens（阈值${threshold} - 固定开销${this._promptOverheadTokens}）, ` +
+                `keepRecentTurns=${wmConfig.keepRecentTurns}）`,
+            );
             try {
               // 压缩开始事件：与下方任一 onCompaction 结束事件配对（含 catch 兜底），
               // 前端据此显示/移除「压缩中」loading
@@ -431,61 +447,98 @@ export class ReActAgent {
                 threshold,
                 contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
               });
-              const llmAdapter = createLLMAdapter(model, temperature);
-              const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter);
-              if (extracted && this._episodicMemory) {
-                // 压缩笔记属会话内上下文语义：scope 改为 session，
-                // 避免跨会话可见，也避免与 L1 摘要占位形成「同一份信息双通道注入」
-                await this._episodicMemory.appendToday(extracted, {
-                  sessionId: this._currentSessionId ?? undefined,
-                  scope: 'session',
-                  tag: 'compaction',
-                });
-                debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
-                // 同一份笔记作为摘要占位注入内存视图；该占位会随 result.messages 落盘，
-                // 由 SessionStore.updateSession 转写为 is_show=false 的总结消息
-                messages = this._workingMemory.compact(messages, extracted);
-                debug.log(`压缩完成，保留 ${messages.length} 条消息`);
+              // D1：只总结「本次将被丢弃」的消息；没有可丢弃消息时是空操作，
+              // 不调用 LLM、不写 L2（否则会出现连续多轮压缩空转、反复 flush）
+              const plan = this._workingMemory.planCompaction(messages, {
+                messageTokensBudget: messageBudget,
+              });
+              if (plan.droppedCount === 0) {
+                debug.log(
+                  `本次压缩无可丢弃消息（keepRecentTurns=${wmConfig.keepRecentTurns} 已覆盖全部 ${messages.length} 条），` +
+                    `跳过压缩（不调用 LLM、不写 L2）`,
+                );
                 await safeEvents.onCompaction?.({
                   threshold,
                   contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
-                  flushedChars: extracted.length,
+                  flushedChars: 0,
                   keptMessages: messages.length,
                   failed: false,
                 });
-              } else if (wmConfig.flushFailure === 'archive' && this._episodicMemory) {
-                // Task-17：提取失败 + archive → 原始对话降级写入 L2 保底，再压缩
-                const rawContent = messages
-                  .map((m) => `${m.role}: ${m.content}`)
-                  .join('\n');
-                await this._episodicMemory.appendToday(rawContent, {
-                  sessionId: this._currentSessionId ?? undefined,
-                  scope: 'session',
-                  tag: 'compaction_fallback',
-                });
-                debug.log(`flush 失败，降级存档 ${rawContent.length} 字符到 L2（compaction_fallback）`);
-                // 降级存档文本同样作为摘要占位注入，避免压缩后上下文断裂
-                messages = this._workingMemory.compact(messages, rawContent);
-                debug.log(`压缩完成，保留 ${messages.length} 条消息`);
-                await safeEvents.onCompaction?.({
-                  threshold,
-                  contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
-                  flushedChars: 0,
-                  keptMessages: messages.length,
-                  failed: true,
-                  fallback: 'archive',
-                });
               } else {
-                // Task-17：提取失败 + skip（默认）→ 保留全部历史，不压缩（宁可超上下文不丢信息）
-                debug.log('flush 提取失败，跳过压缩（保留全部历史）');
-                await safeEvents.onCompaction?.({
-                  threshold,
-                  contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
-                  flushedChars: 0,
-                  keptMessages: messages.length,
-                  failed: true,
-                  fallback: 'skip',
-                });
+                const llmAdapter = createLLMAdapter(model, temperature);
+                const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter, plan);
+                if (extracted && this._episodicMemory) {
+                  // 压缩笔记属会话内上下文语义：scope 改为 session，
+                  // 避免跨会话可见，也避免与 L1 摘要占位形成「同一份信息双通道注入」
+                  await this._episodicMemory.appendToday(extracted, {
+                    sessionId: this._currentSessionId ?? undefined,
+                    scope: 'session',
+                    tag: 'compaction',
+                  });
+                  debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
+                  // 同一份笔记作为摘要占位注入内存视图；该占位会随 result.messages 落盘，
+                  // 由 SessionStore.updateSession 转写为 kind='summary' 的总结消息
+                  const beforeCount = messages.length;
+                  const beforeTokens = this._workingMemory.estimateTokens(messages);
+                  messages = this._workingMemory.compact(messages, extracted, plan);
+                  // 压缩后立即按新消息 + 固定开销回写，避免下一迭代仍判定超阈值（空转压缩）
+                  this._lastContextTokens =
+                    this._workingMemory.estimateTokens(messages) + this._promptOverheadTokens;
+                  debug.log(
+                    `压缩完成，保留 ${messages.length} 条消息` +
+                      `（前 ${beforeCount} 条/${beforeTokens} tokens → 后 ${this._workingMemory.estimateTokens(messages)} tokens, ` +
+                      `实际丢弃 ${beforeCount - messages.length} 条）`,
+                  );
+                  await safeEvents.onCompaction?.({
+                    threshold,
+                    contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                    flushedChars: extracted.length,
+                    keptMessages: messages.length,
+                    failed: false,
+                  });
+                } else if (wmConfig.flushFailure === 'archive' && this._episodicMemory) {
+                  // Task-17：提取失败 + archive → 本次将被丢弃的原始对话降级写入 L2 保底，再压缩
+                  const rawContent = plan.droppable
+                    .map((m) => `${m.role}: ${m.content ?? ''}`)
+                    .join('\n');
+                  await this._episodicMemory.appendToday(rawContent, {
+                    sessionId: this._currentSessionId ?? undefined,
+                    scope: 'session',
+                    tag: 'compaction_fallback',
+                  });
+                  debug.log(`flush 失败，降级存档 ${rawContent.length} 字符到 L2（compaction_fallback）`);
+                  // 降级存档文本同样作为摘要占位注入，避免压缩后上下文断裂
+                  const beforeCount = messages.length;
+                  const beforeTokens = this._workingMemory.estimateTokens(messages);
+                  messages = this._workingMemory.compact(messages, rawContent, plan);
+                  // 压缩后立即按新消息 + 固定开销回写，避免下一迭代仍判定超阈值（空转压缩）
+                  this._lastContextTokens =
+                    this._workingMemory.estimateTokens(messages) + this._promptOverheadTokens;
+                  debug.log(
+                    `压缩完成，保留 ${messages.length} 条消息` +
+                      `（前 ${beforeCount} 条/${beforeTokens} tokens → 后 ${this._workingMemory.estimateTokens(messages)} tokens, ` +
+                      `实际丢弃 ${beforeCount - messages.length} 条）`,
+                  );
+                  await safeEvents.onCompaction?.({
+                    threshold,
+                    contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                    flushedChars: 0,
+                    keptMessages: messages.length,
+                    failed: true,
+                    fallback: 'archive',
+                  });
+                } else {
+                  // Task-17：提取失败 + skip（默认）→ 保留全部历史，不压缩（宁可超上下文不丢信息）
+                  debug.log('flush 提取失败，跳过压缩（保留全部历史）');
+                  await safeEvents.onCompaction?.({
+                    threshold,
+                    contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                    flushedChars: 0,
+                    keptMessages: messages.length,
+                    failed: true,
+                    fallback: 'skip',
+                  });
+                }
               }
             } catch (e) {
               debug.log(`压缩过程出错（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
@@ -564,9 +617,14 @@ export class ReActAgent {
         // ===== Task-15：每轮统计（上下文占用 / 缓存命中率 / 输入输出 token） =====
         const usage = resp.usage;
         const workingConfig = this._workingMemory?.getConfig();
-        const contextTokens =
-          usage?.prompt_tokens ?? (this._workingMemory?.estimateTokens(llmMessages) ?? 0);
+        const estimatedPromptTokens = this._workingMemory?.estimateTokens(llmMessages) ?? 0;
+        const contextTokens = usage?.prompt_tokens ?? estimatedPromptTokens;
         this._lastContextTokens = contextTokens;
+        // 固定开销 = 真实 prompt_tokens - 消息本地估算（system/工具 schema/L2 注入等），
+        // 供下一迭代按「消息预算」判断是否压缩；没有 usage 时沿用上一次的估算
+        if (usage?.prompt_tokens != null) {
+          this._promptOverheadTokens = Math.max(0, usage.prompt_tokens - estimatedPromptTokens);
+        }
         const maxTokens = workingConfig?.maxTokens ?? 0;
         const stats: LLMStats = {
           iteration: i,
@@ -707,8 +765,8 @@ export class ReActAgent {
         options.spinner?.start('保存会话…');
         try {
           if (this._currentSessionId) {
-            // 用 store 归一化后的会话消息作为下一轮基线：摘要占位已转写为总结消息、
-            // 压缩标记一致（is_compact/is_show）。
+            // 用 store 归一化后的会话消息作为下一轮基线：摘要占位已转写为 kind='summary' 的总结消息、
+            // 压缩标记一致（is_compact/is_show/kind）。
             // 同时剔除 is_compact=true 的已折叠历史：它们仅保留用于 UI 展示，
             // 重新进入基线会污染 LLM 上下文并导致每轮重复触发压缩
             const stored = await this._sessionStore.updateSession(

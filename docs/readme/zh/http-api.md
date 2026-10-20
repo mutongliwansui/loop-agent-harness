@@ -159,7 +159,7 @@ HTTP API 服务已启动
 
 ### SSE 流式事件
 
-`POST /sessions/:id/messages` 默认以 `text/event-stream` 返回，把 Agent 全部 15 个事件钩子逐帧透传（`onXxx` → snake_case 事件名），最后由 API 层合成终态：
+`POST /sessions/:id/messages` 默认以 `text/event-stream` 返回，把 Agent 全部 16 个事件钩子逐帧透传（`onXxx` → snake_case 事件名），最后由 API 层合成终态：
 
 | 事件 | 载荷 | 说明 |
 |------|------|------|
@@ -172,6 +172,7 @@ HTTP API 服务已启动
 | `tool_start` / `tool_end` | `{tool, args}` / `{tool, result}` | 工具调用开始/结束 |
 | `tool_progress` | `{tool, elapsedMs}` | 长耗时工具心跳 |
 | `tool_call_delta` | `{tool, accumulatedBytes, elapsedMs}` | 工具参数流式增量 |
+| `compaction_start` | `{info}` | L1 上下文压缩开始（pre-compaction flush 进行中） |
 | `compaction` | `{info}` | L1 上下文压缩 |
 | `final` | `{answer}` | 最终答案 |
 | `error` | `{name, message}` | 非致命错误（可多次出现，非终态） |

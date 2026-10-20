@@ -127,7 +127,7 @@ flowchart TD
     subgraph L2["2️⃣ 编排层"]
         B1["agent/react-agent.ts<br/>run() · initMemory() · restoreSession()"]
         B2["agent/prompt.ts<br/>System Prompt 装配"]
-        B3["agent/logger.ts<br/>15 个事件钩子 → 控制台"]
+        B3["agent/logger.ts<br/>16 个事件钩子 → 控制台"]
         B4["agent/stats.ts<br/>token 统计汇总"]
         B5["agent/stream-forward.ts<br/>流式片段转发"]
     end

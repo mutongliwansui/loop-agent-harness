@@ -46,10 +46,16 @@ async function sentMessages(messages: ChatMessage[]): Promise<Array<Record<strin
 }
 
 describe('normalizeMessages：摘要占位与会话标记', () => {
-  it('占位消息内容保留（LLM 可见），is_show/is_compact 标记字段被剥离', async () => {
+  it('占位消息内容保留（LLM 可见），is_show/is_compact/kind 标记字段被剥离', async () => {
     const sent = await sentMessages([
       { role: 'system', content: 'sys' },
-      { role: 'user', content: '[历史摘要] 用户偏好 X', is_show: false, is_compact: false },
+      {
+        role: 'user',
+        content: '[历史摘要] 用户偏好 X',
+        is_show: false,
+        is_compact: false,
+        kind: 'summary',
+      },
       { role: 'user', content: '继续' },
     ]);
 
@@ -57,6 +63,7 @@ describe('normalizeMessages：摘要占位与会话标记', () => {
     expect(sent[1]).toEqual({ role: 'user', content: '[历史摘要] 用户偏好 X' });
     expect(sent[1]).not.toHaveProperty('is_show');
     expect(sent[1]).not.toHaveProperty('is_compact');
+    expect(sent[1]).not.toHaveProperty('kind');
     expect(sent[2]).toEqual({ role: 'user', content: '继续' });
   });
 

@@ -58,7 +58,7 @@ export class LLMClient {
    * 发送给 OpenAI-compatible API 前清洗 messages：
    * - assistant 消息的 tool_calls 空数组会触发 API 400（API 要求 tool_calls
    *   要么不存在，要么长度 ≥ 1），这里统一剥离该字段（含显式 undefined）。
-   * - is_compact/is_show/show_content 是会话存储标记，不进入 LLM 请求，统一剥离。
+   * - is_compact/is_show/show_content/kind 是会话存储标记，不进入 LLM 请求，统一剥离。
    * 泛型接受 ChatMessage / VisionMessage 等任意结构兼容消息数组。
    */
   private static normalizeMessages<T extends {
@@ -67,16 +67,18 @@ export class LLMClient {
     is_compact?: unknown;
     is_show?: unknown;
     show_content?: unknown;
+    kind?: unknown;
   }>(
     messages: T[],
   ): T[] {
     return messages.map((m) => {
-      // 构造去掉会话标记字段的新对象：is_compact/is_show/show_content 均不进入 LLM 请求，
+      // 构造去掉会话标记字段的新对象：is_compact/is_show/show_content/kind 均不进入 LLM 请求，
       // 否则会因非标准字段触发 API 400（TS 不允许在 ChatMessage 联合上直接解构）
       const {
         is_compact: _isCompact,
         is_show: _isShow,
         show_content: _showContent,
+        kind: _kind,
         tool_calls,
         ...rest
       } = m as unknown as Record<string, unknown>;

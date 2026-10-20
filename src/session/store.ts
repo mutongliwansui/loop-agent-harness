@@ -13,8 +13,10 @@ import {
 import type { ChatMessage } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
+import { isSummaryMessage } from '../memory/summary-message.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
+import { debug } from '../debug.js';
 
 /** 检查文件是否存在 */
 async function fileExists(path: string): Promise<boolean> {
@@ -40,11 +42,6 @@ function formatDate(d: Date): string {
 /** 摘要占位消息的固定前缀（buildCompactedView 注入；落盘为总结消息时剥离） */
 const SUMMARY_PLACEHOLDER_PREFIX = '[历史摘要]';
 
-/** 判断一条已落盘消息是否为「压缩总结消息」（role 非 system 且 is_show===false） */
-function isSummaryMessage(m: ChatMessage): boolean {
-  return m.role !== 'system' && m.is_show === false;
-}
-
 /** 会话数据文件缺失（索引有条目但落盘文件不存在，如存储被清理/跨扩展名切换） */
 export class SessionNotFoundError extends Error {
   constructor(id: string) {
@@ -53,7 +50,7 @@ export class SessionNotFoundError extends Error {
   }
 }
 
-/** 规范化一条运行时消息为可落盘形式：重算 is_compact/is_show/show_content */
+/** 规范化一条运行时消息为可落盘形式：重算 is_compact/is_show/show_content/kind */
 function toStoredMessage(
   m: ChatMessage,
   opts: { isCompact: boolean; isSummary?: boolean },
@@ -61,6 +58,9 @@ function toStoredMessage(
   const out = { ...m } as ChatMessage;
   out.is_compact = m.role === 'system' ? false : opts.isCompact;
   out.is_show = m.role === 'system' ? false : opts.isSummary !== true;
+  // 显式种类标记：总结消息写入 kind='summary'，其余消息清除（避免运行时残留标记误判）
+  if (opts.isSummary === true && m.role !== 'system') out.kind = 'summary';
+  else delete out.kind;
   if (m.role === 'user' && typeof m.content === 'string') {
     // content 保存 LLM 可见原文（可能含记忆前缀）；展示内容单独存 show_content
     const stripped = stripMemorySection(m.content);
@@ -94,6 +94,74 @@ function isSameMessage(a: ChatMessage, b: ChatMessage): boolean {
     return a.tool_call_id === b.tool_call_id;
   }
   return true;
+}
+
+/**
+ * 在 base 的 [from, end) 区间里定位 kept 的起点（后缀锚点对齐）。
+ * 取「从该位置起连续匹配条数最多」的位置：相同内容重复出现时，优先命中匹配链更长的那条，
+ * 避免误命中旧归档副本（找不到就退化为追加，不靠全局内容去重吞消息）。
+ * @returns index 起点下标（未命中为 -1）；run 从起点连续匹配的条数（0 表示未命中）
+ */
+function findKeptAnchor(
+  base: ChatMessage[],
+  kept: ChatMessage[],
+  from: number,
+): { index: number; run: number } {
+  let index = -1;
+  let run = 0;
+  if (kept.length === 0) return { index, run };
+  for (let i = Math.max(0, from); i < base.length; i++) {
+    let n = 0;
+    while (n < kept.length && i + n < base.length && isSameMessage(base[i + n], kept[n])) n++;
+    if (n > run) {
+      run = n;
+      index = i;
+    }
+  }
+  return { index, run };
+}
+
+/**
+ * 防膨胀封顶：优先丢弃最老的归档消息（is_compact=true），
+ * 其次丢弃最老的非总结消息；总结消息与 recent 尽量保留（旧实现 slice(-4000) 会把总结一起截掉）。
+ */
+function capStoredMessages(list: ChatMessage[], max: number): ChatMessage[] {
+  if (list.length <= max) return list;
+  let excess = list.length - max;
+
+  // 阶段 1：从头部丢归档消息
+  const stage1: ChatMessage[] = [];
+  for (const m of list) {
+    if (excess > 0 && m.is_compact === true) {
+      excess--;
+      continue;
+    }
+    stage1.push(m);
+  }
+  if (excess === 0) return stage1;
+
+  // 阶段 2：仍超限 → 保留总结消息，从头部丢非总结消息
+  const stage2: ChatMessage[] = [];
+  for (const m of stage1) {
+    if (excess > 0 && !isSummaryMessage(m)) {
+      excess--;
+      continue;
+    }
+    stage2.push(m);
+  }
+  if (excess === 0) return stage2;
+
+  // 阶段 3：极端情况（仅剩总结）→ 从头截断
+  return stage2.slice(excess);
+}
+
+/** 日志用：单条消息摘要（角色/长度/标记 + 内容截断），避免把全文写进日志 */
+function describeMessage(m: ChatMessage, index?: number): string {
+  const text = typeof m.content === 'string' ? m.content : '';
+  const flags = `is_compact=${m.is_compact === true} is_show=${m.is_show !== false}`;
+  const pos = index === undefined ? '' : `#${index} `;
+  const preview = text.replace(/\s+/g, ' ').slice(0, 60);
+  return `${pos}${m.role}(${text.length}字, ${flags}) ${preview}`;
 }
 
 export class SessionStore {
@@ -162,8 +230,9 @@ export class SessionStore {
 
   /**
    * 创建新会话：messages 直接落盘（含 system），标记规范化后写入索引。
-   * 与 updateSession 压缩分支对齐：传入消息含摘要占位（is_show=false 的 user 消息，
-   * 首轮即触发 L1 压缩）时，占位原位转写为总结消息（剥离 [历史摘要] 前缀），避免摘要丢失。
+   * 与 updateSession 压缩分支对齐：传入消息含摘要占位（kind='summary' 或旧的
+   * is_show=false user 消息，首轮即触发 L1 压缩）时，占位原位转写为总结消息
+   * （剥离 [历史摘要] 前缀），避免摘要丢失。
    */
   async createSession(
     firstMessage: string,
@@ -201,11 +270,12 @@ export class SessionStore {
   }
 
   /**
-   * 更新会话：以已有全量历史为底，去重追加本次消息。
-   * - 未压缩轮次：直接追加（保留已有条目的标记）
-   * - 本轮发生 L1 压缩（messages 中出现摘要占位：is_show=false 的 user 消息）：重建标记——
-   *   边界之前的消息标记 is_compact=true（折叠进摘要），写入新的总结消息（is_show=false、role=user），
-   *   边界之后（压缩后保留的最近轮次）标记 is_compact=false
+   * 更新会话：以已有全量历史为底，按后缀锚点对齐后追加本次新消息。
+   * - 未压缩轮次：保留已有条目的标记，只追加锚点之后的新消息（重复内容是合法消息，不去重）
+   * - 本轮发生 L1 压缩（messages 中出现摘要占位：kind='summary' / is_show=false 的 user 消息）：重建标记——
+   *   边界之前的消息标记 is_compact=true（折叠进摘要），写入新的总结消息（kind='summary'、is_show=false、role=user），
+   *   边界之后（压缩后保留的最近轮次）标记 is_compact=false。边界只会在上一轮 recent 区内定位，
+   *   锚点未命中时保守归档旧历史（kept 全部保留为 recent），不会丢消息。
    * @param firstUserMessage 调用方持有的本次原始用户输入（可选）。会话标题缺失时优先用它生成——
    *   messages 可能已被 L1 压缩重写（首问被摘要替换），从消息推断不可靠。
    * @returns 归一化后的会话消息（全量历史，含 system 及 is_compact/is_show/show_content 标记），
@@ -216,6 +286,9 @@ export class SessionStore {
     messages: ChatMessage[],
     firstUserMessage?: string,
   ): Promise<ChatMessage[]> {
+    const startedAt = Date.now();
+    const log = (msg: string): void => debug.log(`[updateSession ${id}] ${msg}`);
+
     const data = await this.readSession(id);
     const prev = data.messages ?? [];
 
@@ -223,22 +296,31 @@ export class SessionStore {
     const prevNonSystem = prev.filter((m) => m.role !== 'system');
     // 本次传入的非 system 真实消息（去掉摘要占位）
     const incomingKept = messages.filter((m) => m.role !== 'system' && !isSummaryMessage(m));
-    // 本轮是否发生压缩：由 compact() 注入的摘要占位（is_show=false 的 user 消息）标识
+    // 本轮是否发生压缩：由 compact() 注入的摘要占位（kind='summary'，旧数据回退 is_show=false user）标识
     const summaryPlaceholder = messages.find((m) => isSummaryMessage(m));
+
+    log(
+      `入口 传入=${messages.length}条 已有=${prev.length}条 传入非system=${incomingKept.length}条 ` +
+        `已有非system=${prevNonSystem.length}条 system=${system ? '有' : '无'} ` +
+        `摘要占位=${summaryPlaceholder ? `有(${extractSummaryText(summaryPlaceholder).length}字, @${messages.indexOf(summaryPlaceholder)})` : '无'}`,
+    );
 
     let nextNonSystem: ChatMessage[];
     if (summaryPlaceholder) {
       // 压缩轮次：丢弃旧总结消息（被新总结取代），以全量历史重建压缩边界
       const base = prevNonSystem.filter((m) => !isSummaryMessage(m));
       const kept = incomingKept.filter((m) => !isSummaryMessage(m));
-      const full: ChatMessage[] = [...base];
-      for (const m of kept) {
-        if (!full.some((x) => isSameMessage(x, m))) full.push(m);
-      }
-      // 边界 = 压缩后保留的最近轮次（kept 首条）在全量历史中的位置
-      const firstKept = kept[0];
-      let boundary = firstKept ? full.findIndex((x) => isSameMessage(x, firstKept)) : full.length;
-      if (boundary < 0) boundary = full.length;
+      // 锚点只能在「上一轮的 recent 区」里找：边界不得早于此处，
+      // 否则旧归档消息会被误标成 recent（P1-a）
+      const prevRecentStart = base.findIndex((m) => m.is_compact !== true);
+      const from = prevRecentStart < 0 ? base.length : prevRecentStart;
+      const anchor = findKeptAnchor(base, kept, from);
+      // 锚点命中 → 只追加锚点之后的新消息；未命中 → kept 全部视为新消息追加（不丢消息）
+      const appended = anchor.run > 0 ? kept.slice(anchor.run) : kept;
+      const full: ChatMessage[] = [...base, ...appended];
+      // 边界 = kept 起点；未命中时保守取 base 尾部（只归档旧历史，kept 全部保留为 recent，
+      // 不再把 kept 一起折叠导致下一轮只剩总结——P2-a）
+      const boundary = anchor.run > 0 ? anchor.index : base.length;
 
       const compacted = full.slice(0, boundary).map((m) => toStoredMessage(m, { isCompact: true }));
       const recent = full.slice(boundary).map((m) => toStoredMessage(m, { isCompact: false }));
@@ -247,16 +329,41 @@ export class SessionStore {
         { isCompact: false, isSummary: true },
       );
       nextNonSystem = [...compacted, summaryMsg, ...recent];
+
+      log(
+        `压缩轮次 base=${base.length}条(丢弃旧总结${prevNonSystem.length - base.length}条) ` +
+          `kept=${kept.length}条(锚点命中${anchor.run}条, 追加${appended.length}条) full=${full.length}条`,
+      );
+      log(
+        `边界 boundary=${boundary} anchor=${anchor.index} ` +
+          (anchor.run > 0
+            ? `保留首条 ${describeMessage(full[boundary], boundary)}`
+            : `⚠ 锚点未命中(搜索起点=${from})，保守归档旧历史，kept 全部保留为 recent`),
+      );
+      if (boundary > 0) log(`折叠末条 ${describeMessage(full[boundary - 1], boundary - 1)}`);
+      log(
+        `结果 compacted=${compacted.length}条 + summary=${extractSummaryText(summaryPlaceholder).length}字 + recent=${recent.length}条 ` +
+          `=> ${nextNonSystem.length}条`,
+      );
     } else {
-      // 未压缩轮次：保留已有条目（含其标记），仅去重追加新消息
-      nextNonSystem = [...prevNonSystem];
-      for (const m of incomingKept) {
-        if (!nextNonSystem.some((x) => isSameMessage(x, m))) {
-          nextNonSystem.push(toStoredMessage(m, { isCompact: false }));
-        }
-      }
-      // 防膨胀：极端情况封顶
-      if (nextNonSystem.length > 4000) nextNonSystem = nextNonSystem.slice(-4000);
+      // 未压缩轮次：保留已有条目（含其标记），按后缀锚点对齐后只追加新消息
+      const prevRecentStart = prevNonSystem.findIndex((m) => m.is_compact !== true);
+      const from = prevRecentStart < 0 ? prevNonSystem.length : prevRecentStart;
+      const anchor = findKeptAnchor(prevNonSystem, incomingKept, from);
+      // 不做全局内容去重：重复内容（如用户重发「继续」）是合法消息，只按锚点区分新旧（P1-b）
+      const appended = anchor.run > 0 ? incomingKept.slice(anchor.run) : incomingKept;
+      nextNonSystem = [
+        ...prevNonSystem,
+        ...appended.map((m) => toStoredMessage(m, { isCompact: false })),
+      ];
+      // 防膨胀：极端情况封顶（优先丢弃最老的归档消息，避免把总结消息一起截掉）
+      const beforeCap = nextNonSystem.length;
+      if (nextNonSystem.length > 4000) nextNonSystem = capStoredMessages(nextNonSystem, 4000);
+      log(
+        `未压缩轮次 已有=${prevNonSystem.length}条 锚点命中=${anchor.run}条 新增=${appended.length}条 ` +
+          `(传入${incomingKept.length}条) 合计=${beforeCap}条` +
+          `${beforeCap > 4000 ? `（超限封顶为4000，丢弃${beforeCap - nextNonSystem.length}条）` : ''}`,
+      );
     }
 
     data.messages = system
@@ -265,6 +372,11 @@ export class SessionStore {
     data.updatedAt = new Date().toISOString();
 
     await this.writeSession(data);
+    log(
+      `落盘完成 总=${data.messages.length}条(折叠=${data.messages.filter((m) => m.is_compact === true).length}条, ` +
+        `不展示=${data.messages.filter((m) => m.role !== 'system' && m.is_show === false).length}条) ` +
+        `写入=${Date.now() - startedAt}ms`,
+    );
     // 会话标题：WebUI「先建空会话、后发消息」时 createSession 的 title 为空——用首条用户消息补生成（已有 title 不覆盖）
     const updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>> = {
       messageCount: data.messages.length,
@@ -282,6 +394,12 @@ export class SessionStore {
       if (text) updates.title = text.slice(0, 50);
     }
     await this.updateIndex(id, updates);
+    log(
+      `索引更新 messageCount=${updates.messageCount}` +
+        `${updates.title ? ` 标题="${updates.title}"` : ''}` +
+        `${current ? '' : '（索引中未找到该会话，未写入）'}` +
+        ` 总耗时=${Date.now() - startedAt}ms`,
+    );
     return data.messages;
   }
 

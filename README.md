@@ -40,7 +40,7 @@
 | ⌨️ **Tab 自动补全** | REPL 输入 `/con` 按 Tab 补全为 `/config`，命令与子命令均可补全，多候选自动列出 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
-| 🎯 **事件监听** | 参考 LangChain callbacks 设计，15 个生命周期钩子便于扩展 |
+| 🎯 **事件监听** | 参考 LangChain callbacks 设计，16 个生命周期钩子便于扩展 |
 | 💬 **多轮对话** | 跨 `run()` 调用持久化消息历史，支持上下文续接 |
 | ⚡ **同轮多工具** | 支持 LLM 单轮返回多个 `tool_calls`，`Promise.all` 并发执行 |
 | 🛡️ **失败隔离** | 单个工具失败不影响其他工具，工具不存在时返回错误 Observation 让 Agent 继续推理 |
@@ -76,7 +76,18 @@ npm install
 **方式二：.env 手工配置**——复制 `.env.example` 为 `.env` 并填入配置：
 
 ```bash
+# macOS / Linux
 cp .env.example .env
+```
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
+```
+
+```bat
+:: Windows CMD
+copy .env.example .env
 ```
 
 ```env
@@ -143,7 +154,7 @@ npm run build:webui
 | [🧩 工具扩展](docs/readme/zh/tool-extension.md) | 自定义工具编写与 MCP 外部工具接入（五种方式） |
 | [🎯 Skill 技能包](docs/readme/zh/skills.md) | SKILL.md 规范、目录结构与渐进式加载工作流 |
 | [⚙️ 配置管理](docs/readme/zh/configuration.md) | 配置层级、完整配置结构、环境变量与运行时 `/config` 命令 |
-| [🎧 事件监听器](docs/readme/zh/event-listeners.md) | 15 个生命周期钩子与多监听器叠加示例 |
+| [🎧 事件监听器](docs/readme/zh/event-listeners.md) | 16 个生命周期钩子与多监听器叠加示例 |
 | [💬 多轮对话](docs/readme/zh/multi-turn-conversation.md) | 跨 `run()` 消息历史持久化规则与示例 |
 | [💾 会话持久化](docs/readme/zh/session-persistence.md) | 加密存储结构、自动保存/恢复与密钥管理 |
 | [🧠 记忆管理](docs/readme/zh/memory-management.md) | L1/L2/L3 三层记忆架构、Promotion Gate 与 Dreaming |

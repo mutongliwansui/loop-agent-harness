@@ -2,7 +2,7 @@
 
 > [⬅ Back to README](../../../README.md)
 
-Inspired by LangChain callbacks, with support for **15 lifecycle hooks**. Any number of listeners can be stacked.
+Inspired by LangChain callbacks, with support for **16 lifecycle hooks**. Any number of listeners can be stacked.
 
 ### Hook List
 
@@ -16,6 +16,7 @@ Inspired by LangChain callbacks, with support for **15 lifecycle hooks**. Any nu
 | `onToolEnd` | A tool finishes execution | `tool: string, result: string` |
 | `onToolProgress` | Tool execution progress heartbeat (Task-20260930-001; long-running tools report elapsed time every second) | `tool: string, elapsedMs: number` |
 | `onToolCallDelta` | Streaming delta while generating tool arguments (tool_calls.arguments) (Task-20260930-001; covers the gap after Thought and before [Action]) | `tool: string, accumulatedBytes: number, elapsedMs: number` |
+| `onCompactionStart` | L1 context exceeds the threshold; compaction starts (pre-compaction flush extraction in progress, including one extra LLM call) | `info: CompactionStartInfo` |
 | `onCompaction` | L1 context hits the threshold and triggers compaction (Task-17) | `info: CompactionInfo` |
 | `onFinal` | Agent produces the final answer | `answer: string` |
 | `onError` | An error occurs | `error: Error` |

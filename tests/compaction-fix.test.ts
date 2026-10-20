@@ -9,6 +9,9 @@
  * 5. 检索可见性（8.4）：scope=session 无 sessionId 条目在带 sessionId 检索时可见
  * 6. 中文检索（8.5）：查询"我会打篮球吗？"能召回"我会打篮球"条目
  * 7. 回归：压缩成功后 keepRecentTurns 语义不变
+ * 8. #1 单轮内压缩：整段历史只有一个 user 时按 token 预算截尾
+ * 9. #3 触发口径：按「消息预算」判定，固定开销大而消息少时不得误触发
+ * 10. #4 压缩后重置 _lastContextTokens：下一迭代不重复压缩
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
@@ -80,7 +83,12 @@ function msg(role: ChatMessage['role'], content: string): ChatMessage {
 }
 
 /** 写入 workspace 配置并返回 episodic 目录（绝对路径，避免写真实 HOME） */
-function writeWorkspaceConfig(wsDir: string, flushFailure: 'skip' | 'archive'): string {
+function writeWorkspaceConfig(
+  wsDir: string,
+  flushFailure: 'skip' | 'archive',
+  /** L2 检索 topK；置 0 可关闭记忆注入，使 token 计算保持确定 */
+  episodicSearchTopK = 1,
+): string {
   const episodicDir = join(wsDir, 'l2');
   mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
   writeFileSync(
@@ -93,7 +101,7 @@ function writeWorkspaceConfig(wsDir: string, flushFailure: 'skip' | 'archive'): 
       memory: {
         enabled: true,
         working: { maxTokens: 500, compactionThreshold: 0.8, keepRecentTurns: 1, flushFailure },
-        episodic: { dir: episodicDir, searchTopK: 1, searchTimeoutMs: 100 },
+        episodic: { dir: episodicDir, searchTopK: episodicSearchTopK, searchTimeoutMs: 100 },
         curated: { maxLines: 100, dedupe: { enabled: false } },
         dreaming: { enabled: false, daysBack: 1, onExit: false, batchByDay: true, incremental: false },
       },
@@ -123,6 +131,83 @@ function readTodayL2(episodicDir: string): string {
   }
 }
 
+/** 与 WorkingMemory.estimateTokens 同口径（每条消息 ceil(content.length / 4) 求和） */
+function estimateOf(messages: ChatMessage[]): number {
+  return messages.reduce((acc, m) => acc + Math.ceil(String(m.content ?? '').length / 4), 0);
+}
+
+/**
+ * 主对话 mock：让 prompt_tokens = 消息估算 + overhead，
+ * 从而让 ReActAgent 推算出的「固定开销」恒等于 overhead，便于精确控制触发口径。
+ * responses 按主对话调用次序取用，最后一项在后续调用中复用。
+ */
+function mockStreamsWithOverhead(
+  overhead: number,
+  responses: Array<{ content: string; toolCall?: string }>,
+  flushContent = '- 关键事实',
+): { mainCalls: () => number } {
+  let mainCalls = 0;
+  mocks.chatStream.mockImplementation(async function* (messages: ChatMessage[]) {
+    const isFlush =
+      messages[0]?.role === 'system' && String(messages[0].content ?? '').includes('压缩对话历史');
+    if (isFlush) {
+      yield { type: 'delta', content: flushContent };
+      yield {
+        type: 'done',
+        response: {
+          content: flushContent,
+          finish_reason: 'stop',
+          usage: { prompt_tokens: 60, completion_tokens: 4, total_tokens: 64 },
+        },
+      };
+      return;
+    }
+
+    const turn = responses[Math.min(mainCalls, responses.length - 1)];
+    mainCalls++;
+    const promptTokens = estimateOf(messages) + overhead;
+    const usage = {
+      prompt_tokens: promptTokens,
+      completion_tokens: 10,
+      total_tokens: promptTokens + 10,
+    };
+    if (turn.toolCall) {
+      yield {
+        type: 'done',
+        response: {
+          content: turn.content,
+          tool_calls: [
+            {
+              id: `call_${mainCalls}`,
+              type: 'function' as const,
+              function: { name: turn.toolCall, arguments: '{}' },
+            },
+          ],
+          finish_reason: 'tool_calls' as const,
+          usage,
+        },
+      };
+    } else {
+      yield { type: 'delta', content: turn.content };
+      yield {
+        type: 'done',
+        response: { content: turn.content, finish_reason: 'stop', usage },
+      };
+    }
+  });
+  return { mainCalls: () => mainCalls };
+}
+
+/** 构造 N 轮「user + assistant」历史（首条为 system） */
+function buildTurns(count: number, userChars: number, assistantChars: number): ChatMessage[] {
+  const history: ChatMessage[] = [msg('system', 'sys')];
+  for (let i = 0; i < count; i++) {
+    history.push(msg('user', `U${i}${'u'.repeat(userChars)}`));
+    history.push(msg('assistant', `A${i}${'a'.repeat(assistantChars)}`));
+  }
+  return history;
+}
+
 describe('Task-17 压缩信息丢失修复', () => {
   beforeAll(() => {
     rmSync(BASE, { recursive: true, force: true });
@@ -142,13 +227,15 @@ describe('Task-17 压缩信息丢失修复', () => {
     mocks.chatStream.mockReset();
   });
 
-  it('1. flush 消息格式：system 仅 1 条且在首位', async () => {
+  it('1. flush 消息格式：固定 2 条（system 指令 + 将被丢弃消息 JSON）', async () => {
     const wm = new WorkingMemory({ maxTokens: 500, compactionThreshold: 0.8, keepRecentTurns: 1, flushFailure: 'skip' });
     const history: ChatMessage[] = [
       msg('system', '主 system prompt'),
       msg('user', '问题1'),
       msg('assistant', '回答1'),
       msg('user', '问题2'),
+      msg('assistant', '回答2'),
+      msg('user', '问题3'),
     ];
     const captured: ChatMessage[] = [];
     const mockLLM: ILLMClient = {
@@ -161,17 +248,19 @@ describe('Task-17 压缩信息丢失修复', () => {
     const extracted = await wm.preCompactionFlush(history, mockLLM);
     expect(extracted).toBe('- 事实1');
 
-    // system 唯一且在首位
-    const systems = captured.filter((m) => m.role === 'system');
-    expect(systems.length).toBe(1);
+    // 固定 2 条：system 唯一且在首位，第 2 条是 JSON 文本
+    expect(captured.length).toBe(2);
+    expect(captured.filter((m) => m.role === 'system').length).toBe(1);
     expect(captured[0].role).toBe('system');
     expect(captured[0].content).toContain('压缩对话历史');
-    // 其余消息均非 system，且内容与历史一致
-    expect(captured.slice(1).every((m) => m.role !== 'system')).toBe(true);
-    expect(captured.length).toBe(history.length);
-    expect(captured.slice(1).map((m) => m.content)).toEqual(
-      history.filter((m) => m.role !== 'system').map((m) => m.content),
-    );
+    // JSON 只包含本次将被丢弃的消息（问题1/回答1），且不含 system
+    expect(captured[1].role).toBe('user');
+    const payload = JSON.parse(captured[1].content as string);
+    expect(payload.messages).toEqual([
+      { role: 'user', content: '问题1' },
+      { role: 'assistant', content: '回答1' },
+    ]);
+    expect(payload.messages.some((m: ChatMessage) => m.role === 'system')).toBe(false);
   });
 
   it('2. 提取成功 → 写 L2(tag=compaction) → 压缩 → onCompaction(failed:false)', async () => {
@@ -346,5 +435,131 @@ describe('Task-17 压缩信息丢失修复', () => {
     expect(contents).not.toContain('问题1');
     // 压缩后不再触发压缩
     expect(wm.needsCompaction(compacted)).toBe(false);
+  });
+
+  it('8. #1 单轮内压缩：整段历史只有一个 user 时按 token 预算截尾', async () => {
+    const wsDir = join(BASE, 't8');
+    const episodicDir = writeWorkspaceConfig(wsDir, 'skip', 0);
+    mocks.chat.mockImplementation(async () => ({ content: null }));
+    const { mainCalls } = mockStreamsWithOverhead(50, [{ content: '任务完成' }]);
+
+    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const agent = new ReActAgent(loader);
+    await agent.initMemory(wsDir);
+
+    const compactionEvents: CompactionInfo[] = [];
+    // 单轮形态：40 个 assistant/tool 迭代，整段历史没有 user；
+    // 本轮输入「请继续」是唯一 user（且位于末尾，pickRecentTurns 不会选中它切轮）
+    // 每条 assistant 100 字（25 token）+ tool 19 字（5 token）→ 1200 token，远超阈值 400
+    const history: ChatMessage[] = [msg('system', 'sys')];
+    for (let i = 0; i < 40; i++) {
+      const callId = `call_hist_${i}`;
+      history.push({
+        role: 'assistant',
+        content: `A${i}${'a'.repeat(98)}`,
+        tool_calls: [{ id: callId, type: 'function', function: { name: 'someTool', arguments: '{}' } }],
+      } as ChatMessage);
+      history.push({ role: 'tool', content: '工具 someTool 未注册，无法执行', tool_call_id: callId });
+    }
+
+    const result = await agent.run('请继续', {
+      messages: history,
+      verbose: false,
+      events: [{ onCompaction: (info) => { compactionEvents.push(info); } }],
+    });
+
+    // 按 user 切轮丢弃 0 条 → 兜底按 token 截尾：keepBudget = floor(400×0.6) = 240
+    expect(mainCalls()).toBe(1);
+    expect(compactionEvents.length).toBe(1);
+    expect(compactionEvents[0].failed).toBe(false);
+    expect(compactionEvents[0].flushedChars).toBeGreaterThan(0);
+    // 压缩后：system + 占位 + 保留后缀 17 条（8 对 assistant/tool + 本轮 user）
+    expect(compactionEvents[0].keptMessages).toBe(19);
+    expect(result.messages.length).toBe(20);
+    expect(result.messages.length).toBeLessThan(history.length + 2);
+    // 占位为 role=user & is_show=false；保留后缀起点回退到 assistant，不能以 tool 开头
+    expect(result.messages[1].role).toBe('user');
+    expect(result.messages[1].is_show).toBe(false);
+    expect(result.messages[2].role).toBe('assistant');
+    // 保留的最后一条是本轮输入，最终回答追加在其后
+    expect(result.messages[18].role).toBe('user');
+    expect(result.messages[19].content).toBe('任务完成');
+    // flush 内容写入 L2
+    expect(readTodayL2(episodicDir)).toContain('[tag: compaction]');
+  });
+
+  it('9. #3 触发口径：固定开销大但消息少时不得误触发', async () => {
+    const wsDir = join(BASE, 't9');
+    writeWorkspaceConfig(wsDir, 'skip', 0);
+    mocks.chat.mockImplementation(async () => ({ content: null }));
+    // 固定开销 350 → 消息预算 = max(0.2×400, 400-350) = 80
+    mockStreamsWithOverhead(350, [{ content: '好的' }]);
+
+    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const agent = new ReActAgent(loader);
+    await agent.initMemory(wsDir);
+
+    const compactionEvents: CompactionInfo[] = [];
+    const events = [{ onCompaction: (info: CompactionInfo) => { compactionEvents.push(info); } }];
+
+    // run1：短历史（约 66 token < 80）→ 不压缩
+    const shortHistory = buildTurns(4, 30, 30);
+    const r1 = await agent.run('短问题', { messages: shortHistory, verbose: false, events });
+    expect(compactionEvents.length).toBe(0);
+    expect(r1.messages.length).toBe(shortHistory.length + 2);
+
+    // run2：同样短历史。上一轮 prompt_tokens ≈ 消息 + 350 ≥ 400，
+    // 旧口径（直接比 prompt_tokens）会误触发，新口径按消息预算不触发
+    const r2 = await agent.run('短问题', { messages: shortHistory, verbose: false, events });
+    expect(compactionEvents.length).toBe(0);
+    expect(r2.messages.length).toBe(shortHistory.length + 2);
+
+    // run3：长历史（约 130 token ≥ 80）→ 触发一次压缩
+    const longHistory = buildTurns(4, 60, 60);
+    const r3 = await agent.run('短问题', { messages: longHistory, verbose: false, events });
+    expect(compactionEvents.length).toBe(1);
+    expect(compactionEvents[0].failed).toBe(false);
+    expect(compactionEvents[0].flushedChars).toBeGreaterThan(0);
+    expect(r3.messages.length).toBeLessThan(longHistory.length + 2);
+  });
+
+  it('10. #4 压缩后重置 _lastContextTokens：下一迭代不重复压缩', async () => {
+    const wsDir = join(BASE, 't10');
+    writeWorkspaceConfig(wsDir, 'skip', 0);
+    mocks.chat.mockImplementation(async () => ({ content: null }));
+    // 固定开销 400 → 压缩后消息预算 = max(80, 0) = 80
+    const { mainCalls } = mockStreamsWithOverhead(400, [
+      { content: '先查一下', toolCall: 'someTool' },
+      { content: '最终回答' },
+    ]);
+
+    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const agent = new ReActAgent(loader);
+    await agent.initMemory(wsDir);
+
+    const compactionEvents: CompactionInfo[] = [];
+    // 4 个大轮 + 一个很小的末轮：压缩只保留末轮（3 条），压缩后消息量远低于预算
+    const history: ChatMessage[] = [msg('system', 'sys')];
+    for (let i = 0; i < 4; i++) {
+      history.push(msg('user', `U${i}${'u'.repeat(250)}`));
+      history.push(msg('assistant', `A${i}${'a'.repeat(250)}`));
+    }
+    history.push(msg('user', '好的'), msg('assistant', '收到'));
+
+    const result = await agent.run('继续', {
+      messages: history,
+      verbose: false,
+      events: [{ onCompaction: (info) => { compactionEvents.push(info); } }],
+    });
+
+    // 只在迭代 0 压缩一次；迭代 1 工具结果后不得再次压缩
+    expect(mainCalls()).toBe(2);
+    expect(compactionEvents.length).toBe(1);
+    expect(compactionEvents[0].failed).toBe(false);
+    expect(compactionEvents[0].flushedChars).toBeGreaterThan(0);
+    expect(compactionEvents[0].keptMessages).toBe(5);
+    expect(result.iterations).toBe(2);
+    expect(result.messages.length).toBe(8);
+    expect(result.messages[1].is_show).toBe(false);
   });
 });

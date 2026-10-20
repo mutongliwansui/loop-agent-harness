@@ -21,8 +21,8 @@ export interface SessionMeta {
  *
  * 单一真源：`messages` 按时间正序保存全量历史（含 system）。每条消息通过
  * `is_compact`（是否已被压缩折叠进摘要）、`is_show`（是否在界面展示）、
- * `show_content`（展示内容，content 含注入前缀时使用）三个标记表达状态，
- * 不再使用 recentMessages/archivedMessages/fullHistory/lastSummary 等分层字段。
+ * `show_content`（展示内容，content 含注入前缀时使用）、`kind`（'summary' 表示
+ * 压缩总结消息）四个标记表达状态，不再使用 recentMessages/archivedMessages/fullHistory/lastSummary 等分层字段。
  */
 export interface SessionData {
   id: string;
@@ -30,7 +30,7 @@ export interface SessionData {
   createdAt: string;
   /** 更新时间 ISO */
   updatedAt: string;
-  /** 全量历史（含 system），每条带 is_compact/is_show/show_content 标记 */
+  /** 全量历史（含 system），每条带 is_compact/is_show/show_content/kind 标记 */
   messages: ChatMessage[];
 }
 

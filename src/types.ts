@@ -45,25 +45,32 @@ export interface ToolCall {
  * 会话持久化标记（仅存盘语义，调用 LLM 前由 LLMClient.normalizeMessages 统一剥离）
  */
 export interface SessionMessageFlags {
-  /** 是否已被压缩折叠进摘要；true=不参与 LLM 上下文，仅保留用于界面展示 */
+  /** 是否已被压缩折叠进摘要；true=归档消息（不参与 LLM 上下文，仅保留用于界面展示），false=recent 消息 */
   is_compact?: boolean;
   /** 是否在对话界面展示（缺省视为 true；system 与压缩总结消息为 false） */
   is_show?: boolean;
   /** 界面展示内容；缺省或为空时取 content（content 可能含记忆/摘要注入前缀） */
   show_content?: string;
+  /**
+   * 消息种类；'summary' = 压缩总结消息。
+   * 显式判据，避免用 is_show=false 隐式推断（is_show 只是展示标记）；
+   * 旧数据缺省时由 isSummaryMessage 回退到「role=user 且 is_show=false」。
+   */
+  kind?: 'summary';
 }
 
 /**
  * 聊天消息联合类型：
  * - system/user：仅 content；压缩注入的摘要占位与已落盘的总结消息统一用
- *   is_show=false 标记（LLM 可见、UI 不展示），不再使用独立 ephemeral 字段
+ *   kind='summary' 标记（旧数据回退 is_show=false），LLM 可见、UI 不展示
  * - assistant：纯文本回复 或 带 tool_calls 的回复
  * - tool：工具执行结果，附 tool_call_id
  *
- * 每条消息附带 SessionMessageFlags（is_compact/is_show/show_content），
+ * 每条消息附带 SessionMessageFlags（is_compact/is_show/show_content/kind），
  * 用于会话存储层的展示与压缩标记；这些字段不进入 LLM 请求。
- *  - is_compact=true：被折叠进摘要，不进入 LLM 上下文
+ *  - is_compact=true：已被压缩折叠（归档），不进入 LLM 上下文
  *  - is_show=false：不展示给用户（system / 摘要总结消息）
+ *  - kind='summary'：压缩总结消息（显式种类标记）
  */
 export type ChatMessage =
   | ({ role: 'system'; content: string } & SessionMessageFlags)
