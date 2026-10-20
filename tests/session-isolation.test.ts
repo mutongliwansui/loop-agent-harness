@@ -553,6 +553,57 @@ describe('Session 分层存储和恢复', () => {
     expect(queries.some((q) => q.includes('继续改 session 恢复逻辑'))).toBe(true);
   });
 
+  it('1.19 防护 D：L2 记忆只注入真实用户消息，不写入摘要占位（bug 修复）', async () => {
+    const fakeEpisodic = {
+      search: async () => [{ day: '2026-10-19', content: '历史记忆片段', score: 1 }],
+    } as unknown as EpisodicMemory;
+
+    mkdirSync(join(TEST_DIR, 'curated-empty'), { recursive: true });
+    const assembler = new ContextAssembler(
+      new CuratedMemory(join(TEST_DIR, 'curated-empty')),
+      fakeEpisodic,
+    );
+
+    const current: ChatMessage[] = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: '[历史摘要] 早前决定：store 改用合并写', is_show: false, kind: 'summary' },
+      { role: 'user', content: '继续改 session 恢复逻辑' },
+    ];
+    const assembled = await assembler.assemble('继续改 session 恢复逻辑', current, [], {
+      sessionId: 'sess_D',
+    });
+
+    // 摘要占位保持纯净（记忆块不得拼到它前面）
+    const summary = assembled.find((m) => m.kind === 'summary');
+    expect(summary?.content).toBe('[历史摘要] 早前决定：store 改用合并写');
+    // 记忆块注入到真实用户消息
+    const realUser = assembled.filter((m) => m.role === 'user' && !isSummaryPlaceholder(m)).pop();
+    expect(realUser?.content).toContain('历史记忆片段');
+    expect(realUser?.content).toContain('继续改 session 恢复逻辑');
+  });
+
+  it('1.20 防护 E：压缩后视图无可注入的真实用户时不写记忆（避免摘要被污染）', async () => {
+    const fakeEpisodic = {
+      search: async () => [{ day: '2026-10-19', content: '历史记忆片段', score: 1 }],
+    } as unknown as EpisodicMemory;
+
+    mkdirSync(join(TEST_DIR, 'curated-empty'), { recursive: true });
+    const assembler = new ContextAssembler(
+      new CuratedMemory(join(TEST_DIR, 'curated-empty')),
+      fakeEpisodic,
+    );
+
+    const current: ChatMessage[] = [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: '[历史摘要] 单轮截尾后的摘要', is_show: false, kind: 'summary' },
+      { role: 'assistant', content: '工具调用后的助手回复' },
+    ];
+    const assembled = await assembler.assemble('继续', current, [], { sessionId: 'sess_D' });
+
+    expect(assembled.some((m) => typeof m.content === 'string' && m.content.includes('历史记忆片段'))).toBe(false);
+    expect(assembled.find((m) => m.kind === 'summary')?.content).toBe('[历史摘要] 单轮截尾后的摘要');
+  });
+
   // ===== 9. 记忆前缀哨兵剥离健壮性 =====
   it('1.21 记忆块含 markdown `---` 等分隔符时，strip 仍能精确还原原始 content', () => {
     const original = '我有什么技能';

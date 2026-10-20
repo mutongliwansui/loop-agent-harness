@@ -17,6 +17,7 @@ import { skillLoader } from '../skill/loader.js';
 import { SessionStore, workspaceId } from '../session/store.js';
 import type { SessionData } from '../session/types.js';
 import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
+import { isSummaryMessage } from '../memory/summary-message.js';
 import type { CuratedFileKey } from '../memory/types.js';
 import {
   WorkingMemory,
@@ -35,6 +36,7 @@ import {
 import type {
   AgentEvents,
   AgentResult,
+  AgentSnapshot,
   AgentStep,
   AgentOptions,
   ChatMessage,
@@ -399,7 +401,66 @@ export class ReActAgent {
     const steps: AgentStep[] = [];
     const openaiTools = registry.toOpenAITools();
 
+    // 完整真实轨迹：L1 压缩只裁剪内存视图 messages，transcript 始终保留本轮全部真实消息。
+    // run 结束时随 result 交给 SessionStore，用于归档「已被压缩、但从未落盘」的消息。
+    // 注意：与 messages 共享对象引用（compact() 保留原引用），落盘时按引用定位。
+    const transcript: ChatMessage[] = messages.filter(
+      (m) => m.role !== 'system' && !isSummaryMessage(m),
+    );
+    const pushMessage = (m: ChatMessage): void => {
+      messages.push(m);
+      transcript.push(m);
+    };
+
     debug.session(messages.length, openaiTools.length, this._currentSessionId);
+
+    // ===== 节流快照：进程崩溃时保留已产生的消息 =====
+    // 每 3 次迭代或每隔 30s 落盘一次（压缩前强制落盘），避免一整轮 run 只在结束时写一次。
+    const SNAPSHOT_EVERY_ITERATIONS = 3;
+    const SNAPSHOT_INTERVAL_MS = 30_000;
+    let lastSnapshotIteration = 0;
+    let lastSnapshotAt = Date.now();
+    let snapshotInFlight = false;
+    const persistSnapshot = async (iteration: number, force = false): Promise<void> => {
+      if (transcript.length === 0 || snapshotInFlight) return;
+      if (
+        !force &&
+        iteration - lastSnapshotIteration < SNAPSHOT_EVERY_ITERATIONS &&
+        Date.now() - lastSnapshotAt < SNAPSHOT_INTERVAL_MS
+      ) {
+        return;
+      }
+      snapshotInFlight = true;
+      lastSnapshotIteration = iteration;
+      lastSnapshotAt = Date.now();
+      try {
+        const snapshot: AgentSnapshot = {
+          messages: [...messages],
+          transcript: [...transcript],
+          iterations: iteration,
+        };
+        if (options.onSnapshot) {
+          await options.onSnapshot(snapshot);
+          return;
+        }
+        // CLI 模式：agent 自己持有 store，直接节流落盘
+        if (!this._sessionStore || !cfg.session.autoSave) return;
+        if (this._currentSessionId) {
+          await this._sessionStore.updateSession(this._currentSessionId, snapshot.messages, userInput, {
+            transcript: snapshot.transcript,
+          });
+        } else {
+          const meta = await this._sessionStore.createSession(userInput, snapshot.messages, {
+            transcript: snapshot.transcript,
+          });
+          this._currentSessionId = meta.id;
+        }
+      } catch (e) {
+        debug.log(`节流快照失败（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        snapshotInFlight = false;
+      }
+    };
 
     // ===== 设置记忆回调的 sessionId =====
     if (this._memoryCallback && this._currentSessionId) {
@@ -466,6 +527,8 @@ export class ReActAgent {
                 });
               } else {
                 const llmAdapter = createLLMAdapter(model, temperature);
+                // 压缩会物理删除消息：先把当前完整轨迹强制落盘，保证被丢弃的内容不丢
+                await persistSnapshot(i, true);
                 const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter, plan);
                 if (extracted && this._episodicMemory) {
                   // 压缩笔记属会话内上下文语义：scope 改为 session，
@@ -582,26 +645,9 @@ export class ReActAgent {
           }
         }
 
-        // 同步 LLM 可见原文到工作数组：使 result.messages 的 content 与发送给 LLM 的一致
-        // （含 L2 记忆注入前缀）；展示层依赖 show_content 还原用户原始输入。
-        // 注入侧已做幂等（先 strip 再注入），故此处在多轮迭代中重复同步不会造成前缀嵌套。
-        if (llmMessages !== messages) {
-          let srcIdx = -1;
-          let dstIdx = -1;
-          for (let k = llmMessages.length - 1; k >= 0; k--) {
-            if (llmMessages[k].role === 'user') { srcIdx = k; break; }
-          }
-          for (let k = messages.length - 1; k >= 0; k--) {
-            if (messages[k].role === 'user') { dstIdx = k; break; }
-          }
-          if (srcIdx >= 0 && dstIdx >= 0 && llmMessages[srcIdx].content !== messages[dstIdx].content) {
-            const src = llmMessages[srcIdx];
-            const dst = messages[dstIdx];
-            if (src.role === 'user' && dst.role === 'user') {
-              messages[dstIdx] = { ...dst, content: src.content };
-            }
-          }
-        }
+        // 注意：记忆注入只作用于本次 LLM 调用的视图 llmMessages，不回写 messages/transcript。
+        // 回写会让同一条 user 消息在不同迭代/快照间 content 反复变化（原始 ↔ 注入前缀），
+        // 破坏落盘时的锚点/去重匹配，并在归档区留下原始与注入两份副本。
 
         // 1. 流式调用 LLM，累积完整响应
         const llmStartTs = Date.now();
@@ -649,8 +695,14 @@ export class ReActAgent {
         if (!resp.tool_calls?.length) {
           const answer = resp.content ?? '';
           debug.log(`最终回答生成完毕，共 ${i + 1} 轮迭代`);
-          messages.push({ role: 'assistant', content: answer });
-          result = { answer, steps, iterations: i + 1, messages: [...messages] };
+          pushMessage({ role: 'assistant', content: answer });
+          result = {
+            answer,
+            steps,
+            iterations: i + 1,
+            messages: [...messages],
+            transcript: [...transcript],
+          };
           await safeEvents.onFinal(answer);
 
           // ===== 记忆管理：最终回答写入 L2 =====
@@ -668,7 +720,7 @@ export class ReActAgent {
         }
 
         // 3. 拼接 assistant tool_calls
-        messages.push({
+        pushMessage({
           role: 'assistant',
           content: resp.content,
           tool_calls: resp.tool_calls,
@@ -722,7 +774,7 @@ export class ReActAgent {
             observation,
           });
           void safeEvents.onToolEnd(c.toolName, observation);
-          messages.push({
+          pushMessage({
             role: 'tool',
             tool_call_id: c.call.id,
             content: observation,
@@ -740,11 +792,16 @@ export class ReActAgent {
           callItems.map((c) => c.toolName).join(', '),
           observations.join(' | '),
         );
+
+        // 节流落盘：迭代结束时保留已产生的工具调用与结果
+        await persistSnapshot(i + 1);
       }
 
       if (!result) {
         const errMsg = `达到最大迭代次数 ${maxIterations}，Agent 未能给出最终答案`;
         const err = new Error(errMsg);
+        // 异常退出前强制落盘，避免本轮已产生的工具调用与结果全部丢失
+        await persistSnapshot(maxIterations, true);
         await safeEvents.onError(err);
         this._chatHistory = [...messages];
         throw err;
@@ -772,6 +829,8 @@ export class ReActAgent {
             const stored = await this._sessionStore.updateSession(
               this._currentSessionId,
               result.messages,
+              undefined,
+              { transcript: result.transcript },
             );
             this._chatHistory = stored.filter((m) => m.is_compact !== true);
           } else {
@@ -779,6 +838,7 @@ export class ReActAgent {
             const meta = await this._sessionStore.createSession(
               userMsg,
               result.messages,
+              { transcript: result.transcript },
             );
             this._currentSessionId = meta.id;
             // 以落盘结果为下一轮基线（含总结消息，剔除折叠历史）

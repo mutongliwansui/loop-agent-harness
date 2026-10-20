@@ -196,6 +196,22 @@ export interface AgentResult {
   iterations: number;
   /** 本次调用结束后的完整 messages 历史（含 system/assistant/tool），可用于下一轮续接 */
   messages: ChatMessage[];
+  /**
+   * 本次调用的完整真实消息轨迹：未经 L1 压缩裁剪（不含 system 与摘要占位）。
+   * 压缩只裁剪内存视图 messages，本字段始终保留本轮全部真实消息，
+   * 供 SessionStore 归档「本轮已被压缩、尚未落盘」的消息，避免持久化丢历史。
+   */
+  transcript?: ChatMessage[];
+}
+
+/** run 过程中的节流快照（崩溃保护用） */
+export interface AgentSnapshot {
+  /** 当前内存消息视图（含 system 与摘要占位；调用方只读，不要原地修改） */
+  messages: ChatMessage[];
+  /** 未经 L1 压缩的完整真实消息轨迹 */
+  transcript: ChatMessage[];
+  /** 已完成的迭代数（从 1 开始） */
+  iterations: number;
 }
 
 /**
@@ -218,6 +234,12 @@ export interface AgentOptions {
   resetHistory?: boolean;
   /** 可选的 loading 指示器（由 CLI 层创建注入；程序化调用不传即无指示器） */
   spinner?: Spinner;
+  /**
+   * 节流快照回调：run 过程中每个工具迭代结束后按节流窗口（3 次迭代或 30s）调用，
+   * 用于进程崩溃时保留已产生的消息。压缩前会强制调用一次。
+   * 回调失败只记日志，不影响主流程。
+   */
+  onSnapshot?: (snapshot: AgentSnapshot) => void | Promise<void>;
 }
 
 /**

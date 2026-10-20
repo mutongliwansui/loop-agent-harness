@@ -6,6 +6,7 @@ import type { MemorySearchResult } from './types.js';
 import { CuratedMemory } from './curated.js';
 import { EpisodicMemory } from './episodic.js';
 import { withMemorySection, stripMemorySection } from './memory-section.js';
+import { isSummaryMessage } from './summary-message.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { debug } from '../debug.js';
 
@@ -214,8 +215,10 @@ export class ContextAssembler {
 
     if (memoryBlock) {
       // 拼接/剥离格式约定见 memory-section.ts（SessionStore 生成会话标题时依赖哨兵剥离前缀）
+      // 只注入最后一条「真实用户消息」：压缩总结消息也是 role=user（头部占位），
+      // 单轮内 token 截尾时视图中可能没有真实 user，此时跳过注入，避免把记忆写进摘要。
       const lastUserIdx = rawMessages.reduceRight(
-        (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
+        (acc, m, i) => (acc === -1 && m.role === 'user' && !isSummaryMessage(m) ? i : acc),
         -1,
       );
       if (lastUserIdx >= 0 && rawMessages[lastUserIdx].role === 'user') {

@@ -188,8 +188,8 @@ export async function handleGetSession(ctx: HandlerContext, res: ServerResponse,
   }
 
   // 展示层：返回全量历史 data.messages（单一真源，含 system 与压缩总结消息）。
-  // system 与压缩总结消息带 is_show=false，前端据此过滤；用户消息的 content 为
-  // LLM 可见原文（可能含记忆前缀），前端用 show_content 还原原始输入。
+  // system 与压缩总结消息带 is_show=false，前端据此过滤；用户消息的 content 为原始输入
+  // （存量会话可能残留 L2 记忆前缀），前端用 show_content 兜底还原。
   const messages = SessionStore.getAllAvailableMessages(data);
   sendJson(res, 200, {
     meta,

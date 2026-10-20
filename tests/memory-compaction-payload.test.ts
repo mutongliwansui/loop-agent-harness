@@ -35,6 +35,8 @@ describe('buildCompactionPayload', () => {
     expect(messages.length).toBe(2);
     expect(messages[0]).toEqual({ role: 'system', content: FLUSH_SYSTEM_PROMPT });
     expect(messages[0].content).toContain('压缩对话历史');
+    // 摘要长度由压缩指令约束（而非事后截断）：目标 500 字
+    expect(messages[0].content).toContain('500 字以内');
     expect(messages[1].role).toBe('user');
     expect(() => JSON.parse(messages[1].content as string)).not.toThrow();
     expect(stats.outputCount).toBe(2);

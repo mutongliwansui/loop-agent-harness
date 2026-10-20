@@ -52,6 +52,20 @@ export async function handleMessage(
       : { messages: [...historyBefore] }),
   };
 
+  // 节流落盘：run 过程中每 3 次迭代或 30s 快照一次（压缩前强制），
+  // 进程中途退出时也能保留已产生的工具调用与结果。失败只记日志，不影响回答。
+  runOptions.onSnapshot = async (snapshot) => {
+    try {
+      await deps.sessionStore.updateSession(id, snapshot.messages, message, {
+        transcript: snapshot.transcript,
+      });
+    } catch (e) {
+      log(
+        `[api] 会话 ${id} 节流落盘失败（不阻塞回答）: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
   if (stream) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -75,10 +89,13 @@ export async function handleMessage(
       // 持久化（API 层自持 SessionStore；会话已在 ensureEntry/loadSession 阶段确认存在）
       try {
         // 显式传原始输入供会话标题生成（messages 可能已被 L1 压缩重写，不可靠）；
+        // transcript 为未经压缩的完整轨迹：压缩轮次据此归档「已被压缩、从未落盘」的消息。
         // 用 store 归一化后的会话消息作为 entry.history（摘要占位已转写为总结消息、压缩标记一致）。
         // 同时剔除 is_compact=true 的已折叠历史：与 ensureEntry 的 getRestoreMessages 恢复视图对齐，
         // 避免折叠历史重新进入 LLM 上下文并导致每轮重复触发压缩
-        const stored = await deps.sessionStore.updateSession(id, result.messages, message);
+        const stored = await deps.sessionStore.updateSession(id, result.messages, message, {
+          transcript: result.transcript,
+        });
         entry.history = stored.filter((m) => m.role !== 'system' && m.is_compact !== true);
       } catch (e) {
         warnings.push(`会话持久化失败（回答不受影响）: ${e instanceof Error ? e.message : String(e)}`);

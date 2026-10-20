@@ -201,8 +201,9 @@ describe('L1 WorkingMemory', () => {
     expect(plan.droppedCount).toBeGreaterThan(0);
     // 丢弃 + 保留 = 全部非 system 消息，二者不重不漏
     expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
-    // 保留后缀起点不是 tool，工具调用/结果配对完整
-    expect(plan.kept[0].role).toBe('assistant');
+    // 当前轮 user 作为任务锚点固定保留，其后仍是完整的 assistant/tool 配对
+    expect(plan.kept[0].content).toBe('任务开始');
+    expect(plan.kept[1].role).toBe('assistant');
     expect(plan.droppable[plan.droppable.length - 1].role).toBe('tool');
 
     // compact 使用 plan.kept 作为后缀，而不是重新按 user 切轮
@@ -210,6 +211,137 @@ describe('L1 WorkingMemory', () => {
     expect(compacted[0]).toEqual(msg('system', 'sys'));
     expect(isSummaryPlaceholder(compacted[1])).toBe(true);
     expect(compacted.slice(2)).toEqual(plan.kept);
+  });
+
+  it('2.1i 单轮内截尾（工具循环中触发）：原始 user 锚点不被摘要吞掉', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const toolCall = (id: string): ChatMessage => ({
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id, type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+    });
+    // 典型形态：user 在最前，之后是多轮工具调用，压缩发生在工具循环中（尾部是 tool）
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', '实现 A 功能，改 store.ts'),
+      toolCall('c1'),
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(40) },
+      toolCall('c2'),
+      { role: 'tool', tool_call_id: 'c2', content: 'r'.repeat(40) },
+      toolCall('c3'),
+      { role: 'tool', tool_call_id: 'c3', content: 'r'.repeat(40) },
+    ];
+
+    const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
+    expect(plan.withinTurnTrim).toBe(true);
+    // 锚点 pin 在保留区最前，且不再出现在丢弃区（不重复进入摘要）
+    expect(plan.kept[0].content).toBe('实现 A 功能，改 store.ts');
+    expect(plan.kept[1].role).toBe('assistant');
+    expect(plan.droppable.some((m) => m.role === 'user')).toBe(false);
+    expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
+
+    const compacted = wm.compact(history, '- 摘要', plan);
+    expect(compacted[2].content).toBe('实现 A 功能，改 store.ts');
+    expect(compacted[3].role).toBe('assistant');
+  });
+
+  it('2.1j 锚点过大时仍强制保留 user（允许轻微超预算）', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const toolCall: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+    };
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', 'u'.repeat(400)), // 100 tokens，远超保留预算
+      toolCall,
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(40) },
+      toolCall,
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(40) },
+    ];
+
+    const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
+    expect(plan.withinTurnTrim).toBe(true);
+    // 锚点强制保留：不再因为超过保留预算一半而退回摘要
+    expect(plan.kept[0].content).toBe('u'.repeat(400));
+    expect(plan.droppable.some((m) => m.role === 'user')).toBe(false);
+    expect(plan.droppable.length).toBeGreaterThan(0);
+    expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
+  });
+
+  it('2.1k 截尾起点落在工具组内：整组丢弃，kept 不因回退 assistant 而超预算', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const toolCall = (id: string): ChatMessage => ({
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id, type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+    });
+    // 复刻线上日志形态：user 在头部，之后两组工具，第一组的结果很大
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', '帮我看下项目结构'),
+      toolCall('c1'),
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(4248) }, // 1062 tokens
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(1674) }, // 419 tokens
+      toolCall('c2'),
+      { role: 'tool', tool_call_id: 'c2', content: 'r'.repeat(275) }, // 69 tokens
+      { role: 'tool', tool_call_id: 'c2', content: 'r'.repeat(862) }, // 216 tokens
+    ];
+
+    const plan = wm.planCompaction(history, { messageTokensBudget: 1228 });
+    expect(plan.withinTurnTrim).toBe(true);
+    // 当前轮 user 锚点必须留下
+    expect(plan.kept[0].content).toBe('帮我看下项目结构');
+    // 大工具组被整组丢弃（而不是整组回退），保留区只留最后一组
+    expect(plan.droppable.length).toBe(3);
+    expect(plan.kept.length).toBe(4);
+    expect(plan.kept[1].role).toBe('assistant');
+    // kept 控制在「保留预算 + 锚点」量级，不再出现 1766 tokens 压不下去的情况
+    const keptTokens = plan.kept.reduce((acc, m) => acc + Math.ceil((m.content ?? '').length / 4), 0);
+    expect(keptTokens).toBeLessThanOrEqual(Math.floor(1228 * 0.6));
+    expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
+  });
+
+  it('2.1l head 只剩 user 时：不压缩，也绝不把 user 丢进摘要', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', 'q'),
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(400) },
+    ];
+
+    const plan = wm.planCompaction(history, { messageTokensBudget: 40 });
+    expect(plan.kept[0].content).toBe('q');
+    expect(plan.droppable).toEqual([]);
+    expect(plan.droppedCount).toBe(0);
+  });
+
+  it('2.1m 起点落在最后一组工具内：整组保留（保住最新 observation）', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', 'q'),
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(400) },
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(40) },
+    ];
+
+    const plan = wm.planCompaction(history, { messageTokensBudget: 40 });
+    // kept 不能以 tool 开头（不能切开 assistant(tool_calls) / tool 配对）
+    expect(plan.kept[0].content).toBe('q');
+    expect(plan.kept[1].role).toBe('assistant');
+    expect(plan.kept.length).toBe(4);
+    expect(plan.droppable).toEqual([]);
   });
 
   it('2.1g 单轮内未超预算：不截尾', () => {
@@ -253,12 +385,12 @@ describe('buildCompactedView 统一压缩视图', () => {
     expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} - 已修复 store 合并写`);
   });
 
-  it('占位内容截断到 500 字符，避免长期占用 token', () => {
+  it('占位内容按上限上浮 20% 截断（500 → 600 字符），避免长期占用 token', () => {
     const result = buildCompactedView(chain(), {
       keepRecentTurns: 1,
-      summaryText: 'x'.repeat(600),
+      summaryText: 'x'.repeat(700),
     });
-    expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} ${'x'.repeat(500)}`);
+    expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} ${'x'.repeat(600)}`);
   });
 
   it('无摘要不注入占位；全部轮次都在保留范围内也不注入', () => {

@@ -6,6 +6,7 @@
 // 好处：上下文可控（截断 + 总长度上限），旧摘要不会因二次压缩被覆盖而丢失。
 import type { ChatMessage } from '../types.js';
 import { stripMemorySection } from './memory-section.js';
+import { SUMMARY_MAX_CHARS } from './summary-message.js';
 
 /** 压缩请求的固定 system prompt（必须保留「压缩对话历史」字样，测试与日志据此识别 flush 请求） */
 export const FLUSH_SYSTEM_PROMPT = `你正在压缩对话历史。下面这条 user 消息是一个 JSON：
@@ -19,7 +20,8 @@ export const FLUSH_SYSTEM_PROMPT = `你正在压缩对话历史。下面这条 u
 - 工具调用的关键结果
 
 忽略：闲聊、重复确认、临时中间结果。
-输出格式：纯文本，每条一行，以 "- " 开头；不要输出 JSON、标题或解释。`;
+输出格式：纯文本，每条一行，以 "- " 开头；不要输出 JSON、标题或解释。
+长度约束：总字数控制在 ${SUMMARY_MAX_CHARS} 字以内，超出时优先保留偏好/结论/未完成任务，舍弃次要细节。`;
 
 /** 工具执行结果单条最大字符数 */
 export const TOOL_RESULT_MAX_CHARS = 200;

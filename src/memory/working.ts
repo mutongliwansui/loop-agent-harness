@@ -5,13 +5,10 @@ import type { WorkingMemoryConfig, ILLMClient } from './types.js';
 import { DEFAULT_WORKING_CONFIG } from './types.js';
 import { debug } from '../debug.js';
 import { buildCompactionPayload } from './compaction-payload.js';
-import { isSummaryMessage } from './summary-message.js';
+import { isSummaryMessage, SUMMARY_TRUNCATE_MAX_CHARS } from './summary-message.js';
 
 /** 摘要占位消息的固定前缀（内存压缩与磁盘恢复共用的临时上下文占位） */
 export const SUMMARY_PLACEHOLDER_PREFIX = '[历史摘要]';
-
-/** 摘要占位注入时的最大字符数（避免占位长期占用上下文 token） */
-export const SUMMARY_PLACEHOLDER_MAX_CHARS = 500;
 
 /**
  * 判断是否为摘要占位/总结消息（与落盘层共用 isSummaryMessage，避免两处判据不一致）。
@@ -35,6 +32,7 @@ export interface CompactionPlan {
    * 是否走了「单轮内按 token 预算截尾」：
    * 按 user 切轮无法丢弃任何消息（整段历史只有一个 user）时启用，
    * 此时 compact 必须用 kept 作为保留后缀，不能再用 keepRecentTurns 重新切轮。
+   * 该模式下当前轮的原始 user 消息会作为任务锚点被固定保留（见 planCompaction）。
    */
   withinTurnTrim?: boolean;
 }
@@ -87,9 +85,34 @@ function estimateMessageTokens(messages: ChatMessage[]): number {
 }
 
 /**
+ * 把截尾起点对齐到「工具组」边界。
+ *
+ * 组 = assistant(tool_calls) + 其后连续的 tool 结果。起点落在 tool 上时有两种取法：
+ * - 整组保留：回退到该组 assistant，但会把整组 token 拉回保留区（可能远超预算）
+ * - 整组丢弃：前移到该组最后一个 tool 之后，保留区一定不超预算
+ * 默认整组丢弃；只有整组丢弃会把保留区清空（这是最后一组）时才整组保留，
+ * 否则当前迭代拿不到最新的 observation。
+ */
+function snapToGroupBoundary(messages: ChatMessage[], start: number): number {
+  if (start >= messages.length || messages[start].role !== 'tool') return start;
+  let groupStart = start;
+  while (groupStart > 0 && messages[groupStart].role === 'tool') groupStart--;
+  let groupEnd = start;
+  while (groupEnd + 1 < messages.length && messages[groupEnd + 1].role === 'tool') {
+    groupEnd++;
+  }
+  const dropped = groupEnd + 1 < messages.length;
+  const snapped = dropped ? groupEnd + 1 : groupStart;
+  debug.log(
+    `[L1 trimTailByTokenBudget] 起点${start}落在工具组内（${groupStart}~${groupEnd}），` +
+      `${dropped ? `整组丢弃→起点${snapped}` : `整组保留→起点${snapped}（超出预算，最后一组必留）`}`,
+  );
+  return snapped;
+}
+
+/**
  * 单轮内按 token 预算截尾：从尾部累积保留，直到再加一条就超出预算。
- * 起点落在 tool 消息上时向前回退到其对应的 assistant(tool_calls)，
- * 保证「工具调用 / 结果」配对不被截断。
+ * 起点落在 tool 消息上时按「工具组整体」取舍，保证 tool_calls / tool 配对不被截断。
  */
 function trimTailByTokenBudget(
   messages: ChatMessage[],
@@ -103,10 +126,7 @@ function trimTailByTokenBudget(
     acc += t;
     start = i;
   }
-  // 起点是 tool 结果时回退到发起调用的 assistant，避免丢失 tool_calls 上下文
-  while (start > 0 && messages[start].role === 'tool') {
-    start--;
-  }
+  start = snapToGroupBoundary(messages, start);
   return { kept: messages.slice(start), start };
 }
 
@@ -164,7 +184,8 @@ export function buildCompactedView(
   if ((droppedCount > 0 || existingPlaceholder) && summary) {
     result.push({
       role: 'user',
-      content: `${SUMMARY_PLACEHOLDER_PREFIX} ${summary.slice(0, SUMMARY_PLACEHOLDER_MAX_CHARS)}`,
+      // 正常摘要已由压缩指令约束在 SUMMARY_MAX_CHARS 内；此处按上浮 20% 兜底硬截断
+      content: `${SUMMARY_PLACEHOLDER_PREFIX} ${summary.slice(0, SUMMARY_TRUNCATE_MAX_CHARS)}`,
       is_show: false,
       kind: 'summary',
     });
@@ -204,6 +225,10 @@ export class WorkingMemory {
    *
    * 单轮内兜底：整段历史只有一个 user（切轮窗口必然装下全部消息）但消息 token 已超
    * messageTokensBudget 时，改从尾部按 token 预算截尾，避免单轮长任务永远无法压缩。
+   *
+   * 任务锚点：单轮截尾最容易先裁掉当前轮的原始 user 消息（多轮工具调用时它位于头部），
+   * 只靠摘要（有损且限长）会让剩余迭代丢失精确约束，故把最后一条真实 user 从 droppable
+   * 移到 kept 最前无条件保留（锚点过大时允许轻微超预算）。
    */
   planCompaction(
     messages: ChatMessage[],
@@ -230,9 +255,31 @@ export class WorkingMemory {
       const keepBudget = Math.max(1, Math.floor(budget * 0.6));
       const trimmed = trimTailByTokenBudget(nonSystem, keepBudget);
       if (trimmed.start > 0) {
-        droppable = nonSystem.slice(0, trimmed.start);
-        kept = trimmed.kept;
         withinTurnTrim = true;
+        // 当前轮的原始 user 即最后一条 user：它若落在丢弃区，则作为任务锚点 pin 回来
+        const lastUserIdx = nonSystem.reduceRight(
+          (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
+          -1,
+        );
+        const anchorTokens =
+          lastUserIdx >= 0 ? Math.ceil((nonSystem[lastUserIdx].content ?? '').length / 4) : 0;
+        // 锚点无条件保留：丢失精确的原始问题比多占 token 更严重，允许因此轻微超预算
+        const canPin = lastUserIdx >= 0 && lastUserIdx < trimmed.start;
+        if (canPin) {
+          // 扣掉锚点 token 重新截尾，尽量让「锚点 + 后缀」仍控制在原保留预算的量级
+          const retrim = trimTailByTokenBudget(nonSystem, Math.max(1, keepBudget - anchorTokens));
+          const anchor = nonSystem[lastUserIdx];
+          const head = nonSystem.slice(0, retrim.start);
+          droppable = head.filter((m) => m !== anchor);
+          kept = [anchor, ...retrim.kept.filter((m) => m !== anchor)];
+          debug.log(
+            `[L1 planCompaction] 固定保留当前轮 user 锚点（${anchorTokens} tokens），` +
+              `摘要覆盖其余 ${droppable.length} 条`,
+          );
+        } else {
+          droppable = nonSystem.slice(0, trimmed.start);
+          kept = trimmed.kept;
+        }
         debug.log(
           `[L1 planCompaction] 单轮内 token 截尾：消息 ${estimateMessageTokens(nonSystem)} tokens > 预算 ${budget}，` +
             `保留后缀 ${kept.length} 条（约 ${estimateMessageTokens(kept)} tokens）、丢弃 ${droppable.length} 条`,
@@ -308,8 +355,8 @@ export class WorkingMemory {
    * 压缩：保留 system + 最近 N 轮对话
    * 每轮 = user 消息及其对应的 assistant/tool 消息
    *
-   * 传入 plan 且走了单轮内 token 截尾时，保留部分直接用 plan.kept，
-   * 与 planCompaction 算出的 droppable 严格互补。
+   * 传入 plan 且走了单轮内 token 截尾时，保留部分直接用 plan.kept
+   * （当前轮 user 锚点 + 尾部后缀），与 planCompaction 算出的 droppable 严格互补。
    */
   compact(
     messages: ChatMessage[],

@@ -473,17 +473,18 @@ describe('Task-17 压缩信息丢失修复', () => {
     expect(compactionEvents.length).toBe(1);
     expect(compactionEvents[0].failed).toBe(false);
     expect(compactionEvents[0].flushedChars).toBeGreaterThan(0);
-    // 压缩后：system + 占位 + 保留后缀 17 条（8 对 assistant/tool + 本轮 user）
-    expect(compactionEvents[0].keptMessages).toBe(19);
-    expect(result.messages.length).toBe(20);
+    // 压缩后：system + 占位 + 保留后缀 15 条（7 对 assistant/tool + 本轮 user）
+    // 起点落在 tool 上时按「工具组整体」丢弃，故比按 token 粗略累加少一对
+    expect(compactionEvents[0].keptMessages).toBe(17);
+    expect(result.messages.length).toBe(18);
     expect(result.messages.length).toBeLessThan(history.length + 2);
-    // 占位为 role=user & is_show=false；保留后缀起点回退到 assistant，不能以 tool 开头
+    // 占位为 role=user & is_show=false；保留后缀起点落在 assistant，不能以 tool 开头
     expect(result.messages[1].role).toBe('user');
     expect(result.messages[1].is_show).toBe(false);
     expect(result.messages[2].role).toBe('assistant');
     // 保留的最后一条是本轮输入，最终回答追加在其后
-    expect(result.messages[18].role).toBe('user');
-    expect(result.messages[19].content).toBe('任务完成');
+    expect(result.messages[16].role).toBe('user');
+    expect(result.messages[17].content).toBe('任务完成');
     // flush 内容写入 L2
     expect(readTodayL2(episodicDir)).toContain('[tag: compaction]');
   });

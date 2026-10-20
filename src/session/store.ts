@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   writeFile,
+  rename,
   access,
   readdir,
   unlink,
@@ -62,7 +63,7 @@ function toStoredMessage(
   if (opts.isSummary === true && m.role !== 'system') out.kind = 'summary';
   else delete out.kind;
   if (m.role === 'user' && typeof m.content === 'string') {
-    // content 保存 LLM 可见原文（可能含记忆前缀）；展示内容单独存 show_content
+    // content 为原始用户输入（存量数据可能含 L2 记忆前缀）；展示内容单独存 show_content
     const stripped = stripMemorySection(m.content);
     if (stripped !== m.content) out.show_content = stripped;
   }
@@ -78,9 +79,17 @@ function extractSummaryText(placeholder: ChatMessage): string {
 }
 
 // 检查两条消息是否重复（考虑所有关键字段）
+// user 消息按「剥离 L2 记忆前缀后」的文本比较：存量会话可能落盘了带前缀的 content，
+// 而运行时视图使用原始输入，严格比较会让锚点/去重全部失效。
 function isSameMessage(a: ChatMessage, b: ChatMessage): boolean {
   if (a.role !== b.role) return false;
-  if (a.content !== b.content) return false;
+  const aContent = typeof a.content === 'string' ? a.content : '';
+  const bContent = typeof b.content === 'string' ? b.content : '';
+  if (a.role === 'user') {
+    if (stripMemorySection(aContent) !== stripMemorySection(bContent)) return false;
+  } else if (aContent !== bContent) {
+    return false;
+  }
   if (a.role === 'assistant' && b.role === 'assistant') {
     const aCalls = a.tool_calls ?? [];
     const bCalls = b.tool_calls ?? [];
@@ -119,6 +128,76 @@ function findKeptAnchor(
     }
   }
   return { index, run };
+}
+
+/**
+ * updateSession / createSession 的可选持久化参数
+ */
+export interface SessionUpdateOptions {
+  /**
+   * 本轮未经 L1 压缩的完整真实消息轨迹（不含 system 与摘要占位）。
+   * 压缩轮次以此为准划分「归档 / recent」：本轮已被 compact() 从内存视图删除、
+   * 但从未落盘的消息也会以 is_compact=true 归档，避免历史丢失。
+   * 不传时退化为仅基于已落盘历史定位边界的旧行为。
+   */
+  transcript?: ChatMessage[];
+}
+
+/**
+ * 在 transcript 中按引用定位 recent 各条消息，返回递增的 transcript 下标。
+ * recent 必须是当前内存视图中保留的原始消息对象（与 transcript 同引用）；
+ * 任一未命中（消息对象被重建）返回 null，调用方回退旧逻辑。
+ */
+function locateInTranscript(
+  transcript: ChatMessage[],
+  recent: ChatMessage[],
+): number[] | null {
+  const indices: number[] = [];
+  for (const r of recent) {
+    const idx = transcript.indexOf(r);
+    if (idx < 0) return null;
+    if (indices.length > 0 && idx <= indices[indices.length - 1]) return null;
+    indices.push(idx);
+  }
+  return indices;
+}
+
+/**
+ * prev 是否按顺序全部出现在 transcript 中（子序列匹配，忽略中间新增消息）。
+ * 用于校验「已落盘的 recent 历史都被完整带入了本轮轨迹」，避免调用方裁剪历史后重建丢消息。
+ */
+function coversInOrder(prev: ChatMessage[], transcript: ChatMessage[]): boolean {
+  let j = 0;
+  for (const p of prev) {
+    while (j < transcript.length && !isSameMessage(transcript[j], p)) j++;
+    if (j >= transcript.length) return false;
+    j++;
+  }
+  return true;
+}
+
+/**
+ * 识别 prevArchived 末尾有多少条属于本轨迹（上次快照写入的归档）。
+ * 同一 run 的归档总是追加在末尾，且内容按轨迹顺序取自当前 dropped（压缩只会单调丢弃，
+ * 上次的 dropped 必为本次 dropped 的有序子集）。从尾部倒序匹配，命中即视为可复用条目；
+ * 一旦匹配中断就停止（宁可少识别、多保留，也不误删历史归档）。
+ */
+function countReplayedArchive(prevArchived: ChatMessage[], dropped: ChatMessage[]): number {
+  let count = 0;
+  let cursor = dropped.length - 1;
+  for (let k = prevArchived.length - 1; k >= 0; k--) {
+    let hit = -1;
+    for (let t = cursor; t >= 0; t--) {
+      if (isSameMessage(dropped[t], prevArchived[k])) {
+        hit = t;
+        break;
+      }
+    }
+    if (hit < 0) break;
+    cursor = hit - 1;
+    count++;
+  }
+  return count;
 }
 
 /**
@@ -233,25 +312,61 @@ export class SessionStore {
    * 与 updateSession 压缩分支对齐：传入消息含摘要占位（kind='summary' 或旧的
    * is_show=false user 消息，首轮即触发 L1 压缩）时，占位原位转写为总结消息
    * （剥离 [历史摘要] 前缀），避免摘要丢失。
+   * 传入 opts.transcript 时，轮内已被压缩丢弃、从未落盘的消息按 is_compact=true 归档。
    */
   async createSession(
     firstMessage: string,
     messages: ChatMessage[],
+    opts?: SessionUpdateOptions,
   ): Promise<SessionMeta> {
     const id = `sess_${formatDate(new Date())}`;
     const now = new Date().toISOString();
 
     const stored: ChatMessage[] = [];
-    for (const m of messages) {
-      if (isSummaryMessage(m)) {
-        stored.push(
-          toStoredMessage(
-            { role: 'user', content: extractSummaryText(m) },
-            { isCompact: false, isSummary: true },
-          ),
-        );
-      } else {
-        stored.push(toStoredMessage(m, { isCompact: false }));
+    const summaryPlaceholder = messages.find((m) => isSummaryMessage(m));
+    const transcript = opts?.transcript?.filter(
+      (m) => m.role !== 'system' && !isSummaryMessage(m),
+    );
+    const incomingKept = messages.filter((m) => m.role !== 'system' && !isSummaryMessage(m));
+    const recentIdx =
+      summaryPlaceholder && transcript?.length
+        ? locateInTranscript(transcript, incomingKept)
+        : null;
+
+    if (summaryPlaceholder && transcript?.length && recentIdx) {
+      // 压缩轮次：以完整轨迹为准，未被保留的消息全部归档（含本轮已从内存视图删除的消息）
+      const system = messages.find((m) => m.role === 'system');
+      if (system) stored.push(toStoredMessage(system, { isCompact: false }));
+      const recentSet = new Set(recentIdx);
+      transcript.forEach((m, idx) => {
+        if (!recentSet.has(idx)) stored.push(toStoredMessage(m, { isCompact: true }));
+      });
+      stored.push(
+        toStoredMessage(
+          { role: 'user', content: extractSummaryText(summaryPlaceholder) },
+          { isCompact: false, isSummary: true },
+        ),
+      );
+      for (const idx of recentIdx) {
+        stored.push(toStoredMessage(transcript[idx], { isCompact: false }));
+      }
+      debug.log(
+        `[createSession ${id}] 压缩轮次 轨迹=${transcript.length}条 ` +
+          `归档=${transcript.length - recentIdx.length}条 recent=${recentIdx.length}条 ` +
+          `摘要=${extractSummaryText(summaryPlaceholder).length}字`,
+      );
+    } else {
+      for (const m of messages) {
+        if (isSummaryMessage(m)) {
+          stored.push(
+            toStoredMessage(
+              { role: 'user', content: extractSummaryText(m) },
+              { isCompact: false, isSummary: true },
+            ),
+          );
+        } else {
+          stored.push(toStoredMessage(m, { isCompact: false }));
+        }
       }
     }
 
@@ -285,6 +400,7 @@ export class SessionStore {
     id: string,
     messages: ChatMessage[],
     firstUserMessage?: string,
+    opts?: SessionUpdateOptions,
   ): Promise<ChatMessage[]> {
     const startedAt = Date.now();
     const log = (msg: string): void => debug.log(`[updateSession ${id}] ${msg}`);
@@ -314,37 +430,88 @@ export class SessionStore {
       // 否则旧归档消息会被误标成 recent（P1-a）
       const prevRecentStart = base.findIndex((m) => m.is_compact !== true);
       const from = prevRecentStart < 0 ? base.length : prevRecentStart;
-      const anchor = findKeptAnchor(base, kept, from);
-      // 锚点命中 → 只追加锚点之后的新消息；未命中 → kept 全部视为新消息追加（不丢消息）
-      const appended = anchor.run > 0 ? kept.slice(anchor.run) : kept;
-      const full: ChatMessage[] = [...base, ...appended];
-      // 边界 = kept 起点；未命中时保守取 base 尾部（只归档旧历史，kept 全部保留为 recent，
-      // 不再把 kept 一起折叠导致下一轮只剩总结——P2-a）
-      const boundary = anchor.run > 0 ? anchor.index : base.length;
-
-      const compacted = full.slice(0, boundary).map((m) => toStoredMessage(m, { isCompact: true }));
-      const recent = full.slice(boundary).map((m) => toStoredMessage(m, { isCompact: false }));
       const summaryMsg = toStoredMessage(
         { role: 'user', content: extractSummaryText(summaryPlaceholder) },
         { isCompact: false, isSummary: true },
       );
-      nextNonSystem = [...compacted, summaryMsg, ...recent];
 
-      log(
-        `压缩轮次 base=${base.length}条(丢弃旧总结${prevNonSystem.length - base.length}条) ` +
-          `kept=${kept.length}条(锚点命中${anchor.run}条, 追加${appended.length}条) full=${full.length}条`,
+      // 优先用调用方传入的完整轨迹划分归档/recent：压缩会在 run 过程中物理删除消息，
+      // 仅凭内存视图无法还原「本轮已被压缩、但从未落盘」的消息。
+      // kept 与 transcript 须为同一批对象（compact() 保留原引用），按引用定位。
+      const transcript = opts?.transcript?.filter(
+        (m) => m.role !== 'system' && !isSummaryMessage(m),
       );
-      log(
-        `边界 boundary=${boundary} anchor=${anchor.index} ` +
-          (anchor.run > 0
-            ? `保留首条 ${describeMessage(full[boundary], boundary)}`
-            : `⚠ 锚点未命中(搜索起点=${from})，保守归档旧历史，kept 全部保留为 recent`),
-      );
-      if (boundary > 0) log(`折叠末条 ${describeMessage(full[boundary - 1], boundary - 1)}`);
-      log(
-        `结果 compacted=${compacted.length}条 + summary=${extractSummaryText(summaryPlaceholder).length}字 + recent=${recent.length}条 ` +
-          `=> ${nextNonSystem.length}条`,
-      );
+      const prevArchived = base.filter((m) => m.is_compact === true);
+      const prevRecent = base.filter((m) => m.is_compact !== true);
+      const keptIdx = transcript?.length ? locateInTranscript(transcript, kept) : null;
+      // 安全前提：已落盘的 recent 必须完整出现在 transcript 里（按序子序列），
+      // 否则说明调用方传入的历史有裁剪，重建会丢消息 → 回退 legacy
+      const prevCovered = transcript?.length ? coversInOrder(prevRecent, transcript) : false;
+      let rebuilt: ChatMessage[] | null = null;
+
+      if (transcript && keptIdx && prevCovered) {
+        const keptSet = new Set(keptIdx);
+        // 轨迹中本次未保留的全部消息（含本轮压缩后已从内存视图删除的）
+        const dropped = transcript.filter((_, idx) => !keptSet.has(idx));
+        // 同一次 run 内可能发生多次压缩快照：上次快照写入的归档条目仍在本轨迹里，
+        // 需要从已有归档尾部识别并替换，避免重复落盘
+        const replayed = countReplayedArchive(prevArchived, dropped);
+        const keptArchived = prevArchived.slice(0, prevArchived.length - replayed);
+        const compacted = [
+          ...keptArchived,
+          ...dropped,
+        ].map((m) => toStoredMessage(m, { isCompact: true }));
+        const recent = keptIdx.map((idx) => toStoredMessage(transcript[idx], { isCompact: false }));
+        rebuilt = [...compacted, summaryMsg, ...recent];
+        log(
+          `压缩轮次(轨迹) 已有归档=${prevArchived.length}条(其中本轮重复${replayed}条) ` +
+            `已有recent=${prevRecent.length}条 轨迹=${transcript.length}条 kept=${kept.length}条`,
+        );
+        log(
+          `本次归档轨迹未保留=${dropped.length}条（含本轮已从内存视图删除、尚未落盘的消息）`,
+        );
+        log(
+          `结果 compacted=${compacted.length}条 + summary=${extractSummaryText(summaryPlaceholder).length}字 + recent=${recent.length}条 ` +
+            `=> ${rebuilt.length}条`,
+        );
+      } else if (transcript?.length) {
+        log(
+          `⚠ transcript 重建失败（${keptIdx ? '已落盘 recent 未完整包含于轨迹' : '无法按引用定位 recent，消息对象被重建'}），` +
+            `回退 legacy 边界逻辑`,
+        );
+      }
+
+      if (!rebuilt) {
+        // 回退：仅基于已落盘历史做后缀锚点对齐（旧行为）
+        const anchor = findKeptAnchor(base, kept, from);
+        // 锚点命中 → 只追加锚点之后的新消息；未命中 → kept 全部视为新消息追加（不丢消息）
+        const appended = anchor.run > 0 ? kept.slice(anchor.run) : kept;
+        const full: ChatMessage[] = [...base, ...appended];
+        // 边界 = kept 起点；未命中时保守取 base 尾部（只归档旧历史，kept 全部保留为 recent，
+        // 不再把 kept 一起折叠导致下一轮只剩总结——P2-a）
+        const boundary = anchor.run > 0 ? anchor.index : base.length;
+
+        const compacted = full.slice(0, boundary).map((m) => toStoredMessage(m, { isCompact: true }));
+        const recent = full.slice(boundary).map((m) => toStoredMessage(m, { isCompact: false }));
+        rebuilt = [...compacted, summaryMsg, ...recent];
+
+        log(
+          `压缩轮次(legacy) base=${base.length}条(丢弃旧总结${prevNonSystem.length - base.length}条) ` +
+            `kept=${kept.length}条(锚点命中${anchor.run}条, 追加${appended.length}条) full=${full.length}条`,
+        );
+        log(
+          `边界 boundary=${boundary} anchor=${anchor.index} ` +
+            (anchor.run > 0
+              ? `保留首条 ${describeMessage(full[boundary], boundary)}`
+              : `⚠ 锚点未命中(搜索起点=${from})，保守归档旧历史，kept 全部保留为 recent`),
+        );
+        if (boundary > 0) log(`折叠末条 ${describeMessage(full[boundary - 1], boundary - 1)}`);
+        log(
+          `结果 compacted=${compacted.length}条 + summary=${extractSummaryText(summaryPlaceholder).length}字 + recent=${recent.length}条 ` +
+            `=> ${rebuilt.length}条`,
+        );
+      }
+      nextNonSystem = rebuilt;
     } else {
       // 未压缩轮次：保留已有条目（含其标记），按后缀锚点对齐后只追加新消息
       const prevRecentStart = prevNonSystem.findIndex((m) => m.is_compact !== true);
@@ -601,15 +768,25 @@ export class SessionStore {
   private async writeSession(data: SessionData): Promise<void> {
     const dir = await this.resolveWorkspaceDir(data.id);
     const filePath = join(dir, `${data.id}${this.sessionFileExt}`);
+    let payload: string;
     if (this.encryptionEnabled) {
       const key = keychain.getKey();
       if (!key) {
         throw new Error('密钥未加载，无法保存会话');
       }
-      const encrypted = encrypt(data, key);
-      await writeFile(filePath, encrypted, 'utf-8');
+      payload = encrypt(data, key);
     } else {
-      await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+      payload = JSON.stringify(data, null, 2);
+    }
+    // 原子写：先写同目录临时文件再 rename 覆盖，避免进程中途退出留下半截 JSON
+    // （节流落盘会频繁写同一文件，非原子覆盖一旦被打断会直接损坏会话）
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await writeFile(tmpPath, payload, 'utf-8');
+      await rename(tmpPath, filePath);
+    } catch (e) {
+      await unlink(tmpPath).catch(() => {});
+      throw e;
     }
   }
 

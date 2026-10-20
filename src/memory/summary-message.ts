@@ -1,5 +1,11 @@
 import type { ChatMessage } from '../types.js';
 
+/** 压缩摘要的目标长度上限：写入压缩指令，约束模型输出不超过该字数 */
+export const SUMMARY_MAX_CHARS = 500;
+
+/** 摘要落盘/注入时的硬截断上限：目标值上浮 20%，容忍模型小幅超写，避免正常输出被腰斩 */
+export const SUMMARY_TRUNCATE_MAX_CHARS = Math.ceil(SUMMARY_MAX_CHARS * 1.2);
+
 /**
  * 判断一条消息是否为「压缩总结消息」——消息种类的唯一判据（store / working 共用）。
  *
