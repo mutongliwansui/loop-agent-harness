@@ -1,4 +1,4 @@
-import type { ChatMessage, AgentStep } from '../types.js';
+import type { ChatMessage } from '../types.js';
 
 /** 会话元信息（存储在索引中，不含消息内容） */
 export interface SessionMeta {
@@ -16,35 +16,22 @@ export interface SessionMeta {
   file: string;
 }
 
-/** 完整会话数据（加密存储的内容） - 改造后支持分层存储 */
+/**
+ * 完整会话数据（加密存储的内容）。
+ *
+ * 单一真源：`messages` 按时间正序保存全量历史（含 system）。每条消息通过
+ * `is_compact`（是否已被压缩折叠进摘要）、`is_show`（是否在界面展示）、
+ * `show_content`（展示内容，content 含注入前缀时使用）三个标记表达状态，
+ * 不再使用 recentMessages/archivedMessages/fullHistory/lastSummary 等分层字段。
+ */
 export interface SessionData {
   id: string;
   /** 创建时间 ISO */
   createdAt: string;
   /** 更新时间 ISO */
   updatedAt: string;
-  
-  // 原有字段（兼容旧格式，逐步迁移到分层结构）
-  /** @deprecated 使用 recentMessages 替代 */
-  messages?: ChatMessage[];
-  /** @deprecated 保留兼容 */
-  steps?: AgentStep[];
-  
-  // 分层存储字段（新格式）
-  /** L1 压缩产物：上次会话摘要，注入系统提示词 */
-  lastSummary?: string;
-  /** 最近 N 轮对话（L1 工作集），恢复时加载到 _chatHistory */
-  recentMessages?: ChatMessage[];
-  /** 归档消息（可选，不参与上下文） */
-  archivedMessages?: ChatMessage[];
-  /** 归档消息数（用于显示） */
-  archivedCount?: number;
-  /** 保存时的最近轮数配置 */
-  recentTurns?: number;
-
-  /** 全量历史（修复前旧 session 的 messages 可能被 L1 截断覆盖丢失；
-   *  updateSession 每次合并追加、不去头；展示层与 restore 优先用它） */
-  fullHistory?: ChatMessage[];
+  /** 全量历史（含 system），每条带 is_compact/is_show/show_content 标记 */
+  messages: ChatMessage[];
 }
 
 /** 工作空间元信息 */

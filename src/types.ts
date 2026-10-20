@@ -42,17 +42,34 @@ export interface ToolCall {
 }
 
 /**
+ * 会话持久化标记（仅存盘语义，调用 LLM 前由 LLMClient.normalizeMessages 统一剥离）
+ */
+export interface SessionMessageFlags {
+  /** 是否已被压缩折叠进摘要；true=不参与 LLM 上下文，仅保留用于界面展示 */
+  is_compact?: boolean;
+  /** 是否在对话界面展示（缺省视为 true；system 与压缩总结消息为 false） */
+  is_show?: boolean;
+  /** 界面展示内容；缺省或为空时取 content（content 可能含记忆/摘要注入前缀） */
+  show_content?: string;
+}
+
+/**
  * 聊天消息联合类型：
- * - system/user：仅 content；user 可带 ephemeral 标记，表示恢复/压缩注入的临时占位
- *   （LLM 可见，但不写入磁盘全量历史）
+ * - system/user：仅 content；压缩注入的摘要占位与已落盘的总结消息统一用
+ *   is_show=false 标记（LLM 可见、UI 不展示），不再使用独立 ephemeral 字段
  * - assistant：纯文本回复 或 带 tool_calls 的回复
  * - tool：工具执行结果，附 tool_call_id
+ *
+ * 每条消息附带 SessionMessageFlags（is_compact/is_show/show_content），
+ * 用于会话存储层的展示与压缩标记；这些字段不进入 LLM 请求。
+ *  - is_compact=true：被折叠进摘要，不进入 LLM 上下文
+ *  - is_show=false：不展示给用户（system / 摘要总结消息）
  */
 export type ChatMessage =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string; ephemeral?: boolean }
-  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[] }
-  | { role: 'tool'; tool_call_id: string; content: string };
+  | ({ role: 'system'; content: string } & SessionMessageFlags)
+  | ({ role: 'user'; content: string } & SessionMessageFlags)
+  | ({ role: 'assistant'; content: string | null; tool_calls?: ToolCall[] } & SessionMessageFlags)
+  | ({ role: 'tool'; tool_call_id: string; content: string } & SessionMessageFlags);
 
 /**
  * LLM 调用返回的 Token 使用情况（含缓存命中统计）
@@ -133,6 +150,14 @@ export interface CompactionInfo {
   failed?: boolean;
   /** Task-17：提取失败时的兜底策略（'skip'=跳过压缩保留全部历史；'archive'=降级存档后压缩） */
   fallback?: 'skip' | 'archive';
+}
+
+/** 压缩开始事件载荷（与 onCompaction 配对：start 发出后必有一个 compaction 结束事件） */
+export interface CompactionStartInfo {
+  /** 压缩阈值（maxTokens × compactionThreshold） */
+  threshold: number;
+  /** 触发时的上下文 token（真实 usage 或估算） */
+  contextTokens: number;
 }
 
 // ===== Agent 相关 =====
@@ -221,6 +246,8 @@ export interface AgentEvents {
    * @param elapsedMs 自该轮参数生成开始以来的耗时
    */
   onToolCallDelta?(tool: string, accumulatedBytes: number, elapsedMs: number): void | Promise<void>;
+  /** L1 上下文超阈值，压缩开始（pre-compaction flush 提取进行中，期间有一次额外 LLM 调用） */
+  onCompactionStart?(info: CompactionStartInfo): void | Promise<void>;
   /** L1 上下文超阈值，触发压缩 */
   onCompaction?(info: CompactionInfo): void | Promise<void>;
   /** Agent 给出最终答案 */

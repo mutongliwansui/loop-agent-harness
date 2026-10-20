@@ -22,8 +22,7 @@
     "name": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1",
     "apiKey": "sk-xxx",
-    "temperature": 0,
-    "maxIterations": 10
+    "temperature": 0
   },
   "models": {
     "active": "",
@@ -50,7 +49,8 @@
     "verbose": true,
     "debug": false,
     "systemPrompt": null,
-    "showTokenStats": true
+    "showTokenStats": true,
+    "maxIterations": 100
   },
   "session": {
     "autoSave": true,
@@ -112,7 +112,7 @@
 
 | 配置段 | 字段 | 说明 | 默认值 |
 |---|---|---|---|
-| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM 模型配置（当前生效快照，运行时唯一读取点） | `gpt-4o-mini` 等 |
+| `model` | `name` / `baseUrl` / `apiKey` / `temperature` | LLM 模型配置（当前生效快照，运行时唯一读取点） | `gpt-4o-mini` 等 |
 | `models` | `active` / `profiles` | 多模型登记簿（Task-20261011-002）：`profiles` 以别名为键登记各模型三元组（`name` / `baseUrl` / `apiKey`，可选 `temperature`），`active` 指向当前激活别名（空串 = 未纳入多模型管理）；`/model use <别名>` 会同步更新 `active` 与 `model.*` 快照 | `active: ""`、`profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | 内置工具开关与 MCP server 配置 | 全部启用 |
 | `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
@@ -120,6 +120,7 @@
 | `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |
 | `agent` | `showTokenStats` | 是否输出每轮/会话汇总 token 统计（Task-15） | `true` |
 | `agent` | `loading` | 是否显示等待 loading 指示器（非 TTY 环境始终禁用，Task-20260930-001） | `true` |
+| `agent` | `maxIterations` | 单次任务最大迭代次数 | `100` |
 | `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
 | `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
@@ -134,7 +135,7 @@
 | `OPENAI_API_KEY` | ✅ | API Key | 无 |
 | `OPENAI_BASE_URL` | ❌ | 模型服务地址 | `https://api.openai.com/v1` |
 | `MODEL_NAME` | ❌ | 模型名称 | `gpt-4o-mini` |
-| `MAX_ITERATIONS` | ❌ | Agent 最大迭代次数 | `10` |
+| `MAX_ITERATIONS` | ❌ | Agent 最大迭代次数 | `100` |
 | `VERBOSE` | ❌ | 是否输出 Thought/Action/Observation 日志（`true`/`false`） | `true` |
 | `DEBUG` | ❌ | 是否开启文件调试日志（`true`/`false`，输出到 `~/.loop-agent/logs`） | `false` |
 
@@ -166,7 +167,7 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 /config set model.name deepseek-chat
 
 # 修改最大迭代次数
-/config set model.maxIterations 20
+/config set agent.maxIterations 20
 
 # 开启调试日志
 /config set agent.debug true

@@ -191,7 +191,7 @@ beforeAll(async () => {
   mkdirSync(TEST_DIR, { recursive: true });
 
   // 加密关闭（避免 keychain 依赖），userDir 指向临时目录避免污染真实会话数据
-  store = new SessionStore(TEST_WORKSPACE, 3, false, TEST_DIR);
+  store = new SessionStore(TEST_WORKSPACE, false, TEST_DIR);
   await store.init();
 
   // 主实例绑随机端口，避免占用默认 3000
@@ -314,11 +314,11 @@ describe('非流式消息（stream:false）', () => {
     expect(body.steps).toHaveLength(1);
     expect(calls[0].options.resetHistory).toBe(true);
 
-    // 持久化：store 中 recentMessages 含答案
+    // 持久化：store 中 messages 含答案
     const metas = await store.listSessions();
     expect(metas.some((m) => m.id === id)).toBe(true);
     const data = await store.loadSession(id);
-    const contents = (data.recentMessages ?? []).map((m) => m.content);
+    const contents = (data.messages ?? []).map((m) => m.content);
     expect(contents).toContain('第一问');
     expect(contents).toContain('回复:第一问');
   });
@@ -375,7 +375,7 @@ describe('非流式消息（stream:false）', () => {
 
     // 失败轮不持久化：落盘历史仍只有第一轮内容
     const data = await store.loadSession(id);
-    const contents = (data.recentMessages ?? []).map((m) => m.content);
+    const contents = (data.messages ?? []).map((m) => m.content);
     expect(contents).toContain('成功问');
     expect(contents).not.toContain('失败问');
   });

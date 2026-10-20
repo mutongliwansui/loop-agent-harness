@@ -56,26 +56,36 @@ export class LLMClient {
 
   /**
    * 发送给 OpenAI-compatible API 前清洗 messages：
-   * assistant 消息的 tool_calls 空数组会触发 API 400（API 要求 tool_calls
-   * 要么不存在，要么长度 ≥ 1），这里统一归一为 undefined。
-   * 还顺便过滤掉 ephemeral 占位——占位只对本进程 LLM 可见，跨 API 调用不应透出。
+   * - assistant 消息的 tool_calls 空数组会触发 API 400（API 要求 tool_calls
+   *   要么不存在，要么长度 ≥ 1），这里统一剥离该字段（含显式 undefined）。
+   * - is_compact/is_show/show_content 是会话存储标记，不进入 LLM 请求，统一剥离。
    * 泛型接受 ChatMessage / VisionMessage 等任意结构兼容消息数组。
    */
-  private static normalizeMessages<T extends { role: string; tool_calls?: unknown; ephemeral?: boolean }>(
+  private static normalizeMessages<T extends {
+    role: string;
+    tool_calls?: unknown;
+    is_compact?: unknown;
+    is_show?: unknown;
+    show_content?: unknown;
+  }>(
     messages: T[],
   ): T[] {
-    const out: T[] = [];
-    for (const m of messages) {
-      if (m.role === 'user' && m.ephemeral === true) continue;
-      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length === 0) {
-        // 构造一个去掉 tool_calls 的新对象（TS 不允许在 ChatMessage 联合上直接解构 tool_calls）
-        const { tool_calls: _empty, ...rest } = m as unknown as Record<string, unknown>;
-        out.push(rest as T);
-      } else {
-        out.push(m);
+    return messages.map((m) => {
+      // 构造去掉会话标记字段的新对象：is_compact/is_show/show_content 均不进入 LLM 请求，
+      // 否则会因非标准字段触发 API 400（TS 不允许在 ChatMessage 联合上直接解构）
+      const {
+        is_compact: _isCompact,
+        is_show: _isShow,
+        show_content: _showContent,
+        tool_calls,
+        ...rest
+      } = m as unknown as Record<string, unknown>;
+      // 仅非空 tool_calls 需保留；空数组/未定义一律剥离，避免 API 400
+      if (m.role === 'assistant' && Array.isArray(tool_calls) && tool_calls.length > 0) {
+        return { ...rest, tool_calls } as T;
       }
-    }
-    return out;
+      return rest as T;
+    });
   }
 
   /**
@@ -129,7 +139,7 @@ export class LLMClient {
     try {
       return await this.retry(async () => {
         const client = this.getClient();
-        // normalizeMessages 确保 assistant.tool_calls 不为空数组、ephemeral 占位不透出
+        // normalizeMessages 确保 assistant.tool_calls 不为空数组、会话标记字段不透传
         const cleanMessages = LLMClient.normalizeMessages(messages);
         const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
           model,
@@ -336,7 +346,7 @@ export class LLMClient {
 
     const streamStartMs = Date.now();
 
-    // normalizeMessages 确保 assistant.tool_calls 不为空数组、ephemeral 占位不透出
+    // normalizeMessages 确保 assistant.tool_calls 不为空数组、会话标记字段不透出
     const cleanMessages = LLMClient.normalizeMessages(messages);
     const params: OpenAI.Chat.ChatCompletionCreateParamsStreaming = {
       model,

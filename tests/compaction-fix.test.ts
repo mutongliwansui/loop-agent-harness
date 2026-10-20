@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 
-/** mock llm 模块（react-agent 依赖；chat=flush 调用，chatStream=主对话流） */
+/** mock llm 模块（react-agent 依赖；chat=其他记忆调用，chatStream=flush 提取（流式）+ 主对话流） */
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(),
   chatStream: vi.fn(),
@@ -37,6 +37,38 @@ vi.mock('../src/llm/client.js', () => ({
   },
   LLMClient: class {},
 }));
+
+/**
+ * flush 提取（流式）与主对话流共用 chatStream mock：按 messages[0] 是否压缩 prompt 区分。
+ * flushContent 为 null 表示 flush 提取失败（done 携带 content:null）。
+ */
+function mockChatStreamWithFlush(flushContent: string | null): void {
+  mocks.chatStream.mockImplementation(async function* (messages: ChatMessage[]) {
+    const isFlush =
+      messages[0]?.role === 'system' && String(messages[0].content ?? '').includes('压缩对话历史');
+    if (isFlush) {
+      if (flushContent) yield { type: 'delta', content: flushContent };
+      yield {
+        type: 'done',
+        response: {
+          content: flushContent,
+          finish_reason: 'stop',
+          usage: { prompt_tokens: 60, completion_tokens: 4, total_tokens: 64 },
+        },
+      };
+      return;
+    }
+    yield { type: 'delta', content: '测试回答' };
+    yield {
+      type: 'done',
+      response: {
+        content: '测试回答',
+        finish_reason: 'stop',
+        usage: { prompt_tokens: 120, completion_tokens: 6, total_tokens: 126 },
+      },
+    };
+  });
+}
 
 const BASE = join(tmpdir(), 'loop-agent-tests', 'compaction-fix');
 
@@ -145,20 +177,8 @@ describe('Task-17 压缩信息丢失修复', () => {
   it('2. 提取成功 → 写 L2(tag=compaction) → 压缩 → onCompaction(failed:false)', async () => {
     const wsDir = join(BASE, 't2');
     const episodicDir = writeWorkspaceConfig(wsDir, 'skip');
-    mocks.chat.mockImplementation(async () => ({ content: '- 关键事实：我会打篮球' }));
-    mocks.chatStream.mockImplementation(
-      async function* () {
-        yield { type: 'delta', content: '测试回答' };
-        yield {
-          type: 'done',
-          response: {
-            content: '测试回答',
-            finish_reason: 'stop',
-            usage: { prompt_tokens: 120, completion_tokens: 6, total_tokens: 126 },
-          },
-        };
-      },
-    );
+    mocks.chat.mockImplementation(async () => ({ content: null }));
+    mockChatStreamWithFlush('- 关键事实：我会打篮球');
 
     const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
@@ -188,19 +208,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     const wsDir = join(BASE, 't3');
     const episodicDir = writeWorkspaceConfig(wsDir, 'skip');
     mocks.chat.mockImplementation(async () => ({ content: null }));
-    mocks.chatStream.mockImplementation(
-      async function* () {
-        yield { type: 'delta', content: '测试回答' };
-        yield {
-          type: 'done',
-          response: {
-            content: '测试回答',
-            finish_reason: 'stop',
-            usage: { prompt_tokens: 120, completion_tokens: 6, total_tokens: 126 },
-          },
-        };
-      },
-    );
+    mockChatStreamWithFlush(null);
 
     const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
@@ -230,19 +238,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     const wsDir = join(BASE, 't4');
     const episodicDir = writeWorkspaceConfig(wsDir, 'archive');
     mocks.chat.mockImplementation(async () => ({ content: null }));
-    mocks.chatStream.mockImplementation(
-      async function* () {
-        yield { type: 'delta', content: '测试回答' };
-        yield {
-          type: 'done',
-          response: {
-            content: '测试回答',
-            finish_reason: 'stop',
-            usage: { prompt_tokens: 120, completion_tokens: 6, total_tokens: 126 },
-          },
-        };
-      },
-    );
+    mockChatStreamWithFlush(null);
 
     const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
     const agent = new ReActAgent(loader);

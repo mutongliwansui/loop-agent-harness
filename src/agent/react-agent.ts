@@ -20,8 +20,6 @@ import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
 import type { CuratedFileKey } from '../memory/types.js';
 import {
   WorkingMemory,
-  buildCompactedView,
-  DEFAULT_WORKING_CONFIG,
   EpisodicMemory,
   CuratedMemory,
   ContextAssembler,
@@ -52,6 +50,17 @@ export function createLLMAdapter(model: string, temperature: number): ILLMClient
     async chat(messages: ChatMessage[]): Promise<{ content: string | null }> {
       const resp = await llm.chat(messages, undefined, { model, temperature });
       return { content: resp.content };
+    },
+    // 压缩提取走流式：长非流式连接在部分后端/代理下易被中途截断（Premature close），
+    // 流式逐 chunk 累积即使连接异常关闭也能保留已产出内容
+    async chatViaStream(messages: ChatMessage[]): Promise<{ content: string | null }> {
+      let acc = '';
+      let finalContent: string | null = null;
+      for await (const chunk of llm.chatStream(messages, undefined, { model, temperature })) {
+        if (chunk.type === 'delta') acc += chunk.content;
+        else if (chunk.type === 'done') finalContent = chunk.response.content;
+      }
+      return { content: finalContent ?? (acc || null) };
     },
   };
 }
@@ -126,22 +135,15 @@ export class ReActAgent {
       this._memoryCallback.setSessionId(data.id);
     }
 
-    // 统一恢复视图：与 L1 压缩共用 buildCompactedView（同一逻辑/参数/形态）。
-    // 原材料用 SessionStore.getAllAvailableMessages（覆盖修复前被截断的旧 session）；
-    // system 用当前配置的 prompt（丢弃历史 system，避免旧 prompt 覆盖当前配置）；
-    // 摘要以 ephemeral 占位注入，只对 LLM 可见，不会写入磁盘全量历史。
-    const base = SessionStore.getAllAvailableMessages(data).filter(
-      (m) => m.role !== 'system',
-    );
-    const restored = buildCompactedView(base, {
-      systemPrompt,
-      keepRecentTurns: DEFAULT_WORKING_CONFIG.keepRecentTurns,
-      summaryText: data.lastSummary || undefined,
-    });
+    // 统一恢复视图：system（当前配置重建） + 所有 is_compact!==true 的消息。
+    // 被压缩折叠进摘要的历史（is_compact=true）不进入上下文；摘要本身是一条
+    // is_show=false / is_compact=false 的 user 消息，会自然进入上下文。
+    // system 用当前配置的 prompt（丢弃历史 system，避免旧 prompt 覆盖当前配置）。
+    const restored = SessionStore.getRestoreMessages(data, systemPrompt);
 
     // 持久化/恢复过程中可能导致 tool-assistant 配对损坏，统一修复
     this._chatHistory = repairMessageSequence(restored);
-    debug.log(`Session 恢复: ${data.id}, recentMessages=${data.recentMessages?.length ?? 0}, archivedCount=${data.archivedCount ?? 0}`);
+    debug.log(`Session 恢复: ${data.id}, messages=${data.messages?.length ?? 0}`);
   }
 
   /** 获取当前持久化的对话历史（只读拷贝） */
@@ -423,6 +425,12 @@ export class ReActAgent {
           if (overThreshold) {
             debug.log('L1 超阈值，触发 pre-compaction flush');
             try {
+              // 压缩开始事件：与下方任一 onCompaction 结束事件配对（含 catch 兜底），
+              // 前端据此显示/移除「压缩中」loading
+              await safeEvents.onCompactionStart?.({
+                threshold,
+                contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+              });
               const llmAdapter = createLLMAdapter(model, temperature);
               const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter);
               if (extracted && this._episodicMemory) {
@@ -434,12 +442,9 @@ export class ReActAgent {
                   tag: 'compaction',
                 });
                 debug.log(`pre-compaction flush 完成，提取 ${extracted.length} 字符写入 L2`);
-                // 同一份笔记既写 L2，也作为摘要占位注入内存视图，否则压缩后头部轮次直接从 LLM 视野消失
+                // 同一份笔记作为摘要占位注入内存视图；该占位会随 result.messages 落盘，
+                // 由 SessionStore.updateSession 转写为 is_show=false 的总结消息
                 messages = this._workingMemory.compact(messages, extracted);
-                // 方案 B：让磁盘层也知道这次压缩的摘要（restore 时 buildCompactedView 有 summaryText 注入占位）
-                if (this._sessionStore && this._currentSessionId) {
-                  void this._sessionStore.saveLastSummary(this._currentSessionId, extracted);
-                }
                 debug.log(`压缩完成，保留 ${messages.length} 条消息`);
                 await safeEvents.onCompaction?.({
                   threshold,
@@ -461,10 +466,6 @@ export class ReActAgent {
                 debug.log(`flush 失败，降级存档 ${rawContent.length} 字符到 L2（compaction_fallback）`);
                 // 降级存档文本同样作为摘要占位注入，避免压缩后上下文断裂
                 messages = this._workingMemory.compact(messages, rawContent);
-                // 降级分支也把摘要写盘（长度可能很大，saveLastSummary 内部有 MAX_SUMMARY_CHARS 限长）
-                if (this._sessionStore && this._currentSessionId) {
-                  void this._sessionStore.saveLastSummary(this._currentSessionId, rawContent);
-                }
                 debug.log(`压缩完成，保留 ${messages.length} 条消息`);
                 await safeEvents.onCompaction?.({
                   threshold,
@@ -488,6 +489,16 @@ export class ReActAgent {
               }
             } catch (e) {
               debug.log(`压缩过程出错（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
+              // 异常路径也要发结束事件与 onCompactionStart 配对（历史原样保留，语义同 skip），
+              // 否则前端「压缩中」loading 会一直挂起
+              await safeEvents.onCompaction?.({
+                threshold,
+                contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                flushedChars: 0,
+                keptMessages: messages.length,
+                failed: true,
+                fallback: 'skip',
+              });
             }
           }
         }
@@ -515,6 +526,27 @@ export class ReActAgent {
             );
           } catch {
             // Context 组装失败不阻塞主流程
+          }
+        }
+
+        // 同步 LLM 可见原文到工作数组：使 result.messages 的 content 与发送给 LLM 的一致
+        // （含 L2 记忆注入前缀）；展示层依赖 show_content 还原用户原始输入。
+        // 注入侧已做幂等（先 strip 再注入），故此处在多轮迭代中重复同步不会造成前缀嵌套。
+        if (llmMessages !== messages) {
+          let srcIdx = -1;
+          let dstIdx = -1;
+          for (let k = llmMessages.length - 1; k >= 0; k--) {
+            if (llmMessages[k].role === 'user') { srcIdx = k; break; }
+          }
+          for (let k = messages.length - 1; k >= 0; k--) {
+            if (messages[k].role === 'user') { dstIdx = k; break; }
+          }
+          if (srcIdx >= 0 && dstIdx >= 0 && llmMessages[srcIdx].content !== messages[dstIdx].content) {
+            const src = llmMessages[srcIdx];
+            const dst = messages[dstIdx];
+            if (src.role === 'user' && dst.role === 'user') {
+              messages[dstIdx] = { ...dst, content: src.content };
+            }
           }
         }
 
@@ -675,19 +707,25 @@ export class ReActAgent {
         options.spinner?.start('保存会话…');
         try {
           if (this._currentSessionId) {
-            await this._sessionStore.updateSession(
+            // 用 store 归一化后的会话消息作为下一轮基线：摘要占位已转写为总结消息、
+            // 压缩标记一致（is_compact/is_show）。
+            // 同时剔除 is_compact=true 的已折叠历史：它们仅保留用于 UI 展示，
+            // 重新进入基线会污染 LLM 上下文并导致每轮重复触发压缩
+            const stored = await this._sessionStore.updateSession(
               this._currentSessionId,
               result.messages,
-              steps,
             );
+            this._chatHistory = stored.filter((m) => m.is_compact !== true);
           } else {
             const userMsg = userInput;
             const meta = await this._sessionStore.createSession(
               userMsg,
               result.messages,
-              steps,
             );
             this._currentSessionId = meta.id;
+            // 以落盘结果为下一轮基线（含总结消息，剔除折叠历史）
+            const created = await this._sessionStore.loadSession(meta.id);
+            this._chatHistory = created.messages.filter((m) => m.is_compact !== true);
           }
         } catch (e) {
           await safeEvents.onWarning?.({
@@ -769,6 +807,7 @@ export class ReActAgent {
       onToolEnd: (tool, result) => callAll('onToolEnd', tool, result),
       onToolProgress: (tool, elapsedMs) => callAll('onToolProgress', tool, elapsedMs),
       onToolCallDelta: (tool, bytes, elapsedMs) => callAll('onToolCallDelta', tool, bytes, elapsedMs),
+      onCompactionStart: (info) => callAll('onCompactionStart', info),
       onCompaction: (info) => callAll('onCompaction', info),
       onFinal: (answer) => callAll('onFinal', answer),
       onError: (err) => callAll('onError', err),

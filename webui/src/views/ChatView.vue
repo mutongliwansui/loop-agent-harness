@@ -15,7 +15,7 @@
 //          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
 
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
-import { api, AuthError, uploadRaw } from '../api/client.js';
+import { api, AuthError, ApiError, uploadRaw } from '../api/client.js';
 import { sseFetch, type SseEvent } from '../api/sse.js';
 import { showToast } from '../toast.js';
 import { renderMarkdown, highlightIn } from '../markdown.js';
@@ -53,6 +53,10 @@ interface ApiHistoryMsg {
   content: string | null;
   tool_calls?: { id: string; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
+  /** 是否在会话界面展示（system 与压缩总结消息为 false；缺省视为展示） */
+  is_show?: boolean;
+  /** 展示内容；缺省或为空时取 content（content 为 LLM 可见原文，可能含记忆注入前缀） */
+  show_content?: string;
 }
 interface ChatMsg {
   id: number;
@@ -60,6 +64,7 @@ interface ChatMsg {
   segments: Segment[]; // 按序渲染形成 思考→命令→思考→命令→总结 的完整过程
   files?: string[]; // 该消息附带的上传文件名（仅用户消息展示）
   streaming?: boolean;
+  compacting?: boolean; // 压缩中 loading（compaction_start 置 true，compaction 结束事件置 false）
   failed?: boolean;
   failedText?: string; // fatal 终止原因
   meta?: string; // done 后的耗时/轮数标注
@@ -286,9 +291,13 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
     pending = [];
   };
   for (const m of list) {
+    // 不展示的消息：system 与压缩总结消息（is_show=false）
+    if (m.is_show === false) continue;
     if (m.role === 'user') {
       flush();
-      out.push({ id: ++msgSeq, role: 'user', segments: [{ type: 'text', text: m.content ?? '' }] });
+      // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原
+      const text = m.show_content || m.content || '';
+      out.push({ id: ++msgSeq, role: 'user', segments: [{ type: 'text', text }] });
     } else if (m.role === 'assistant') {
       if (m.content) pending.push({ type: 'text', text: m.content });
       for (const tc of m.tool_calls ?? []) {
@@ -333,7 +342,16 @@ async function selectSession(id: string): Promise<void> {
     void postRenderMsgs();
     if (switched) showToast(`已切换工作空间：${r.workspace?.path}`, 'success');
   } catch (e) {
-    if (!(e instanceof AuthError)) showToast(errText(e), 'error');
+    if (e instanceof AuthError) return;
+    // 会话不存在（落盘数据被清理等）：重置视图并刷新列表，让僵尸条目消失
+    if (e instanceof ApiError && e.code === 'not_found') {
+      showToast('会话不存在或已被删除，列表已刷新', 'error');
+      activeId.value = '';
+      messages.value = [];
+      await loadSessions();
+      return;
+    }
+    showToast(errText(e), 'error');
   }
 }
 
@@ -370,6 +388,26 @@ function handleEvent(ev: SseEvent, asst: ChatMsg): void {
           s.done = true;
           break;
         }
+      }
+      scrollBottom();
+      break;
+    }
+    case 'compaction_start':
+      // 压缩开始（flush 提取期间有一次额外 LLM 调用，主输出会暂停）：显示 loading
+      asst.compacting = true;
+      scrollBottom();
+      break;
+    case 'compaction': {
+      // 压缩结束事件（成功/失败/异常兜底均会到达，与 compaction_start 配对）：移除 loading
+      asst.compacting = false;
+      const info = (d.info ?? {}) as { failed?: boolean; fallback?: string };
+      if (info.failed) {
+        showToast(
+          info.fallback === 'archive'
+            ? '压缩提取失败：已降级存档原始对话后压缩'
+            : '压缩提取失败：已保留全部历史',
+          'error',
+        );
       }
       scrollBottom();
       break;
@@ -625,6 +663,9 @@ onUnmounted(() => {
             </div>
             <div :class="m.role === 'user' ? 'bubble' : 'body'">
               <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
+              <div v-if="m.compacting" class="compact-loading">
+                <span class="cl-spin"></span>正在压缩对话历史…
+              </div>
               <template v-for="(seg, i) in m.segments" :key="i">
                 <details v-if="seg.type === 'tool'" class="tool-call">
                   <summary>
@@ -972,6 +1013,29 @@ onUnmounted(() => {
   border-radius: 1px;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* ===== 压缩中 loading（compaction_start/compaction 事件配对驱动） ===== */
+.compact-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.cl-spin {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid var(--muted);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: cl-rotate 0.8s linear infinite;
+}
+@keyframes cl-rotate { to { transform: rotate(360deg); } }
 
 /* ===== 工具调用折叠块 ===== */
 .tool-call {

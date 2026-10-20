@@ -41,10 +41,10 @@
 ### 达到最大迭代次数
 
 ```
-错误：达到最大迭代次数 10，Agent 未能给出最终答案
+错误：达到最大迭代次数 100，Agent 未能给出最终答案
 ```
 
-**解决**：增大 `.env` 中 `MAX_ITERATIONS`，或通过 `/config set model.maxIterations 20` 运行时修改。也可以简化问题描述，让 Agent 在更少步骤内完成。
+**解决**：增大 `.env` 中 `MAX_ITERATIONS`，或通过 `/config set agent.maxIterations 20` 运行时修改。也可以简化问题描述，让 Agent 在更少步骤内完成。
 
 ### 工具未注册
 

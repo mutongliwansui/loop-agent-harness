@@ -16,7 +16,7 @@ Launching it enters an interactive REPL console:
 
 Model: gpt-4o-mini (workspace)
 BaseURL: https://api.openai.com/v1 (env)
-Max iterations: 10
+Max iterations: 100
 Built-in tools: [commandRun, fileRead, fileWrite, editFile, grep, activate_skill]
 MCP tools: 3, Servers: atlasGraphMcp (atlasGraphMcp__toolName)
 Skills: 2 (example-skill, py-pptx)

@@ -1,5 +1,5 @@
 // 会话系统聚合入口
-export { SessionStore, workspaceId } from './store.js';
+export { SessionStore, workspaceId, SessionNotFoundError } from './store.js';
 export { Keychain, keychain } from './keychain.js';
 export { encrypt, decrypt } from './crypto.js';
 export type {

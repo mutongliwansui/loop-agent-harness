@@ -155,19 +155,20 @@ export class ConfigLoader {
     const env = process.env;
     const cfg: PartialAgentConfig = {};
 
-    if (env.OPENAI_API_KEY || env.MODEL_NAME || env.OPENAI_BASE_URL || env.MAX_ITERATIONS) {
+    if (env.OPENAI_API_KEY || env.MODEL_NAME || env.OPENAI_BASE_URL) {
       cfg.model = {};
       if (env.OPENAI_API_KEY) cfg.model.apiKey = env.OPENAI_API_KEY;
       if (env.MODEL_NAME) cfg.model.name = env.MODEL_NAME;
       if (env.OPENAI_BASE_URL) cfg.model.baseUrl = env.OPENAI_BASE_URL;
-      if (env.MAX_ITERATIONS) {
-        const n = Number(env.MAX_ITERATIONS);
-        if (!Number.isNaN(n)) cfg.model.maxIterations = n;
-      }
+    }
+
+    if (env.MAX_ITERATIONS) {
+      const n = Number(env.MAX_ITERATIONS);
+      if (!Number.isNaN(n)) (cfg.agent ??= {}).maxIterations = n;
     }
 
     if (env.VERBOSE !== undefined) {
-      cfg.agent = { verbose: ['1', 'true', 'TRUE', 'yes'].includes(env.VERBOSE) };
+      cfg.agent = { ...cfg.agent, verbose: ['1', 'true', 'TRUE', 'yes'].includes(env.VERBOSE) };
     }
 
     if (env.DEBUG !== undefined) {

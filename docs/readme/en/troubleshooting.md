@@ -41,10 +41,10 @@ Error: Tool execution timed out (30000ms)
 ### Reaching Max Iterations
 
 ```
-Error: Reached max iterations 10; the agent could not produce a final answer
+Error: Reached max iterations 100; the agent could not produce a final answer
 ```
 
-**Fix**: Increase `MAX_ITERATIONS` in `.env`, or change it at runtime via `/config set model.maxIterations 20`. You can also simplify the question so the agent finishes in fewer steps.
+**Fix**: Increase `MAX_ITERATIONS` in `.env`, or change it at runtime via `/config set agent.maxIterations 20`. You can also simplify the question so the agent finishes in fewer steps.
 
 ### Tool Not Registered
 

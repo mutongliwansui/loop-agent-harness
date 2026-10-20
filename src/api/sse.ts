@@ -29,6 +29,7 @@ export function createSseForwarder(write: (event: string, data: unknown) => void
     onToolProgress: (tool, elapsedMs) => write('tool_progress', { tool, elapsedMs }),
     onToolCallDelta: (tool, accumulatedBytes, elapsedMs) =>
       write('tool_call_delta', { tool, accumulatedBytes, elapsedMs }),
+    onCompactionStart: (info) => write('compaction_start', { info }),
     onCompaction: (info) => write('compaction', { info }),
     onFinal: (answer) => write('final', { answer }),
     onError: (error) => write('error', serializeError(error)),

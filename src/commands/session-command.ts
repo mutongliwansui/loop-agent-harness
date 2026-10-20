@@ -91,9 +91,10 @@ export const sessionCommand: CommandHandler = {
         const skills = loadCfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
         const systemPrompt = loadCfg.agent.systemPrompt ?? buildSystemPrompt(skills);
         agent.restoreSession(data, systemPrompt);
-        // 展示层：始终从 getAllAvailableMessages 取所有可用消息（修复前旧 session 的 data.messages
-        // 可能被覆盖截断，需从 archivedMessages + recentMessages 重建）。
-        const restoreMessages = SessionStore.getAllAvailableMessages(data);
+        // 展示层：取全量历史中 is_show!==false 的消息（system 与压缩总结消息不展示）
+        const restoreMessages = SessionStore.getAllAvailableMessages(data).filter(
+          (m) => m.role !== 'system' && m.is_show !== false,
+        );
         renderMessages(restoreMessages);
       } catch (e) {
         out.error(`${COLORS.red}✗ 加载失败: ${e instanceof Error ? e.message : String(e)}${COLORS.reset}`);
@@ -111,7 +112,7 @@ export const sessionCommand: CommandHandler = {
       }
       try {
         if (agent.currentSessionId) {
-          await sessionStore.updateSession(agent.currentSessionId, msgs, []);
+          await sessionStore.updateSession(agent.currentSessionId, msgs);
           out.log(`${COLORS.green}✓ 会话已更新: ${agent.currentSessionId}${COLORS.reset}`);
           out.blank();
         } else {
@@ -119,7 +120,6 @@ export const sessionCommand: CommandHandler = {
           const meta = await sessionStore.createSession(
             typeof userMsg === 'string' ? userMsg : '新会话',
             msgs,
-            [],
           );
           agent.setCurrentSessionId(meta.id);
           out.log(`${COLORS.green}✓ 会话已保存: ${meta.id}${COLORS.reset}`);

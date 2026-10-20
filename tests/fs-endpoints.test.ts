@@ -53,7 +53,7 @@ beforeAll(async () => {
   writeFileSync(join(TEST_WORKSPACE, 'blob.bin'), Buffer.from([0x4e, 0x55, 0x00, 0x4c, 0x4c]));
   writeFileSync(join(TEST_WORKSPACE, 'big.log'), `${'x'.repeat(600 * 1024)}\n`, 'utf-8');
 
-  const store = new SessionStore(TEST_WORKSPACE, 3, false, join(TEST_DIR, 'sessions'));
+  const store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions'));
   await store.init();
 
   const config: AgentConfig = { ...structuredClone(DEFAULT_CONFIG), api: { ...DEFAULT_CONFIG.api, port: 0 } };

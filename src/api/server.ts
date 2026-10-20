@@ -19,7 +19,7 @@ import { LOOPBACK_HOST, isAuthorized, sendError } from './http-utils.js';
 import { SessionManager } from './session-manager.js';
 import { createRoutes, matchRoute, type HandlerContext } from './router.js';
 import { resolveStaticHandler, type StaticHandler } from './static.js';
-import { SessionStore } from '../session/index.js';
+import { SessionStore, SessionNotFoundError } from '../session/index.js';
 import type { AgentConfig } from '../config/schema.js';
 import type { AgentOptions, AgentResult } from '../types.js';
 import { configLoader } from '../config/loader.js';
@@ -138,6 +138,9 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       }
       if (e instanceof ApiHttpError) {
         sendError(res, e.code, e.message);
+      } else if (e instanceof SessionNotFoundError) {
+        // 索引有条目但落盘文件缺失（存储被清理等）：按 404 优雅响应，而非 500 ENOENT
+        sendError(res, 'not_found', e.message);
       } else {
         sendError(res, 'internal', e instanceof Error ? e.message : String(e));
       }

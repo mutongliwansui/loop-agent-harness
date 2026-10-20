@@ -4,7 +4,7 @@
 // - createSession 排队执行，规避 store 秒级时间戳 id 的同秒覆盖
 
 import { SessionStore } from '../session/index.js';
-import type { AgentStep, ChatMessage } from '../types.js';
+import type { ChatMessage } from '../types.js';
 import { ApiHttpError } from './errors.js';
 
 /** SessionMeta 的结构子集（避免引入 store 内部类型依赖） */
@@ -60,7 +60,7 @@ export class SessionManager {
     let history: ChatMessage[];
     try {
       const data = await this.store.loadSession(id);
-      // 恢复视图：lastSummary 注入 + recentMessages，不含 system
+      // 恢复视图：system 由调用方重建 + is_compact!==true 的消息（含摘要消息），不含 system
       history = SessionStore.getRestoreMessages(data).filter((m) => m.role !== 'system');
     } catch {
       throw new ApiHttpError('not_found', `会话不存在: ${id}`);
@@ -74,7 +74,7 @@ export class SessionManager {
    * createSession 串行化：store 内部生成秒级时间戳 id（sess_YYYYMMDD_HHMMSS），
    * 同秒两次创建会互相覆盖文件，故排队执行并保证调用间隔 ≥ 1 秒（最多等待 3 次）。
    */
-  createSessionSafe(firstMessage: string, messages: ChatMessage[], steps: AgentStep[]): Promise<SessionMetaLike> {
+  createSessionSafe(firstMessage: string, messages: ChatMessage[]): Promise<SessionMetaLike> {
     const task = this.createChain.then(async () => {
       let waited = 0;
       while (Date.now() - this.lastCreateAt < 1050) {
@@ -84,7 +84,7 @@ export class SessionManager {
         await delay(1050 - (Date.now() - this.lastCreateAt));
         waited++;
       }
-      const meta = await this.store.createSession(firstMessage, messages, steps);
+      const meta = await this.store.createSession(firstMessage, messages);
       this.lastCreateAt = Date.now();
       return meta;
     });

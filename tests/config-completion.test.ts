@@ -15,7 +15,7 @@ describe('flattenConfigKeys', () => {
     const keys = flattenConfigKeys(DEFAULT_CONFIG);
     for (const k of [
       'model.name',
-      'model.maxIterations',
+      'agent.maxIterations',
       'models.active',
       'agent.verbose',
       'agent.systemPrompt',

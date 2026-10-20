@@ -5,8 +5,7 @@ import type { SkillMetadata } from '../skill/types.js';
 import type { MemorySearchResult } from './types.js';
 import { CuratedMemory } from './curated.js';
 import { EpisodicMemory } from './episodic.js';
-import { withMemorySection } from './memory-section.js';
-import { isEphemeral } from './working.js';
+import { withMemorySection, stripMemorySection } from './memory-section.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { debug } from '../debug.js';
 
@@ -163,13 +162,13 @@ export class ContextAssembler {
       let searchQuery = userMessage;
       if (queryEnhanceRounds > 0) {
         const recentMsgs = currentMessages
-          // 排除语义检索用的临时占位（ephemeral）：占位 role 为 user，
-          // 若拼进检索词会把摘要文本当查询内容，污染召回结果
-          .filter(m => (m.role === 'user' || m.role === 'assistant') && !isEphemeral(m))
+          // 排除摘要占位/总结消息（is_show=false 的 user）：若拼进检索词会把摘要文本当查询内容，污染召回结果
+          .filter(m => (m.role === 'user' || m.role === 'assistant') && m.is_show !== false)
           .slice(-queryEnhanceRounds * 2);
         if (recentMsgs.length > 0) {
           const contextStr = recentMsgs
-            .map(m => typeof m.content === 'string' ? m.content : '')
+            // 剥离历史消息里可能已落盘的记忆前缀，避免污染检索词
+            .map(m => typeof m.content === 'string' ? stripMemorySection(m.content) : '')
             .join(' ');
           searchQuery = `${contextStr} ${userMessage}`;
         }
@@ -223,7 +222,8 @@ export class ContextAssembler {
         const lastUser = rawMessages[lastUserIdx];
         rawMessages[lastUserIdx] = {
           ...lastUser,
-          content: withMemorySection(memoryBlock, lastUser.content),
+          // 注入前先剥离已有记忆前缀，保证幂等（避免多轮/恢复后前缀嵌套叠加）
+          content: withMemorySection(memoryBlock, stripMemorySection(lastUser.content)),
         };
       }
     }

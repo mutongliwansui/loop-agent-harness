@@ -2,7 +2,7 @@
 export {
   WorkingMemory,
   buildCompactedView,
-  isEphemeral,
+  isSummaryPlaceholder,
   SUMMARY_PLACEHOLDER_PREFIX,
 } from './working.js';
 export { EpisodicMemory } from './episodic.js';

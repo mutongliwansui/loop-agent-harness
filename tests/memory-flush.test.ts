@@ -3,12 +3,12 @@
  *
  * 覆盖验收项：
  * - 2.1 Pre-compaction flush：压缩前 LLM 提取关键信息写入 L2
- * - 2.2 压缩信息保留：压缩后关键信息以 ephemeral 摘要占位保留在上下文（L2 原文不再参与检索，避免双通道重复注入）
+ * - 2.2 压缩信息保留：压缩后关键信息以 is_show=false 摘要占位保留在上下文（L2 原文不再参与检索，避免双通道重复注入）
  * - 2.5 压缩后对话延续：压缩后 Agent 能正常继续对话
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { WorkingMemory, isEphemeral } from '../src/memory/working.js';
+import { WorkingMemory, isSummaryPlaceholder } from '../src/memory/working.js';
 import { EpisodicMemory } from '../src/memory/episodic.js';
 import { ToolMemoryCallback } from '../src/memory/callback.js';
 import type { ChatMessage } from '../src/types.js';
@@ -48,7 +48,7 @@ describe('Phase 2.4 压缩质量验证', () => {
     rmSync(MEMORY_DIR, { recursive: true, force: true });
   });
 
-  it('2.1+2.2 flush 提取关键信息，压缩后以 ephemeral 摘要占位保留在上下文中', async () => {
+  it('2.1+2.2 flush 提取关键信息，压缩后以摘要占位保留在上下文中', async () => {
     const wm = new WorkingMemory({
       // 小阈值便于触发：maxTokens=500, 阈值 80% → 400 token 触发
       maxTokens: 500,
@@ -77,13 +77,13 @@ describe('Phase 2.4 压缩质量验证', () => {
       tag: 'compaction',
     });
 
-    // 3. 压缩：只保留最近 2 轮，并把同一份笔记作为 ephemeral 摘要占位注入视图
+    // 3. 压缩：只保留最近 2 轮，并把同一份笔记作为摘要占位（is_show=false）注入视图
     const compacted = wm.compact(history, extracted);
     expect(compacted.length).toBeLessThan(history.length);
     expect(compacted.length).toBeLessThanOrEqual(6); // system + 占位 + 2 轮*2
     expect(compacted[0]).toEqual(msg('system', 'sys'));
-    // 占位紧随 system：LLM 可见，但不会写入磁盘历史
-    expect(isEphemeral(compacted[1])).toBe(true);
+    // 占位紧随 system：LLM 可见，落盘时转写为总结消息
+    expect(isSummaryPlaceholder(compacted[1])).toBe(true);
     expect(compacted[1].content).toContain('华锐报价');
 
     // 4. 笔记已落盘 L2（读回原文可见），但不再参与语义检索

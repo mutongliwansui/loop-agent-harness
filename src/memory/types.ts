@@ -201,4 +201,10 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
 // 预留给记忆模块使用的 LLM 客户端接口
 export interface ILLMClient {
   chat(messages: ChatMessage[], options?: Record<string, unknown>): Promise<{ content: string | null }>;
+  /**
+   * 流式调用并聚合完整内容（可选）。压缩提取等场景优先使用：
+   * 长非流式连接在部分后端/代理下易被中途截断，流式逐 chunk 累积更健壮。
+   * 未实现时调用方回退 chat()。
+   */
+  chatViaStream?(messages: ChatMessage[]): Promise<{ content: string | null }>;
 }

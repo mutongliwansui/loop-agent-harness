@@ -25,7 +25,6 @@ export interface ModelConfig {
   baseUrl: string;
   apiKey: string;
   temperature: number;
-  maxIterations: number;
 }
 
 /**
@@ -75,6 +74,8 @@ export interface AgentBehaviorConfig {
   llmLogEnabled: boolean;
   /** Task-20260930-001：是否显示等待 loading 指示器（默认 true；非 TTY 环境始终禁用） */
   loading: boolean;
+  /** 单次任务最大迭代次数（默认 100；环境变量 MAX_ITERATIONS 可覆盖） */
+  maxIterations: number;
 }
 
 /**
@@ -173,7 +174,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
     baseUrl: 'https://api.openai.com/v1',
     apiKey: '',
     temperature: 0,
-    maxIterations: 10,
   },
   models: {
     active: '',
@@ -191,6 +191,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     showTokenStats: true,
     llmLogEnabled: true,
     loading: true,
+    maxIterations: 100,
   },
   session: {
     autoSave: true,

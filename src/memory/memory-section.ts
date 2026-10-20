@@ -1,13 +1,14 @@
 // L2 记忆注入前缀的拼接/剥离（单一出处，供 ContextAssembler 与 SessionStore 共用，避免循环依赖）
 //
-// ContextAssembler.assemble 会把检索到的历史记忆拼接到首条 user 消息 content 前面，
-// 前缀以 "---" 哨兵结尾——memoryBlock 内可能含空行，不能按首个空行切分。
+// ContextAssembler.assemble 会把检索到的历史记忆拼接到最后一条 user 消息 content 前面，
+// 前缀以唯一哨兵结尾——memoryBlock 是任意历史对话片段，可能含 markdown `---`、空行等，
+// 普通分隔符（如 `\n\n---\n\n`）会与内容冲突导致剥离错位，故使用固定唯一 token。
 
 /** 记忆前缀的固定头部（不含 memoryBlock） */
 const MEMORY_SECTION_HEAD = '## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n';
 
-/** 记忆前缀的固定尾部（哨兵分隔线） */
-const MEMORY_SECTION_TAIL = '\n\n---\n\n';
+/** 记忆前缀的固定尾部哨兵（唯一 token，避免与 markdown `---` 等内容冲突） */
+const MEMORY_SECTION_TAIL = '\n\n<<<LOOP_AGENT_MEMORY_END_7f3a9c2e>>>\n\n';
 
 /** 拼接记忆前缀：`memorySection(memoryBlock) + 原始 content` */
 export function withMemorySection(memoryBlock: string, content: string): string {

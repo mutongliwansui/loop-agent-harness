@@ -22,8 +22,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "name": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1",
     "apiKey": "sk-xxx",
-    "temperature": 0,
-    "maxIterations": 10
+    "temperature": 0
   },
   "models": {
     "active": "",
@@ -50,7 +49,8 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "verbose": true,
     "debug": false,
     "systemPrompt": null,
-    "showTokenStats": true
+    "showTokenStats": true,
+    "maxIterations": 100
   },
   "session": {
     "autoSave": true,
@@ -112,7 +112,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 
 | Section | Field | Description | Default |
 |---|---|---|---|
-| `model` | `name` / `baseUrl` / `apiKey` / `temperature` / `maxIterations` | LLM model config (the effective snapshot, the runtime's single read point) | `gpt-4o-mini`, etc. |
+| `model` | `name` / `baseUrl` / `apiKey` / `temperature` | LLM model config (the effective snapshot, the runtime's single read point) | `gpt-4o-mini`, etc. |
 | `models` | `active` / `profiles` | Multi-model registry (Task-20261011-002): `profiles` maps aliases to model triplets (`name` / `baseUrl` / `apiKey`, optional `temperature`), `active` points to the current alias (empty string = not under multi-model management); `/model use <alias>` updates both `active` and the `model.*` snapshot | `active: ""`, `profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | Built-in tool toggles and MCP server config | all enabled |
 | `agent` | `verbose` | Whether to output Thought/Action/Observation console logs | `true` |
@@ -120,6 +120,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `agent` | `systemPrompt` | Custom system prompt override | `null` |
 | `agent` | `showTokenStats` | Whether to output per-round/summary token stats (Task-15) | `true` |
 | `agent` | `loading` | Whether to show the waiting loading indicator (always disabled in non-TTY environments, Task-20260930-001) | `true` |
+| `agent` | `maxIterations` | Max iterations per task | `100` |
 | `session` | `autoSave` | Auto-save the session to disk after `run()` | `true` |
 | `session` | `autoRestore` | Auto-restore the most recent session on startup | `true` |
 | `session` | `encryptionEnabled` | Whether session files are stored encrypted (AES-256-GCM) | `true` |
@@ -134,7 +135,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `OPENAI_API_KEY` | ✅ | API Key | none |
 | `OPENAI_BASE_URL` | ❌ | Model service address | `https://api.openai.com/v1` |
 | `MODEL_NAME` | ❌ | Model name | `gpt-4o-mini` |
-| `MAX_ITERATIONS` | ❌ | Max agent iterations | `10` |
+| `MAX_ITERATIONS` | ❌ | Max agent iterations | `100` |
 | `VERBOSE` | ❌ | Whether to output Thought/Action/Observation logs (`true`/`false`) | `true` |
 | `DEBUG` | ❌ | Whether to enable file debug logging (`true`/`false`, output to `~/.loop-agent/logs`) | `false` |
 
@@ -166,7 +167,7 @@ Use the CLI's built-in `/config` command to modify config directly (written to `
 /config set model.name deepseek-chat
 
 # Change the max iterations
-/config set model.maxIterations 20
+/config set agent.maxIterations 20
 
 # Enable debug logging
 /config set agent.debug true

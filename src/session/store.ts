@@ -10,11 +10,9 @@ import {
   unlink,
   rm,
 } from 'node:fs/promises';
-import type { ChatMessage, AgentStep } from '../types.js';
+import type { ChatMessage } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
-import { buildCompactedView, isEphemeral } from '../memory/working.js';
-import { DEFAULT_WORKING_CONFIG } from '../memory/types.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
 
@@ -39,28 +37,44 @@ function formatDate(d: Date): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-/** 归档消息超过该数量时生成 lastSummary */
-const MAX_ARCHIVED_BEFORE_COMPACT = 30;
-/** 生成摘要时最多拼接的归档消息条数（防止超大 Session 摘要无限膨胀） */
-const MAX_SUMMARY_ENTRIES = 20;
-/** lastSummary 的最大字符长度（超出截断，控制恢复后首轮上下文体积） */
-const MAX_SUMMARY_CHARS = 2000;
+/** 摘要占位消息的固定前缀（buildCompactedView 注入；落盘为总结消息时剥离） */
+const SUMMARY_PLACEHOLDER_PREFIX = '[历史摘要]';
 
-/** 将归档消息列表生成精炼摘要（限制条数与长度，避免膨胀） */
-function buildSummary(messages: ChatMessage[]): string {
-  // 只取最近 MAX_SUMMARY_ENTRIES 条参与拼接
-  const toSummarize = messages.slice(-MAX_SUMMARY_ENTRIES);
-  const parts: string[] = [];
-  for (const msg of toSummarize) {
-    const roleLabel = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role;
-    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-    parts.push(`${roleLabel}: ${content.slice(0, 80)}`);
+/** 判断一条已落盘消息是否为「压缩总结消息」（role 非 system 且 is_show===false） */
+function isSummaryMessage(m: ChatMessage): boolean {
+  return m.role !== 'system' && m.is_show === false;
+}
+
+/** 会话数据文件缺失（索引有条目但落盘文件不存在，如存储被清理/跨扩展名切换） */
+export class SessionNotFoundError extends Error {
+  constructor(id: string) {
+    super(`会话不存在或已被删除: ${id}`);
+    this.name = 'SessionNotFoundError';
   }
-  let summary = `[历史摘要] ${parts.join(' | ')}`;
-  if (summary.length > MAX_SUMMARY_CHARS) {
-    summary = summary.slice(0, MAX_SUMMARY_CHARS) + '...';
+}
+
+/** 规范化一条运行时消息为可落盘形式：重算 is_compact/is_show/show_content */
+function toStoredMessage(
+  m: ChatMessage,
+  opts: { isCompact: boolean; isSummary?: boolean },
+): ChatMessage {
+  const out = { ...m } as ChatMessage;
+  out.is_compact = m.role === 'system' ? false : opts.isCompact;
+  out.is_show = m.role === 'system' ? false : opts.isSummary !== true;
+  if (m.role === 'user' && typeof m.content === 'string') {
+    // content 保存 LLM 可见原文（可能含记忆前缀）；展示内容单独存 show_content
+    const stripped = stripMemorySection(m.content);
+    if (stripped !== m.content) out.show_content = stripped;
   }
-  return summary;
+  return out;
+}
+
+/** 从摘要占位/总结消息里取纯净摘要文本（去掉 [历史摘要] 前缀） */
+function extractSummaryText(placeholder: ChatMessage): string {
+  const text = typeof placeholder.content === 'string' ? placeholder.content : '';
+  return text.startsWith(SUMMARY_PLACEHOLDER_PREFIX)
+    ? text.slice(SUMMARY_PLACEHOLDER_PREFIX.length).trim()
+    : text.trim();
 }
 
 // 检查两条消息是否重复（考虑所有关键字段）
@@ -88,14 +102,11 @@ export class SessionStore {
   private workspaceDir: string;
   private readonly userDir: string;
   private currentSessionId: string | null = null;
-  /** 保存最近 N 轮对话（每轮 = user + assistant + tool） */
-  private readonly recentTurns: number;
   /** 是否启用加密存储 */
   private readonly encryptionEnabled: boolean;
 
   constructor(
     workspacePath: string = process.cwd(),
-    recentTurns = 3,
     encryptionEnabled = true,
     userDir: string = join(homedir(), '.loop-agent'),
   ) {
@@ -103,7 +114,6 @@ export class SessionStore {
     this.workspacePath = workspacePath;
     this.workspaceId = workspaceId(workspacePath);
     this.workspaceDir = join(userDir, 'sessions', this.workspaceId);
-    this.recentTurns = recentTurns;
     this.encryptionEnabled = encryptionEnabled;
   }
 
@@ -151,29 +161,38 @@ export class SessionStore {
   }
 
   /**
-   * 创建新会话（支持分层存储）
+   * 创建新会话：messages 直接落盘（含 system），标记规范化后写入索引。
+   * 与 updateSession 压缩分支对齐：传入消息含摘要占位（is_show=false 的 user 消息，
+   * 首轮即触发 L1 压缩）时，占位原位转写为总结消息（剥离 [历史摘要] 前缀），避免摘要丢失。
    */
   async createSession(
     firstMessage: string,
     messages: ChatMessage[],
-    steps: AgentStep[],
   ): Promise<SessionMeta> {
     const id = `sess_${formatDate(new Date())}`;
     const now = new Date().toISOString();
-    
-    // 分层存储：首次创建时 recentMessages = messages（因为消息很少）
+
+    const stored: ChatMessage[] = [];
+    for (const m of messages) {
+      if (isSummaryMessage(m)) {
+        stored.push(
+          toStoredMessage(
+            { role: 'user', content: extractSummaryText(m) },
+            { isCompact: false, isSummary: true },
+          ),
+        );
+      } else {
+        stored.push(toStoredMessage(m, { isCompact: false }));
+      }
+    }
+
     const data: SessionData = {
       id,
       createdAt: now,
       updatedAt: now,
-      recentMessages: messages,
-      archivedCount: 0,
-      recentTurns: this.recentTurns,
-      // 兼容旧格式
-      messages,
-      steps,
+      messages: stored,
     };
-    
+
     await this.writeSession(data);
     const meta = this.toMeta(data, firstMessage);
     await this.appendIndex(meta);
@@ -182,123 +201,73 @@ export class SessionStore {
   }
 
   /**
-   * 更新会话（追加新消息，自动分层存储）
-   * - recentMessages 只保留最近 N 轮（N = recentTurns）
-   * - 超出部分迁移到 archivedMessages
-   * - 当 archivedMessages 超过阈值时，生成摘要到 lastSummary
+   * 更新会话：以已有全量历史为底，去重追加本次消息。
+   * - 未压缩轮次：直接追加（保留已有条目的标记）
+   * - 本轮发生 L1 压缩（messages 中出现摘要占位：is_show=false 的 user 消息）：重建标记——
+   *   边界之前的消息标记 is_compact=true（折叠进摘要），写入新的总结消息（is_show=false、role=user），
+   *   边界之后（压缩后保留的最近轮次）标记 is_compact=false
    * @param firstUserMessage 调用方持有的本次原始用户输入（可选）。会话标题缺失时优先用它生成——
    *   messages 可能已被 L1 压缩重写（首问被摘要替换），从消息推断不可靠。
+   * @returns 归一化后的会话消息（全量历史，含 system 及 is_compact/is_show/show_content 标记），
+   *   调用方可直接用作下一轮基线（摘要占位已转写为总结消息）
    */
   async updateSession(
     id: string,
     messages: ChatMessage[],
-    steps: AgentStep[],
     firstUserMessage?: string,
-  ): Promise<void> {
+  ): Promise<ChatMessage[]> {
     const data = await this.readSession(id);
+    const prev = data.messages ?? [];
 
-    // 保存全量消息用于兼容——合并而非覆盖：
-    // 传入 messages 可能已被 L1 压缩重写（WorkingMemory.compact 只保留 system + 最近 N 轮，
-    // 头部轮次被丢弃），直接覆盖会让磁盘上的全量历史也跟着丢头（首轮 user 消失、
-    // system 后紧跟悬空 tool）。以已有 data.messages 为底，只去重追加新消息。
-    const prevMessages = data.messages ?? [];
-    const incomingSystem = messages.find((m) => m.role === 'system');
-    const mergedMessages: ChatMessage[] = [];
-    // system 只保留一条：优先用传入的最新 system，否则沿用旧的
-    if (incomingSystem) {
-      mergedMessages.push(incomingSystem);
+    const system = messages.find((m) => m.role === 'system') ?? prev.find((m) => m.role === 'system');
+    const prevNonSystem = prev.filter((m) => m.role !== 'system');
+    // 本次传入的非 system 真实消息（去掉摘要占位）
+    const incomingKept = messages.filter((m) => m.role !== 'system' && !isSummaryMessage(m));
+    // 本轮是否发生压缩：由 compact() 注入的摘要占位（is_show=false 的 user 消息）标识
+    const summaryPlaceholder = messages.find((m) => isSummaryMessage(m));
+
+    let nextNonSystem: ChatMessage[];
+    if (summaryPlaceholder) {
+      // 压缩轮次：丢弃旧总结消息（被新总结取代），以全量历史重建压缩边界
+      const base = prevNonSystem.filter((m) => !isSummaryMessage(m));
+      const kept = incomingKept.filter((m) => !isSummaryMessage(m));
+      const full: ChatMessage[] = [...base];
+      for (const m of kept) {
+        if (!full.some((x) => isSameMessage(x, m))) full.push(m);
+      }
+      // 边界 = 压缩后保留的最近轮次（kept 首条）在全量历史中的位置
+      const firstKept = kept[0];
+      let boundary = firstKept ? full.findIndex((x) => isSameMessage(x, firstKept)) : full.length;
+      if (boundary < 0) boundary = full.length;
+
+      const compacted = full.slice(0, boundary).map((m) => toStoredMessage(m, { isCompact: true }));
+      const recent = full.slice(boundary).map((m) => toStoredMessage(m, { isCompact: false }));
+      const summaryMsg = toStoredMessage(
+        { role: 'user', content: extractSummaryText(summaryPlaceholder) },
+        { isCompact: false, isSummary: true },
+      );
+      nextNonSystem = [...compacted, summaryMsg, ...recent];
     } else {
-      const prevSystem = prevMessages.find((m) => m.role === 'system');
-      if (prevSystem) mergedMessages.push(prevSystem);
+      // 未压缩轮次：保留已有条目（含其标记），仅去重追加新消息
+      nextNonSystem = [...prevNonSystem];
+      for (const m of incomingKept) {
+        if (!nextNonSystem.some((x) => isSameMessage(x, m))) {
+          nextNonSystem.push(toStoredMessage(m, { isCompact: false }));
+        }
+      }
+      // 防膨胀：极端情况封顶
+      if (nextNonSystem.length > 4000) nextNonSystem = nextNonSystem.slice(-4000);
     }
-    for (const msg of prevMessages) {
-      if (msg.role !== 'system') mergedMessages.push(msg);
-    }
-    for (const msg of messages) {
-      // system 只保留一条；ephemeral 是恢复/压缩注入的临时占位，不写入全量历史
-      if (msg.role === 'system' || isEphemeral(msg)) continue;
-      const exists = mergedMessages.some((m) => isSameMessage(m, msg));
-      if (!exists) mergedMessages.push(msg);
-    }
-    data.messages = mergedMessages;
-    data.steps = steps;
+
+    data.messages = system
+      ? [toStoredMessage(system, { isCompact: false }), ...nextNonSystem]
+      : nextNonSystem;
     data.updatedAt = new Date().toISOString();
-
-    // === 方案 A：fullHistory 全量历史（每次 updateSession 合并追加、不去头） ===
-    // L1 WorkingMemory.compact 会把 result.messages 截断成 [system, ephemeral_placeholder, 最近 N 轮]，
-    // 直接写 messages 会导致早期轮次永久丢失。fullHistory 存"未截断"的完整对话链，作为展示层/restore 的唯一真源。
-    {
-      const nonEphemeralNew = messages.filter((m) => !isEphemeral(m)); // fullHistory 也过滤 ephemeral（是 L1 压缩瞬间的临时占位，不落盘）
-      if (!data.fullHistory) data.fullHistory = [];
-      for (const msg of nonEphemeralNew) {
-        if (msg.role === 'system') continue; // fullHistory 存原始对话，不含 system
-        const exists = data.fullHistory.some((m) => isSameMessage(m, msg));
-        if (!exists) data.fullHistory.push(msg);
-      }
-      // 防膨胀：fullHistory 封顶 2000 条（极端情况保护）
-      if (data.fullHistory.length > 2000) {
-        data.fullHistory = data.fullHistory.slice(-2000);
-      }
-    }
-
-    // === 方案 C 兜底：如果 fullHistory 已够长但 lastSummary 仍空，store 层自己生成一个 ===
-    // 正常情况下 agent 压缩成功会主动调 saveLastSummary（方案 B）；但万一 agent 还没压缩过、
-    // 或者异常退出没走到压缩分支，这里兜底生成一个，避免 restore 时 summary 占位缺失。
-    if (!data.lastSummary && data.fullHistory && data.fullHistory.length > 20) {
-      data.lastSummary = buildSummary(data.fullHistory);
-    }
-
-    // === 分层存储逻辑 ===
-    const recentTurns = data.recentTurns ?? this.recentTurns;
-    const turnSize = 4; // 每轮约 4 条：system + user + assistant + tool
-    const maxRecentMessages = recentTurns * turnSize;
-
-    // 当前 recentMessages（不含 system）
-    let currentRecent = data.recentMessages ?? [];
-    // 新的非 system 消息（同样排除临时占位，保持磁盘原材料干净）
-    const nonSystemMessages = messages.filter((m) => m.role !== 'system' && !isEphemeral(m));
-
-    // 合并当前 recent + 新消息
-    let mergedRecent = [...currentRecent];
-    for (const msg of nonSystemMessages) {
-      // 避免重复（基于 role + content + tool_calls/tool_call_id 的完整比较）
-      const exists = mergedRecent.some((m) => isSameMessage(m, msg));
-      if (!exists) {
-        mergedRecent.push(msg);
-      }
-    }
-
-    // 如果 recentMessages 超过阈值，将最旧的迁移到 archived
-    let archived = [...(data.archivedMessages ?? [])];
-    if (mergedRecent.length > maxRecentMessages) {
-      const overflow = mergedRecent.slice(0, mergedRecent.length - maxRecentMessages);
-      mergedRecent = mergedRecent.slice(-maxRecentMessages);
-      archived = [...archived, ...overflow];
-    }
-
-    // 如果 archived 超过一定数量，生成摘要
-    if (archived.length > MAX_ARCHIVED_BEFORE_COMPACT) {
-      const archiveSummary = buildSummary(archived);
-      data.lastSummary = data.lastSummary
-        ? `${data.lastSummary}\n${archiveSummary}`.slice(-MAX_SUMMARY_CHARS * 2)
-        : archiveSummary;
-      // 限制 lastSummary 总长度（防止跨轮次累积膨胀）
-      if (data.lastSummary.length > MAX_SUMMARY_CHARS) {
-        data.lastSummary = data.lastSummary.slice(-MAX_SUMMARY_CHARS);
-      }
-      // 保留最近 10 条 archived，其余丢弃
-      archived = archived.slice(-10);
-    }
-
-    data.recentMessages = mergedRecent;
-    data.archivedMessages = archived;
-    data.archivedCount = archived.length + (data.archivedCount ?? 0) - (archived.length > 10 ? archived.length - 10 : 0);
-    data.recentTurns = recentTurns;
 
     await this.writeSession(data);
     // 会话标题：WebUI「先建空会话、后发消息」时 createSession 的 title 为空——用首条用户消息补生成（已有 title 不覆盖）
     const updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>> = {
-      messageCount: mergedMessages.length,
+      messageCount: data.messages.length,
       updatedAt: data.updatedAt,
     };
     const current = (await this.readIndex()).find((m) => m.id === id);
@@ -306,129 +275,51 @@ export class SessionStore {
       // 标题来源优先级：调用方显式传入的原始输入 > 消息推断（首条 user 可能带 L2 记忆前缀，需剥离；
       // 且 L1 压缩后首问可能已被摘要替换，故推断仅作 fallback）
       const explicit = firstUserMessage?.trim();
-      const firstUser = messages.find((m) => m.role === 'user');
-      const text = explicit || (firstUser ? stripMemorySection(firstUser.content).trim() : '');
+      const firstUser = messages.find((m) => m.role === 'user' && !isSummaryMessage(m));
+      const text = explicit || (firstUser && typeof firstUser.content === 'string'
+        ? stripMemorySection(firstUser.content).trim()
+        : '');
       if (text) updates.title = text.slice(0, 50);
     }
     await this.updateIndex(id, updates);
+    return data.messages;
   }
 
   /**
-   * 加载会话
+   * 加载会话（仅支持新结构：单一 messages 数组 + per-message 标记）
    */
   async loadSession(id: string): Promise<SessionData> {
     const data = await this.readSession(id);
     this.currentSessionId = id;
-
-    // 如果是旧格式（无 recentMessages），转换为分层格式
-    if (!data.recentMessages && data.messages && data.messages.length > 0) {
-      const nonSystemMessages = data.messages.filter((m) => m.role !== 'system');
-      data.recentMessages = nonSystemMessages.slice(-this.recentTurns * 4);
-      data.archivedMessages = nonSystemMessages.slice(0, Math.max(0, nonSystemMessages.length - this.recentTurns * 4));
-      data.archivedCount = data.archivedMessages.length;
-      data.recentTurns = this.recentTurns;
-
-      // 如果历史过长，生成摘要
-      if (data.archivedMessages.length > MAX_ARCHIVED_BEFORE_COMPACT) {
-        data.lastSummary = buildSummary(data.archivedMessages);
-        data.archivedMessages = data.archivedMessages.slice(-10);
-      }
-
-      // 保存转换后的数据
-      await this.writeSession(data);
-    }
-
     return data;
   }
 
   /**
-   * 汇总所有可用消息源为完整历史（修复前旧 session 的 data.messages 可能被覆盖截断，
-   * 需从 archivedMessages + recentMessages 重建；修复后新 session 的 data.messages 永远完整）。
-   *
-   * 两个步骤：
-   *  1. 三个来源按时间顺序（archived 最早 → recent 最新）去重合并
-   *  2. 从第一条 user 开始截：修复前旧 session 的 archivedMessages 可能残留孤立的
-   *     assistant/tool 片段（对应的 user 已被覆盖丢掉），把它们剔掉，只保留
-   *     有配对起点的连续对话
+   * 返回会话全量历史（含 system）。messages 已是唯一真源，
+   * 展示层自行按 is_show 过滤（system 与压缩总结消息不展示）。
    */
   static getAllAvailableMessages(data: SessionData): ChatMessage[] {
-    // 方案 A 优先：fullHistory 是 updateSession 每次合并追加不去头的完整链
-    if (data.fullHistory && data.fullHistory.length > 0) {
-      // fullHistory 本身不含 system，直接返回（展示层/restore 都不需要 system）
-      return data.fullHistory;
-    }
-    // 旧 session / 无 fullHistory：从 archived + messages + recent 三路重建
-    const seen = new Set<string>();
-    const merged: ChatMessage[] = [];
-    const sources: ChatMessage[][] = [
-      data.archivedMessages ?? [],
-      data.messages ?? [],
-      data.recentMessages ?? [],
-    ];
-    for (const pool of sources) {
-      for (const m of pool) {
-        let key: string;
-        if (m.role === 'tool') key = `tool:${m.tool_call_id}`;
-        else if (m.role === 'assistant') {
-          const calls = (m.tool_calls ?? [])
-            .map((c) => `${c.id}:${c.function.name}`)
-            .join(',');
-          key = `assistant:${m.content ?? ''}:${calls}`;
-        } else {
-          key = `${m.role}:${m.content ?? ''}`;
-        }
-        if (!seen.has(key)) {
-          seen.add(key);
-          merged.push(m);
-        }
-      }
-    }
-    let firstUserIdx = merged.findIndex((m) => m.role === 'user');
-    if (firstUserIdx < 0) firstUserIdx = 0;
-    return merged.slice(firstUserIdx);
+    return data.messages ?? [];
   }
 
   /**
-   * 获取用于恢复对话的消息
-   * 与 L1 压缩共用 buildCompactedView：输出 = [system（可选）, (摘要占位 · ephemeral), 最近 N 轮]
-   * 原材料用 getAllAvailableMessages（覆盖修复前被截断的旧 session）；
-   * 输出不含 system（由调用方的 systemPrompt 决定）
+   * 获取用于恢复对话的消息：system（当前配置重建） + 所有 is_compact!==true 的消息。
+   * 被压缩折叠进摘要的历史（is_compact=true）不参与上下文；摘要本身是一条
+   * is_show=false、is_compact=false 的 user 消息，会自然进入上下文。
+   * 输出不含历史 system（由调用方的 systemPrompt 决定）。
    */
   static getRestoreMessages(
     data: SessionData,
     systemPrompt?: string,
-    opts?: { keepRecentTurns?: number },
   ): ChatMessage[] {
-    const full = SessionStore.getAllAvailableMessages(data).filter(
-      (m) => m.role !== 'system',
-    );
-
-    return buildCompactedView(full, {
-      systemPrompt,
-      keepRecentTurns: opts?.keepRecentTurns ?? DEFAULT_WORKING_CONFIG.keepRecentTurns,
-      summaryText: data.lastSummary || undefined,
-    });
-  }
-
-  /**
-   * 方案 B：L1 压缩成功时，agent 调用此方法把 preCompactionFlush 提炼出的结构化摘要写盘。
-   * 正常链路：agent.run → compact(messages, extracted) → saveLastSummary(id, extracted)
-   * restoreSession 读 data.lastSummary 并注入 buildCompactedView 占位，整条链打通。
-   */
-  async saveLastSummary(id: string, summary: string): Promise<void> {
-    if (!summary?.trim()) return; // 空摘要不写
-    const data = await this.readSession(id);
-    // 拼接并限长（跨轮次累积）
-    const combined = data.lastSummary
-      ? `${data.lastSummary}\n${summary}`
-      : summary;
-    if (combined.length > MAX_SUMMARY_CHARS) {
-      data.lastSummary = combined.slice(-MAX_SUMMARY_CHARS);
-    } else {
-      data.lastSummary = combined;
+    const result: ChatMessage[] = [];
+    if (systemPrompt) result.push({ role: 'system', content: systemPrompt });
+    for (const m of data.messages ?? []) {
+      if (m.role === 'system') continue;
+      if (m.is_compact === true) continue;
+      result.push(m);
     }
-    data.updatedAt = new Date().toISOString();
-    await this.writeSession(data);
+    return result;
   }
 
   /**
@@ -491,16 +382,20 @@ export class SessionStore {
    * 删除会话
    */
   async deleteSession(id: string): Promise<void> {
-    const dir = await this.resolveWorkspaceDir(id);
-    const dataFile = join(dir, `${id}${this.sessionFileExt}`);
-    const encFile = join(dir, `${id}.enc`);
-    const jsonFile = join(dir, `${id}.json`);
-    for (const f of [dataFile, encFile, jsonFile]) {
-      if (await fileExists(f)) {
-        await unlink(f);
+    const found = await this.findSessionFile(id);
+    if (found) {
+      // 同目录下两种扩展名一并清理（加密开关切换可能留下另一扩展名的残留）
+      for (const name of [`${id}.enc`, `${id}.json`]) {
+        const filePath = join(found.dir, name);
+        if (await fileExists(filePath)) {
+          await unlink(filePath);
+        }
       }
+      await this.removeFromIndex(id, found.dir);
+    } else {
+      // 落盘文件已缺失：仍清理索引，避免僵尸条目
+      await this.removeFromIndex(id);
     }
-    await this.removeFromIndex(id, dir);
     if (this.currentSessionId === id) {
       this.currentSessionId = null;
     }
@@ -556,6 +451,35 @@ export class SessionStore {
     return this.workspaceDir;
   }
 
+  /**
+   * 定位会话落盘文件：当前空间优先，其次兄弟空间（跨工作空间读取/删除用）。
+   * 同时兼容 .enc/.json 两种扩展名——加密开关切换后旧会话仍可读。
+   * 找不到返回 null（writeSession 落新盘时改走 resolveWorkspaceDir 回退当前空间）。
+   */
+  private async findSessionFile(
+    id: string,
+  ): Promise<{ dir: string; file: string; encrypted: boolean } | null> {
+    const root = dirname(this.workspaceDir);
+    const dirs = [this.workspaceDir];
+    try {
+      for (const d of await readdir(root, { withFileTypes: true })) {
+        if (d.isDirectory() && d.name !== this.workspaceId) dirs.push(join(root, d.name));
+      }
+    } catch {
+      // 根目录不可读：仅查当前空间
+    }
+    for (const dir of dirs) {
+      for (const [name, encrypted] of [
+        [`${id}.enc`, true],
+        [`${id}.json`, false],
+      ] as const) {
+        const file = join(dir, name);
+        if (await fileExists(file)) return { dir, file, encrypted };
+      }
+    }
+    return null;
+  }
+
   private async writeSession(data: SessionData): Promise<void> {
     const dir = await this.resolveWorkspaceDir(data.id);
     const filePath = join(dir, `${data.id}${this.sessionFileExt}`);
@@ -572,19 +496,19 @@ export class SessionStore {
   }
 
   private async readSession(id: string): Promise<SessionData> {
-    const dir = await this.resolveWorkspaceDir(id);
-    const filePath = join(dir, `${id}${this.sessionFileExt}`);
-    if (this.encryptionEnabled) {
+    const found = await this.findSessionFile(id);
+    if (!found) {
+      throw new SessionNotFoundError(id);
+    }
+    const raw = await readFile(found.file, 'utf-8');
+    if (found.encrypted) {
       const key = keychain.getKey();
       if (!key) {
         throw new Error('密钥未加载，无法读取会话');
       }
-      const encrypted = await readFile(filePath, 'utf-8');
-      return decrypt<SessionData>(encrypted, key);
-    } else {
-      const raw = await readFile(filePath, 'utf-8');
-      return JSON.parse(raw) as SessionData;
+      return decrypt<SessionData>(raw, key);
     }
+    return JSON.parse(raw) as SessionData;
   }
 
   private async readIndex(): Promise<SessionMeta[]> {
@@ -633,16 +557,12 @@ export class SessionStore {
 
   private toMeta(data: SessionData, firstMessage: string): SessionMeta {
     const title = firstMessage.slice(0, 50);
-    // 优先使用 recentMessages 数量 + archivedCount，兼容旧格式
-    const count = data.recentMessages
-      ? data.recentMessages.length + (data.archivedCount ?? 0)
-      : (data.messages?.length ?? 0);
     return {
       id: data.id,
       title,
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
-      messageCount: count,
+      messageCount: data.messages?.length ?? 0,
       file: `${data.id}${this.sessionFileExt}`,
     };
   }

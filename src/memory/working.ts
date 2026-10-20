@@ -11,11 +11,11 @@ export const SUMMARY_PLACEHOLDER_PREFIX = '[历史摘要]';
 export const SUMMARY_PLACEHOLDER_MAX_CHARS = 500;
 
 /**
- * 判断是否为临时占位消息。
- * 占位消息只在「给 LLM 的视图」中出现，写盘时必须过滤（见 SessionStore.updateSession）。
+ * 判断是否为摘要占位/总结消息：role=user 且 is_show=false。
+ * 压缩注入的临时占位与已落盘的总结消息统一用此形态，不再使用独立 ephemeral 字段。
  */
-export function isEphemeral(msg: ChatMessage): boolean {
-  return msg.role === 'user' && msg.ephemeral === true;
+export function isSummaryPlaceholder(msg: ChatMessage): boolean {
+  return msg.role === 'user' && msg.is_show === false;
 }
 
 export interface CompactedViewOptions {
@@ -57,7 +57,7 @@ function pickRecentTurns(
 
 /**
  * 统一压缩视图：内存压缩与磁盘恢复共用同一形态。
- * 输出 = [system, (摘要占位 · ephemeral), 最近 N 轮]
+ * 输出 = [system, (摘要占位 · is_show=false), 最近 N 轮]
  *
  * 单一出处的意义：避免「L1 压缩结果」与「磁盘恢复视图」两套参数、两种形态。
  */
@@ -69,8 +69,14 @@ export function buildCompactedView(
     messages.find((m) => m.role === 'system') ??
     (opts.systemPrompt ? { role: 'system' as const, content: opts.systemPrompt } : undefined);
 
-  // 1) 清掉旧占位（多次压缩不堆积），system 不参与切轮
-  const nonSystem = messages.filter((m) => m.role !== 'system' && !isEphemeral(m));
+  // 1) 提取已有占位（本轮已压缩过）：重复压缩时若头部无新丢弃，仍需保留占位，
+  //    否则落盘链路（updateSession 靠 is_show=false 识别压缩轮次）会漏写总结消息
+  const existingPlaceholder = messages.find((m) => isSummaryPlaceholder(m));
+
+  // 清掉旧占位与旧总结消息（由本次新摘要取代），system 不参与切轮
+  const nonSystem = messages.filter(
+    (m) => m.role !== 'system' && m.is_show !== false,
+  );
 
   // 2) 从后向前按 user 切轮，保留最近 N 轮
   const { turns, droppedCount } = pickRecentTurns(nonSystem, opts.keepRecentTurns);
@@ -78,13 +84,21 @@ export function buildCompactedView(
   const result: ChatMessage[] = [];
   if (systemMsg) result.push(systemMsg);
 
-  // 3) 头部确实被裁掉且有摘要 → 注入临时占位（截断后注入，避免长期吃 token）
-  const summary = opts.summaryText?.trim();
-  if (droppedCount > 0 && summary) {
+  // 3) 注入摘要占位：有新摘要用新摘要；无新摘要但输入已有占位（重复压缩）时沿用原摘要文本，
+  //    保证占位不丢失；条件为「有丢弃」或「输入已有占位」，二者满足其一且摘要非空即注入。
+  //    占位与已落盘总结消息统一用 is_show=false 标记，落盘时仅需剥离 [历史摘要] 前缀。
+  let summary = opts.summaryText?.trim();
+  if (!summary && existingPlaceholder) {
+    const text = typeof existingPlaceholder.content === 'string' ? existingPlaceholder.content : '';
+    summary = text.startsWith(SUMMARY_PLACEHOLDER_PREFIX)
+      ? text.slice(SUMMARY_PLACEHOLDER_PREFIX.length).trim()
+      : text.trim();
+  }
+  if ((droppedCount > 0 || existingPlaceholder) && summary) {
     result.push({
       role: 'user',
       content: `${SUMMARY_PLACEHOLDER_PREFIX} ${summary.slice(0, SUMMARY_PLACEHOLDER_MAX_CHARS)}`,
-      ephemeral: true,
+      is_show: false,
     });
   }
 
@@ -138,7 +152,10 @@ export class WorkingMemory {
     ];
 
     try {
-      const response = await llm.chat(extractMessages);
+      // 优先流式调用（长非流式连接在部分后端/代理下易被截断）；adapter 未实现时回退非流式
+      const response = llm.chatViaStream
+        ? await llm.chatViaStream(extractMessages)
+        : await llm.chat(extractMessages);
       return response.content ?? '';
     } catch {
       return '';

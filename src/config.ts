@@ -18,7 +18,7 @@ export const config = {
     return configLoader.load().config.model.name;
   },
   get maxIterations(): number {
-    return configLoader.load().config.model.maxIterations;
+    return configLoader.load().config.agent.maxIterations;
   },
   get temperature(): number {
     return configLoader.load().config.model.temperature;

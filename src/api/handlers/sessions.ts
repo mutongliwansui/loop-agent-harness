@@ -16,8 +16,6 @@ import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
 import { resetMemoryKitCache } from '../memory-kit.js';
 import { SessionStore } from '../../session/index.js';
-import { stripMemorySection } from '../../memory/memory-section.js';
-import { isEphemeral } from '../../memory/working.js';
 import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
 
 /** 归一化目录输入：'D:' → 'D:\'；其余走 resolve（相对路径基于服务端 cwd 展开） */
@@ -100,7 +98,7 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
     }
   }
 
-  const meta = await ctx.sessions.createSessionSafe(title, [], []);
+  const meta = await ctx.sessions.createSessionSafe(title, []);
   ctx.sessions.set(meta.id, { history: [], inFlight: null });
   ctx.log(`[api] 会话已创建: ${meta.id}${switched ? `（已切换工作空间: ${ctx.deps.sessionStore.path}）` : ''}`);
   sendJson(res, 201, {
@@ -189,21 +187,13 @@ export async function handleGetSession(ctx: HandlerContext, res: ServerResponse,
     }
   }
 
-  // 展示层：始终从 getAllAvailableMessages 取所有可用消息（修复前旧 session 的 data.messages 可能被
-  // 覆盖截断，需从 archivedMessages + recentMessages 重建；修复后新 session 的 data.messages 永远完整）。
-  // 展示层永不显示压缩提示条——压缩只对 LLM 上下文生效，前端永远展示磁盘全量历史（三视图方案 4.3 修正）。
-  const all = SessionStore.getAllAvailableMessages(data);
+  // 展示层：返回全量历史 data.messages（单一真源，含 system 与压缩总结消息）。
+  // system 与压缩总结消息带 is_show=false，前端据此过滤；用户消息的 content 为
+  // LLM 可见原文（可能含记忆前缀），前端用 show_content 还原原始输入。
+  const messages = SessionStore.getAllAvailableMessages(data);
   sendJson(res, 200, {
     meta,
-    // 展示层过滤 ephemeral（兜底恢复视图会带出「历史摘要」占位，但 getAllAvailableMessages 本身
-    // 不包含占位——占位是 buildCompactedView 动态生成的，磁盘永远没有；这里保留过滤作防御）
-    messages: all
-      .filter((m) => !isEphemeral(m))
-      .map((m) =>
-        m.role === 'user' && typeof m.content === 'string'
-          ? { ...m, content: stripMemorySection(m.content) }
-          : m,
-      ),
+    messages,
     workspace: { path: ctx.deps.sessionStore.path, id: ctx.deps.sessionStore.id, switched },
   });
 }

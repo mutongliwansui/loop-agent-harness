@@ -15,7 +15,7 @@ npm start
 
 模型: gpt-4o-mini (workspace)
 BaseURL: https://api.openai.com/v1 (env)
-最大迭代: 10
+最大迭代: 100
 内置工具: [commandRun, fileRead, fileWrite, editFile, grep, activate_skill]
 MCP 工具: 3 个, Servers: atlasGraphMcp (atlasGraphMcp__toolName)
 Skills: 2 个 (example-skill, py-pptx)

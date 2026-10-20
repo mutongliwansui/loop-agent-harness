@@ -49,7 +49,7 @@ const APP_CSS = 'body { margin: 0; }';
 const ASSET_JS = 'console.log("asset");';
 
 async function makeServer(getConfig: () => AgentConfig): Promise<{ server: ApiServer; base: string }> {
-  const store = new SessionStore(TEST_WORKSPACE, 3, false, join(TEST_DIR, 'sessions'));
+  const store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions'));
   await store.init();
   const api = createApiServer({
     runAgent: async () => { throw new Error('本套件不触达 runAgent'); },

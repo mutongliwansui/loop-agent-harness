@@ -60,7 +60,7 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`${C.cyan}模型:${C.reset} ${C.bold}${cfg.model.name}${C.reset}${profileNote} ${C.gray}(${sourceColor(tag)}${tag}${C.reset}${C.gray})${C.reset}`);
   const urlTag = sources['model.baseUrl'] ?? 'default';
   console.log(`${C.cyan}BaseURL:${C.reset} ${cfg.model.baseUrl} ${C.gray}(${sourceColor(urlTag)}${urlTag}${C.reset}${C.gray})${C.reset}`);
-  console.log(`${C.cyan}最大迭代:${C.reset} ${cfg.model.maxIterations}`);
+  console.log(`${C.cyan}最大迭代:${C.reset} ${cfg.agent.maxIterations}`);
   console.log(`${C.cyan}内置工具:${C.reset} [${opts.builtinToolNames.map((n) => `${C.green}${n}${C.reset}`).join(', ')}]`);
   if (opts.mcpToolCount > 0) {
     console.log(`${C.cyan}MCP 工具:${C.reset} ${opts.mcpToolCount} 个, Servers: ${opts.mcpServers.join(', ')} (${C.magenta}{serverName}__toolName${C.reset})`);

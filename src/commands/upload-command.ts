@@ -27,7 +27,7 @@ function argText(input: string): string {
 async function ensureSessionKey(ctx: CommandContext): Promise<string | null> {
   if (ctx.agent.currentSessionId) return ctx.agent.currentSessionId;
   if (!ctx.sessionStore) return null;
-  const meta = await ctx.sessionStore.createSession('[文件上传]', [], []);
+  const meta = await ctx.sessionStore.createSession('[文件上传]', []);
   ctx.agent.setCurrentSessionId(meta.id);
   return meta.id;
 }

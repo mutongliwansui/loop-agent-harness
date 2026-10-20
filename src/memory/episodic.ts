@@ -94,7 +94,7 @@ export interface SearchOptions {
 
 /**
  * 压缩类笔记的 tag：这类条目是 L1 压缩时提取的会话上下文，
- * 已作为摘要占位（ephemeral）注入内存视图，不再参与语义检索，避免双通道重复注入
+ * 已作为摘要占位（is_show=false）注入内存视图，不再参与语义检索，避免双通道重复注入
  */
 const COMPACTION_TAGS = ['compaction', 'compaction_fallback'];
 

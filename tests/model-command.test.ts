@@ -49,7 +49,6 @@ function model(overrides: Partial<ModelConfig> = {}): ModelConfig {
     baseUrl: 'https://api.deepseek.com/v1',
     apiKey: 'sk-main-9999',
     temperature: 0.5,
-    maxIterations: 10,
     ...overrides,
   };
 }

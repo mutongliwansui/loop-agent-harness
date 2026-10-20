@@ -38,7 +38,7 @@ beforeAll(async () => {
   rmSync(TEST_DIR, { recursive: true, force: true });
   mkdirSync(TEST_WORKSPACE, { recursive: true });
 
-  store = new SessionStore(TEST_WORKSPACE, 3, false, join(TEST_DIR, 'sessions'));
+  store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions'));
   await store.init();
 
   config = { ...config, api: { ...config.api, port: 0 } };
