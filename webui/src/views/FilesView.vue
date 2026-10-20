@@ -624,6 +624,49 @@ function onSplitDbl(): void {
   showToast('已恢复默认占比（工作空间 2/3）', 'success');
 }
 
+/* ================= 预览 / 文件目录 内部分割条 ================= */
+const SIDE_MIN = 160; // 目录区最小宽度
+const SIDE_DEFAULT = 240; // 与 .files-side 默认宽度一致
+const VIEWER_MIN = 320; // 预览区最小宽度
+const sideW = ref(SIDE_DEFAULT);
+const bodyEl = ref<HTMLElement | null>(null);
+const sideDragging = ref(false);
+
+const sideStyle = computed(() => ({ width: sideW.value + 'px' }));
+
+function clampSide(next: number, total: number): number {
+  const upper = Math.max(SIDE_MIN, total - VIEWER_MIN);
+  return Math.min(upper, Math.max(SIDE_MIN, next));
+}
+
+function onSideSplitDown(e: PointerEvent): void {
+  const body = bodyEl.value;
+  if (!body) return;
+  const total = body.clientWidth;
+  const startX = e.clientX;
+  const startW = sideW.value;
+  sideDragging.value = true;
+  body.setPointerCapture(e.pointerId);
+  const onMove = (ev: PointerEvent): void => {
+    // 分割条在预览右侧：向左拖放大预览（目录变窄），向右拖放大目录
+    sideW.value = clampSide(startW - (ev.clientX - startX), total);
+  };
+  const onUp = (): void => {
+    sideDragging.value = false;
+    body.removeEventListener('pointermove', onMove);
+    body.removeEventListener('pointerup', onUp);
+    body.removeEventListener('pointercancel', onUp);
+  };
+  body.addEventListener('pointermove', onMove);
+  body.addEventListener('pointerup', onUp);
+  body.addEventListener('pointercancel', onUp);
+}
+
+function onSideSplitDbl(): void {
+  sideW.value = SIDE_DEFAULT;
+  showToast('已恢复默认占比（目录 240px）', 'success');
+}
+
 watch(open, (v) => {
   if (!v) {
     savedW = splitterW.value;
@@ -647,7 +690,7 @@ function fmtBytes(n: number): string {
   <div ref="panelEl" class="files-panel" :class="{ open, dragging }" :style="panelStyle">
     <div class="splitter" title="拖拽调整宽度；双击恢复默认" @pointerdown="onSplitDown" @dblclick="onSplitDbl"></div>
 
-    <div class="files-body">
+    <div ref="bodyEl" class="files-body" :class="{ 'side-dragging': sideDragging }">
       <!-- 左：文件预览 -->
       <div ref="viewerEl" class="files-viewer">
         <div v-if="!selected" class="fv-empty">点击右侧文件预览内容</div>
@@ -730,8 +773,16 @@ function fmtBytes(n: number): string {
         </template>
       </div>
 
+      <!-- 预览 / 目录 分割条：拖拽调整占比，双击恢复默认 -->
+      <div
+        class="side-split"
+        title="拖拽调整预览与目录宽度；双击恢复默认"
+        @pointerdown="onSideSplitDown"
+        @dblclick="onSideSplitDbl"
+      ></div>
+
       <!-- 右：搜索 + 文件树 -->
-      <div class="files-side">
+      <div class="files-side" :style="sideStyle">
         <div class="fs-tools">
           <div class="fs-search">
             <input v-model="searchKw" type="text" placeholder="搜索文件内容…">
@@ -818,6 +869,18 @@ function fmtBytes(n: number): string {
 .splitter:active { background: var(--brand-weak); }
 
 .files-body { flex: 1; display: flex; min-width: 0; overflow: hidden; }
+/* 预览 / 目录 内部分割条 */
+.side-split {
+  width: 5px;
+  flex: none;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+.side-split:hover,
+.side-split:active { background: var(--brand-weak); }
+/* 拖拽中禁止选中文本，避免拖出蓝色选区 */
+.files-body.side-dragging { user-select: none; cursor: col-resize; }
 
 /* ===== 左：预览 ===== */
 .files-viewer { flex: 1; min-width: 0; overflow: auto; padding: 14px 18px; }
