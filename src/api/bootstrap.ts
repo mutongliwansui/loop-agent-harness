@@ -1,5 +1,6 @@
-// src/index.ts --serve 分支的组装入口（真实依赖）：
-// 建独立 SessionStore（与 CLI 共用同一存储池，但不注入共享 agent）、起服务、打印服务信息。
+// HTTP API 模式（--serve）的组装入口（真实依赖）：
+// 建独立 SessionStore（与 CLI 共用同一存储池，但不注入共享 agent）、初始化记忆、起服务、
+// 打印服务信息、注册 SIGINT 关停。共享前置（引导/配置/工具/MCP/Skill）由 src/runtime/init.ts 完成。
 
 import { createRequire } from 'node:module';
 import { createApiServer, type ApiServer } from './server.js';
@@ -13,10 +14,14 @@ export async function startApiServer(): Promise<ApiServer> {
   const { defaultUploadsRoot } = await import('../upload/manager.js');
   const { defaultMemoryKitFactory } = await import('./memory-kit.js');
   const { SessionStore: Store } = await import('../session/index.js');
+  const { initAgentMemory } = await import('../runtime/init.js');
 
   const { config: cfg } = configLoader.load();
-  const store = new Store(process.cwd(), 3, cfg.session.encryptionEnabled);
+  const store = new Store(process.cwd(), cfg.session.encryptionEnabled);
   await store.init();
+
+  // 记忆初始化（serve 时序：起服务之前）
+  await initAgentMemory();
 
   // 读取 package.json 版本（/health 返回）
   let version = '';
@@ -55,5 +60,13 @@ export async function startApiServer(): Promise<ApiServer> {
   console.log(`  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory`);
   console.log(`  提示:    Ctrl+C 退出；配置变更需重启生效`);
   console.log('');
+
+  // serve 常驻：Ctrl+C 关停服务并断开 MCP，随后退出
+  process.on('SIGINT', async () => {
+    await server.close().catch(() => {});
+    await mcpManager.disconnectAll().catch(() => {});
+    process.exit(0);
+  });
+
   return server;
 }
