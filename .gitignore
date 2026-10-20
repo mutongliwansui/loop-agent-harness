@@ -7,6 +7,7 @@ sea-config.json
 *.log
 .DS_Store
 *.tsbuildinfo
+.vscode/
 
 # WebUI 前端工程（构建产物 webui/dist 按 D2 入库；依赖不入库）
 /webui/node_modules/
