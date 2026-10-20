@@ -1,6 +1,7 @@
 // 工作空间文件浏览器 API（原型-20261018-001）
 //
 // GET /fs/tree   → 工作空间文件树（递归；node_modules/__pycache__ 恒排除；dot 条目默认隐藏）
+// GET /fs/tree?path= → 单个目录的直接子项（懒加载，无深度上限；Web UI 逐层展开用）
 // GET /fs/file   → 单文件文本预览（within 工作空间校验；二进制拒绝；超长截断）
 // GET /fs/raw    → 文件原始字节（pdf/docx/xlsx 等二进制文档与图片预览用；大小上限）
 // GET /fs/doc2md → 旧版 .doc 文本提取并转 markdown（word-extractor + 段落启发式；前端复用 md 渲染）
@@ -21,9 +22,11 @@ import WordExtractor from 'word-extractor'; // CJS 包，类型见 src/types/wor
 
 /** 恒排除的重目录（体积大且对代码浏览无价值；不随 hidden 开关出现） */
 const ALWAYS_SKIP = new Set(['node_modules', '__pycache__']);
-/** 树最大递归深度与总条目上限（防御超大空间拖垮响应） */
+/** 树最大递归深度与总条目上限（仅 /fs/tree 递归模式；防御超大空间拖垮响应） */
 const MAX_DEPTH = 8;
 const MAX_TREE_ENTRIES = 4000;
+/** 懒加载单层目录的条目上限（/fs/tree?path=） */
+const MAX_LEVEL_ENTRIES = 2000;
 /** 文件预览读取上限（超出截断并在响应标记） */
 const MAX_FILE_BYTES = 512 * 1024;
 /** 搜索跳过的单文件大小上限（与二进制探测配合） */
@@ -126,11 +129,58 @@ async function listNodes(
   return out;
 }
 
-/** GET /fs/tree?hidden=1：工作空间文件树（dot 条目默认隐藏） */
+/** 懒加载：只列单层子项，不递归、无深度上限；条目过多时截断并标记 */
+async function listChildren(
+  dirAbs: string,
+  dirRel: string,
+  hidden: boolean,
+): Promise<{ children: FsNode[]; truncated: boolean }> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dirAbs, { withFileTypes: true });
+  } catch {
+    return { children: [], truncated: false };
+  }
+  const filtered = entries
+    .filter((x) => (hidden || !x.name.startsWith('.')) && !ALWAYS_SKIP.has(x.name))
+    .sort(cmpEntries);
+  const out: FsNode[] = [];
+  for (const e of filtered) {
+    if (out.length >= MAX_LEVEL_ENTRIES) break;
+    const childRel = dirRel ? `${dirRel}/${e.name}` : e.name;
+    if (e.isDirectory()) {
+      out.push({ name: e.name, path: childRel, type: 'dir' });
+    } else if (e.isFile()) {
+      let size: number | undefined;
+      try {
+        size = (await stat(join(dirAbs, e.name))).size;
+      } catch {
+        // stat 失败：size 缺省，节点保留
+      }
+      out.push({ name: e.name, path: childRel, type: 'file', size });
+    }
+  }
+  return { children: out, truncated: filtered.length > out.length };
+}
+
+/** GET /fs/tree?hidden=1：工作空间文件树（无 path 时整树递归；带 path 时只列该目录单层） */
 async function handleTree(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
   const hidden = query.get('hidden') === '1';
   const root = ctx.deps.sessionStore.path;
+
+  if (query.has('path')) {
+    const input = query.get('path')?.trim() ?? '';
+    const dirAbs = resolveInWs(root, input);
+    const st = await stat(dirAbs).catch(() => null);
+    if (!st) throw new ApiHttpError('not_found', `目录不存在: ${input || '/'}`);
+    if (!st.isDirectory()) throw new ApiHttpError('not_found', `不是目录: ${input}`);
+    const dirRel = toSlash(relative(root, dirAbs));
+    const { children, truncated } = await listChildren(dirAbs, dirRel, hidden);
+    sendJson(res, 200, { root, name: basename(root), hidden, path: dirRel, truncated, children });
+    return;
+  }
+
   const budget = { count: 0 };
   const children = await listNodes(root, '', 1, hidden, budget);
   sendJson(res, 200, {

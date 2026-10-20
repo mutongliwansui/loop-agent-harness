@@ -52,6 +52,10 @@ beforeAll(async () => {
   writeFileSync(join(TEST_WORKSPACE, '.hidden', 'secret.txt'), 'NEEDLE in hidden dir\n', 'utf-8');
   writeFileSync(join(TEST_WORKSPACE, 'blob.bin'), Buffer.from([0x4e, 0x55, 0x00, 0x4c, 0x4c]));
   writeFileSync(join(TEST_WORKSPACE, 'big.log'), `${'x'.repeat(600 * 1024)}\n`, 'utf-8');
+  // 12 层深目录：验证懒加载无深度上限（递归 /fs/tree 在 8 层处截断）
+  const deep = join(TEST_WORKSPACE, 'deep', ...Array.from({ length: 11 }, (_, i) => `d${i + 1}`));
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(deep, 'leaf.txt'), 'deep leaf\n', 'utf-8');
 
   const store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions'));
   await store.init();
@@ -150,6 +154,51 @@ describe('GET /fs/tree（工作空间文件树）', () => {
     expect(findNode(body.children, '.hidden/secret.txt')).toMatchObject({ type: 'file' });
     // 重目录仍排除
     expect(findNode(body.children, 'node_modules')).toBeUndefined();
+  });
+});
+
+// ===== 1b. /fs/tree?path=（懒加载单层目录） =====
+
+describe('GET /fs/tree?path=（懒加载单层目录）', () => {
+  it('只返回直接子项，不递归展开，目录节点不带 children', async () => {
+    const res = await req('/fs/tree?path=' + encodeURIComponent('src'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      path: string; truncated: boolean; children: FsNode[];
+    };
+    expect(body.path).toBe('src');
+    expect(body.truncated).toBe(false);
+    expect(body.children.map((n) => n.name)).toEqual(['api', 'grep-me.txt']);
+    expect(body.children.find((n) => n.name === 'api')?.children).toBeUndefined();
+  });
+
+  it('任意深度可逐层拉取（突破递归模式的 8 层上限）', async () => {
+    let path = 'deep';
+    for (let i = 1; i <= 11; i++) {
+      const res = await req('/fs/tree?path=' + encodeURIComponent(path));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { children: FsNode[] };
+      const next = body.children.find((n) => n.name === `d${i}`);
+      expect(next).toMatchObject({ type: 'dir' });
+      path = next!.path;
+    }
+    const body = (await (await req('/fs/tree?path=' + encodeURIComponent(path))).json()) as { children: FsNode[] };
+    const leaf = body.children.find((n) => n.name === 'leaf.txt');
+    expect(leaf).toMatchObject({ type: 'file', path: `${path}/leaf.txt` });
+    expect(leaf?.size).toBeGreaterThan(0);
+  });
+
+  it('校验：不存在/非目录 → 404，越界 → 403', async () => {
+    expect((await req('/fs/tree?path=' + encodeURIComponent('no-such-dir'))).status).toBe(404);
+    expect((await req('/fs/tree?path=' + encodeURIComponent('README.md'))).status).toBe(404);
+    expect((await req('/fs/tree?path=' + encodeURIComponent('../outside'))).status).toBe(403);
+  });
+
+  it('hidden 开关对单层列表同样生效', async () => {
+    const plain = (await (await req('/fs/tree?path=')).json()) as { children: FsNode[] };
+    expect(plain.children.map((n) => n.name)).not.toContain('.hidden');
+    const hidden = (await (await req('/fs/tree?path=&hidden=1')).json()) as { children: FsNode[] };
+    expect(hidden.children.map((n) => n.name)).toContain('.hidden');
   });
 });
 

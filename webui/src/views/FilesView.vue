@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // FilesView：工作空间文件浏览器（原型-20261018-001）
-// 端点：GET /fs/tree?hidden=1（树）、GET /fs/file?path=（文本预览）、GET /fs/raw?path=（二进制文档）、
+// 端点：GET /fs/tree?path=（懒加载单层目录）、GET /fs/file?path=（文本预览）、GET /fs/raw?path=（二进制文档）、
 //       GET /fs/search?q=&hidden=1（搜索）
 // 布局：v-model:open 面板展开态；默认宽度使对话区恰占 1/3（面板 = 容器 2/3 − 会话侧栏 220px），
 //       左缘分割条拖拽调宽（360 ~ 父宽-340），双击复位；左侧预览按类型分流：md 渲染 markdown、
@@ -49,6 +49,8 @@ const treeLoading = ref(false);
 const treeError = ref('');
 const showHidden = ref(false);
 const expanded = ref(new Set<string>()); // 展开的目录 path 集合（整体替换实例以触发响应）
+const loadedDirs = ref(new Set<string>()); // 子项已拉取过的目录（空目录也记住，避免重复请求）
+const loadingDirs = ref(new Set<string>()); // 正在拉取子项的目录
 
 /** 树扁平化为行（仅渲染展开目录的子级） */
 const rows = computed(() => {
@@ -64,6 +66,15 @@ const rows = computed(() => {
 });
 const emptyHint = computed(() => (props.wsPath ? '（空）' : '无当前工作空间'));
 
+/** 拉取单个目录的直接子项（懒加载，无深度上限） */
+async function fetchDir(path: string): Promise<FsNode[]> {
+  const r = await api<{ children: FsNode[]; truncated: boolean }>(
+    `/fs/tree?path=${encodeURIComponent(path)}&hidden=${showHidden.value ? 1 : 0}`,
+  );
+  if (r.truncated) showToast('目录条目过多，仅显示前 2000 条', 'warn');
+  return r.children ?? [];
+}
+
 async function loadTree(): Promise<void> {
   if (!props.wsPath) {
     tree.value = [];
@@ -72,8 +83,8 @@ async function loadTree(): Promise<void> {
   treeLoading.value = true;
   treeError.value = '';
   try {
-    const r = await api<{ children: FsNode[] }>(`/fs/tree?hidden=${showHidden.value ? 1 : 0}`);
-    tree.value = r.children ?? []; // 目录默认收起，点击展开
+    tree.value = await fetchDir(''); // 只拉根目录，子目录按需展开
+    loadedDirs.value = new Set(['']);
   } catch (e) {
     tree.value = [];
     treeError.value = e instanceof Error ? e.message : String(e);
@@ -82,11 +93,32 @@ async function loadTree(): Promise<void> {
   }
 }
 
+/** 展开时懒加载子项；失败保留可重试状态 */
+async function expandDir(n: FsNode): Promise<void> {
+  if (loadedDirs.value.has(n.path) || loadingDirs.value.has(n.path)) return;
+  loadingDirs.value = new Set(loadingDirs.value).add(n.path);
+  try {
+    const children = await fetchDir(n.path);
+    n.children = children; // 节点属于深层响应式对象，直接赋值即可触发渲染
+    loadedDirs.value = new Set(loadedDirs.value).add(n.path);
+  } catch (e) {
+    showToast(e instanceof Error ? e.message : String(e), 'error');
+  } finally {
+    const s = new Set(loadingDirs.value);
+    s.delete(n.path);
+    loadingDirs.value = s;
+  }
+}
+
 function onRowClick(n: FsNode): void {
   if (n.type === 'dir') {
     const s = new Set(expanded.value);
-    if (s.has(n.path)) s.delete(n.path);
-    else s.add(n.path);
+    if (s.has(n.path)) {
+      s.delete(n.path);
+    } else {
+      s.add(n.path);
+      void expandDir(n); // 已加载则内部直接返回
+    }
     expanded.value = s;
   } else {
     void openFile(n.path);
@@ -529,6 +561,8 @@ watch(
   () => props.wsPath,
   () => {
     expanded.value = new Set();
+    loadedDirs.value = new Set();
+    loadingDirs.value = new Set();
     tree.value = [];
     treeError.value = '';
     selected.value = '';
@@ -545,6 +579,8 @@ watch(
 );
 onBeforeUnmount(releaseBinary); // 组件卸载释放 blob objectURL
 watch(showHidden, () => {
+  expanded.value = new Set(); // 隐藏目录开关改变可见集合，已加载的子项需重新拉取
+  loadedDirs.value = new Set();
   void loadTree();
   if (searchKw.value.trim()) void doSearch(); // 隐藏目录开关同时影响搜索范围
 });
@@ -738,7 +774,7 @@ function fmtBytes(n: number): string {
               :title="r.node.path"
               @click="onRowClick(r.node)"
             >
-              <span class="tw">{{ r.node.type === 'dir' ? (expanded.has(r.node.path) ? '▼' : '▶') : '' }}</span>
+              <span class="tw">{{ r.node.type !== 'dir' ? '' : loadingDirs.has(r.node.path) ? '…' : (expanded.has(r.node.path) ? '▼' : '▶') }}</span>
               <span class="nm">{{ r.node.type === 'dir' ? '📁' : '📄' }} {{ r.node.name }}</span>
               <span v-if="r.node.type === 'file'" class="sz">{{ fmtBytes(r.node.size ?? 0) }}</span>
             </div>
