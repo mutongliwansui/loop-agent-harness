@@ -66,7 +66,7 @@ export async function handleAttachStream(
   const sub = ctx.runs.subscribe(id, cursor, (ev) => {
     if (closed) return;
     sseFrame(res, ev.event, ev.data, ev.seq);
-    if (ev.event === 'done' || ev.event === 'fatal') {
+    if (ev.event === 'done' || ev.event === 'fatal' || ev.event === 'aborted') {
       res.end(); // 终态后关流，前端据 lastSeq 判定无需再附着
       cleanup();
     }

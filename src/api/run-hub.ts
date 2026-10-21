@@ -16,7 +16,7 @@ export const RUN_BUFFER_MAX_BYTES = 2 * 1024 * 1024;
 /** run 结束后缓冲保留时长（重连补齐终态的窗口） */
 export const RUN_RETAIN_AFTER_FINISH_MS = 60_000;
 
-export type RunStatus = 'running' | 'done' | 'failed';
+export type RunStatus = 'running' | 'done' | 'failed' | 'aborted';
 
 /** 缓冲/下发的事件单元 */
 export interface RunEvent {
@@ -51,6 +51,10 @@ interface RunState {
   bytes: number;
   subscribers: Set<RunSubscriber>;
   retainTimer?: NodeJS.Timeout;
+  /** 取消句柄（Task-20261021-002-03 D8）：start() 内创建，生命周期与 run 注册同源 */
+  controller: AbortController;
+  /** 幂等标记：abort() 重复调用时不再重复 controller.abort（Task-20261021-002-03） */
+  aborting: boolean;
 }
 
 /** 估算事件占用字节（event 名 + 序列化载荷） */
@@ -71,6 +75,11 @@ export class RunHub {
   start(sessionId: string): string {
     const prev = this.runs.get(sessionId);
     if (prev?.retainTimer) clearTimeout(prev.retainTimer);
+    // 旧 run 仍在跑：先取消其 signal，避免被替换的 run 失去取消通路（D8 生命周期同源）
+    if (prev && prev.status === 'running' && !prev.aborting) {
+      prev.aborting = true;
+      prev.controller.abort(new Error('aborted: superseded by new run'));
+    }
     const state: RunState = {
       runId: randomUUID(),
       seq: 0,
@@ -79,9 +88,30 @@ export class RunHub {
       buffer: [],
       bytes: 0,
       subscribers: new Set(),
+      controller: new AbortController(),
+      aborting: false,
     };
     this.runs.set(sessionId, state);
     return state.runId;
+  }
+
+  /** 供 handleMessage 注入 AgentOptions.signal（D8：signal 生命周期与 run 注册同源） */
+  signal(sessionId: string): AbortSignal | null {
+    return this.runs.get(sessionId)?.controller.signal ?? null;
+  }
+
+  /**
+   * 请求取消（Task-20261021-002-03）：无 run / 非 running / 已在取消中 → null（幂等，D2）。
+   * 只置位 + controller.abort，不发布终态（D5：终态由持有 run 的 handleMessage 统一 finish，
+   * 避免 abort 与真实完成竞争时出现双重终态）。
+   */
+  abort(sessionId: string): { runId: string; alreadyAborting: boolean } | null {
+    const state = this.runs.get(sessionId);
+    if (!state || state.status !== 'running') return null;
+    const alreadyAborting = state.aborting;
+    state.aborting = true;
+    if (!alreadyAborting) state.controller.abort(new Error('aborted by user'));
+    return { runId: state.runId, alreadyAborting };
   }
 
   /** 追加事件：分配 seq → 入缓冲 → fan-out；无运行中 run 返回 0 */
@@ -174,16 +204,24 @@ export class RunHub {
     return this.runs.get(sessionId)?.status === 'running';
   }
 
-  /** 丢弃会话的 run 记录（删除会话时调用） */
+  /** 丢弃会话的 run 记录（删除会话时调用）；仍 running 的 run 先取消 */
   drop(sessionId: string): void {
     const state = this.runs.get(sessionId);
+    if (state && state.status === 'running' && !state.aborting) {
+      state.aborting = true;
+      state.controller.abort(new Error('aborted: session dropped'));
+    }
     if (state?.retainTimer) clearTimeout(state.retainTimer);
     this.runs.delete(sessionId);
   }
 
-  /** 释放全部保留定时器（服务关停/单测清理） */
+  /** 释放全部保留定时器（服务关停/单测清理）；仍 running 的 run 全部取消（3.6 边界） */
   dispose(): void {
     for (const state of this.runs.values()) {
+      if (state.status === 'running' && !state.aborting) {
+        state.aborting = true;
+        state.controller.abort(new Error('aborted: server disposing'));
+      }
       if (state.retainTimer) clearTimeout(state.retainTimer);
     }
     this.runs.clear();

@@ -6,6 +6,8 @@ import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendError, sendJson } from '../http-utils.js';
 import { createSseForwarder, sseFrame } from '../sse.js';
 import type { AgentOptions } from '../../types.js';
+import { AgentAbortedError } from '../../types.js';
+import { sealPendingToolCalls } from '../abort-utils.js';
 import { switchWorkspace } from './sessions.js';
 
 export async function handleMessage(
@@ -53,6 +55,10 @@ export async function handleMessage(
       ? { resetHistory: true }
       : { messages: [...historyBefore] }),
   };
+
+  // 取消链路（Task-20261021-002-03 D8）：signal 取自 RunHub（start 之后取），
+  // 生命周期与 run 注册同源——/stop 触发 abort 时 agent 主循环感知并抛 AgentAbortedError
+  runOptions.signal = ctx.runs.signal(id) ?? undefined;
 
   // 节流落盘：run 过程中每 3 次迭代或 30s 快照一次（压缩前强制），
   // 进程中途退出时也能保留已产生的工具调用与结果。失败只记日志，不影响回答。
@@ -134,6 +140,59 @@ export async function handleMessage(
       }
       log(`[api] 会话 ${id} 完成: ${result.iterations} 轮 / ${result.steps.length} 步 / ${donePayload.durationMs}ms`);
     } catch (e) {
+      // ===== 用户取消收尾（Task-20261021-002-03） =====
+      // agent 主循环感知 abort 后抛 AgentAbortedError（partial 含完整快照）：
+      // 封口（补齐孤立 tool_calls）→ 部分落盘（失败降级 warning）→ warning + aborted 终态 → 响应。
+      // D4：中断标记不进消息数组；D6：aborted 终态带 partial:true，前端渲染部分输出灰条而非失败态；
+      // D7：非流式返回 200（用户主动行为不算错误）。
+      if ((e as { aborted?: boolean }).aborted === true && e instanceof AgentAbortedError) {
+        const partial = e.partial;
+        const sealed = sealPendingToolCalls(partial.messages);
+        const abortedWarnings: string[] = [];
+        let stored = sealed;
+        try {
+          stored = await deps.sessionStore.updateSession(id, sealed, message, {
+            transcript: partial.transcript,
+          });
+        } catch (err) {
+          abortedWarnings.push(
+            `会话持久化失败（已停止，部分输出仅存内存）: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        // store 归一化后的消息作为 entry.history（与成功路径同一过滤口径）
+        entry.history = stored.filter((m) => m.role !== 'system' && m.is_compact !== true);
+        for (const w of abortedWarnings) {
+          ctx.runs.publish(id, 'warning', { level: 'warning', message: w });
+        }
+        ctx.runs.publish(id, 'warning', {
+          level: 'warning',
+          message: '已被用户停止（以上为已生成的部分输出）',
+        });
+        ctx.runs.finish(id, 'aborted', {
+          event: 'aborted',
+          data: {
+            sessionId: id,
+            durationMs: Date.now() - startedAt,
+            iterations: partial.iterations,
+            steps: partial.steps.length,
+            partial: true,
+          },
+        });
+        if (stream) {
+          res.end();
+        } else {
+          sendJson(res, 200, {
+            sessionId: id,
+            aborted: true,
+            partial: true,
+            iterations: partial.iterations,
+            steps: partial.steps.length,
+            ...(abortedWarnings.length ? { warnings: abortedWarnings } : {}),
+          });
+        }
+        log(`[api] 会话 ${id} 已被用户停止: ${partial.iterations} 轮 / ${partial.steps.length} 步（部分输出已落盘）`);
+        return;
+      }
       // run 抛错：流式先推已发生事件再合成 fatal 关流；非流式 500（失败轮不持久化，保留原历史）
       const msg = e instanceof Error ? e.message : String(e);
       log(`[api] 会话 ${id} 运行失败: ${msg}`);
