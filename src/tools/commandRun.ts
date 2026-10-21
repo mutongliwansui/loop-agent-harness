@@ -1,6 +1,8 @@
 // 本地命令执行工具：执行 shell 命令，返回 stdout+stderr
+// Task-20261021-002-01：接入取消信号（exec signal）+ Windows 进程树兜底终止
 import { exec } from 'node:child_process';
-import type { Tool } from '../types.js';
+import type { Tool, ToolContext } from '../types.js';
+import { killProcessTree } from './process-tree.js';
 
 export const commandRun: Tool = {
   name: 'commandRun',
@@ -15,16 +17,19 @@ export const commandRun: Tool = {
     },
     required: ['command'],
   },
-  async execute(args) {
+  async execute(args, ctx?: ToolContext) {
     const cmd = String(args.command);
+    // workspaceRoot 为 2b 接口位，本期不消费（默认仍为 exec 的 process.cwd()）
     const cwd = args.cwd ? String(args.cwd) : undefined;
     const timeout = Number(args.timeout ?? 30000);
 
     return new Promise((resolve) => {
-      exec(
+      const child = exec(
         cmd,
-        { cwd, timeout, maxBuffer: 1024 * 1024 },
+        { cwd, timeout, maxBuffer: 1024 * 1024, signal: ctx?.signal },
         (err, stdout, stderr) => {
+          // abort 触发的 err（ExecException, killed=true）也走同一汇编，
+          // 该返回值会被 ToolRunner.raceAbort 的 reject 丢弃，无需特判
           const parts: string[] = [];
           if (stdout) parts.push(`[stdout]\n${stdout}`);
           if (stderr) parts.push(`[stderr]\n${stderr}`);
@@ -33,6 +38,13 @@ export const commandRun: Tool = {
           }
           resolve(parts.join('\n') || '(无输出)');
         },
+      );
+      // Windows：exec 走 cmd.exe，signal 只能杀 shell 本身，孙进程会残留
+      // → 趁进程树完整时用 taskkill /T /F 兜底（先杀直接子进程会让后代孤儿化）
+      ctx?.signal?.addEventListener(
+        'abort',
+        () => { void killProcessTree(child.pid); },
+        { once: true },
       );
     });
   },

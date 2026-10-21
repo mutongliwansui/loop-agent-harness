@@ -4,6 +4,19 @@ import type { Spinner } from './ui/spinner.js';
 // ===== 工具相关 =====
 
 /**
+ * 工具执行上下文（Task-20261021-002-01）
+ *
+ * 作为 execute 的可选第二参传入，向后兼容：
+ * 既有 `(args) => Promise<string>` 签名在 TS 结构类型下仍合法，无需改动。
+ */
+export interface ToolContext {
+  /** run 级取消信号：来自 AgentOptions.signal，贯穿 LLM/工具/子进程三层 */
+  signal?: AbortSignal;
+  /** 工作空间根目录（Task-20261021-002 2b 接口位；本期工具不消费） */
+  workspaceRoot?: string;
+}
+
+/**
  * 工具接口：每个工具需提供名称、描述、参数 JSON Schema 与执行函数
  */
 export interface Tool {
@@ -11,8 +24,11 @@ export interface Tool {
   description: string;
   /** JSON Schema 描述参数结构 */
   parameters: Record<string, unknown>;
-  /** 执行工具，返回字符串形式的 Observation */
-  execute: (args: Record<string, unknown>) => Promise<string>;
+  /**
+   * 执行工具，返回字符串形式的 Observation
+   * 第二参 ctx 可选：需要感知取消/工作空间的工具（如 commandRun）可声明并消费
+   */
+  execute: (args: Record<string, unknown>, ctx?: ToolContext) => Promise<string>;
   /** 工具自定义超时毫秒；未设置时使用 runner 默认 30000（视觉等慢工具可调大） */
   timeoutMs?: number;
 }
@@ -240,6 +256,46 @@ export interface AgentOptions {
    * 回调失败只记日志，不影响主流程。
    */
   onSnapshot?: (snapshot: AgentSnapshot) => void | Promise<void>;
+  /**
+   * run 级取消信号（Task-20261021-002-01）：
+   * aborted 后 Agent 在检查点抛出 AgentAbortedError（携带 partial）。
+   * 不传时全部路径行为与无取消一致（CLI 模式零改动）。
+   */
+  signal?: AbortSignal;
+}
+
+// ===== 取消相关（Task-20261021-002-01） =====
+
+/**
+ * 中止时携带的部分结果：供 API 层（RunHub / handleMessage）落盘已生成内容
+ */
+export interface AgentPartialResult {
+  /** 当前内存消息视图（含 system 与摘要占位） */
+  messages: ChatMessage[];
+  /** 未经 L1 压缩的完整真实消息轨迹 */
+  transcript: ChatMessage[];
+  /** 已完成的推理步骤 */
+  steps: AgentStep[];
+  /** 中止发生时的迭代轮数 */
+  iterations: number;
+}
+
+/**
+ * 用户中止载体（Task-20261021-002-01）
+ *
+ * 设计要点：
+ * - `aborted === true` 标记位用于各层识别"这是取消"而非普通失败
+ *   （ToolRunner 的归一化契约对此唯一放行，取消必须冒泡而非转为失败 Observation）；
+ * - LLM/Tool 层无法构造完整 partial，会先抛空 partial 实例，
+ *   由 agent 主循环（Task-20261021-002-02）换绑完整快照后再向外抛。
+ */
+export class AgentAbortedError extends Error {
+  /** 标记位：识别"取消"而非普通失败（ToolRunner 冒泡例外的判据） */
+  readonly aborted = true;
+  constructor(readonly partial: AgentPartialResult) {
+    super('run aborted by user');
+    this.name = 'AgentAbortedError';
+  }
 }
 
 /**

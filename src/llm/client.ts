@@ -3,7 +3,19 @@ import OpenAI from 'openai';
 import { config } from '../config.js';
 import { debug } from '../debug.js';
 import { llmLogger, beginLLMCall } from '../llm-logger.js';
+import { AgentAbortedError } from '../types.js';
 import type { ChatMessage, LLMResponse, OpenAIToolDef, StreamChunk, ToolCall, VisionMessage } from '../types.js';
+
+/** LLM 层无法构造完整 partial，先抛空快照，由 agent 主循环（task-02）换绑（Task-20261021-002-01） */
+function emptyPartialAborted(): AgentAbortedError {
+  return new AgentAbortedError({ messages: [], transcript: [], steps: [], iterations: 0 });
+}
+
+/** 判断错误是否为"取消"（SDK abort 抛出的 APIUserAbortError / DOM AbortError） */
+function isAbortLikeError(e: unknown): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  return name === 'AbortError' || name === 'APIUserAbortError';
+}
 
 export interface ChatOptions {
   /** 采样温度，默认 0 */
@@ -12,6 +24,12 @@ export interface ChatOptions {
   model?: string;
   /** 最大 token 数 */
   maxTokens?: number;
+  /**
+   * 取消信号（Task-20261021-002-01）：
+   * 透传给 SDK（create(params, { signal })）；aborted 后抛 AgentAbortedError，
+   * 且在 retry() 前短路（取消不作为网络错误重试）。
+   */
+  signal?: AbortSignal;
 }
 
 /** 视觉调用选项（Task-20261010-001）：三元组由调用方从 cfg.vision 解析回退后传入 */
@@ -156,7 +174,11 @@ export class LLMClient {
           params.max_tokens = options.maxTokens;
         }
 
-        const resp = await client.chat.completions.create(params);
+        // signal 透传：SDK 层取消请求（Task-20261021-002-01）
+        const resp = await client.chat.completions.create(
+          params,
+          options.signal ? { signal: options.signal } : undefined,
+        );
         const choice = resp.choices[0];
         if (!choice) {
           throw new Error('LLM 返回为空：choices 为空数组');
@@ -375,7 +397,11 @@ export class LLMClient {
     let streamUsage: LLMResponse['usage'] | undefined;
 
     try {
-      const stream = await client.chat.completions.create(params);
+      // signal 透传：SDK 层取消流式请求（Task-20261021-002-01）
+      const stream = await client.chat.completions.create(
+        params,
+        options.signal ? { signal: options.signal } : undefined,
+      );
 
       for await (const chunk of stream) {
         const choice = chunk.choices[0];
@@ -429,9 +455,24 @@ export class LLMClient {
         }
       }
     } catch (e) {
+      // 取消（Task-20261021-002-01）：SDK abort 抛出的错误先于此处识别，
+      // 归一为 AgentAbortedError 抛出——不走下面的"部分内容兜底"路径
+      if (options.signal?.aborted || isAbortLikeError(e)) {
+        llmLogger.error({ callId, error: e, elapsedMs: Date.now() - streamStartMs });
+        throw e instanceof AgentAbortedError ? e : emptyPartialAborted();
+      }
       // 流连接过早关闭（Premature close 等），保存错误但不丢失已累积的内容
       streamError = e instanceof Error ? e : new Error(String(e));
       debug.log(`流式流连接异常关闭: ${streamError.message}，将返回已累积的内容`);
+    }
+
+    // 循环后判定（Task-20261021-002-01 / D3）：openai SDK（streaming.ts）在 abort 时
+    // 可能吞掉传输层错误，使 for await 正常 return——必须显式判 signal.aborted 并抛错，
+    // 否则会出现"abort 了但空响应继续往下走"的静默错误
+    if (options.signal?.aborted) {
+      const err = emptyPartialAborted();
+      llmLogger.error({ callId, error: err, elapsedMs: Date.now() - streamStartMs });
+      throw err;
     }
 
     // 组装最终 LLMResponse
@@ -478,6 +519,8 @@ export class LLMClient {
   /**
    * 重试机制：仅对网络错误与 429 速率限制重试，指数退避
    * 401/403/404 等 4xx 错误不重试，直接抛出
+   * 取消（Task-20261021-002-01）：AgentAbortedError / AbortError 不进入重试，
+   * 否则"用户取消"会被当作网络抖动重试 3 次 = 等于没取消
    */
   private async retry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
     let lastErr: unknown;
@@ -491,6 +534,9 @@ export class LLMClient {
         return result;
       } catch (e) {
         lastErr = e;
+        // 取消短路：原样抛出 AgentAbortedError，不做重试统计/错误包装
+        if (e instanceof AgentAbortedError) throw e;
+        if (isAbortLikeError(e)) throw emptyPartialAborted();
         const shouldRetry = this.isRetryable(e);
         if (!shouldRetry || attempt === retries) {
           debug.llmError(e, Date.now() - startMs);
