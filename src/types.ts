@@ -171,8 +171,8 @@ export interface CompactionInfo {
   keptMessages: number;
   /** Task-17：提取是否失败（false=正常压缩；true=提取失败走了兜底路径） */
   failed?: boolean;
-  /** Task-17：提取失败时的兜底策略（'skip'=跳过压缩保留全部历史；'archive'=降级存档后压缩） */
-  fallback?: 'skip' | 'archive';
+  /** Task-17：提取失败时的兜底策略（'skip'=跳过压缩保留全部历史；'archive'=降级存档后压缩；'aborted'=压缩期被用户取消，run 即将中止） */
+  fallback?: 'skip' | 'archive' | 'aborted';
 }
 
 /** 压缩开始事件载荷（与 onCompaction 配对：start 发出后必有一个 compaction 结束事件） */

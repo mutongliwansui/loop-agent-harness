@@ -45,6 +45,7 @@ import type {
   LLMUsage,
   ToolCall,
 } from '../types.js';
+import { AgentAbortedError } from '../types.js';
 
 /** 适配器：将 LLMClient 包装为 ILLMClient（用于记忆模块） */
 export function createLLMAdapter(model: string, temperature: number): ILLMClient {
@@ -475,7 +476,22 @@ export class ReActAgent {
     try {
       await safeEvents.onStart(userInput);
 
+      // ===== 取消检查点（Task-20261021-002-02） =====
+      // 同步判定 signal.aborted，命中即抛 AgentAbortedError（携带当前快照）。
+      // 不传 signal 时此函数立即返回，主循环行为与无取消完全一致。
+      const throwIfAborted = (iteration: number): void => {
+        if (!options.signal?.aborted) return;
+        throw new AgentAbortedError({
+          messages: [...messages],
+          transcript: [...transcript],
+          steps: [...steps],
+          iterations: iteration,
+        });
+      };
+
       for (let i = 0; i < maxIterations; i++) {
+        // C1：每轮迭代入口——abort 后不再启动"下一轮"
+        throwIfAborted(i);
         await safeEvents.onIterationStart(i, maxIterations);
 
         // ===== 记忆管理：L1 压缩检查 =====
@@ -501,6 +517,8 @@ export class ReActAgent {
                 `消息=${messageTokens}/${messageBudget} tokens（阈值${threshold} - 固定开销${this._promptOverheadTokens}）, ` +
                 `keepRecentTurns=${wmConfig.keepRecentTurns}）`,
             );
+            // C4-a：进入压缩流程前——压缩含额外 LLM 调用，最易"停不下来"
+            throwIfAborted(i);
             try {
               // 压缩开始事件：与下方任一 onCompaction 结束事件配对（含 catch 兜底），
               // 前端据此显示/移除「压缩中」loading
@@ -527,6 +545,8 @@ export class ReActAgent {
                 });
               } else {
                 const llmAdapter = createLLMAdapter(model, temperature);
+                // C4-b：preCompactionFlush（额外 LLM 调用）前再判一次
+                throwIfAborted(i);
                 // 压缩会物理删除消息：先把当前完整轨迹强制落盘，保证被丢弃的内容不丢
                 await persistSnapshot(i, true);
                 const extracted = await this._workingMemory.preCompactionFlush(messages, llmAdapter, plan);
@@ -604,6 +624,20 @@ export class ReActAgent {
                 }
               }
             } catch (e) {
+              // 取消冒泡优先（Task-20261021-002-02 D4）：压缩期被取消时必须发
+              // {failed:true, fallback:'aborted'} 终止事件与 onCompactionStart 配对，
+              // 否则前端「压缩中」loading 会挂死；随后继续上抛由外层换绑逻辑处理
+              if ((e as { aborted?: boolean }).aborted === true) {
+                await safeEvents.onCompaction?.({
+                  threshold,
+                  contextTokens: this._lastContextTokens ?? this._workingMemory.estimateTokens(messages),
+                  flushedChars: 0,
+                  keptMessages: messages.length,
+                  failed: true,
+                  fallback: 'aborted',
+                });
+                throw e;
+              }
               debug.log(`压缩过程出错（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
               // 异常路径也要发结束事件与 onCompactionStart 配对（历史原样保留，语义同 skip），
               // 否则前端「压缩中」loading 会一直挂起
@@ -650,6 +684,8 @@ export class ReActAgent {
         // 破坏落盘时的锚点/去重匹配，并在归档区留下原始与注入两份副本。
 
         // 1. 流式调用 LLM，累积完整响应
+        // C2：LLM 调用前——abort 后不再发起空转请求
+        throwIfAborted(i);
         const llmStartTs = Date.now();
         const resp = await this.streamLLM(llmMessages, openaiTools, { model, temperature }, events);
 
@@ -706,6 +742,8 @@ export class ReActAgent {
           await safeEvents.onFinal(answer);
 
           // ===== 记忆管理：最终回答写入 L2 =====
+          // C5-a：最终回答写 L2 前——abort 后不产生新记忆条目（D6：不回滚已写的）
+          throwIfAborted(i + 1);
           if (this._episodicMemory) {
             try {
               const summary = `用户: ${userInput}\n结果: ${answer.slice(0, 200)}`;
@@ -725,6 +763,11 @@ export class ReActAgent {
           content: resp.content,
           tool_calls: resp.tool_calls,
         });
+
+        // C3：工具执行前——不再启动新工具（最长耗时环节，"停得下来"的关键）。
+        // 位置在 pushMessage(assistant tool_calls) 之后：assistant 消息带 pending tool_calls
+        // 进入快照，由 task-03 的 sealPendingToolCalls 在落盘时封口。
+        throwIfAborted(i);
 
         // 4. 并发执行所有工具调用
         const callItems = resp.tool_calls.map((call) => {
@@ -756,7 +799,9 @@ export class ReActAgent {
             }, 1000);
             ticker.unref?.();
             try {
-              const result = await runner.run(c.tool, c.args);
+              // signal 注入（Task-20261021-002-02）：工具层 raceAbort 取消 + ctx 感知（commandRun 杀子进程树）
+              // D5：abort 后在跑工具自然结束（结果被丢弃）才抛错，不留游离 Promise
+              const result = await runner.run(c.tool, c.args, { signal: options.signal });
               void debug.toolCall(c.toolName, c.args ?? {}, result, Date.now() - toolStart);
               return result;
             } finally {
@@ -766,8 +811,13 @@ export class ReActAgent {
         );
 
         // 5. 记录步骤 + 拼接 tool 角色 Observation + 触发 onToolEnd
-        callItems.forEach((c, idx) => {
+        for (let idx = 0; idx < callItems.length; idx++) {
+          const c = callItems[idx];
           const observation = observations[idx];
+          // C5-b：工具结果写 L2 前（abort 后不产生新记忆条目）。
+          // 检查点在 steps.push 之前：本轮 Observation 尚未入 steps/消息，
+          // 快照保持「assistant tool_calls 已带 pending 工具」的一致形态（task-03 封口）
+          throwIfAborted(i + 1);
           steps.push({
             thought: resp.content ?? undefined,
             action: { tool: c.toolName, args: c.args ?? {} },
@@ -784,7 +834,7 @@ export class ReActAgent {
           if (this._memoryCallback) {
             void this._memoryCallback.log(c.toolName, c.args ?? {}, observation);
           }
-        });
+        }
 
         debug.iteration(
           i + 1,
@@ -855,6 +905,26 @@ export class ReActAgent {
           options.spinner?.stop();
         }
       }
+    } catch (e) {
+      // 取消换绑（Task-20261021-002-02 D3）：task-01 层（ToolRunner/chatStream）抛来的
+      // 中止错误只带空 partial（它们不掌握 run 上下文），在此统一换绑完整快照再向外抛，
+      // 交 API 层（task-03）落盘部分结果；C1~C5 直接抛的（partial 已有内容）原样上抛。
+      if (
+        (e as { aborted?: boolean }).aborted === true &&
+        e instanceof AgentAbortedError &&
+        e.partial.messages.length === 0 &&
+        e.partial.steps.length === 0
+      ) {
+        throw new AgentAbortedError({
+          messages: [...messages],
+          transcript: [...transcript],
+          steps: [...steps],
+          // LLM/工具层抛错时本迭代尚在进行：statsHistory 未及 push，按已调用口径
+          // 取 max(len,1)，避免出现 iterations=0 的空转轮（迭代从 0 计数）
+          iterations: Math.max(statsHistory.length, 1),
+        });
+      }
+      throw e;
     } finally {
       await safeEvents.onEnd(result);
     }

@@ -346,7 +346,15 @@ export class WorkingMemory {
         ? await llm.chatViaStream(extractMessages)
         : await llm.chat(extractMessages);
       return response.content ?? '';
-    } catch {
+    } catch (e) {
+      // 取消冒泡例外（Task-20261021-002-02）：abort 不算「提取失败」，
+      // 吞掉它会让压缩期取消退化为正常压缩继续执行（用户感知"停不下来"）
+      if (
+        (e as { aborted?: boolean }).aborted === true ||
+        (e as { name?: string }).name === 'AbortError'
+      ) {
+        throw e;
+      }
       return '';
     }
   }
