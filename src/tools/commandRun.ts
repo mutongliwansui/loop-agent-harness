@@ -3,6 +3,7 @@
 import { exec } from 'node:child_process';
 import type { Tool, ToolContext } from '../types.js';
 import { killProcessTree } from './process-tree.js';
+import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 
 export const commandRun: Tool = {
   name: 'commandRun',
@@ -19,8 +20,10 @@ export const commandRun: Tool = {
   },
   async execute(args, ctx?: ToolContext) {
     const cmd = String(args.command);
-    // workspaceRoot 为 2b 接口位，本期不消费（默认仍为 exec 的 process.cwd()）
-    const cwd = args.cwd ? String(args.cwd) : undefined;
+    // 空间根（D3）：无 args.cwd 时显式落在注入根（原先靠 exec 的隐式 process.cwd()）；
+    // 相对 args.cwd 按空间根展开，绝对路径原样放行（D20）
+    const wsRoot = toolWorkspaceRoot(ctx);
+    const cwd = args.cwd ? resolveToolPath(wsRoot, String(args.cwd)) : wsRoot;
     const timeout = Number(args.timeout ?? 30000);
 
     return new Promise((resolve) => {

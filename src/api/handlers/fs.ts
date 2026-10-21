@@ -14,10 +14,12 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { sendJson } from '../http-utils.js';
+// D15：toSlash / resolveInWs 抽到工具层共享模块，本文件只保留调用（规则唯一真源）
+import { resolveInWs, toSlash } from '../../tools/workspace-fs.js';
 import WordExtractor from 'word-extractor'; // CJS 包，类型见 src/types/word-extractor.d.ts
 
 /** 恒排除的重目录（体积大且对代码浏览无价值；不随 hidden 开关出现） */
@@ -64,23 +66,6 @@ interface FsNode {
   type: 'dir' | 'file';
   size?: number;
   children?: FsNode[];
-}
-
-/** Windows 下 relative() 产 '\'，统一转 '/'（resolve 两种都接受） */
-function toSlash(p: string): string {
-  return sep === '\\' ? p.replace(/\\/g, '/') : p;
-}
-
-/** 解析空间内路径：相对基于根展开，绝对路径直接用；越出根 → 403 */
-function resolveInWs(root: string, input: string): string {
-  const raw = input.trim();
-  if (!raw) return root;
-  const abs = isAbsolute(raw) ? resolve(raw) : resolve(root, raw);
-  const rel = relative(root, abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new ApiHttpError('forbidden', `路径越出工作空间: ${input}`);
-  }
-  return abs;
 }
 
 /** 同层条目排序：目录在前，同类按名称（忽略大小写） */

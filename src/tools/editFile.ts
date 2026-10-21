@@ -1,6 +1,7 @@
 // 文件编辑工具：默认按字面文本替换（唯一匹配才替换，防止误改），可选正则模式；支持按行范围整段替换
 import { readFile, writeFile } from 'node:fs/promises';
-import type { Tool } from '../types.js';
+import type { Tool, ToolContext } from '../types.js';
+import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 
 /**
  * 编译正则并确保带 g 标志（全局匹配用于计数与替换）
@@ -62,8 +63,9 @@ export const editFile: Tool = {
     },
     required: ['path', 'newText'],
   },
-  async execute(args) {
-    const path = String(args.path);
+  async execute(args, ctx?: ToolContext) {
+    // 相对路径按空间根解析（D3/D20）；绝对路径原样
+    const path = resolveToolPath(toolWorkspaceRoot(ctx), String(args.path));
     const newText = String(args.newText);
     const oldText = args.oldText != null ? String(args.oldText) : '';
     const replaceAll = args.replaceAll === true;

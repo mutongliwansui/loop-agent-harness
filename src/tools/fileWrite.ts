@@ -1,7 +1,8 @@
 // 文件写入工具：整文件写入（overwrite 全文覆盖 / append 追加），自动创建父目录
 import { writeFile, appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { Tool } from '../types.js';
+import type { Tool, ToolContext } from '../types.js';
+import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 
 export const fileWrite: Tool = {
   name: 'fileWrite',
@@ -21,8 +22,9 @@ export const fileWrite: Tool = {
     },
     required: ['path', 'content'],
   },
-  async execute(args) {
-    const path = String(args.path);
+  async execute(args, ctx?: ToolContext) {
+    // 相对路径按空间根解析（D3/D20）；绝对路径原样
+    const path = resolveToolPath(toolWorkspaceRoot(ctx), String(args.path));
     const content = String(args.content);
     const mode = (args.mode as 'overwrite' | 'append') ?? 'overwrite';
 

@@ -1,7 +1,8 @@
 // 内容检索工具：模仿 grep，支持正则、忽略大小写、递归搜索目录
 import { readFile, stat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Tool } from '../types.js';
+import type { Tool, ToolContext } from '../types.js';
+import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 
 /** 跳过这些目录，避免递归过深或读取依赖 */
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
@@ -30,9 +31,10 @@ export const grep: Tool = {
     },
     required: ['pattern', 'path'],
   },
-  async execute(args) {
+  async execute(args, ctx?: ToolContext) {
     const pattern = String(args.pattern);
-    const path = String(args.path);
+    // 相对路径按空间根解析（D3/D20）：递归起点跟随空间，不再依赖隐式 process.cwd()
+    const path = resolveToolPath(toolWorkspaceRoot(ctx), String(args.path));
     const ignoreCase = args.ignoreCase === true; // 默认 false
     const recursive = args.recursive !== false; // 默认 true
     const maxResults = Number(args.maxResults ?? 50);

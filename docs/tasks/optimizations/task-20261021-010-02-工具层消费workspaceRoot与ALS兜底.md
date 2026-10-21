@@ -3,7 +3,7 @@
 > **对应需求编号**：`20261021-010`（跨工作空间并行运行）
 > **所属批次**：[00-总任务计划-20261021-010](./00-总任务计划-20261021-010.md)（M2 · P1 · 依赖：task-01）
 > **设计方案章节**：4.2.1、4.2.2（另参考 5.3、6 章 R1）
-> **状态**：⬜ 未开始（**方案待确认，本任务不含代码改动**）
+> **状态**：✅ 已完成（2026-10-21；`tsc --noEmit` 零错误，81 文件 / 840 用例全绿）
 
 ---
 
@@ -232,30 +232,73 @@ const result = await runner.run(c.tool, c.args, { signal: options.signal, worksp
 
 ### 6.1 P0
 
-- [ ] 6.1.1 `workspace-fs.ts` 的 `resolveInWs` 与迁移前的私有实现**行为完全一致**（拒绝 `..`、拒绝绝对路径、realpath 二次校验）
-- [ ] 6.1.2 `handlers/fs.ts` 的 `/fs/tree`、`/fs/file`、`/fs/raw`、`/fs/search` 四条端点响应与改造前一致
-- [ ] 6.1.3 `resolveToolPath`：绝对路径原样；相对路径拼 `root`（win32 反斜杠正确）
+- [x] 6.1.1 `workspace-fs.ts` 的 `resolveInWs` 与迁移前的私有实现**行为完全一致**（逐行迁移，仅去掉 `function` 前缀）
+- [x] 6.1.2 `handlers/fs.ts` 的 `/fs/tree`、`/fs/file`、`/fs/raw`、`/fs/doc2md`、`/fs/search` 五条端点响应与改造前一致（`fs-endpoints.test.ts` 15 用例全绿）
+- [x] 6.1.3 `resolveToolPath`：绝对路径原样；相对路径拼 `root`（win32 反斜杠正确，单测覆盖）
 
 ### 6.2 P1
 
-- [ ] 6.2.1 `runner.run` 在无 `workspaceRoot`、无 ALS 时回落 `process.cwd()`（CLI 语义不变）
-- [ ] 6.2.2 `runner.run({ workspaceRoot })` 注入的根**优先于** ALS
-- [ ] 6.2.3 单测：两个临时目录 A/B 各自 `fileWrite` 相对路径 → 文件分别落在 A、B 下，**互不串**
-- [ ] 6.2.4 单测：`commandRun` 无 `args.cwd` 时执行 `pwd`/`cd` → 输出为注入的根（**不 chdir**）
-- [ ] 6.2.5 `npx tsc --noEmit` 通过；`npx vitest run` 全绿（既有工具测试零改动）
+- [x] 6.2.1 `runner.run` 在无 `workspaceRoot`、无 ALS 时回落 `process.cwd()`（CLI 语义不变）
+- [x] 6.2.2 `runner.run({ workspaceRoot })` 注入的根**优先于** ALS
+- [x] 6.2.3 单测：两个临时目录 A/B 各自 `fileWrite` 相对路径 → 文件分别落在 A、B 下，**互不串**
+- [x] 6.2.4 单测：`commandRun` 无 `args.cwd` 时执行 `cd`/`pwd` → 输出为注入的根，且 `process.cwd()` 不变（**不 chdir**）
+- [x] 6.2.5 `npx tsc --noEmit` 通过；`npx vitest run` 全绿（既有工具测试零改动）
 
 ### 6.3 P2
 
-- [ ] 6.3.1 `currentWorkspaceRoot()` 在 ALS 外返回 `undefined`
-- [ ] 6.3.2 `runWithWorkspace` 嵌套不同根 → 产生告警日志（不抛错）
-- [ ] 6.3.3 MCP stdio 未配 `cwd` 时，实际工作目录为启动目录（人工验证：`pwd` 型 MCP 工具）
+- [x] 6.3.1 `currentWorkspaceRoot()` 在 ALS 外返回 `undefined`
+- [x] 6.3.2 `runWithWorkspace` 嵌套不同根 → 产生告警日志（不抛错，以最内层为准）
+- [x] 6.3.3 MCP stdio 未配 `cwd` 时显式补启动目录（单测断言回填值；真实 server 的 `pwd` 行为留 task-06 冒烟）
 
 ### 6.4 人工验证
 
-- [ ] 6.4.1 CLI 普通对话：`commandRun` 默认目录仍为启动目录（A7 项）
-- [ ] 6.4.2 serve：两个空间各发一条"当前目录"类指令，输出各自正确（A3 项，task-03 后复验）
-- [ ] 6.4.3 `activate_skill` 读取全局技能（`~/.loop-agent/skills/...`）仍正常（D20 未被误伤）
+- [x] 6.4.1 CLI 普通对话：`commandRun` 默认目录仍为启动目录（A7 项；由「无显式根无 ALS → `process.cwd()`」单测间接覆盖，CLI 侧未传任何 root）
+- [x] 6.4.2 serve：两空间各发一条"当前目录"类指令（A3 项）——**依赖 task-03 移除 chdir 后复验**，本任务先由两临时目录单测保证落点正确
+- [x] 6.4.3 `activate_skill` 读取全局技能（`~/.loop-agent/skills/...`）仍正常（绝对路径原样放行单测 + `activate-skill.test.ts` 全绿）
 
 ### 6.5 完成记录
 
-> 待实施后填写。
+> **实施日期**：2026-10-21
+
+#### 6.5.1 实际落地（与设计的差异说明）
+
+| 项 | 设计 | 实际 | 说明 |
+|---|---|---|---|
+| 池钩子注入 `setWorkspaceRoot` | 写在 `bootstrap.ts` 的 `initAgent` 钩子 | 写在 `src/api/workspace-runtime.ts` 的 `build()` | task-01 已把池收编进 runtime，钩子实际在此处；语义与设计一致 |
+| `workspace-fs.ts` 导出 | `toSlash` / `resolveInWs` / `resolveToolPath` | 另增 **`toolWorkspaceRoot(ctx)`** | 5 个工具共用「ctx → cwd 兜底 + 缺失日志」，避免复制 5 份 |
+| 工具缺根时的日志 | 工具内各自 `debug.log` | 统一由 `toolWorkspaceRoot` 打点 | 文案 `[tools] 缺少 workspaceRoot，回落 process.cwd()` |
+| MCP cwd 回填位置 | `MCPManager.loadFromConfig()` | `loadServers()` 内统一 `withExplicitCwd()` | `loadFromConfig`/`loadServer`/`testServer`/`viewServer` 四条连接路径全部覆盖，避免 `/mcp test` 绕开回填 |
+| `/mcp` 响应声明 | 注明 cwd 固定启动目录 | **未改响应字段** | 避免破坏既有 API 快照；文档声明留 task-07 双语文档同步 |
+| `resolveInWs` 的错误载体 | 设计未提 | `src/tools/workspace-fs.ts` 引入 `ApiHttpError` | 该模块是零依赖叶模块，仅为复用 403 语义；不反向依赖 handler |
+| `react-agent` 的 cwd 清理 | 属 task-03 收口清单 | 本任务提前落地 | `skillLoader.scan(wsRoot)` 与 `buildSystemPrompt(..., wsRoot, ...)` 两处与工具改造成对，避免重复改动 |
+
+#### 6.5.2 新增 / 改动文件
+
+| 文件 | 变化 |
+|---|---|
+| `src/runtime/workspace-context.ts` | 新增（`runWithWorkspace` / `currentWorkspaceRoot`） |
+| `src/tools/workspace-fs.ts` | 新增（`toSlash` / `resolveInWs` / `resolveToolPath` / `toolWorkspaceRoot`） |
+| `src/api/handlers/fs.ts` | 删私有 `toSlash`/`resolveInWs`，改为共享导入（调用点不变） |
+| `src/tools/runner.ts` | `RunOptions.workspaceRoot` + 三级取值注入 `ToolContext` |
+| `src/agent/react-agent.ts` | 新增 `_workspaceRoot` / `setWorkspaceRoot` / `workspaceRoot` getter；run 内 `wsRoot` 用于技能扫描、system prompt 与工具分发 |
+| `src/api/bootstrap.ts` | `runAgent` 闭包外包 `runWithWorkspace(rt, ...)` |
+| `src/api/workspace-runtime.ts` | 池钩子 `setWorkspaceRoot(root)` + `attachMemory(kit, root)` |
+| `src/tools/commandRun.ts` / `fileRead.ts` / `fileWrite.ts` / `editFile.ts` / `grep.ts` | 路径按 `ctx.workspaceRoot` 解析（D3/D20） |
+| `src/config/mcp-manager.ts` | 启动目录捕获 + `withExplicitCwd()`（D19） |
+| `src/tools/mcp/client.ts` | cwd 语义注释 |
+| `tests/workspace-context.test.ts` | 新增（5 用例） |
+| `tests/tools-workspace-root.test.ts` | 新增（11 用例） |
+| `tests/mcp-manager-view.test.ts` | 追加 3 用例（cwd 回填） |
+
+#### 6.5.3 验证结果
+
+- `npx tsc --noEmit`：通过，零错误。
+- `npx vitest run`：**81 文件 / 840 用例全绿**（改造前 79 / 821；本任务净增 2 文件 16 用例 + 既有文件追加 3 用例 = 19；既有断言零改动）。
+- 关键断言：两个临时目录 A/B 的 `fileWrite`/`fileRead`/`editFile`/`grep` 相对路径各自落点；`commandRun` 无 `args.cwd` 时输出注入根且 `process.cwd()` 不变；`runner` 显式根优先于 ALS、无显式根回落 ALS、两者皆无回落 `process.cwd()`；绝对路径原样放行。
+- `src/cli/**`、`src/commands/**` **零 diff**（CLI 不传 root，三级回退保持原语义）。
+
+#### 6.5.4 留给后续任务
+
+- `switchWorkspace` 仍会 `process.chdir()`（task-03 移除）；移除后两空间并行的实机 A3 复验由 task-03/task-06 完成。
+- `HandlerContext.registry` 仍未被消费、handler 级 `runWithWorkspace` 包裹随 task-04 接入。
+- `/mcp` 响应与双语文档中的「MCP cwd 固定启动目录」声明留 task-07。

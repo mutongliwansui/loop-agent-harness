@@ -13,6 +13,50 @@ vi.mock('../src/tools/registry.js', () => ({ registry: registryMocks }));
 
 import { MCPManager } from '../src/config/mcp-manager.js';
 
+describe('MCPManager.loadServers（D19：stdio cwd 显式化）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    registryMocks.listMCPServers.mockReturnValue([]);
+    registryMocks.registerMCPServer.mockResolvedValue([]);
+  });
+
+  it('stdio 未配置 cwd → 显式补启动目录，不依赖隐式 process.cwd()', async () => {
+    const mgr = new MCPManager();
+    await mgr.loadServers({ demo: { type: 'stdio', command: 'npx' } });
+
+    expect(registryMocks.registerMCPServer).toHaveBeenCalledWith('demo', {
+      type: 'stdio',
+      command: 'npx',
+      cwd: process.cwd(),
+    });
+  });
+
+  it('stdio 显式 cwd 保留原值', async () => {
+    const mgr = new MCPManager();
+    await mgr.loadServers({
+      demo: { type: 'stdio', command: 'npx', cwd: '/custom/root' },
+    });
+
+    expect(registryMocks.registerMCPServer).toHaveBeenCalledWith('demo', {
+      type: 'stdio',
+      command: 'npx',
+      cwd: '/custom/root',
+    });
+  });
+
+  it('非 stdio 传输不注入 cwd', async () => {
+    const mgr = new MCPManager();
+    await mgr.loadServers({
+      demo: { type: 'streamableHttp', url: 'https://host/mcp' },
+    });
+
+    expect(registryMocks.registerMCPServer).toHaveBeenCalledWith('demo', {
+      type: 'streamableHttp',
+      url: 'https://host/mcp',
+    });
+  });
+});
+
 describe('MCPManager.viewServer（/mcp view）', () => {
   beforeEach(() => {
     vi.clearAllMocks();

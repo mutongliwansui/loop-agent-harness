@@ -60,6 +60,8 @@ export function createTransport(config: MCPServerConfig): Transport {
         command: c.command,
         args: c.args,
         env: c.env,
+        // cwd 由 MCPManager 统一补为「配置显式值 ?? 启动目录」（D19）：
+        // MCP 是进程级外部资源，不随 WebUI 工作空间切换
         cwd: c.cwd,
         stderr: 'pipe', // 捕获 stderr，不污染主进程
       });

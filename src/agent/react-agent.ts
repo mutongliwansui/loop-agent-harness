@@ -76,6 +76,11 @@ export class ReActAgent {
   private _sessionStore: SessionStore | null = null;
   /** 当前会话 ID */
   private _currentSessionId: string | null = null;
+  /**
+   * 工作空间根（Task-20261021-010-02 D3）：由池钩子/外部显式注入；
+   * 未注入时回落 process.cwd()，保证 CLI 与既有单测语义不变。
+   */
+  private _workspaceRoot: string | null = null;
   /** 最近一次 LLM 调用的真实 prompt_tokens（供 /status 展示） */
   private _lastContextTokens: number | null = null;
   /**
@@ -112,6 +117,19 @@ export class ReActAgent {
   /** 设置当前会话 ID（由外部 /session load 调用） */
   setCurrentSessionId(id: string | null): void {
     this._currentSessionId = id;
+  }
+
+  /**
+   * 设置本实例的工作空间根（Task-20261021-010-02 D3/D4）：
+   * serve 侧由 WorkspaceRegistry 的池钩子注入（每空间一池），CLI 不注入 → 回落 process.cwd()。
+   */
+  setWorkspaceRoot(root: string): void {
+    this._workspaceRoot = root;
+  }
+
+  /** 当前实例的工作空间根（未注入时为启动目录） */
+  get workspaceRoot(): string {
+    return this._workspaceRoot ?? process.cwd();
   }
 
   /** 向会话历史追加一条用户侧上下文备注（如 /upload 文件上传），随 autoSave 持久化（Task-20261012-001 D2） */
@@ -411,9 +429,12 @@ export class ReActAgent {
     const temperature = cfg.model.temperature;
     const verbose = cfg.agent.verbose;
 
-    // 自定义 system prompt 覆盖
-    const skills = cfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
-    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills, process.cwd(), cfg.vision.enabled);
+    // 空间根（D3）：显式注入优先，CLI/单测回落启动目录（行为不变）
+    const wsRoot = this.workspaceRoot;
+
+    // 自定义 system prompt 覆盖（技能扫描与提示词环境信息均按空间根，不再依赖进程 cwd）
+    const skills = cfg.skill.enabled ? skillLoader.scan(wsRoot) : [];
+    const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills, wsRoot, cfg.vision.enabled);
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义
     const events = this.composeEvents([
@@ -845,7 +866,8 @@ export class ReActAgent {
             try {
               // signal 注入（Task-20261021-002-02）：工具层 raceAbort 取消 + ctx 感知（commandRun 杀子进程树）
               // D5：abort 后在跑工具自然结束（结果被丢弃）才抛错，不留游离 Promise
-              const result = await runner.run(c.tool, c.args, { signal: options.signal });
+              // D3：显式传入本实例空间根，工具层不再依赖隐式 process.cwd()
+              const result = await runner.run(c.tool, c.args, { signal: options.signal, workspaceRoot: wsRoot });
               void debug.toolCall(c.toolName, c.args ?? {}, result, Date.now() - toolStart);
               return result;
             } finally {

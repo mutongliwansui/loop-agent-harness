@@ -219,6 +219,9 @@ export class WorkspaceRegistry {
     // rt 自引用：initAgent 钩子需在实例创建后取其共享 kit（禁止每实例自建记忆）
     let rt!: WorkspaceRuntime;
     const pool = new AgentPool({ capacity: this.poolCapacity }, async (a) => {
+      // Task-20261021-010-02 D3/D4：池内实例显式绑定本空间根（每空间一池），
+      // 工具调用与技能扫描不再依赖进程 cwd；attachMemory 的 workspaceId 也取同一根。
+      a.setWorkspaceRoot(root);
       await a.attachMemory(await rt.getMemoryKit(), root);
     });
 

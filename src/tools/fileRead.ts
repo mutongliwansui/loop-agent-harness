@@ -1,6 +1,7 @@
 // 文件读取工具：支持全文读取或按行范围部分读取
 import { readFile } from 'node:fs/promises';
-import type { Tool } from '../types.js';
+import type { Tool, ToolContext } from '../types.js';
+import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 
 export const fileRead: Tool = {
   name: 'fileRead',
@@ -26,8 +27,9 @@ export const fileRead: Tool = {
     },
     required: ['path'],
   },
-  async execute(args) {
-    const path = String(args.path);
+  async execute(args, ctx?: ToolContext) {
+    // 相对路径按空间根解析（D3/D20）；绝对路径原样
+    const path = resolveToolPath(toolWorkspaceRoot(ctx), String(args.path));
     const encoding = (args.encoding as BufferEncoding) ?? 'utf-8';
     const content = await readFile(path, encoding);
     const lines = content.split('\n');

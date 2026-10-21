@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { createApiServer, type ApiServer } from './server.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
+import { runWithWorkspace } from '../runtime/workspace-context.js';
 
 export async function startApiServer(): Promise<ApiServer> {
   const { configLoader } = await import('../config/index.js');
@@ -50,7 +51,9 @@ export async function startApiServer(): Promise<ApiServer> {
 
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
-    runAgent: (sessionId, input, options) => rt.pool.withAgent(sessionId, (a) => a.run(input, options)),
+    // D3：run 全程处于该空间 ALS 上下文，漏传显式根的深层代码仍能取到正确的根
+    runAgent: (sessionId, input, options) =>
+      runWithWorkspace(rt, () => rt.pool.withAgent(sessionId, (a) => a.run(input, options))),
     sessionStore: store,
     // 会话缓存/互斥层由 runtime 持有，server 不再自建（避免两份缓存分叉）
     sessions: rt.sessions,

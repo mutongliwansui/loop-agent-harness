@@ -1,9 +1,27 @@
 // MCP Manager：MCP server 生命周期管理（load/unload/reload/disconnectAll）
 import { registry } from '../tools/registry.js';
-import type { MCPServerConfig } from '../tools/mcp/client.js';
+import {
+  normalizeMcpTransportType,
+  type MCPServerConfig,
+  type StdioConfig,
+} from '../tools/mcp/client.js';
 import { configLoader } from './loader.js';
 import type { ConfigLoader } from './loader.js';
 import type { ResolvedConfig } from './schema.js';
+
+/**
+ * 进程启动目录（模块加载时捕获，早于 serve 的任何 chdir）。
+ * Task-20261021-010-02 D19：MCPManager 是进程级单例、启动期一次性连接，
+ * stdio server 的 cwd 固定为「配置显式值 ?? 启动目录」，不随 WebUI 切换空间。
+ */
+const startupRoot = process.cwd();
+
+/** 为未显式配置 cwd 的 stdio server 填入启动目录（不修改原配置对象） */
+function withExplicitCwd(cfg: MCPServerConfig): MCPServerConfig {
+  if (normalizeMcpTransportType(String((cfg as { type?: unknown }).type ?? '')) !== 'stdio') return cfg;
+  const stdio = cfg as StdioConfig;
+  return stdio.cwd ? cfg : { ...stdio, cwd: startupRoot };
+}
 
 export interface LoadResult {
   successes: string[];
@@ -42,7 +60,7 @@ export class MCPManager {
     for (const [name, cfg] of Object.entries(servers)) {
       if (registry.listMCPServers().includes(name)) continue;
       try {
-        const tools = await registry.registerMCPServer(name, cfg);
+        const tools = await registry.registerMCPServer(name, withExplicitCwd(cfg));
         successes.push(`${name} (${tools.length} 个工具)`);
       } catch (e) {
         failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
@@ -89,7 +107,7 @@ export class MCPManager {
   /** 测试连接指定 MCP server（仅连接+listTools 后立即断开，不注册） */
   async testServer(name: string, cfg: MCPServerConfig): Promise<{ ok: boolean; message: string }> {
     try {
-      const tools = await registry.registerMCPServer(name, cfg);
+      const tools = await registry.registerMCPServer(name, withExplicitCwd(cfg));
       await registry.disconnectMCPServer(name);
       return { ok: true, message: `连接成功（${tools.length} 个工具）` };
     } catch (e) {
@@ -109,7 +127,7 @@ export class MCPManager {
     const connected = registry.listMCPServers().includes(name);
     try {
       if (!connected) {
-        await registry.registerMCPServer(name, cfg);
+        await registry.registerMCPServer(name, withExplicitCwd(cfg));
       }
       const prefix = `${name}__`;
       const tools = registry

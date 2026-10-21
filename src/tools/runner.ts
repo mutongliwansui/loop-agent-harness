@@ -2,12 +2,18 @@
 // Task-20261021-002-01：新增 signal 支持（raceAbort + 取消冒泡例外）
 import type { Tool, ToolContext } from '../types.js';
 import { AgentAbortedError } from '../types.js';
+import { currentWorkspaceRoot } from '../runtime/workspace-context.js';
 
 export interface RunOptions {
   /** 超时毫秒数，默认 30000 */
   timeout?: number;
   /** run 级取消信号；aborted 后抛出 AgentAbortedError（携带空 partial，由 agent 层换绑完整快照） */
   signal?: AbortSignal;
+  /**
+   * 空间根（Task-20261021-010-02 D3 显式优先）：
+   * agent 传入 → 缺省回落 ALS → 再回落 process.cwd()（CLI / 单测语义不变）。
+   */
+  workspaceRoot?: string;
 }
 
 interface ToolCallItem {
@@ -43,8 +49,9 @@ export class ToolRunner {
     const timeout = options.timeout ?? tool.timeoutMs ?? 30000;
     const signal = options.signal;
     try {
-      // ctx 注入：工具可感知取消信号（如 commandRun 杀子进程树）
-      const ctx: ToolContext = { signal };
+      // ctx 注入：工具可感知取消信号（如 commandRun 杀子进程树）与空间根（D3 三级取值）
+      const workspaceRoot = options.workspaceRoot ?? currentWorkspaceRoot() ?? process.cwd();
+      const ctx: ToolContext = { signal, workspaceRoot };
       const exec$ = tool.execute(args, ctx);
       const raced = signal ? this.raceAbort(exec$, signal) : exec$;
       const result = await this.withTimeout(raced, timeout);
