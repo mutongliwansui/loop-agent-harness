@@ -12,7 +12,8 @@
  * 5. models 组（P1）：POST 登记（201/409）、PUT 激活、GET 列表/快照（遮蔽）、DELETE（激活 409 / 跨层 404）、test 连通性
  * 6. mcp 组（P1）：POST 登记（连接失败 502 落盘 / 同名 409）、GET 列表/详情、reload failed、DELETE 反序
  * 7. skills 组（P1）：POST 安装（201/409/overwrite）、GET 列表/详情、DELETE、reload
- *    （SkillLoader 的 workspace 目录锚定 process.cwd()，用 API 自身 DELETE + 独特名清理）
+ *    （Task-20261021-010-03：SkillLoader 的 workspace 目录显式取当前空间根 = TEST_WORKSPACE，
+ *      用 API 自身 DELETE + 独特名清理）
  * 8. memory 组（P1）：status/curated/episodic/search/gate/dream(202)/init
  * 9. vision 组（P2）：GET 探测链状态（无 Key available:false / 假 Key available:true）、
  *    POST test 无 Key → ok:false（诊断语义，不触网）
@@ -566,7 +567,7 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
 // ===== 7. skills 组（P1）=====
 
 describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE、reload）', () => {
-  // 独特名避免撞真实仓库 skill；SkillLoader 锚定 process.cwd()，测试后用 API DELETE + 兜底 rmSync 清理
+  // 独特名避免撞真实仓库 skill；workspace 根取 TEST_WORKSPACE，测试后用 API DELETE + 兜底 rmSync 清理
   const SKILL_NAME = 'api-e2e-skill-zz9';
   let sourceDir = '';
 
@@ -582,8 +583,8 @@ describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE�
   });
 
   afterAll(() => {
-    // 兜底清理：真实仓库 .loop-agent/skills 下的安装残留
-    rmSync(join(process.cwd(), '.loop-agent', 'skills', SKILL_NAME), { recursive: true, force: true });
+    // 兜底清理：TEST_WORKSPACE/.loop-agent/skills 下的安装残留
+    rmSync(join(TEST_WORKSPACE, '.loop-agent', 'skills', SKILL_NAME), { recursive: true, force: true });
   });
 
   it('POST 缺 sourcePath → 400；目录不存在 → 400', async () => {

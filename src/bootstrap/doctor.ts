@@ -44,10 +44,12 @@ export const defaultExistsProbe: ExistsProbe = (path) => existsSync(path);
 /**
  * 按项目路径约定构造检测路径集合
  * 与 configWriter / skillLoader 的默认路径保持一致
+ *
+ * @param workspaceRoot 工作空间根（缺省为进程 cwd；CLI 单空间即启动目录，serve 侧由 runtime 传入）
  */
-export function defaultBootstrapPaths(): BootstrapPaths {
+export function defaultBootstrapPaths(workspaceRoot = process.cwd()): BootstrapPaths {
   const globalDir = join(homedir(), '.loop-agent');
-  const workspaceDir = join(process.cwd(), '.loop-agent');
+  const workspaceDir = join(workspaceRoot, '.loop-agent');
   return {
     globalConfigPath: join(globalDir, 'config.json'),
     workspaceConfigPath: join(workspaceDir, '.agent-config.json'),

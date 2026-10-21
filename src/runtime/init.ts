@@ -25,8 +25,11 @@ export interface RuntimeContext {
  * API 则在起服务前初始化；两者时序不同，故各自在所属分支内调用。
  *
  * @param opts.noSetup 跳过初次启动引导（对应 `--no-setup`）
+ * @param opts.workspaceRoot 技能扫描根（缺省为进程 cwd；CLI 单空间即启动目录，serve 侧由 runtime 传入）
  */
-export async function initRuntime(opts: { noSetup?: boolean } = {}): Promise<RuntimeContext> {
+export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: string } = {}): Promise<RuntimeContext> {
+  // 共享默认值：CLI 不传 root 时以启动目录为唯一空间（D11，CLI 零改动）
+  const workspaceRoot = opts.workspaceRoot ?? process.cwd();
   // 0. 初次启动引导：自动检测必备目录与配置（齐备零打扰；主模型未配置进向导；仅目录/文件缺失静默补建）
   //    引导可能写盘，随后重新加载即为生效值
   await ensureBootstrap({ noSetup: opts.noSetup === true });
@@ -55,7 +58,8 @@ export async function initRuntime(opts: { noSetup?: boolean } = {}): Promise<Run
   // 3. 扫描 Skill
   if (config.skill.enabled && config.skill.autoLoad) {
     try {
-      const skills = skillLoader.scan(process.cwd());
+      // 空间资源：缺省为启动目录（CLI 单空间），serve 侧由调用方传 runtime 根
+      const skills = skillLoader.scan(workspaceRoot);
       if (skills.length > 0) {
         console.log(`${C.green}Skill 加载成功:${C.reset} ${skills.length} 个`);
         for (const s of skills) console.log(`  ✓ ${s.name} (${s.scope === 'workspace' ? '工作空间' : '全局'})`);
@@ -72,9 +76,10 @@ export async function initRuntime(opts: { noSetup?: boolean } = {}): Promise<Run
  * 初始化 Agent 记忆系统（L1/L2/L3）。
  * CLI 与 API 各自在合适的时序调用（CLI 在会话恢复之后，API 在起服务之前）。
  */
-export async function initAgentMemory(): Promise<void> {
+export async function initAgentMemory(root = process.cwd()): Promise<void> {
   try {
-    await agent.initMemory(process.cwd());
+    // 空间资源：缺省为启动目录（CLI 单空间），serve 侧显式传 runtime 根
+    await agent.initMemory(root);
     if (agent.memoryEnabled) {
       console.log(`${C.green}✓ 记忆系统已启用:${C.reset} L1(Working) + L2(Episodic) + L3(Curated)`);
     }

@@ -6,12 +6,10 @@ import { createRequire } from 'node:module';
 import { createApiServer, type ApiServer } from './server.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
-import { runWithWorkspace } from '../runtime/workspace-context.js';
 
 export async function startApiServer(): Promise<ApiServer> {
   const { configLoader } = await import('../config/index.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
-  const { skillLoader } = await import('../skill/loader.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
   const { resetMemoryKitCache } = await import('./memory-kit.js');
   const { initAgentMemory } = await import('../runtime/init.js');
@@ -21,6 +19,7 @@ export async function startApiServer(): Promise<ApiServer> {
   // 工作空间运行时注册表（Task-20261021-010-01）：本阶段只装启动目录一个 runtime，
   // store / configLoader / configWriter / sessions / pool / memory-kit 全部自该 runtime 解构，
   // 对外行为与改造前一致（L1：HandlerContext 字段不变）。
+  // 启动目录即初始空间（应用启动参数，非"当前空间"全局态）：process.cwd() 保留语义。
   const registry = new WorkspaceRegistry();
   const rt = await registry.get(process.cwd());
   const store = rt.store;
@@ -33,7 +32,8 @@ export async function startApiServer(): Promise<ApiServer> {
 
   // 记忆初始化（serve 时序：起服务之前；initAgentMemory 走 agent.initMemory 自建路径，
   // 仅用于启动期自检与旧目录迁移——池内实例的运行时记忆由 initAgent 钩子注入共享 kit）
-  await initAgentMemory();
+  // Task-20261021-010-03：显式传 runtime 根，不再依赖进程 cwd。
+  await initAgentMemory(rt.root);
 
   // Agent 实例池（Task-20261021-002-05）：替代单例 agent，同工作空间多会话并发。
   // D1：容量默认 4（含 busy）；D2：记忆按 workspaceId 共享 kit，禁止每实例自建；
@@ -51,16 +51,17 @@ export async function startApiServer(): Promise<ApiServer> {
 
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
-    // D3：run 全程处于该空间 ALS 上下文，漏传显式根的深层代码仍能取到正确的根
-    runAgent: (sessionId, input, options) =>
-      runWithWorkspace(rt, () => rt.pool.withAgent(sessionId, (a) => a.run(input, options))),
+    // D3：run 全程处于该空间 ALS 上下文（runtime.runAgent 内部已包裹）。
+    // Task-20261021-010-03：runtime 自带 runAgent，切换空间时 handler 指针指向新 runtime 即可。
+    runAgent: (sessionId, input, options) => rt.runAgent(sessionId, input, options),
     sessionStore: store,
     // 会话缓存/互斥层由 runtime 持有，server 不再自建（避免两份缓存分叉）
     sessions: rt.sessions,
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
-    // 切换工作空间：池内实例的记忆绑定旧 workspaceId，整体重建（D6）+ 清共享 kit 缓存
+    // 切换工作空间：P1 起 switchWorkspace 不再调用本回调（每空间独立 pool/kit，无需重建）。
+    // 保留可选 seam 以兼容外部嵌入与后续 /config、/model 变更场景（L1 兼容约束）。
     reinitMemory: async () => {
       resetMemoryKitCache();
       rt.pool.reset();
@@ -70,7 +71,8 @@ export async function startApiServer(): Promise<ApiServer> {
       configLoader: rt.configLoader,
       configWriter: rt.configWriter,
       mcpManager,
-      skillLoader,
+      // 技能加载器也按 runtime 持有（D14：实例级 Map 隔离，避免两空间 scan 互相覆盖）
+      skillLoader: rt.skillLoader,
       uploadsRoot: defaultUploadsRoot(),
       createMemoryKit: () => rt.getMemoryKit(),
     },

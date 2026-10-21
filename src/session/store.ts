@@ -252,6 +252,7 @@ export class SessionStore {
   /** 是否启用加密存储 */
   private readonly encryptionEnabled: boolean;
 
+  // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根
   constructor(
     workspacePath: string = process.cwd(),
     encryptionEnabled = true,
@@ -299,7 +300,9 @@ export class SessionStore {
 
   /**
    * 原地重绑到新工作空间路径（切换空间）：更新空间三元组并重新初始化（建目录 + 写 meta）。
-   * 需配合 process.chdir(path) 使用，使 agent / skills 等 cwd 依赖跟随新空间。
+   * @deprecated Task-20261021-010-03 起切换空间不再改写 store，而是由 WorkspaceRegistry
+   * 为新空间懒建独立 runtime（store 构造期定根、实例不可变）；本方法仅保留兼容旧调用与
+   * 既有单测，P2（task-04）删除。
    */
   async rebindWorkspace(path: string): Promise<void> {
     this.workspacePath = path;

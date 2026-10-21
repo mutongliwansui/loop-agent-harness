@@ -11,6 +11,7 @@ import {
   type ResolvedConfig,
 } from './schema.js';
 import { deepMerge } from './merge.js';
+import { getCliOverrides } from './cli-overrides.js';
 
 /**
  * 从 .env 文件加载配置到 process.env（如果文件存在）。
@@ -18,6 +19,7 @@ import { deepMerge } from './merge.js';
  */
 function loadDotEnvToProcessEnv(): void {
   // 仅当 process.env 中未标记过已加载时加载，避免重复读取
+  // 应用自身资源：.env 读取锚定启动目录（非工作空间资源，切换空间不改变）
   const paths = [join(process.cwd(), '.env')];
   for (const p of paths) {
     if (!existsSync(p)) continue;
@@ -49,6 +51,7 @@ export class ConfigLoader {
   private workspacePath: string;
   private globalDir: string;
 
+  // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根（D7）
   constructor(workspacePath = process.cwd(), globalDir = join(homedir(), '.loop-agent')) {
     this.workspacePath = workspacePath;
     this.globalDir = globalDir;
@@ -61,7 +64,11 @@ export class ConfigLoader {
     return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
-  /** 切换工作空间后更新工作空间根目录（load 的 workspace 层随之指向新空间；全局层不变） */
+  /**
+   * 切换工作空间后更新工作空间根目录（load 的 workspace 层随之指向新空间；全局层不变）
+   * @deprecated Task-20261021-010-03 起 serve 侧每个 runtime 构造期定根，不再原地改写；
+   * 保留仅为兼容外部调用与既有单测，P2（task-04）删除。
+   */
   setWorkspacePath(path: string): void {
     this.workspacePath = path;
   }
@@ -82,6 +89,8 @@ export class ConfigLoader {
     const env = this.loadFromEnv();
     const global = this.loadGlobalSync();
     const workspace = this.loadWorkspaceSync();
+    // 进程级启动参数（--port 等）优先级最高，且对所有 ConfigLoader 实例生效
+    const cli = deepMerge<PartialAgentConfig>(getCliOverrides(), cliOverrides);
 
     // 深合并：后者覆盖前者
     const merged = deepMerge<AgentConfig>(
@@ -89,7 +98,7 @@ export class ConfigLoader {
       env as Partial<AgentConfig>,
       global as Partial<AgentConfig>,
       workspace as Partial<AgentConfig>,
-      cliOverrides as Partial<AgentConfig>,
+      cli as Partial<AgentConfig>,
     );
 
     const sources = this.resolveSources({
@@ -97,7 +106,7 @@ export class ConfigLoader {
       env,
       global,
       workspace,
-      cli: cliOverrides,
+      cli,
     });
 
     return { config: merged, sources };
@@ -112,13 +121,15 @@ export class ConfigLoader {
     const env = this.loadFromEnv();
     const global = await this.loadGlobal();
     const workspace = await this.loadWorkspace();
+    // 进程级启动参数（--port 等）优先级最高，且对所有 ConfigLoader 实例生效
+    const cli = deepMerge<PartialAgentConfig>(getCliOverrides(), cliOverrides);
 
     const merged = deepMerge<AgentConfig>(
       defaults,
       env as Partial<AgentConfig>,
       global as Partial<AgentConfig>,
       workspace as Partial<AgentConfig>,
-      cliOverrides as Partial<AgentConfig>,
+      cli as Partial<AgentConfig>,
     );
 
     const sources = this.resolveSources({
@@ -126,7 +137,7 @@ export class ConfigLoader {
       env,
       global,
       workspace,
-      cli: cliOverrides,
+      cli,
     });
 
     return { config: merged, sources };

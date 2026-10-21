@@ -2,10 +2,14 @@
 //
 // POST /sessions 支持 { title?, workspacePath? }（原型-20261017-004）：
 // - 同空间：直接创建空会话
-// - 异空间：校验目录 → 全局无 in-flight → process.chdir + store 原地重绑 + 配置跟随 + scaffold 初始化
-//   + 重置记忆缓存 + 重建 agent 记忆 → 创建
+// - 异空间：校验目录 → 全局无 in-flight → 切换"当前空间指针"（不再 chdir / 原地重绑）
+//   + 新空间目录骨架补齐 → 创建
 // - GET /fs/dirs：服务端目录浏览（新建会话选择工作空间；纯 Web 拿不到本地绝对路径）
 // - GET /sessions/:id：跨空间会话自动切换到会话所在空间（switchWorkspace 导出供 messages 兜底复用）
+//
+// 解耦（Task-20261021-010-03）：切换空间只把 handler 的运行时指针从 old runtime 指向
+// registry 为新空间懒建的 runtime（store/configLoader/configWriter/skillLoader/sessions/pool
+// 均为该 runtime 的不可变实例），进程 cwd 与其他空间运行中的 run 完全不受影响。
 //
 // 路径归一（Task-20261021-010-01 L2）：'D:' 盘符特例与绝对化统一由 session/path-utils 提供，
 // 本文件不再保留私有实现——展示型回显用 lexicalWorkspacePath（取值与改造前一致），
@@ -18,7 +22,6 @@ import { dirname } from 'node:path';
 import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
-import { resetMemoryKitCache } from '../memory-kit.js';
 import { ensureDirUsable } from '../workspace-runtime.js';
 import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
 import { SessionStore } from '../../session/index.js';
@@ -71,7 +74,17 @@ export async function handleListDirs(ctx: HandlerContext, req: IncomingMessage, 
   });
 }
 
-/** POST /sessions：创建空会话；body 可带 { title?, workspacePath? }，异空间时切换服务端工作空间 */
+/**
+ * P1 的"全局互斥"语义（Task-20261021-010-03）：切换空间前要求所有已装载空间都无 run。
+ * task-04 放开并行后改为按空间粒度判断。
+ */
+export function hasAnyInFlight(ctx: HandlerContext): boolean {
+  const registry = ctx.registry;
+  if (!registry) return ctx.sessions.hasInFlight();
+  return registry.list().some((rt) => rt.sessions.hasInFlight());
+}
+
+/** POST /sessions：创建空会话；body 可带 { title?, workspacePath? }，异空间时切换当前空间指针 */
 export async function handleCreateSession(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJsonBody(req);
   const title = typeof body.title === 'string' ? body.title : '';
@@ -83,8 +96,10 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
     const target = await canonicalWorkspacePath(requested);
     const current = await canonicalWorkspacePath(ctx.deps.sessionStore.path);
     if (!isSameWorkspace(target, current)) {
-      await ensureDirUsable(target);
-      if (ctx.sessions.hasInFlight()) {
+      // 目录校验先于 busy（保持改造前错误优先级）
+      if (ctx.registry) await ctx.registry.ensureRoot(target);
+      else await ensureDirUsable(target);
+      if (hasAnyInFlight(ctx)) {
         throw new ApiHttpError('busy', '存在正在处理的会话，暂不能切换工作空间');
       }
       await switchWorkspace(ctx, target);
@@ -105,32 +120,36 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
   });
 }
 
-/** 切换服务端工作空间：chdir + store 原地重绑 + 配置分层跟随 + 目录初始化（scaffold）+ 重置记忆缓存 + 重建 agent 实例记忆；rebind 失败时回滚 chdir */
+/**
+ * 切换"当前空间指针"（Task-20261021-010-03，D7/D9）：
+ * registry 为新空间懒建不可变 runtime，handler 侧六项依赖整体指向该运行时——
+ * **不再 chdir、不 rebind store、不 setWorkspacePath、不重置记忆缓存/整池**。
+ * 新空间缺目录骨架时幂等补齐（失败只记日志，不阻断已成功的指针切换）。
+ */
 export async function switchWorkspace(ctx: HandlerContext, target: string): Promise<void> {
-  const prevCwd = process.cwd();
-  process.chdir(target);
-  try {
-    await ctx.deps.sessionStore.rebindWorkspace(target);
-  } catch (e) {
-    process.chdir(prevCwd);
-    throw new ApiHttpError('internal', `切换工作空间失败: ${e instanceof Error ? e.message : String(e)}`);
+  const registry = ctx.registry;
+  if (!registry) {
+    throw new ApiHttpError('internal', '工作空间注册表未初始化，无法切换工作空间');
   }
-  // 配置分层跟随：loader/writer 的 workspace 层指向新空间（全局层不变），后续 /config 读写即生效
-  ctx.configLoader.setWorkspacePath(target);
-  ctx.configWriter.setWorkspacePath(target);
-  resetMemoryKitCache();
-  // 初始化新空间目录骨架：两级 skills 目录 + 工作空间配置骨架文件（幂等，已存在跳过；失败不阻断已成功的切换）
+  const root = await registry.ensureRoot(target);
+  const rt = await registry.getCanonical(root);
+
+  // 指针刷新：以下字段均来自 runtime（实例本身不可变，仅替换 handler 的引用）
+  ctx.deps.sessionStore = rt.store;
+  ctx.deps.runAgent = (sessionId, input, options) => rt.runAgent(sessionId, input, options);
+  // 鉴权 token / 模型名等随当前空间配置生效（与改造前 configLoader.setWorkspacePath 的可见效果一致）
+  ctx.deps.getConfig = () => rt.configLoader.load().config;
+  ctx.sessions = rt.sessions;
+  ctx.configLoader = rt.configLoader;
+  ctx.configWriter = rt.configWriter;
+  ctx.skillLoader = rt.skillLoader;
+  ctx.createMemoryKit = () => rt.getMemoryKit();
+
+  // 初始化新空间目录骨架：两级 skills 目录 + 工作空间配置骨架文件（幂等，已存在跳过）
   try {
-    await ensureScaffold(defaultBootstrapPaths());
+    await ensureScaffold(defaultBootstrapPaths(rt.root));
   } catch (e) {
     ctx.log(`[api] 工作空间初始化失败: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  // 记忆/池重建（Task-20261021-002-05 D6）：清共享 kit 缓存 + 重置 AgentPool
-  //（池内实例的记忆绑定旧 workspaceId，整体重建最稳妥）；失败不阻断已成功的切换，仅记日志
-  try {
-    await ctx.reinitMemory?.(target);
-  } catch (e) {
-    ctx.log(`[api] 切换后记忆/实例池重建失败（沿用旧实例直至重启）: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -177,9 +196,9 @@ export async function handleGetSession(ctx: HandlerContext, res: ServerResponse,
   const meta = owner.sessions.find((s) => s.id === id);
   const data = await ctx.deps.sessionStore.loadSession(id);
 
-  // 跨空间会话：自动切换到会话所在空间（无 in-flight 才切；失败静默记日志，不阻断只读查看）
+  // 跨空间会话：自动切换到会话所在空间（全局无 in-flight 才切；失败静默记日志，不阻断只读查看）
   let switched = false;
-  if (!owner.current && !ctx.sessions.hasInFlight()) {
+  if (!owner.current && !hasAnyInFlight(ctx)) {
     try {
       await switchWorkspace(ctx, owner.path);
       switched = true;

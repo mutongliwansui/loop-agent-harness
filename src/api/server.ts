@@ -113,7 +113,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     mcpManager: rt.mcpManager ?? mcpManager,
     skillLoader: rt.skillLoader ?? skillLoader,
     uploadsRoot: rt.uploadsRoot ?? defaultUploadsRoot(),
-    createMemoryKit: rt.createMemoryKit ?? defaultMemoryKitFactory,
+    // Task-20261021-010-03：缺省工厂也显式绑定当前（启动）空间根，不再回落 process.cwd()
+    createMemoryKit: rt.createMemoryKit ?? (() => defaultMemoryKitFactory(deps.sessionStore.path)),
     // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅透传，后续任务消费
     registry: deps.registry,
   };

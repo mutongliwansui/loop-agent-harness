@@ -42,7 +42,7 @@ export interface HandlerContext {
   log: (msg: string) => void;
   /** 服务版本号（/health 返回） */
   version?: string;
-  /** 切换工作空间后重建 agent 实例记忆（serve 注入 agent.initMemory；单测缺省则跳过） */
+  /** 切换工作空间后重建 agent 实例记忆（P1 起 switchWorkspace 不再调用；保留可选 seam 供外部嵌入） */
   reinitMemory?: (cwd: string) => Promise<void>;
   /** 分层配置加载器（/config 组读取 + 来源解析；Task-20261016-002 D8） */
   configLoader: ConfigLoader;
@@ -58,8 +58,9 @@ export interface HandlerContext {
   createMemoryKit: () => Promise<MemoryKit>;
   /**
    * 工作空间运行时注册表（Task-20261021-010-01）。
-   * 本任务只挂载不消费（L1：字段不变，避免一次性打穿 15 个 handler）；
-   * 后续任务据此把"请求携带空间"解析成对应 runtime。
+   * Task-20261021-010-03 起消费：switchWorkspace 通过 registry 懒建目标空间 runtime，
+   * 并把下方 sessions/configLoader/configWriter/skillLoader/createMemoryKit 与
+   * deps.sessionStore/runAgent/getConfig 整体指向该 runtime 的不可变实例。
    */
   registry?: WorkspaceRegistry;
 }

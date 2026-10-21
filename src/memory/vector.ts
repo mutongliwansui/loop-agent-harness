@@ -8,11 +8,13 @@ import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, basename, dirname, resolve } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { EmbeddingClient } from './embedding.js';
 import type { VectorSearchConfig } from './types.js';
 
-const nodeRequire = createRequire(resolve(process.cwd(), 'package.json'));
+// D16：解析对象是 node:sqlite 内置模块（应用自身资源，与工作空间无关），
+// 以本模块 URL 为基准，避免空间目录无 package.json 时崩溃。
+const nodeRequire = createRequire(import.meta.url);
 let DatabaseSyncCtor: typeof DatabaseSync | undefined;
 try {
   DatabaseSyncCtor = nodeRequire('node:sqlite').DatabaseSync;

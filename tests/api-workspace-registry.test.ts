@@ -1,14 +1,15 @@
 /**
- * WorkspaceRegistry 与 API 组装联调测试（Task-20261021-010-01 验收 6.2.4 / 6.2.5）
+ * WorkspaceRegistry 与 API 组装联调测试（Task-20261021-010-01 / 010-03 验收）
  *
  * 覆盖：
  * - 6.2.4 bootstrap 收编后 /sessions、/workspaces、/fs/dirs 响应字段与改造前完全一致
  *         （对照改造前实现的字段清单做形状断言，不多不少）
- * - 6.2.5 switchWorkspace 仍按原六步工作：chdir + rebind + setWorkspacePath + reset + scaffold + reinit
+ * - 6.2.5（task-03 重写）switchWorkspace 退化为"当前空间指针刷新"：
+ *         零 process.chdir、零 store 原地重绑、零 setWorkspacePath、不触发记忆/池重建；
+ *         目标空间由 registry 懒建独立 runtime，旧空间 runtime 保持不可变
  * - registry 提供的 runtime 与 server 注入的 deps 指向同一 root（无两份缓存分叉）
  *
- * 目录全部注入临时路径（userDir 覆盖 ~/.loop-agent）；chdir 后必在 finally 恢复，
- * 避免污染同进程内其他用例的相对路径语义。
+ * 目录全部注入临时路径（userDir 覆盖 ~/.loop-agent）。
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -181,37 +182,50 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
   });
 });
 
-describe('6.2.5 switchWorkspace 仍按原六步工作', () => {
-  it('异空间创建会话：chdir + rebind + 配置跟随 + reinit 均发生', async () => {
-    const rtA = registry.peek(await canonicalWorkspacePath(WS_A))!;
+describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重绑）', () => {
+  it('异空间创建会话：cwd 不变、旧空间 runtime 不变、新空间 runtime 懒建、指针整体切换', async () => {
+    const rootA = await canonicalWorkspacePath(WS_A);
+    const rootB = await canonicalWorkspacePath(WS_B);
+    const rtA = registry.peek(rootA)!;
     const prevCwd = process.cwd();
-    try {
-      const res = await req('POST', '/sessions', { title: '跨空间', workspacePath: WS_B });
-      expect(res.status).toBe(201);
-      const body = (await res.json()) as { workspace: { path: string; switched: boolean } };
 
-      const rootB = await canonicalWorkspacePath(WS_B);
-      expect(body.workspace.switched).toBe(true);
-      expect(body.workspace.path).toBe(rootB);
+    const res = await req('POST', '/sessions', { title: '跨空间', workspacePath: WS_B });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { workspace: { path: string; switched: boolean } };
+    expect(body.workspace.switched).toBe(true);
+    expect(body.workspace.path).toBe(rootB);
 
-      // 1) chdir
-      expect(await canonicalWorkspacePath(process.cwd())).toBe(rootB);
-      // 2) store 原地重绑（仍是同一个 runtime 里的 store 实例，L1 阶段语义）
-      expect(rtA.store.path).toBe(rootB);
-      expect(rtA.store.id).toBe(workspaceId(rootB));
-      // 3) 配置分层跟随
-      expect(await canonicalWorkspacePath(rtA.configLoader.workspacePath ?? rootB)).toBe(rootB);
-      // 4) scaffold 初始化（两级 skills 目录存在）
-      expect(existsSync(join(rootB, '.loop-agent'))).toBe(true);
-      // 5) 记忆/池重建回调
-      expect(reinitCalls).toContain(rootB);
-    } finally {
-      // 复原：chdir 回原目录 + store 重绑回 WS_A（后续用例仍以 WS_A 为当前空间）
-      process.chdir(prevCwd);
-      await rtA.store.rebindWorkspace(await canonicalWorkspacePath(WS_A));
-      rtA.configLoader.setWorkspacePath(await canonicalWorkspacePath(WS_A));
-      rtA.configWriter.setWorkspacePath(await canonicalWorkspacePath(WS_A));
-    }
+    // 1) 零 chdir：进程目录不随空间切换变化
+    expect(process.cwd()).toBe(prevCwd);
+    // 2) 旧空间 runtime 不被原地改写（store / 配置层构造期定根，实例不可变）
+    expect(rtA.store.path).toBe(rootA);
+    expect(rtA.store.id).toBe(workspaceId(rootA));
+    // 3) 新空间由 registry 懒建独立 runtime（与 A 的实例不同）
+    const rtB = registry.peek(rootB)!;
+    expect(rtB).toBeTruthy();
+    expect(rtB).not.toBe(rtA);
+    expect(rtB.store).not.toBe(rtA.store);
+    expect(rtB.store.path).toBe(rootB);
+    expect(rtB.store.id).toBe(workspaceId(rootB));
+    // 4) scaffold 初始化（两级 skills 目录存在）
+    expect(existsSync(join(rootB, '.loop-agent'))).toBe(true);
+    // 5) /config（workspace 层）读写落到当前空间（6.2.5）
+    const cfgPath = (await (await req('GET', '/config/path')).json()) as {
+      workspacePath: string;
+      workspaceExists: boolean;
+    };
+    expect(cfgPath.workspacePath).toBe(join(rootB, '.loop-agent', '.agent-config.json'));
+    expect(cfgPath.workspaceExists).toBe(true);
+    // 6) 不再触发"记忆缓存重置 / 整池重建"
+    expect(reinitCalls).toHaveLength(0);
+
+    // 复原当前空间指针（后续用例仍以 WS_A 为当前空间）：切回同样零 chdir
+    const back = await req('POST', '/sessions', { title: '切回', workspacePath: rootA });
+    expect(back.status).toBe(201);
+    const backBody = (await back.json()) as { workspace: { path: string; switched: boolean } };
+    expect(backBody.workspace.switched).toBe(true);
+    expect(backBody.workspace.path).toBe(rootA);
+    expect(process.cwd()).toBe(prevCwd);
   });
 
   it('同空间创建会话：不触发切换（switched=false）', async () => {
@@ -241,6 +255,10 @@ describe('deps 与 registry 单一真源', () => {
     // 会话被写进该 runtime 的 store，说明 server 用的就是它的实例
     const list = await rt.store.listSessions();
     expect(list.some((s) => s.id === id)).toBe(true);
-    expect(registry.list().length).toBe(1);
+    // Task-20261021-010-03：切换过的空间各自保留独立 runtime（A + B 并存，LRU 未淘汰）
+    expect(registry.list().length).toBe(2);
+    expect(registry.list().map((r) => r.root).sort()).toEqual(
+      [await canonicalWorkspacePath(WS_A), await canonicalWorkspacePath(WS_B)].sort(),
+    );
   });
 });

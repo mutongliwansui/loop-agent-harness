@@ -9,7 +9,7 @@ import type { AgentOptions } from '../../types.js';
 import { AgentAbortedError } from '../../types.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
-import { switchWorkspace } from './sessions.js';
+import { switchWorkspace, hasAnyInFlight } from './sessions.js';
 
 export async function handleMessage(
   ctx: HandlerContext,
@@ -17,7 +17,9 @@ export async function handleMessage(
   res: ServerResponse,
   id: string,
 ): Promise<void> {
-  const { deps, sessions, log } = ctx;
+  const { deps, log } = ctx;
+  // Task-20261021-010-03：切换空间后 ctx.sessions 已指向新 runtime，这里必须用可变引用（而非解构快照）
+  let sessions = ctx.sessions;
   const body = await readJsonBody(req);
   const message = body.message;
   if (typeof message !== 'string' || !message.trim()) {
@@ -31,10 +33,11 @@ export async function handleMessage(
       (w) => !w.current && w.sessions.some((s) => s.id === id),
     );
     if (foreign) {
-      if (sessions.hasInFlight()) {
+      if (hasAnyInFlight(ctx)) {
         throw new ApiHttpError('busy', '存在正在处理的会话，暂不能切换工作空间');
       }
       await switchWorkspace(ctx, foreign.path);
+      sessions = ctx.sessions;
     }
   }
 

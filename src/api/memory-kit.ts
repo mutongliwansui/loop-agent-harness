@@ -109,9 +109,10 @@ export function getMemoryKit(cwd: string, opts?: MemoryKitOptions): Promise<Memo
   return p;
 }
 
-/** 兼容旧接口：默认工厂即当前工作空间的共享 kit（/memory 组端点使用） */
-export function defaultMemoryKitFactory(): Promise<MemoryKit> {
-  return getMemoryKit(process.cwd());
+/** 兼容旧接口：默认工厂即指定空间根的共享 kit（/memory 组端点使用；根由调用方显式传入） */
+export function defaultMemoryKitFactory(root: string): Promise<MemoryKit> {
+  // Task-20261021-010-03：入参改为必填 root——空间资源不允许再隐式回落进程 cwd。
+  return getMemoryKit(root);
 }
 
 /**

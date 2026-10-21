@@ -48,6 +48,7 @@ export function resolveWebRoot(raw: string): string {
   try {
     here = fileURLToPath(new URL('.', import.meta.url));
   } catch {
+    // 应用自身资源（webui 构建产物随安装目录，与工作空间无关）：保留启动目录语义
     return join(process.cwd(), 'webui', 'dist');
   }
   return join(here, '..', '..', 'webui', 'dist');
