@@ -18,6 +18,8 @@ export interface SessionMeta {
   messageCount: number;
   /** 服务端 run 状态快照（GET /workspaces 注入；与 chat-stream 实时状态取并集展示） */
   running?: boolean;
+  /** run journal 概要（GET /workspaces 注入，Task-20261021-002-06）：interrupted 时侧栏标 ⚠ */
+  lastRun?: { status: string; finishedAt?: number } | null;
 }
 export interface WorkspaceGroup {
   id: string;

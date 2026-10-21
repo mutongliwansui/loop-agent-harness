@@ -285,6 +285,19 @@ export class SessionStore {
   }
 
   /**
+   * 会话文件所在的工作空间存储目录（<userDir>/sessions/<workspaceId>，Task-20261021-002-06）。
+   * run journal 等会话附属文件据此同根存放，随会话/空间清理天然联动。
+   */
+  get sessionsDir(): string {
+    return this.workspaceDir;
+  }
+
+  /** 跨空间定位会话文件所在目录（找不到回退当前空间目录）；journal 读写删除联动用 */
+  async sessionDirOf(id: string): Promise<string> {
+    return this.resolveWorkspaceDir(id);
+  }
+
+  /**
    * 原地重绑到新工作空间路径（切换空间）：更新空间三元组并重新初始化（建目录 + 写 meta）。
    * 需配合 process.chdir(path) 使用，使 agent / skills 等 cwd 依赖跟随新空间。
    */

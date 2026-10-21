@@ -113,6 +113,7 @@ onUnmounted(() => {
                   class="run-dot"
                   title="运行中"
                 ></span>
+                <span v-else-if="s.lastRun?.status === 'interrupted'" class="warn-mark" title="上次运行被中断（服务已重启）">⚠</span>
                 <span v-else-if="isUnread(s.id)" class="unread-dot" title="已完成，有未读内容"></span>
                 {{ s.title || '新会话' }}
               </div>

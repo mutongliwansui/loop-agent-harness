@@ -17,6 +17,7 @@ import { readJsonBody, sendJson } from '../http-utils.js';
 import { resetMemoryKitCache } from '../memory-kit.js';
 import { SessionStore } from '../../session/index.js';
 import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
+import { readJournal, dropJournal } from '../run-journal.js';
 
 /** 归一化目录输入：'D:' → 'D:\'；其余走 resolve（相对路径基于服务端 cwd 展开） */
 function normalizeDirPath(input: string): string {
@@ -162,15 +163,32 @@ export async function handleListSessions(ctx: HandlerContext, res: ServerRespons
   sendJson(res, 200, { sessions: list });
 }
 
-/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；当前空间置顶；注入 running 供侧栏标记） */
+/** run journal 概要（列表用，D7：只暴露 status/finishedAt 控制体量） */
+async function readJournalSummary(
+  store: SessionStore,
+  id: string,
+): Promise<{ status: string; finishedAt?: number } | null> {
+  const jr = await readJournal(store, id);
+  return jr ? { status: jr.status, finishedAt: jr.finishedAt } : null;
+}
+
+/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；当前空间置顶；注入 running 与 lastRun 概要供侧栏标记） */
 export async function handleListWorkspaces(ctx: HandlerContext, res: ServerResponse): Promise<void> {
   const workspaces = await ctx.deps.sessionStore.listAllWorkspaces();
-  sendJson(res, 200, {
-    workspaces: workspaces.map((w) => ({
+  const enriched = await Promise.all(
+    workspaces.map(async (w) => ({
       ...w,
-      sessions: w.sessions.map((s) => ({ ...s, running: ctx.runs.isRunning(s.id) })),
+      sessions: await Promise.all(
+        w.sessions.map(async (s) => ({
+          ...s,
+          running: ctx.runs.isRunning(s.id),
+          // run journal 概要（Task-20261021-002-06 D7）：仅 status/finishedAt 两个字段，控制列表体量
+          lastRun: await readJournalSummary(ctx.deps.sessionStore, s.id),
+        })),
+      ),
     })),
-  });
+  );
+  sendJson(res, 200, { workspaces: enriched });
 }
 
 /** GET /sessions/:id：会话详情（完整历史，不含 system；支持跨工作空间会话——点击时自动切换到会话所在空间） */
@@ -201,6 +219,8 @@ export async function handleGetSession(ctx: HandlerContext, res: ServerResponse,
     meta,
     messages,
     run: ctx.runs.snapshot(id), // 运行中概览（前端决定是否 attach 续传）
+    // run journal 磁盘态（Task-20261021-002-06）：与内存 run 并列；重启后 run=null 但 lastRun 仍在
+    lastRun: await readJournal(ctx.deps.sessionStore, id),
     workspace: { path: ctx.deps.sessionStore.path, id: ctx.deps.sessionStore.id, switched },
   });
 }
@@ -218,6 +238,8 @@ export async function handleDeleteSession(ctx: HandlerContext, res: ServerRespon
   await ctx.deps.sessionStore.deleteSession(id);
   ctx.sessions.delete(id);
   ctx.runs.drop(id);
+  // journal 联动删除（Task-20261021-002-06）：会话删除后 runs/<id>.json 一并清掉
+  await dropJournal(ctx.deps.sessionStore, id);
   ctx.log(`[api] 会话已删除: ${id}`);
   sendJson(res, 200, { deleted: true });
 }

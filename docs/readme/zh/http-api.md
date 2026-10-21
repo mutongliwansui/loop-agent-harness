@@ -213,3 +213,4 @@ curl -X DELETE http://127.0.0.1:3000/sessions/sess_20261016_103000
 - **会话持久化**：回答完成后写入会话池（与 CLI 共用存储），服务重启后直接对已有会话 ID 发消息即可续聊
 - **会话级互斥**：同一会话同时只处理一条消息，并发请求返回 409；不同会话可并行
 - **配置变更**（token/port/host）需重启服务生效
+- **run journal（Task-20261021-002-06）**：每次 run 的生命周期（running/done/failed/aborted）落到 `<用户目录>/.loop-agent/sessions/<空间ID>/runs/<会话ID>.json`（随会话删除联动清理）；服务重启时启动扫描把上个进程遗留的 `running` 记录改写为 `interrupted`。`GET /sessions/:id` 响应含 `lastRun` 字段（journal 磁盘态），`GET /workspaces` 的会话项含 `lastRun: {status, finishedAt}` 概要——前端据此展示「上次运行被中断（服务已重启）」注记与侧栏 ⚠ 标记。诊断日志另写 `~/.loop-agent/logs/runs-YYYY-MM-DD.jsonl`（start/finish/abort/failed/interrupted 事件流）

@@ -81,6 +81,11 @@ export interface SessionStreamState {
   pending: SseEvent[];
   /** 首次加载去重（并发 ensureLoaded 共享同一请求） */
   loadTask: Promise<{ switched: boolean; workspacePath?: string }> | null;
+  /**
+   * 时间线尾注记（task-06，前端态不进消息数组）：
+   * lastRun=interrupted → 「⚠ 上次运行被中断（服务已重启）…」；lastRun=aborted → 「上次运行由用户停止」
+   */
+  note?: string;
 }
 
 const EMPTY_MESSAGES: ChatMsg[] = [];
@@ -228,6 +233,8 @@ interface SessionDetail {
   messages: ApiHistoryMsg[];
   workspace?: { path: string; id: string; switched: boolean };
   run?: { runId: string; status: 'running' | 'done' | 'failed' | 'aborted' } | null;
+  /** run journal 磁盘态（task-06）：服务重启后 run=null，lastRun 仍可判中断/停止 */
+  lastRun?: { status: string; finishedAt?: number } | null;
 }
 
 async function fetchDetail(id: string, st: SessionStreamState): Promise<{ switched: boolean; workspacePath?: string }> {
@@ -261,6 +268,15 @@ async function fetchDetail(id: string, st: SessionStreamState): Promise<{ switch
       last.aborted = true;
       last.meta = last.meta ? `已停止 · ${last.meta}` : '已停止';
     }
+  }
+  // 重启后中断/停止注记（task-06）：内存 run 已消失（快照 null）时按磁盘 journal 派生。
+  // interrupted 只可能来自启动扫描（bootId 不匹配），前端态 note 渲染，不进消息数组（task-03 D4）
+  if (!r.run && r.lastRun?.status === 'interrupted') {
+    st.note = '⚠ 上次运行被中断（服务已重启），以上为已保存的部分输出';
+  } else if (!r.run && r.lastRun?.status === 'aborted') {
+    st.note = '上次运行由用户停止';
+  } else if (st.note?.startsWith('⚠') || st.note === '上次运行由用户停止') {
+    st.note = undefined;
   }
   return { switched: r.workspace?.switched === true, workspacePath: r.workspace?.path };
 }
@@ -662,6 +678,7 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
   const ctrl = new AbortController();
   st.controller = ctrl;
   notifyActivity(id);
+  st.note = undefined; // 新一轮 run 开始：清掉上次的中断/停止注记（task-06）
 
   try {
     if (opts.stream) {

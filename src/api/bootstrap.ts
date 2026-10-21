@@ -4,6 +4,7 @@
 
 import { createRequire } from 'node:module';
 import { createApiServer, type ApiServer } from './server.js';
+import { reconcileInterruptedOnBoot } from './run-journal.js';
 
 export async function startApiServer(): Promise<ApiServer> {
   const { configLoader } = await import('../config/index.js');
@@ -19,6 +20,12 @@ export async function startApiServer(): Promise<ApiServer> {
   const { config: cfg } = configLoader.load();
   const store = new Store(process.cwd(), cfg.session.encryptionEnabled);
   await store.init();
+
+  // 启动扫描（Task-20261021-002-06）：上个进程遗留的 running journal 标记为 interrupted。
+  // fire-and-forget：不阻塞启动；bootId 不匹配即判中断（pid 复用不可靠，见 run-journal.ts D1）
+  void reconcileInterruptedOnBoot(store).then((n) => {
+    if (n > 0) console.log(`[api] 启动扫描：${n} 个上次运行被标记为 interrupted`);
+  });
 
   // 记忆初始化（serve 时序：起服务之前；initAgentMemory 走 agent.initMemory 自建路径，
   // 仅用于启动期自检与旧目录迁移——池内实例的运行时记忆由 initAgent 钩子注入共享 kit）

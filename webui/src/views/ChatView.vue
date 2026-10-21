@@ -515,6 +515,8 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <!-- 时间线尾注记（task-06）：重启后的中断/停止说明，前端态灰条，不进消息数组 -->
+        <div v-if="stream.note" class="aborted-note run-note">{{ stream.note }}</div>
       </div>
 
       <div class="composer">
@@ -842,6 +844,11 @@ onUnmounted(() => {
   padding: 4px 10px;
   font-size: 12.5px;
   margin-top: 8px;
+}
+/* 时间线尾注记（stream.note，Task-20261021-002-06）：与 aborted 灰条同色系，独立于消息卡片 */
+.run-note {
+  margin: 10px 2px 0;
+  text-align: center;
 }
 .cursor {
   display: inline-block;

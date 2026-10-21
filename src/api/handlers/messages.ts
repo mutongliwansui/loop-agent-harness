@@ -8,6 +8,7 @@ import { createSseForwarder, sseFrame } from '../sse.js';
 import type { AgentOptions } from '../../types.js';
 import { AgentAbortedError } from '../../types.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
+import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
 import { switchWorkspace } from './sessions.js';
 
 export async function handleMessage(
@@ -46,6 +47,22 @@ export async function handleMessage(
   const warnings: string[] = []; // 持久化失败降级收集（不失败请求）
   // run 注册（流式/非流式一致）：/workspaces 运行中标记、GET /sessions/:id 的 run、attach 端点均据此判断
   ctx.runs.start(id);
+  // journal 落盘（Task-20261021-002-06）：run 开始即写 running 记录 + 诊断日志（best-effort，失败静默）
+  const runIdNow = ctx.runs.snapshot(id)?.runId ?? '';
+  void writeJournal(deps.sessionStore, id, {
+    runId: runIdNow,
+    sessionId: id,
+    status: 'running',
+    startedAt,
+    pid: process.pid,
+    bootId: currentBootId(),
+  });
+  void writeRunLog({
+    ts: new Date().toISOString(),
+    sessionId: id,
+    runId: runIdNow,
+    event: 'start',
+  });
 
   // D5：空历史 → resetHistory（忽略 agent 实例残留 _chatHistory）；非空 → 显式 messages
   const historyBefore = entry.history;
@@ -67,6 +84,8 @@ export async function handleMessage(
       await deps.sessionStore.updateSession(id, snapshot.messages, message, {
         transcript: snapshot.transcript,
       });
+      // journal 同步（best-effort）：迭代数随节流窗口合并落盘（500ms 窗口，D3 不追求精确）
+      void writeJournal(deps.sessionStore, id, { iterations: snapshot.iterations });
     } catch (e) {
       log(
         `[api] 会话 ${id} 节流落盘失败（不阻塞回答）: ${e instanceof Error ? e.message : String(e)}`,
@@ -91,8 +110,14 @@ export async function handleMessage(
       if (!clientGone) sseFrame(res, ev.event, ev.data, ev.seq);
     });
     unsubscribe = sub?.unsubscribe ?? ((): void => {});
-    // Agent 事件先入 Hub（供断线续传），再由 Hub fan-out 到当前连接
-    runOptions.events = [createSseForwarder((event, data) => void ctx.runs.publish(id, event, data))];
+    // Agent 事件先入 Hub（供断线续传），再由 Hub fan-out 到当前连接；
+    // 发布返回的 seq 顺带同步 journal lastSeq（节流写，仅供中断诊断）
+    runOptions.events = [
+      createSseForwarder((event, data) => {
+        const seq = ctx.runs.publish(id, event, data);
+        if (seq > 0) void writeJournal(deps.sessionStore, id, { lastSeq: seq });
+      }),
+    ];
   }
 
   entry.inFlight = (async () => {
@@ -127,6 +152,21 @@ export async function handleMessage(
         ctx.runs.publish(id, 'warning', { level: 'warning', message: w });
       }
       ctx.runs.finish(id, 'done', { event: 'done', data: donePayload });
+      // journal 终态 + 诊断日志（best-effort）
+      void writeJournal(deps.sessionStore, id, {
+        status: 'done',
+        finishedAt: Date.now(),
+        iterations: result.iterations,
+      });
+      void writeRunLog({
+        ts: new Date().toISOString(),
+        sessionId: id,
+        runId: runIdNow,
+        event: 'finish',
+        status: 'done',
+        durationMs: donePayload.durationMs,
+        iterations: result.iterations,
+      });
       if (stream) {
         res.end();
       } else {
@@ -179,6 +219,21 @@ export async function handleMessage(
             partial: true,
           },
         });
+        // journal 终态 + 诊断日志（best-effort）：aborted 也属正常收尾，重启后显示「由用户停止」
+        void writeJournal(deps.sessionStore, id, {
+          status: 'aborted',
+          finishedAt: Date.now(),
+          iterations: partial.iterations,
+        });
+        void writeRunLog({
+          ts: new Date().toISOString(),
+          sessionId: id,
+          runId: runIdNow,
+          event: 'abort',
+          status: 'aborted',
+          durationMs: Date.now() - startedAt,
+          iterations: partial.iterations,
+        });
         if (stream) {
           res.end();
         } else {
@@ -198,6 +253,16 @@ export async function handleMessage(
       const msg = e instanceof Error ? e.message : String(e);
       log(`[api] 会话 ${id} 运行失败: ${msg}`);
       ctx.runs.finish(id, 'failed', { event: 'fatal', data: { message: msg } });
+      // journal 终态 + 诊断日志（best-effort）
+      void writeJournal(deps.sessionStore, id, { status: 'failed', finishedAt: Date.now() });
+      void writeRunLog({
+        ts: new Date().toISOString(),
+        sessionId: id,
+        runId: runIdNow,
+        event: 'failed',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+      });
       if (stream) {
         res.end();
       } else {
