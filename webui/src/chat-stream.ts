@@ -10,7 +10,7 @@
 //     再用 GET /sessions/:id/stream?cursor=0 全量回放重建，避免内容重复。
 
 import { computed, reactive } from 'vue';
-import { api, AuthError } from './api/client.js';
+import { api, apiStatus, AuthError } from './api/client.js';
 import { sseFetch, sseGet, type SseEvent } from './api/sse.js';
 import { showToast } from './toast.js';
 
@@ -56,7 +56,9 @@ export interface ChatMsg {
   compacting?: boolean; // 压缩中 loading（compaction_start 置 true，compaction 结束事件置 false）
   failed?: boolean;
   failedText?: string; // fatal 终止原因
-  meta?: string; // done 后的耗时/轮数标注
+  /** 被用户停止：渲染部分输出灰条（纯前端态，不进持久化内容） */
+  aborted?: boolean;
+  meta?: string; // done/aborted 后的耗时/轮数标注（aborted 带「已停止 ·」前缀）
   live?: LivePhase | null; // 实时状态行（思考中/生成参数/执行中）
   lastEventAt?: number; // 最近一次收到 SSE 事件的时间（长时间无事件时提示仍在响应）
 }
@@ -225,7 +227,7 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
 interface SessionDetail {
   messages: ApiHistoryMsg[];
   workspace?: { path: string; id: string; switched: boolean };
-  run?: { runId: string; status: 'running' | 'done' | 'failed' } | null;
+  run?: { runId: string; status: 'running' | 'done' | 'failed' | 'aborted' } | null;
 }
 
 async function fetchDetail(id: string, st: SessionStreamState): Promise<{ switched: boolean; workspacePath?: string }> {
@@ -249,6 +251,17 @@ async function fetchDetail(id: string, st: SessionStreamState): Promise<{ switch
   st.status = running ? 'running' : 'idle';
   st.runId = r.run?.runId;
   if (running) void attach(id);
+  // 刷新后灰条恢复（6.2.2）：历史消息不含中断标记（task-03 D4 中断标记不落盘），
+  // 但 run 终态在服务端有 60s 保留期——刚停止后刷新页面时 run.status 仍为 'aborted'，
+  // 末尾助手消息即为被停止的那轮部分输出，补标灰条与「已停止 ·」标注。
+  // 超过保留期后快照为 null，此时界面仅剩标注文字，灰条自然消失（可接受降级）。
+  if (r.run?.status === 'aborted' && msgs.length > 0) {
+    const last = msgs[msgs.length - 1];
+    if (last.role === 'assistant') {
+      last.aborted = true;
+      last.meta = last.meta ? `已停止 · ${last.meta}` : '已停止';
+    }
+  }
   return { switched: r.workspace?.switched === true, workspacePath: r.workspace?.path };
 }
 
@@ -304,7 +317,10 @@ function currentAssistant(st: SessionStreamState): ChatMsg {
   return asst;
 }
 
-function finishRun(id: string, st: SessionStreamState): void {
+/** run 结束状态（D5：task-07 tab 广播/系统通知直接复用） */
+type RunEndStatus = 'done' | 'failed' | 'aborted';
+
+function finishRun(id: string, st: SessionStreamState, status: RunEndStatus = 'done'): void {
   if (st.status !== 'running') return;
   st.status = 'idle';
   st.controller = null;
@@ -315,7 +331,7 @@ function finishRun(id: string, st: SessionStreamState): void {
   // 聊天页不在场或看的是别的会话：记未读 + 提醒（切回时 ChatView 会 markRead）
   if (!chatViewMounted || activeSessionId !== id) {
     st.unread = true;
-    showToast('后台会话已生成完成');
+    showToast(status === 'aborted' ? '后台会话已被停止' : '后台会话已生成完成');
   }
   notifyActivity(id);
   for (const cb of finishHandlers) cb(id);
@@ -429,12 +445,18 @@ function applyEvent(id: string, ev: SseEvent): void {
       asst.live = { kind: 'thinking', since: now };
       const info = (d.info ?? {}) as { failed?: boolean; fallback?: string };
       if (info.failed) {
-        showToast(
-          info.fallback === 'archive'
-            ? '压缩提取失败：已降级存档原始对话后压缩'
-            : '压缩提取失败：已保留全部历史',
-          'error',
-        );
+        // 压缩期被用户停止（Task-20261021-002-02 D4）：aborted 终止事件随 run 取消到达，
+        // 紧随其后的 aborted 终态会再提示「已被用户停止」，这里换文案避免语义混淆
+        if (info.fallback === 'aborted') {
+          showToast('对话压缩已随停止终止', 'error');
+        } else {
+          showToast(
+            info.fallback === 'archive'
+              ? '压缩提取失败：已降级存档原始对话后压缩'
+              : '压缩提取失败：已保留全部历史',
+            'error',
+          );
+        }
       }
       notifyActivity(id);
       break;
@@ -465,6 +487,20 @@ function applyEvent(id: string, ev: SseEvent): void {
       asst.failed = true;
       asst.failedText = String(d.message ?? '生成失败');
       finishRun(id, st);
+      break;
+    }
+    case 'aborted': {
+      // 用户停止（Task-20261021-002-04）：保留已生成部分输出，标灰条 + 「已停止 ·」标注；
+      // 部分输出已落盘（task-03），随后 reconcile 与磁盘对齐
+      const asst = currentAssistant(st);
+      asst.lastEventAt = now;
+      asst.streaming = false;
+      asst.compacting = false;
+      asst.live = null;
+      asst.aborted = true;
+      asst.meta = `已停止 · ${(Number(d.durationMs ?? 0) / 1000).toFixed(1)}s · ${String(d.iterations ?? '?')} 轮`;
+      finishRun(id, st, 'aborted');
+      void reconcile(id, true);
       break;
     }
     case 'done': {
@@ -537,8 +573,10 @@ function keepLocalUserBubbles(disk: ChatMsg[], local: ChatMsg[]): void {
 /**
  * done 后静默重拉一次历史，以落盘结果为准（P1）。
  * 期间若已开始新一轮或又收到新事件则放弃；内容一致不替换，避免界面闪烁。
+ * markAborted：本次为「已停止」收尾——磁盘重建的消息无中断标记（D4 不落盘），
+ * 替换时间线后需回填灰条与「已停止 ·」标注，否则刚出现的灰条立即消失。
  */
-async function reconcile(id: string): Promise<void> {
+async function reconcile(id: string, markAborted = false): Promise<void> {
   const st = states.get(id);
   if (!st) return;
   const seqAt = st.lastSeq;
@@ -548,7 +586,15 @@ async function reconcile(id: string): Promise<void> {
     const disk = rebuildChatMsgs(r.messages);
     keepLocalUserBubbles(disk, st.messages);
     if (sameTimeline(disk, st.messages)) return;
+    const prevAsst = markAborted ? st.messages[st.messages.length - 1] : undefined;
     st.messages.splice(0, st.messages.length, ...disk);
+    if (markAborted && prevAsst?.aborted === true) {
+      const last = st.messages[st.messages.length - 1];
+      if (last && last.role === 'assistant') {
+        last.aborted = true;
+        last.meta = prevAsst.meta;
+      }
+    }
     // 内容被磁盘结果替换：通知视图重做高亮/mermaid 与滚动
     for (const cb of finishHandlers) cb(id);
   } catch {
@@ -634,10 +680,19 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
       iterations: number;
       durationMs: number;
       warnings?: string[];
+      aborted?: boolean; // 用户取消（task-03 D7：非流式 200 + {aborted:true,partial:true}）
     }>(`/sessions/${encodeURIComponent(id)}/messages`, {
       method: 'POST',
       json: { message: opts.message, stream: false },
     });
+    // 非流式被用户取消（task-03 D7：200 + {aborted:true}）：部分输出已落盘但响应无增量可渲染，
+    // 回滚乐观气泡避免「空泡」困惑（方案 D6），下次进入会话由历史渲染呈现
+    if (r.aborted === true) {
+      st.messages.splice(baseLen);
+      st.status = 'idle';
+      showToast('已停止（未产生输出）', 'error');
+      return 'aborted';
+    }
     asst.segments = [{ type: 'text', text: r.answer }];
     asst.live = null;
     asst.streaming = false;
@@ -646,11 +701,13 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
     return 'done';
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
-      // 用户主动停止：保留已收内容（服务端照常完成并持久化）
+      // 本端读流被 abort（停止请求失败降级 / 组件级中断）：保留已收内容。
+      // 注意常规「■ 停止」走 abortRun()（服务端真取消），不会进入此分支
       asst.streaming = false;
       asst.live = null;
+      asst.aborted = true; // 语义上这轮已被停止（灰条）；若服务端稍后仍跑完，reconcile 以磁盘为准
       st.status = 'idle';
-      showToast('已停止生成（服务端将照常完成并保存）');
+      showToast('已断开连接，本轮已停止显示', 'error');
       return 'aborted';
     }
     if (st.lastSeq > 0) {
@@ -675,12 +732,38 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
   }
 }
 
-/** 停止查看（中断本端连接；服务端 run 不受影响，P2 再做服务端取消） */
+/** 本地断流兜底（Task-20261021-002-04）：常规「■ 停止」走 abortRun()（服务端真取消）；
+ * 仅当停止请求网络失败时降级调用——中断本端 POST/attach 读流，保留已收内容与服务端 run */
 export function stop(id: string): void {
   const st = states.get(id);
   if (!st) return;
   st.controller?.abort();
   st.attachCtrl?.abort();
+  // 本地封口（Task-20261021-002-04）：中断本端读流时保留已生成内容并清状态行，
+  // 避免流式光标/状态行随流关闭而残留
+  const last = st.messages[st.messages.length - 1];
+  if (last && last.role === 'assistant') {
+    last.streaming = false;
+    last.live = null;
+  }
+}
+
+/** abortRun 结果：aborting=已受理取消；none=当前无运行中任务（204）；error=请求失败（已降级本地断流） */
+export type AbortOutcome = 'aborting' | 'none' | 'error';
+
+/** 请求服务端取消当前 run（Task-20261021-002-04）：终态由 SSE aborted 事件驱动 */
+export async function abortRun(id: string): Promise<AbortOutcome> {
+  try {
+    const status = await apiStatus(`/sessions/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    return status === 204 ? 'none' : 'aborting';
+  } catch (e) {
+    // 降级为本地 detach（方案 D1）：服务端可能照常跑完，用户至少眼不见、页面不卡死
+    if (!(e instanceof AuthError)) {
+      stop(id);
+      return 'error';
+    }
+    return 'error';
+  }
 }
 
 /** attach 断线重连的退避间隔（1s、2s） */

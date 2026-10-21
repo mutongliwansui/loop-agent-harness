@@ -298,19 +298,6 @@ input:focus, textarea:focus { outline: none; border-color: var(--brand); }
 .nav .sess:hover .del, .nav .sess .del.armed { visibility: visible; }
 .nav .sess .del:hover { background: var(--danger-weak); }
 .nav .sess .del.armed { color: var(--danger); font-weight: 600; }
-/* 运行中条目的停止查看按钮（仅本端持有流时渲染，常显） */
-.nav .sess .sess-stop {
-  flex: none;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  font-size: 9px;
-  line-height: 1;
-  color: var(--danger);
-  padding: 3px 5px;
-  border-radius: 6px;
-}
-.nav .sess .sess-stop:hover { background: var(--danger-weak); }
 .nav .sess-empty { font-size: 12.5px; color: var(--muted); text-align: center; padding: 14px 0; }
 
 /* 底部：管理折叠组 + 主题行 */

@@ -72,9 +72,29 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
     headers.set('content-type', 'application/json');
     body = JSON.stringify(init.json);
   }
-  const res = await fetch(path, { ...init, headers, body });
+    const res = await fetch(path, { ...init, headers, body });
+  if (res.status === 204) return undefined as T; // 204 无响应体（如 POST /sessions/:id/stop 幂等空态）
   if (!res.ok) await throwFor(res);
   return (await res.json()) as T;
+}
+
+/** 通用 JSON API 调用（不解析响应体），返回 HTTP 状态码：供需区分 202/204 等语义的端点使用 */
+export async function apiStatus(path: string, init: RequestInit & { json?: unknown } = {}): Promise<number> {
+  const headers = new Headers(init.headers);
+  for (const [k, v] of Object.entries(authHeaders())) headers.set(k, v);
+  let body = init.body;
+  if (init.json !== undefined) {
+    headers.set('content-type', 'application/json');
+    body = JSON.stringify(init.json);
+  }
+  const res = await fetch(path, { ...init, headers, body });
+  if (res.status === 401) {
+    clearToken();
+    needAuth.value = true;
+    throw new AuthError();
+  }
+  if (!res.ok) await throwFor(res);
+  return res.status;
 }
 
 /** 原始文件下载（GET /fs/raw：自动注入 Bearer；供 pdf iframe / Office 文档前端解析） */

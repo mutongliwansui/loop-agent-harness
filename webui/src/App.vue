@@ -24,9 +24,7 @@ import {
   onRunFinished,
   runningCount,
   unreadCount,
-  stop as stopStream,
 } from './chat-stream';
-import { showToast } from './toast';
 import TokenGate from './components/TokenGate.vue';
 import Toast from './components/Toast.vue';
 
@@ -42,12 +40,6 @@ watch(
   },
   { immediate: true },
 );
-
-/** 侧栏停止：仅中断本端查看，服务端 run 继续并落盘 */
-function stopSession(id: string): void {
-  stopStream(id);
-  showToast('已停止查看该会话（服务端将照常完成并保存）');
-}
 
 // 管理分组默认收起；位于管理页时自动展开（否则活动项不可见）
 const mgrpOpen = ref(currentPath.value !== '#/chat');
@@ -126,14 +118,6 @@ onUnmounted(() => {
               </div>
               <div class="s">{{ s.messageCount }} 条 · {{ fmtTime(s.updatedAt) }}</div>
             </div>
-            <button
-              v-if="isRunning(s.id)"
-              class="sess-stop"
-              title="停止查看（服务端会照常完成并保存）"
-              @click.stop="stopSession(s.id)"
-            >
-              ■
-            </button>
             <button
               class="del"
               :class="{ armed: delArmedId === s.id }"

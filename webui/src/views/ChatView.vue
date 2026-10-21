@@ -9,7 +9,7 @@
 //   POST   /sessions/:id/messages → 发消息（默认 SSE；stream:false 非流式 JSON；跨空间会话自动切换空间）
 //   POST   /uploads/raw         → 📎 文件选择框上传 → chip（contextNote 随下一条消息注入）
 //   DELETE /uploads             → 上传面板「清空全部」（二次确认）
-// 停止生成：AbortController 中断 fetch（服务端照常完成并持久化，停止后刷新列表）
+// 停止生成：POST /sessions/:id/stop 服务端真取消（Task-20261021-002-04），终态由 SSE aborted 事件驱动
 // mermaid：流式结束/历史加载后对 ```mermaid 代码块后处理渲染为 SVG（../mermaid.ts 共享模块，
 //          FilesView md 预览同款；动态 import 独立 chunk，主题跟随 prefers-color-scheme；
 //          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
@@ -39,7 +39,7 @@ import {
   ensureLoaded,
   initEmpty,
   sendMessage,
-  stop as stopStream,
+  abortRun,
   setActiveSession,
   setChatViewMounted,
   setActivityHandler,
@@ -351,8 +351,13 @@ async function send(): Promise<void> {
   void loadSessions(); // 刷新 messageCount / updatedAt
 }
 
-function stopGen(): void {
-  if (activeId.value) stopStream(activeId.value);
+/** 停止生成（Task-20261021-002-04）：请求服务端真取消，终态由 SSE aborted 事件驱动渲染 */
+async function stopGen(): Promise<void> {
+  if (!activeId.value) return;
+  const outcome = await abortRun(activeId.value);
+  if (outcome === 'aborting') showToast('已请求停止（服务端正在收尾）');
+  else if (outcome === 'none') showToast('当前无正在运行的任务');
+  else showToast('停止请求失败，已断开本页连接', 'error');
 }
 
 function onEnter(e: KeyboardEvent): void {
@@ -519,6 +524,7 @@ onUnmounted(() => {
               />
               <span v-if="m.streaming && !m.compacting && !m.live" class="cursor"></span>
               <div v-if="m.failed" class="fatal">⚠ {{ m.failedText }}</div>
+              <div v-if="m.aborted" class="aborted-note">⏹ 已被用户停止，以上为已生成的部分输出</div>
               <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
             </div>
           </div>
@@ -543,7 +549,7 @@ onUnmounted(() => {
               @compositionstart="setComposing(true)"
               @compositionend="setComposing(false)"
             ></textarea>
-            <button v-if="streaming" class="stop" @click="stopGen">■ 停止</button>
+            <button v-if="streaming" class="stop" title="停止本次运行（服务端将中断）" @click="stopGen">■ 停止</button>
             <button
               v-else
               class="primary send"
@@ -836,6 +842,16 @@ onUnmounted(() => {
 .fatal {
   color: var(--danger);
   background: var(--danger-weak);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  margin-top: 8px;
+}
+/* 被用户停止的部分输出灰条（m.aborted，Task-20261021-002-04）：中性灰，与失败红区分 */
+.aborted-note {
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px dashed var(--line);
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12.5px;
