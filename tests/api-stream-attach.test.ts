@@ -41,7 +41,7 @@ function makeResult(answer: string, input: string): AgentResult {
   };
 }
 
-const runAgent = async (input: string, options: AgentOptions): Promise<AgentResult> => {
+const runAgent = async (_sessionId: string, input: string, options: AgentOptions): Promise<AgentResult> => {
   for (const ev of options.events ?? []) await ev.onStart?.(input);
   started = true;
   await gate;

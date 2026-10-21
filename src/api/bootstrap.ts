@@ -6,13 +6,13 @@ import { createRequire } from 'node:module';
 import { createApiServer, type ApiServer } from './server.js';
 
 export async function startApiServer(): Promise<ApiServer> {
-  const { agent } = await import('../agent/react-agent.js');
   const { configLoader } = await import('../config/index.js');
   const { configWriter } = await import('../config/writer.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
   const { skillLoader } = await import('../skill/loader.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
-  const { defaultMemoryKitFactory } = await import('./memory-kit.js');
+  const { getMemoryKit, resetMemoryKitCache } = await import('./memory-kit.js');
+  const { AgentPool } = await import('../agent/agent-pool.js');
   const { SessionStore: Store } = await import('../session/index.js');
   const { initAgentMemory } = await import('../runtime/init.js');
 
@@ -20,8 +20,18 @@ export async function startApiServer(): Promise<ApiServer> {
   const store = new Store(process.cwd(), cfg.session.encryptionEnabled);
   await store.init();
 
-  // 记忆初始化（serve 时序：起服务之前）
+  // 记忆初始化（serve 时序：起服务之前；initAgentMemory 走 agent.initMemory 自建路径，
+  // 仅用于启动期自检与旧目录迁移——池内实例的运行时记忆由 initAgent 钩子注入共享 kit）
   await initAgentMemory();
+
+  // Agent 实例池（Task-20261021-002-05）：替代单例 agent，同工作空间多会话并发。
+  // D1：容量默认 4（含 busy）；D2：记忆按 workspaceId 共享 kit，禁止每实例自建；
+  // D5：attachMemory 注入共享 kit；容量 1 等价回退旧串行语义（经环境变量可调）。
+  const capacity = Number.parseInt(process.env.LOOP_AGENT_POOL_CAPACITY ?? '', 10);
+  const pool = new AgentPool(
+    { capacity: Number.isFinite(capacity) && capacity > 0 ? capacity : undefined },
+    async (a) => a.attachMemory(await getMemoryKit(process.cwd()), process.cwd()),
+  );
 
   // 读取 package.json 版本（/health 返回）
   let version = '';
@@ -33,13 +43,17 @@ export async function startApiServer(): Promise<ApiServer> {
   }
 
   const server = createApiServer({
-    runAgent: (input, options) => agent.run(input, options),
+    // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
+    runAgent: (sessionId, input, options) => pool.withAgent(sessionId, (a) => a.run(input, options)),
     sessionStore: store,
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
-    // 切换工作空间后重建 agent 实例记忆（L1/L2/L3 重绑新空间，避免旧空间记忆污染回答）
-    reinitMemory: (cwd) => agent.initMemory(cwd),
+    // 切换工作空间：池内实例的记忆绑定旧 workspaceId，整体重建（D6）+ 清共享 kit 缓存
+    reinitMemory: async () => {
+      resetMemoryKitCache();
+      pool.reset();
+    },
     // D8：命令资源化运行时依赖（真实单例组装）
     runtime: {
       configLoader,
@@ -47,7 +61,7 @@ export async function startApiServer(): Promise<ApiServer> {
       mcpManager,
       skillLoader,
       uploadsRoot: defaultUploadsRoot(),
-      createMemoryKit: defaultMemoryKitFactory,
+      createMemoryKit: () => getMemoryKit(process.cwd()),
     },
   });
 

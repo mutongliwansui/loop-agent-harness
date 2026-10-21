@@ -15,6 +15,7 @@ import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
 import { skillLoader } from '../skill/loader.js';
 import { SessionStore, workspaceId } from '../session/store.js';
+import type { MemoryKit } from '../api/memory-kit.js';
 import type { SessionData } from '../session/types.js';
 import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
 import { isSummaryMessage } from '../memory/summary-message.js';
@@ -281,6 +282,47 @@ export class ReActAgent {
     }
 
     debug.log(`记忆系统已初始化: L1(maxTokens=${cfg.memory.working.maxTokens}), L2(dir=${episodicDir}), L3(Curated), Dreaming(daysBack=${cfg.memory.dreaming.daysBack})`);
+  }
+
+  /**
+   * 外部注入已初始化的记忆子系统（Task-20261021-002-05 D5，AgentPool 用）。
+   * serve 模式：池的 initAgent 钩子调用，多 agent 实例共享同一 MemoryKit（同空间写一致性前提）；
+   * CLI 模式不经过此入口（仍走 initMemory 自建）。
+   * 与 initMemory 互斥，后调用者生效（重入时先释放旧实例的 sqlite 句柄）。
+   * kit 为 null 视为禁用记忆（config.memory.enabled=false 同口径）。
+   */
+  async attachMemory(kit: MemoryKit | null, cwd: string): Promise<void> {
+    const { config: cfg } = this._configLoader.load();
+    if (!cfg.memory.enabled || !kit) {
+      this._memoryEnabled = false;
+      return;
+    }
+    this._memoryEnabled = true;
+    this._workingConfig = cfg.memory.working;
+
+    // 重入支持：旧实例的 FTS/向量索引持 sqlite 句柄，重建前先释放（首次调用时为 no-op）
+    this._episodicMemory?.closeIndex();
+
+    this._workingMemory = new WorkingMemory(cfg.memory.working);
+    this._episodicMemory = kit.episodic;
+    this._curatedMemory = kit.curated;
+    this._promotionGate = kit.gate;
+    this._dreamingPipeline = kit.dream;
+    this._contextAssembler = new ContextAssembler(kit.curated, kit.episodic);
+    this._memoryCallback = new ToolMemoryCallback(kit.episodic);
+    this._memoryCallback.setSessionId(this._currentSessionId);
+
+    debug.log(`记忆系统已注入（共享 kit）: workspace=${workspaceId(cwd)}`);
+  }
+
+  /**
+   * 释放实例持有的资源（AgentPool 淘汰/reset 时调用）；幂等。
+   * 注意：**不关共享 kit 的 sqlite 索引**——记忆子系统按 workspaceId 共享（05 D2），
+   * closeIndex 会破坏同池其他实例的检索能力；实例本身无独占资源（历史在内存），
+   * 直接丢弃引用交给 GC 即可。CLI 自建实例的生命周期由 initMemory 重入路径管理。
+   */
+  dispose(): void {
+    // 共享 kit 实例不归本 agent 所有，无资源可释放（有意为空实现）
   }
 
   /** 是否启用了记忆系统 */

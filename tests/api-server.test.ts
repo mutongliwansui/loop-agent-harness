@@ -31,20 +31,32 @@ type Res = Awaited<ReturnType<typeof fetch>>;
 let config: AgentConfig = structuredClone(DEFAULT_CONFIG);
 
 /** 默认 runAgent：构造单步结果并按顺序触发全部 15 个事件钩子 */
-const defaultImpl = async (input: string, options: AgentOptions): Promise<AgentResult> => {
+const defaultImpl = async (
+  _sessionId: string,
+  input: string,
+  options: AgentOptions,
+): Promise<AgentResult> => {
   const result = makeResult(`回复:${input}`, input, options.messages ?? []);
   await emitAll(input, options, result);
   return result;
 };
 
-let runAgentImpl: (input: string, options: AgentOptions) => Promise<AgentResult> = defaultImpl;
+let runAgentImpl: (
+  sessionId: string,
+  input: string,
+  options: AgentOptions,
+) => Promise<AgentResult> = defaultImpl;
 
 /** 记录每次 runAgent 调用的入参 */
-const calls: { input: string; options: AgentOptions }[] = [];
+const calls: { sessionId: string; input: string; options: AgentOptions }[] = [];
 
-const runAgent = async (input: string, options: AgentOptions): Promise<AgentResult> => {
-  calls.push({ input, options });
-  return runAgentImpl(input, options);
+const runAgent = async (
+  sessionId: string,
+  input: string,
+  options: AgentOptions,
+): Promise<AgentResult> => {
+  calls.push({ sessionId, input, options });
+  return runAgentImpl(sessionId, input, options);
 };
 
 // ===== 构造工具 =====
@@ -463,13 +475,13 @@ describe('会话级互斥（409 busy）', () => {
     const idB = await createSessionViaApi();
 
     let releaseHang: ((r: AgentResult) => void) | undefined;
-    runAgentImpl = (input, options) => {
+    runAgentImpl = (_sessionId, input, options) => {
       if (input === '挂起') {
         return new Promise<AgentResult>((resolve) => {
           releaseHang = (r) => resolve(r);
         });
       }
-      return defaultImpl(input, options);
+      return defaultImpl(_sessionId, input, options);
     };
 
     // A 会话首条消息挂起（不 await，保持 in-flight）
@@ -498,7 +510,98 @@ describe('会话级互斥（409 busy）', () => {
   });
 });
 
-// ===== 6. 重启恢复（D5：内存缓存 miss → SessionStore 恢复） =====
+// ===== 6. 同工作空间多会话并发（Task-20261021-002-05 验收 6.2.7） =====
+
+describe('同工作空间多会话并发（20261021-002-05）', () => {
+  it('6.2.7 双会话并发 runAgent：entry.history 不串、B 空历史不继承 A、落盘各自独立', async () => {
+    const idA = await createSessionViaApi();
+    const idB = await createSessionViaApi();
+
+    // A 第一轮正常完成（产生落盘历史 user+assistant）
+    await req('POST', `/sessions/${idA}/messages`, { message: 'A 第一轮', stream: false });
+    expect(calls.filter((c) => c.sessionId === idA)).toHaveLength(1);
+
+    // A 第二条挂起保持 in-flight；期间 B 首条并发执行
+    let releaseA: ((r: AgentResult) => void) | undefined;
+    runAgentImpl = (sessionId, input, options) => {
+      if (sessionId === idA && input === 'A 挂起') {
+        return new Promise<AgentResult>((resolve) => {
+          releaseA = (r) => resolve(r);
+        });
+      }
+      return defaultImpl(sessionId, input, options);
+    };
+    const pA = req('POST', `/sessions/${idA}/messages`, { message: 'A 挂起', stream: false });
+    await waitFor(() => calls.filter((c) => c.sessionId === idA).length === 2);
+
+    // B 与 A 真并发：B 首条应为空历史（resetHistory），不继承 A 的第一轮历史
+    const pB = req('POST', `/sessions/${idB}/messages`, { message: 'B 并发首条', stream: false });
+    await pB.then(async (res) => {
+      expect(res.status).toBe(200);
+      expect((await jsonOf(res)).answer).toBe('回复:B 并发首条');
+    });
+    const callB = calls.find((c) => c.sessionId === idB)!;
+    expect(callB.options.resetHistory).toBe(true);
+    expect(callB.options.messages).toBeUndefined(); // A 的历史没有泄入 B 的请求
+
+    // A 第二轮收到的历史仍是 A 自己的第一轮（未被并发的 B 改写）
+    const callA2 = calls.filter((c) => c.sessionId === idA)[1];
+    expect(callA2.options.resetHistory).toBeUndefined();
+    expect(callA2.options.messages?.map((m) => m.content)).toEqual(['A 第一轮', '回复:A 第一轮']);
+
+    // 释放 A：返回值拼上 A 自己的历史（模拟真实 agent 追加语义），完成落盘
+    releaseA?.(makeResult('A 恢复回复', 'A 挂起', [
+      { role: 'user', content: 'A 第一轮' },
+      { role: 'assistant', content: '回复:A 第一轮' },
+    ]));
+    const resA = await pA;
+    expect(resA.status).toBe(200);
+
+    // 落盘内容各自独立：两会话详情互不包含对方的消息（GET /sessions/:id 返回全量历史）
+    const detailA = await jsonOf(await req('GET', `/sessions/${idA}`));
+    const detailB = await jsonOf(await req('GET', `/sessions/${idB}`));
+    const contentsA = (detailA.messages as { content: string }[]).map((m) => m.content);
+    const contentsB = (detailB.messages as { content: string }[]).map((m) => m.content);
+    expect(contentsA).toContain('A 挂起');
+    expect(contentsA).toContain('A 恢复回复');
+    expect(contentsA.every((c) => !c.includes('B 并发'))).toBe(true);
+    expect(contentsB).toContain('B 并发首条');
+    expect(contentsB.every((c) => !c.includes('A 第一轮') && !c.includes('A 恢复'))).toBe(true);
+  });
+
+  it('并发流式：两会话 SSE 流内容互不串扰（RunHub 按 sessionId fan-out）', async () => {
+    const idA = await createSessionViaApi();
+    const idB = await createSessionViaApi();
+
+    // 同时发起两个流式请求，各自读到完整 SSE 帧序列
+    const [resA, resB] = await Promise.all([
+      req('POST', `/sessions/${idA}/messages`, { message: '流式A' }),
+      req('POST', `/sessions/${idB}/messages`, { message: '流式B' }),
+    ]);
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+
+    const [framesA, framesB] = await Promise.all([readSse(resA), readSse(resB)]);
+    const byEventA = new Map(framesA.map((f) => [f.event, f.data]));
+    const byEventB = new Map(framesB.map((f) => [f.event, f.data]));
+
+    // 各自的 start/final/end 只含自己的输入与回答
+    expect(byEventA.get('start')).toEqual({ input: '流式A' });
+    expect(byEventA.get('final')).toEqual({ answer: '回复:流式A' });
+    expect(byEventA.get('done')).toMatchObject({ sessionId: idA });
+    expect(byEventB.get('start')).toEqual({ input: '流式B' });
+    expect(byEventB.get('final')).toEqual({ answer: '回复:流式B' });
+    expect(byEventB.get('done')).toMatchObject({ sessionId: idB });
+
+    // A 的流中不出现 B 的任何载荷（反之亦然）
+    const dumpA = JSON.stringify(framesA);
+    const dumpB = JSON.stringify(framesB);
+    expect(dumpA).not.toContain('流式B');
+    expect(dumpB).not.toContain('流式A');
+  });
+});
+
+// ===== 7. 重启恢复（D5：内存缓存 miss → SessionStore 恢复） =====
 
 describe('重启恢复（D5）', () => {
   it('close 后同 SessionStore 新建 server，历史从落盘恢复注入 runAgent', async () => {

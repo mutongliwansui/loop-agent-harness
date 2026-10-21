@@ -147,11 +147,12 @@ export async function switchWorkspace(ctx: HandlerContext, target: string): Prom
   } catch (e) {
     ctx.log(`[api] 工作空间初始化失败: ${e instanceof Error ? e.message : String(e)}`);
   }
-  // 重建 agent 实例记忆（L1/L2/L3 绑定新空间）；失败不阻断已成功的切换，仅记日志
+  // 记忆/池重建（Task-20261021-002-05 D6）：清共享 kit 缓存 + 重置 AgentPool
+  //（池内实例的记忆绑定旧 workspaceId，整体重建最稳妥）；失败不阻断已成功的切换，仅记日志
   try {
     await ctx.reinitMemory?.(target);
   } catch (e) {
-    ctx.log(`[api] 切换后 agent 记忆重建失败（沿用旧空间记忆直至重启）: ${e instanceof Error ? e.message : String(e)}`);
+    ctx.log(`[api] 切换后记忆/实例池重建失败（沿用旧实例直至重启）: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

@@ -50,9 +50,11 @@ export interface ApiRuntimeDeps {
 
 /** 依赖注入面（D9：单测注入 fake runAgent + 临时目录 SessionStore） */
 export interface ApiServerDeps {
-  /** agent.run 的函数签名 */
-  runAgent: (input: string, options: AgentOptions) => Promise<AgentResult>;
-  /** API 专用会话存储（serve 模式不注入共享 agent） */
+  /**
+   * agent.run 的函数签名（Task-20261021-002-05）：
+   * sessionId 首参供 AgentPool 按会话租用独立 agent 实例（同工作空间多会话并发）
+   */
+  runAgent: (sessionId: string, input: string, options: AgentOptions) => Promise<AgentResult>;
   sessionStore: SessionStore;
   /** 每次请求时读取生效配置（鉴权 token / 健康探针的 model 名） */
   getConfig: () => AgentConfig;
@@ -60,7 +62,7 @@ export interface ApiServerDeps {
   version?: string;
   /** 日志输出（默认静默；startApiServer 注入 console.log） */
   log?: (msg: string) => void;
-  /** 切换工作空间后重建 agent 实例记忆（serve 注入 agent.initMemory；缺省时切换仅重置 memory-kit 缓存） */
+  /** 切换工作空间后重建记忆与实例池（Task-20261021-002-05 D6：缺省时仅重置 memory-kit 缓存） */
   reinitMemory?: (cwd: string) => Promise<void>;
   /** 命令资源化运行时依赖（D8）；缺省字段回落全局单例 */
   runtime?: Partial<ApiRuntimeDeps>;

@@ -89,15 +89,36 @@ export async function createMemoryKit(
   return { episodic, curated, gate, dream };
 }
 
-let cachedKit: Promise<MemoryKit> | null = null;
+// Task-20261021-002-05 D2：记忆 kit 按 workspaceId 缓存（Map）——
+// serve 模式下 AgentPool 的多个 agent 实例共享同一 kit 实例（同空间并发的写一致性前提）；
+// 切换工作空间后 resetMemoryKitCache() 清空 Map（对应 AgentPool.reset()）。
+const kits = new Map<string, Promise<MemoryKit>>();
 
-/** 默认工厂：真实单例组装（进程内 memoized——记忆目录与状态文件只需初始化一次） */
-export function defaultMemoryKitFactory(): Promise<MemoryKit> {
-  cachedKit ??= createMemoryKit(process.cwd(), configLoader);
-  return cachedKit;
+/**
+ * 取/建指定 cwd 的共享记忆 kit（进程内按 workspaceId memoized）。
+ * 同一空间多次调用返回同一 Promise 实例（避免双 kit 并发写同一索引/状态文件）。
+ * opts 仅测试注入目录隔离用（首调生效，缓存命中时忽略——同 cwd 不应传不同 opts）。
+ */
+export function getMemoryKit(cwd: string, opts?: MemoryKitOptions): Promise<MemoryKit> {
+  const key = workspaceId(cwd);
+  let p = kits.get(key);
+  if (!p) {
+    p = createMemoryKit(cwd, configLoader, opts);
+    kits.set(key, p);
+  }
+  return p;
 }
 
-/** 切换工作空间后重置单例：记忆目录含 workspaceId(cwd)，必须按新 cwd 重新组装 */
+/** 兼容旧接口：默认工厂即当前工作空间的共享 kit（/memory 组端点使用） */
+export function defaultMemoryKitFactory(): Promise<MemoryKit> {
+  return getMemoryKit(process.cwd());
+}
+
+/**
+ * 重置全部缓存 kit：切换工作空间后调用（记忆目录含 workspaceId(cwd)，必须按新 cwd 重新组装）。
+ * 注意：仅清 Map 引用，不 dispose 旧实例（Kit 无统一释放口；sqlite 句柄由 GC/进程管理，
+ * 与切空间前 hasInFlight() 全局空闲的前提共同保证无并发写残留）。
+ */
 export function resetMemoryKitCache(): void {
-  cachedKit = null;
+  kits.clear();
 }

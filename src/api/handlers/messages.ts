@@ -97,7 +97,8 @@ export async function handleMessage(
 
   entry.inFlight = (async () => {
     try {
-      const result = await deps.runAgent(message, runOptions);
+      // 05：sessionId 首参 → AgentPool 按会话租用独立实例（同空间多会话并发）
+      const result = await deps.runAgent(id, message, runOptions);
 
       // 持久化（API 层自持 SessionStore；会话已在 ensureEntry/loadSession 阶段确认存在）
       try {

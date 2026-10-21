@@ -294,16 +294,6 @@ async function ensureSession(): Promise<string | null> {
   return activeId.value ?? (await createSession());
 }
 
-/** 其他会话中正在运行的第一个（服务端单 run：同一时刻只允许一个会话生成） */
-function otherRunningSession(): SessionMeta | null {
-  for (const w of workspaces.value) {
-    for (const s of w.sessions) {
-      if (s.id !== activeId.value && isRunning(s.id)) return s;
-    }
-  }
-  return null;
-}
-
 async function send(): Promise<void> {
   if (foreignActive.value) {
     showToast('跨工作空间会话仅支持查看与删除，不支持继续对话', 'error');
@@ -315,12 +305,8 @@ async function send(): Promise<void> {
     showToast('当前会话正在生成回复，请先停止', 'error');
     return;
   }
-  // 服务端单 run（runAgent/agent 实例共享）：另一会话在跑时不允许再发，避免并发写乱历史
-  const other = otherRunningSession();
-  if (other) {
-    showToast(`会话「${other.title || '新会话'}」正在生成回复，请先停止或稍后再试`, 'error');
-    return;
-  }
+  // 20261021-002-05：服务端 AgentPool 已支持同空间多会话并发，
+  // 跨会话发送拦截移除（服务端 entry.inFlight 仅约束同会话串行）
   const sessionId = await ensureSession();
   if (!sessionId) return;
 

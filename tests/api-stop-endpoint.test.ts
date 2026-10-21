@@ -32,13 +32,13 @@ let config: AgentConfig = structuredClone(DEFAULT_CONFIG);
 
 /** 当前正在跑的 run 的 AgentOptions（测试用来读 signal / 定制行为） */
 let liveOptions: AgentOptions | null = null;
-/** runAgent 行为钩子（每个用例自定义） */
-let runImpl: (input: string, options: AgentOptions) => Promise<unknown> = async () => {
+/** runAgent 行为钩子（每个用例自定义；05：签名含 sessionId） */
+let runImpl: (sessionId: string, input: string, options: AgentOptions) => Promise<unknown> = async () => {
   throw new Error('not configured');
 };
 
 /** 默认行为：发 onStart 后挂起直到 abort，然后抛 AgentAbortedError（快照带孤立 tool_calls） */
-const hangingAgent = async (input: string, options: AgentOptions): Promise<unknown> => {
+const hangingAgent = async (_sessionId: string, input: string, options: AgentOptions): Promise<unknown> => {
   liveOptions = options;
   for (const ev of options.events ?? []) await ev.onStart?.(input);
   await new Promise<void>((resolve, reject) => {
@@ -97,7 +97,7 @@ beforeAll(async () => {
 
   config = { ...config, api: { ...config.api, port: 0 } };
   server = createApiServer({
-    runAgent: (input, options) => runImpl(input, options),
+    runAgent: (sessionId, input, options) => runImpl(sessionId, input, options),
     sessionStore: store,
     getConfig: () => config,
   });
