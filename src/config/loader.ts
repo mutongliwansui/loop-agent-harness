@@ -64,15 +64,6 @@ export class ConfigLoader {
     return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
-  /**
-   * 切换工作空间后更新工作空间根目录（load 的 workspace 层随之指向新空间；全局层不变）
-   * @deprecated Task-20261021-010-03 起 serve 侧每个 runtime 构造期定根，不再原地改写；
-   * 保留仅为兼容外部调用与既有单测，P2（task-04）删除。
-   */
-  setWorkspacePath(path: string): void {
-    this.workspacePath = path;
-  }
-
   get globalConfigPath(): string {
     return join(this.globalDir, 'config.json');
   }

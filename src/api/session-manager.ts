@@ -45,7 +45,7 @@ export class SessionManager {
     this.sessions.delete(id);
   }
 
-  /** 是否存在任意会话的 in-flight run（切换工作空间前须确认全局空闲） */
+  /** 本空间内是否存在任意会话的 in-flight run（task-04：语义收窄为空间内；跨空间互斥已移除） */
   hasInFlight(): boolean {
     for (const entry of this.sessions.values()) {
       if (entry.inFlight) return true;
@@ -71,8 +71,9 @@ export class SessionManager {
   }
 
   /**
-   * createSession 串行化：store 内部生成秒级时间戳 id（sess_YYYYMMDD_HHMMSS），
-   * 同秒两次创建会互相覆盖文件，故排队执行并保证调用间隔 ≥ 1 秒（最多等待 3 次）。
+   * createSession 串行化：store 内部生成秒级时间戳 id（sess_<wsId8>_<ts>，task-04 起含空间段），
+   * 同空间同秒两次创建会互相覆盖文件，故排队执行并保证调用间隔 ≥ 1 秒（最多等待 3 次）。
+   * task-04：串行链按 runtime 独立（每空间一个 SessionManager），跨空间创建不再互相等待。
    */
   createSessionSafe(firstMessage: string, messages: ChatMessage[]): Promise<SessionMetaLike> {
     const task = this.createChain.then(async () => {

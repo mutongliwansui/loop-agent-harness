@@ -299,20 +299,6 @@ export class SessionStore {
   }
 
   /**
-   * 原地重绑到新工作空间路径（切换空间）：更新空间三元组并重新初始化（建目录 + 写 meta）。
-   * @deprecated Task-20261021-010-03 起切换空间不再改写 store，而是由 WorkspaceRegistry
-   * 为新空间懒建独立 runtime（store 构造期定根、实例不可变）；本方法仅保留兼容旧调用与
-   * 既有单测，P2（task-04）删除。
-   */
-  async rebindWorkspace(path: string): Promise<void> {
-    this.workspacePath = path;
-    this.workspaceId = workspaceId(path);
-    this.workspaceDir = join(this.userDir, 'sessions', this.workspaceId);
-    this.currentSessionId = null;
-    await this.init();
-  }
-
-  /**
    * 初始化：加密模式下确保密钥已加载，创建目录
    */
   async init(): Promise<void> {
@@ -335,7 +321,10 @@ export class SessionStore {
     messages: ChatMessage[],
     opts?: SessionUpdateOptions,
   ): Promise<SessionMeta> {
-    const id = `sess_${formatDate(new Date())}`;
+    // Task-20261021-010-04（D5）：id 加空间命名空间 sess_<wsId8>_<ts>，
+    // 跨空间同秒创建不再撞名（RunHub/SessionManager 以 id 为全局键）；
+    // 老格式 sess_<ts> 永久兼容读取（session-locator 全扫回退定位）。
+    const id = `sess_${this.workspaceId.slice(0, 8)}_${formatDate(new Date())}`;
     const now = new Date().toISOString();
 
     const stored: ChatMessage[] = [];

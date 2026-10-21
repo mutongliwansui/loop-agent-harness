@@ -30,6 +30,7 @@ import type { AgentOptions, AgentResult } from '../types.js';
 import { ApiHttpError } from './errors.js';
 import { getMemoryKit, type MemoryKit } from './memory-kit.js';
 import { SessionManager } from './session-manager.js';
+import { Semaphore } from './semaphore.js';
 
 /** 单次 run 的执行签名（与 ApiServerDeps.runAgent 同构） */
 export type RuntimeRunAgent = (
@@ -71,6 +72,11 @@ export interface WorkspaceRegistryOptions {
   idleTtlMs?: number;
   /** 会话/密钥根目录覆盖（默认 ~/.loop-agent；仅单测隔离用，避免污染真实用户目录） */
   userDir?: string;
+  /**
+   * runAgent 工厂覆盖（仅单测用）：为每个 runtime 生成假 runAgent，
+   * 替代"池租用 + ALS 包裹"的默认实现，避免单测触发真实 LLM 调用
+   */
+  runAgentFactory?: (root: string, id: string) => RuntimeRunAgent;
 }
 
 /** 读正整数环境变量，非法时回退默认值并记一条日志 */
@@ -124,18 +130,52 @@ export class WorkspaceRegistry {
   private readonly maxRuntimes: number;
   private readonly poolCapacity: number;
   private readonly idleTtlMs: number;
-  private readonly userDir?: string;
+  /** 会话/密钥根目录覆盖（session-locator 全扫回退定位需要；默认 ~/.loop-agent） */
+  readonly userDir?: string;
+  private readonly runAgentFactory?: (root: string, id: string) => RuntimeRunAgent;
+  /**
+   * 进程级并发闸门（Task-20261021-010-04 D18）：跨空间 run 总数上限
+   * min(maxRuntimes × poolCapacity, LOOP_AGENT_MAX_CONCURRENCY ?? 8)，
+   * 夹在每个 runtime 的 runAgent 外层（FIFO 排队，不拒绝）。
+   */
+  private readonly gate: Semaphore;
+  /** 最近使用指针（D9）：get/getCanonical 取用即更新；/workspaces 的 current 由它标注 */
+  private current: string | null = null;
 
   constructor(opts: WorkspaceRegistryOptions = {}) {
     this.maxRuntimes = opts.maxRuntimes ?? intFromEnv('LOOP_AGENT_MAX_WORKSPACES', DEFAULT_MAX_RUNTIMES);
     this.poolCapacity = opts.poolCapacity ?? intFromEnv('LOOP_AGENT_POOL_CAPACITY', 4);
     this.idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
     this.userDir = opts.userDir;
+    this.runAgentFactory = opts.runAgentFactory;
+    this.gate = new Semaphore(
+      Math.min(this.maxRuntimes * this.poolCapacity, intFromEnv('LOOP_AGENT_MAX_CONCURRENCY', 8)),
+    );
   }
 
   /** 当前保有的 runtime 数量上限 */
   get limit(): number {
     return this.maxRuntimes;
+  }
+
+  /** 每个 runtime 的 agent 池容量 */
+  get capacity(): number {
+    return this.poolCapacity;
+  }
+
+  /** 全局并发闸门的实际上限（D18） */
+  get maxConcurrency(): number {
+    return this.gate.max;
+  }
+
+  /** 最近使用空间（canonical root；无则为 null，调用方回落启动空间） */
+  get currentRoot(): string | null {
+    return this.current;
+  }
+
+  /** 显式更新最近使用指针（一般无需调用——get/getCanonical 已自动 touch） */
+  touch(root: string): void {
+    this.current = root;
   }
 
   /**
@@ -151,6 +191,7 @@ export class WorkspaceRegistry {
     const hit = this.runtimes.get(root);
     if (hit) {
       hit.lastUsedAt = Date.now();
+      this.current = root;
       return hit;
     }
     const inflight = this.building.get(root);
@@ -159,6 +200,7 @@ export class WorkspaceRegistry {
     const task = this.build(root)
       .then((rt) => {
         this.building.delete(root);
+        this.current = root;
         return rt;
       })
       .catch((e: unknown) => {
@@ -217,6 +259,7 @@ export class WorkspaceRegistry {
     for (const rt of this.runtimes.values()) rt.pool.reset();
     this.runtimes.clear();
     this.building.clear();
+    this.current = null;
     debug.log('[registry] 已重置（全部工作空间运行时释放）');
   }
 
@@ -244,6 +287,12 @@ export class WorkspaceRegistry {
       await a.attachMemory(await rt.getMemoryKit(), root);
     });
 
+    // 默认实现：池租用 + 本空间 ALS 包裹，外层再夹进程级并发闸门（D18）；
+    // 单测可经 runAgentFactory 注入假实现（避免真实 LLM 调用）
+    const pooledRun: RuntimeRunAgent = (sessionId, input, options) =>
+      runWithWorkspace({ root, id }, () => pool.withAgent(sessionId, (a) => a.run(input, options)));
+    const raw = this.runAgentFactory?.(root, id) ?? pooledRun;
+
     rt = {
       root,
       id,
@@ -255,9 +304,9 @@ export class WorkspaceRegistry {
       pool,
       getMemoryKit: () => getMemoryKit(root),
       // run 全程处于本空间 ALS 上下文（漏传显式根的深层代码仍能取到正确的根）；
-      // 每空间一池，run 只可能落在本空间实例上（切换空间仅更换 handler 指针）
-      runAgent: (sessionId, input, options) =>
-        runWithWorkspace({ root, id }, () => pool.withAgent(sessionId, (a) => a.run(input, options))),
+      // 每空间一池，run 只可能落在本空间实例上（切换空间仅更换 handler 指针）；
+      // 跨空间并发总上限由进程级 Semaphore 把关（FIFO 排队，不拒绝）
+      runAgent: (sessionId, input, options) => this.gate.run(() => raw(sessionId, input, options)),
       lastUsedAt: Date.now(),
     };
     this.runtimes.set(root, rt);
@@ -272,9 +321,10 @@ export class WorkspaceRegistry {
     return rt.sessions.hasInFlight();
   }
 
-  /** 释放单个 runtime：池内实例 dispose，缓存移除 */
+  /** 释放单个 runtime：池内实例 dispose，缓存移除；最近使用指针同步失效（回落启动空间） */
   private dispose(root: string, rt: WorkspaceRuntime): void {
     this.runtimes.delete(root);
+    if (this.current === root) this.current = null;
     try {
       rt.pool.reset();
     } catch (e) {

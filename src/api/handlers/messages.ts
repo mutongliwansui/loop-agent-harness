@@ -9,7 +9,7 @@ import type { AgentOptions } from '../../types.js';
 import { AgentAbortedError } from '../../types.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
-import { switchWorkspace, hasAnyInFlight } from './sessions.js';
+import { locateSession } from '../session-locator.js';
 
 export async function handleMessage(
   ctx: HandlerContext,
@@ -18,8 +18,6 @@ export async function handleMessage(
   id: string,
 ): Promise<void> {
   const { deps, log } = ctx;
-  // Task-20261021-010-03：切换空间后 ctx.sessions 已指向新 runtime，这里必须用可变引用（而非解构快照）
-  let sessions = ctx.sessions;
   const body = await readJsonBody(req);
   const message = body.message;
   if (typeof message !== 'string' || !message.trim()) {
@@ -27,18 +25,17 @@ export async function handleMessage(
   }
   const stream = body.stream !== false; // 默认 true
 
-  // 跨工作空间会话：自动切换到会话所在空间再对话（查看时 GET 详情已先行切换；此处兜底直接发消息的入口）
-  if (!(await deps.sessionStore.listSessions()).some((s) => s.id === id)) {
-    const foreign = (await deps.sessionStore.listAllWorkspaces()).find(
-      (w) => !w.current && w.sessions.some((s) => s.id === id),
-    );
-    if (foreign) {
-      if (hasAnyInFlight(ctx)) {
-        throw new ApiHttpError('busy', '存在正在处理的会话，暂不能切换工作空间');
-      }
-      await switchWorkspace(ctx, foreign.path);
-      sessions = ctx.sessions;
-    }
+  // Task-20261021-010-04（D10/D17）：按 sessionId 定位归属 runtime，
+  // 在该空间的 sessions/store/runAgent 内完成读历史、互斥与执行——
+  // 不再切换全局"当前空间"，跨空间会话续聊天然并行（per-space 互斥仅作用于归属空间）
+  let sessions = ctx.sessions;
+  let store = deps.sessionStore;
+  let runAgent = deps.runAgent;
+  if (ctx.registry) {
+    const rt = await locateSession(ctx.registry, id);
+    sessions = rt.sessions;
+    store = rt.store;
+    runAgent = (sessionId, input, options) => rt.runAgent(sessionId, input, options);
   }
 
   const entry = await sessions.ensureEntry(id);
@@ -52,7 +49,7 @@ export async function handleMessage(
   ctx.runs.start(id);
   // journal 落盘（Task-20261021-002-06）：run 开始即写 running 记录 + 诊断日志（best-effort，失败静默）
   const runIdNow = ctx.runs.snapshot(id)?.runId ?? '';
-  void writeJournal(deps.sessionStore, id, {
+  void writeJournal(store, id, {
     runId: runIdNow,
     sessionId: id,
     status: 'running',
@@ -84,11 +81,11 @@ export async function handleMessage(
   // 进程中途退出时也能保留已产生的工具调用与结果。失败只记日志，不影响回答。
   runOptions.onSnapshot = async (snapshot) => {
     try {
-      await deps.sessionStore.updateSession(id, snapshot.messages, message, {
+      await store.updateSession(id, snapshot.messages, message, {
         transcript: snapshot.transcript,
       });
       // journal 同步（best-effort）：迭代数随节流窗口合并落盘（500ms 窗口，D3 不追求精确）
-      void writeJournal(deps.sessionStore, id, { iterations: snapshot.iterations });
+      void writeJournal(store, id, { iterations: snapshot.iterations });
     } catch (e) {
       log(
         `[api] 会话 ${id} 节流落盘失败（不阻塞回答）: ${e instanceof Error ? e.message : String(e)}`,
@@ -118,7 +115,7 @@ export async function handleMessage(
     runOptions.events = [
       createSseForwarder((event, data) => {
         const seq = ctx.runs.publish(id, event, data);
-        if (seq > 0) void writeJournal(deps.sessionStore, id, { lastSeq: seq });
+        if (seq > 0) void writeJournal(store, id, { lastSeq: seq });
       }),
     ];
   }
@@ -126,7 +123,7 @@ export async function handleMessage(
   entry.inFlight = (async () => {
     try {
       // 05：sessionId 首参 → AgentPool 按会话租用独立实例（同空间多会话并发）
-      const result = await deps.runAgent(id, message, runOptions);
+      const result = await runAgent(id, message, runOptions);
 
       // 持久化（API 层自持 SessionStore；会话已在 ensureEntry/loadSession 阶段确认存在）
       try {
@@ -135,7 +132,7 @@ export async function handleMessage(
         // 用 store 归一化后的会话消息作为 entry.history（摘要占位已转写为总结消息、压缩标记一致）。
         // 同时剔除 is_compact=true 的已折叠历史：与 ensureEntry 的 getRestoreMessages 恢复视图对齐，
         // 避免折叠历史重新进入 LLM 上下文并导致每轮重复触发压缩
-        const stored = await deps.sessionStore.updateSession(id, result.messages, message, {
+        const stored = await store.updateSession(id, result.messages, message, {
           transcript: result.transcript,
         });
         entry.history = stored.filter((m) => m.role !== 'system' && m.is_compact !== true);
@@ -156,7 +153,7 @@ export async function handleMessage(
       }
       ctx.runs.finish(id, 'done', { event: 'done', data: donePayload });
       // journal 终态 + 诊断日志（best-effort）
-      void writeJournal(deps.sessionStore, id, {
+      void writeJournal(store, id, {
         status: 'done',
         finishedAt: Date.now(),
         iterations: result.iterations,
@@ -195,7 +192,7 @@ export async function handleMessage(
         const abortedWarnings: string[] = [];
         let stored = sealed;
         try {
-          stored = await deps.sessionStore.updateSession(id, sealed, message, {
+          stored = await store.updateSession(id, sealed, message, {
             transcript: partial.transcript,
           });
         } catch (err) {
@@ -223,7 +220,7 @@ export async function handleMessage(
           },
         });
         // journal 终态 + 诊断日志（best-effort）：aborted 也属正常收尾，重启后显示「由用户停止」
-        void writeJournal(deps.sessionStore, id, {
+        void writeJournal(store, id, {
           status: 'aborted',
           finishedAt: Date.now(),
           iterations: partial.iterations,
@@ -257,7 +254,7 @@ export async function handleMessage(
       log(`[api] 会话 ${id} 运行失败: ${msg}`);
       ctx.runs.finish(id, 'failed', { event: 'fatal', data: { message: msg } });
       // journal 终态 + 诊断日志（best-effort）
-      void writeJournal(deps.sessionStore, id, { status: 'failed', finishedAt: Date.now() });
+      void writeJournal(store, id, { status: 'failed', finishedAt: Date.now() });
       void writeRunLog({
         ts: new Date().toISOString(),
         sessionId: id,

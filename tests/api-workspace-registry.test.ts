@@ -183,7 +183,7 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
 });
 
 describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重绑）', () => {
-  it('异空间创建会话：cwd 不变、旧空间 runtime 不变、新空间 runtime 懒建、指针整体切换', async () => {
+  it('异空间创建会话：cwd 不变、旧空间 runtime 不变、新空间 runtime 懒建、指针整体切换（task-04：switched 恒 false）', async () => {
     const rootA = await canonicalWorkspacePath(WS_A);
     const rootB = await canonicalWorkspacePath(WS_B);
     const rtA = registry.peek(rootA)!;
@@ -191,9 +191,11 @@ describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重
 
     const res = await req('POST', '/sessions', { title: '跨空间', workspacePath: WS_B });
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { workspace: { path: string; switched: boolean } };
-    expect(body.workspace.switched).toBe(true);
+    const body = (await res.json()) as { id: string; workspace: { path: string; switched: boolean } };
+    // task-04（L2）：switched 字段保留但恒 false；会话 id 含目标空间命名空间段（D5）
+    expect(body.workspace.switched).toBe(false);
     expect(body.workspace.path).toBe(rootB);
+    expect(body.id.startsWith(`sess_${workspaceId(rootB).slice(0, 8)}_`)).toBe(true);
 
     // 1) 零 chdir：进程目录不随空间切换变化
     expect(process.cwd()).toBe(prevCwd);
@@ -219,11 +221,11 @@ describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重
     // 6) 不再触发"记忆缓存重置 / 整池重建"
     expect(reinitCalls).toHaveLength(0);
 
-    // 复原当前空间指针（后续用例仍以 WS_A 为当前空间）：切回同样零 chdir
+    // 复原当前空间指针（后续用例仍以 WS_A 为当前空间）：切回同样零 chdir（task-04：switched 恒 false）
     const back = await req('POST', '/sessions', { title: '切回', workspacePath: rootA });
     expect(back.status).toBe(201);
     const backBody = (await back.json()) as { workspace: { path: string; switched: boolean } };
-    expect(backBody.workspace.switched).toBe(true);
+    expect(backBody.workspace.switched).toBe(false);
     expect(backBody.workspace.path).toBe(rootA);
     expect(process.cwd()).toBe(prevCwd);
   });
