@@ -759,10 +759,12 @@ export class ReActAgent {
           promptTokens: usage?.prompt_tokens ?? 0,
           completionTokens: usage?.completion_tokens ?? 0,
           totalTokens: usage?.total_tokens ?? 0,
+          // 20261021-009：hit 为 undefined（服务商未提供缓存字段）时 cacheHitRate
+          // 保持 undefined（渲染 N/A），不再误算成 0.0%；hit=0 是真实 0% 命中
           cacheHitTokens: usage?.prompt_cache_hit_tokens,
           cacheHitRate:
-            usage?.prompt_tokens
-              ? (usage.prompt_cache_hit_tokens ?? 0) / usage.prompt_tokens
+            usage?.prompt_cache_hit_tokens !== undefined && usage.prompt_tokens
+              ? usage.prompt_cache_hit_tokens / usage.prompt_tokens
               : undefined,
           elapsedMs: Date.now() - llmStartTs,
         };

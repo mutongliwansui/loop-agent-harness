@@ -5,7 +5,8 @@ import type { LLMStats, LLMStatsSummary } from '../types.js';
 /**
  * 聚合会话级统计汇总
  * - 总输入/输出/总 token：逐轮累加
- * - 平均缓存命中率 = 累计命中 token / 累计输入 token（无命中数据时为 undefined）
+ * - 平均缓存命中率 = 累计命中 token / 累计「有缓存数据的」输入 token
+ *   （20261021-009：无缓存字段的轮次只进 totalPrompt，不进缓存分母——N/A 不拉低均值）
  * - 上下文峰值：各轮 contextTokens 最大值
  */
 export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
@@ -25,6 +26,8 @@ export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
   let totalCompletion = 0;
   let totalTokens = 0;
   let totalCacheHit = 0;
+  /** 有缓存数据轮次的输入 token 合计（缓存命中率分母） */
+  let promptTokensWithCache = 0;
   let hasCache = false;
   let peakContextTokens = 0;
   let peakContextMaxTokens = 0;
@@ -35,6 +38,8 @@ export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
     totalTokens += s.totalTokens;
     if (s.cacheHitTokens !== undefined) {
       totalCacheHit += s.cacheHitTokens;
+      // 分母用「有缓存字段轮次」的 promptTokens（与 hit 同源，口径一致）
+      promptTokensWithCache += s.promptTokens;
       hasCache = true;
     }
     if (s.contextTokens > peakContextTokens) peakContextTokens = s.contextTokens;
@@ -47,7 +52,8 @@ export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
     totalCompletion,
     totalTokens,
     totalCacheHit,
-    avgCacheHitRate: hasCache && totalPrompt > 0 ? totalCacheHit / totalPrompt : undefined,
+    promptTokensWithCache,
+    avgCacheHitRate: hasCache && promptTokensWithCache > 0 ? totalCacheHit / promptTokensWithCache : undefined,
     peakContextTokens,
     peakContextMaxTokens,
   };

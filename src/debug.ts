@@ -125,11 +125,13 @@ export const debug = {
       lines.push('  (空响应)');
     }
     if (usage) {
-      const hit = usage.prompt_cache_hit_tokens ?? 0;
+      // 20261021-009：字段缺失显示 N/A（不误渲染为 0.0%），与真 0 命中区分
+      const hit = usage.prompt_cache_hit_tokens;
       const total = usage.prompt_tokens;
-      const rate = total > 0 ? ((hit / total) * 100).toFixed(1) : '0.0';
+      const rate =
+        hit !== undefined && total > 0 ? ((hit / total) * 100).toFixed(1) : 'N/A';
       lines.push(
-        `  Cache: ${hit}/${total} tokens hit (${rate}%) | prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`,
+        `  Cache: ${hit ?? 'N/A'}/${total} tokens hit (${rate}%) | prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`,
       );
     }
     write(lines.join('\n') + '\n');
@@ -154,18 +156,24 @@ export const debug = {
     total_tokens: number;
   }>): void {
     if (!config.debug || rounds.length === 0) return;
+    // 20261021-009：分母只统计有缓存字段的轮次——无缓存字段轮次不拉低命中率（N/A 语义）
     const totalPrompt = rounds.reduce((s, r) => s + r.prompt_tokens, 0);
+    const promptWithCache = rounds.reduce(
+      (s, r) => s + (r.prompt_cache_hit_tokens !== undefined || r.prompt_cache_miss_tokens !== undefined ? r.prompt_tokens : 0),
+      0,
+    );
     const totalHit = rounds.reduce((s, r) => s + (r.prompt_cache_hit_tokens ?? 0), 0);
     const totalMiss = rounds.reduce((s, r) => s + (r.prompt_cache_miss_tokens ?? 0), 0);
     const totalCompletion = rounds.reduce((s, r) => s + r.completion_tokens, 0);
     const totalAll = rounds.reduce((s, r) => s + r.total_tokens, 0);
-    const hitRate = totalPrompt > 0 ? ((totalHit / totalPrompt) * 100).toFixed(1) : '0.0';
+    const hitRate =
+      promptWithCache > 0 ? ((totalHit / promptWithCache) * 100).toFixed(1) : 'N/A';
     const savingsPct = totalAll > 0 ? ((totalHit / totalAll) * 100).toFixed(1) : '0.0';
 
     const lines = [
       `[DEBUG ${ts()}] ╔══ 缓存命中率汇总 ════`,
-      `  迭代轮数: ${rounds.length}`,
-      `  Prompt 命中率: ${totalHit}/${totalPrompt} tokens (${hitRate}%)`,
+      `  迭代轮数: ${rounds.length}（其中 ${rounds.filter((r) => r.prompt_cache_hit_tokens !== undefined || r.prompt_cache_miss_tokens !== undefined).length} 轮含缓存数据）`,
+      `  Prompt 命中率: ${totalHit}/${promptWithCache} tokens (${hitRate}%)`,
       `  节省比例 (hit/total): ${totalHit}/${totalAll} (${savingsPct}%)`,
       `  未命中 tokens: ${totalMiss}`,
       `  总输入 tokens: ${totalPrompt}`,

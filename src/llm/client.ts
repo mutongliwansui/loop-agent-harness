@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { debug } from '../debug.js';
 import { llmLogger, beginLLMCall } from '../llm-logger.js';
 import { AgentAbortedError } from '../types.js';
+import { normalizeUsage } from './usage.js';
 import type { ChatMessage, LLMResponse, OpenAIToolDef, StreamChunk, ToolCall, VisionMessage } from '../types.js';
 
 /** LLM 层无法构造完整 partial，先抛空快照，由 agent 主循环（task-02）换绑（Task-20261021-002-01） */
@@ -198,13 +199,7 @@ export class LLMClient {
           content: msg.content ?? null,
           tool_calls: toolCalls,
           finish_reason: choice.finish_reason ?? 'stop',
-          usage: resp.usage ? {
-            prompt_tokens: resp.usage.prompt_tokens ?? 0,
-            prompt_cache_hit_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_hit_tokens as number | undefined,
-            prompt_cache_miss_tokens: (resp.usage as unknown as Record<string, unknown>).prompt_cache_miss_tokens as number | undefined,
-            completion_tokens: resp.usage.completion_tokens ?? 0,
-            total_tokens: resp.usage.total_tokens ?? 0,
-          } : undefined,
+          usage: resp.usage ? normalizeUsage(resp.usage) : undefined,
         };
 
         debug.llmResponse(
@@ -289,11 +284,8 @@ export class LLMClient {
       return {
         content: choice.message.content ?? null,
         finish_reason: choice.finish_reason ?? 'stop',
-        usage: resp.usage ? {
-          prompt_tokens: resp.usage.prompt_tokens ?? 0,
-          completion_tokens: resp.usage.completion_tokens ?? 0,
-          total_tokens: resp.usage.total_tokens ?? 0,
-        } : undefined,
+        // 20261021-009：视觉链路同样归一化，不再丢弃缓存字段
+        usage: resp.usage ? normalizeUsage(resp.usage) : undefined,
       };
     };
 
@@ -443,15 +435,9 @@ export class LLMClient {
           finishReason = choice.finish_reason;
         }
 
-        // 4. usage：流式模式下通常在最后一个 chunk 返回
+        // 4. usage：流式模式下通常在最后一个 chunk 返回（20261021-009 统一归一化）
         if (chunk.usage) {
-          streamUsage = {
-            prompt_tokens: chunk.usage.prompt_tokens ?? 0,
-            prompt_cache_hit_tokens: (chunk.usage as unknown as Record<string, unknown>).prompt_cache_hit_tokens as number | undefined,
-            prompt_cache_miss_tokens: (chunk.usage as unknown as Record<string, unknown>).prompt_cache_miss_tokens as number | undefined,
-            completion_tokens: chunk.usage.completion_tokens ?? 0,
-            total_tokens: chunk.usage.total_tokens ?? 0,
-          };
+          streamUsage = normalizeUsage(chunk.usage);
         }
       }
     } catch (e) {

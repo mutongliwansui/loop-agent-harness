@@ -99,17 +99,24 @@ export type ChatMessage =
  *
  * 各字段含义：
  * - prompt_tokens: 总输入 token 数
- * - prompt_cache_hit_tokens: 命中前缀缓存的 token 数（DeepSeek V4 等模型支持）
+ * - prompt_cache_hit_tokens: 命中前缀缓存的 token 数（智谱/DeepSeek 风格字段）
  * - prompt_cache_miss_tokens: 未命中缓存、需重新计算的 token 数
+ * - prompt_tokens_details.cached_tokens: OpenAI 风格缓存命中字段（部分兼容服务商使用）
  * - completion_tokens: 输出 token 数
  * - total_tokens: 总 token 数
  *
  * 缓存命中率 = prompt_cache_hit_tokens / prompt_tokens
+ *
+ * 归一化（优化建议 20261021-009）：client 统一经 normalizeUsage() 解析——
+ * OpenAI 风格 cached_tokens 已换算为 prompt_cache_hit_tokens，且「字段缺失」保持
+ * undefined（N/A）与「真 0 命中」区分；details 字段仅解析用，随原样保留。
  */
 export interface LLMUsage {
   prompt_tokens: number;
   prompt_cache_hit_tokens?: number;
   prompt_cache_miss_tokens?: number;
+  /** OpenAI 风格报文附带的 details（仅解析用；归一化后以 hit/miss 为准） */
+  prompt_tokens_details?: { cached_tokens?: number };
   completion_tokens: number;
   total_tokens: number;
 }
@@ -154,6 +161,8 @@ export interface LLMStatsSummary {
   totalCompletion: number;
   totalTokens: number;
   totalCacheHit: number;
+  /** 有缓存数据轮次的输入 token 合计（缓存命中率分母；无任何缓存字段时为 0） */
+  promptTokensWithCache?: number;
   avgCacheHitRate?: number;
   peakContextTokens: number;
   peakContextMaxTokens: number;
