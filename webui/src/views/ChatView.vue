@@ -45,6 +45,13 @@ import {
   setActivityHandler,
   onRunFinished,
 } from '../chat-stream.js';
+import {
+  getNotifySettings,
+  setNotifySettings,
+  requestNotifyPermission,
+  notifySupported,
+  type NotifySettings,
+} from '../notify.js';
 interface UploadChip {
   id: number;
   fileName: string;
@@ -57,6 +64,37 @@ const messages = computed(() => messagesOf(activeId.value));
 const draft = ref('');
 const streaming = computed(() => (activeId.value ? isRunning(activeId.value) : false));
 const streamChk = ref(true);
+// 后台完成提醒（Task-20261021-002-07）：🔔 面板两开关 + 非安全上下文降级说明
+const notifyPopOpen = ref(false);
+const notifyCfg = ref<NotifySettings>(getNotifySettings());
+const notifySecure = notifySupported();
+
+/** 勾选「系统通知」：手势中请求权限（D4）；denied 回退开关并提示 */
+async function toggleNotifySystem(on: boolean): Promise<void> {
+  if (on) {
+    if (!notifySecure) {
+      notifyCfg.value.system = false;
+      showToast('当前环境不支持系统通知（需 https/localhost），提示音仍可用', 'error');
+      return;
+    }
+    const perm = await requestNotifyPermission();
+    if (perm !== 'granted') {
+      notifyCfg.value.system = false;
+      showToast(perm === 'denied' ? '通知权限已被拒绝，可在浏览器设置中恢复' : '通知权限未授权', 'error');
+      setNotifySettings({ asked: true });
+      return;
+    }
+  }
+  notifyCfg.value.system = on;
+  setNotifySettings({ system: on, asked: true });
+}
+
+/** 勾选「提示音」：AudioContext 在手势中创建解锁（自动播放策略） */
+function toggleNotifySound(on: boolean): void {
+  notifyCfg.value.sound = on;
+  setNotifySettings({ sound: on });
+  if (on) playChime(); // 手势中播放同时解锁 AudioContext
+}
 const uploads = ref<UploadChip[]>([]);
 const upPopOpen = ref(false);
 const upBusy = ref(false);
@@ -552,6 +590,40 @@ onUnmounted(() => {
               <input v-model="streamChk" type="checkbox" :disabled="streaming"> 流式
             </label>
             <span class="hint">发送后自动附带 📎 文件的 contextNote</span>
+            <button
+              class="chk notify-btn"
+              type="button"
+              title="后台完成提醒设置"
+              @click="notifyPopOpen = !notifyPopOpen"
+            >
+              🔔<span class="muted-hint">{{ notifyCfg.sound ? '声音开' : '声音关' }}{{ notifyCfg.system ? ' · 通知开' : '' }}</span>
+            </button>
+          </div>
+
+          <!-- 后台完成提醒面板（Task-20261021-002-07）：系统通知/提示音两开关 -->
+          <div v-if="notifyPopOpen" class="up-pop notify-pop">
+            <div class="up-row notify-row">
+              <label class="chk">
+                <input
+                  type="checkbox"
+                  :checked="notifyCfg.system"
+                  @change="toggleNotifySystem(($event.target as HTMLInputElement).checked)"
+                > 系统通知
+              </label>
+              <label class="chk">
+                <input
+                  type="checkbox"
+                  :checked="notifyCfg.sound"
+                  @change="toggleNotifySound(($event.target as HTMLInputElement).checked)"
+                > 提示音
+              </label>
+            </div>
+            <div v-if="!notifySecure" class="notify-degrade">
+              当前通过局域网 IP + http 访问，浏览器不提供系统通知；提示音与页内提醒不受影响
+            </div>
+            <div v-else-if="!notifyCfg.system && !notifyCfg.asked" class="notify-degrade">
+              开启「系统通知」后，切到其他窗口时完成/停止会弹系统提醒
+            </div>
           </div>
 
           <!-- 上传面板（文件选择框 + POST /uploads/raw） -->
@@ -961,7 +1033,12 @@ onUnmounted(() => {
   min-width: 0;
 }
 .composer label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; flex: none; }
-.composer .hint { font-size: 11.5px; }
+/* 后台完成提醒（Task-20261021-002-07）：🔔 按钮 + 面板 */
+.composer .notify-btn { background: none; border: none; padding: 0; font-size: 12.5px; }
+.composer .notify-btn .muted-hint { color: var(--muted, #888); font-size: 11.5px; margin-left: 3px; }
+.notify-pop { min-width: 300px; }
+.notify-pop .notify-row { display: flex; gap: 18px; margin-bottom: 6px; }
+.notify-pop .notify-degrade { font-size: 11.5px; color: var(--muted, #888); line-height: 1.5; }.composer .hint { font-size: 11.5px; }
 
 /* 窄容器兼容（对话区收窄时）：隐藏次要提示、收窄按钮 */
 @container (max-width: 520px) {

@@ -55,6 +55,12 @@ Eight items in the left navigation (Chinese UI, light/dark follows the system, n
 
 The 📎 button in the composer opens the upload panel: file picker (multi-select) → each file is uploaded as raw bytes via `POST /uploads/raw` (browsers cannot obtain full local paths, hence this new endpoint; the CLI's `/upload` path mode is unaffected) → on success a context chip (file name + size) appears above the composer and is injected into the Agent context with the next message. The chip ✕ only removes it on the client (no longer injected); the management list can inspect/clear uploaded files (verb-as-confirmation).
 
+### Multi-tab sync and background-completion alerts
+
+When multiple tabs of the same browser are open, run state syncs automatically (Task-20261021-002-07): a run started/finished in tab A shows a running dot / unread dot in tab B within ~1s and refreshes the sidebar; deleting a session in A removes it in B; marking a session read in A clears the unread dot in B as well. The channel is `BroadcastChannel('loop-agent')` with automatic localStorage fallback in older browsers; only derived state is broadcast (run started/finished/read/deleted) — message content always comes from the server.
+
+Background-completion alerts are configured in the 🔔 panel above the composer, with two independent persisted toggles: **system notification** (fires only when the window is hidden or unfocused; same-session notifications replace each other to avoid spam; clicking one focuses the window and jumps to the session; permission is requested only when you tick the switch — if the browser denied it, re-enable from browser settings) and **chime** (a WebAudio synthesized two-tone sound, no permission needed). Foreground completion keeps the in-page toast. When accessed via LAN IP + http the browser provides no Notification API; the 🔔 panel shows a degradation notice, while the chime and in-page alerts keep working.
+
 ### Security Details
 
 - The static layer prevents path traversal (`..%2f` etc. → 403); `/assets/*` is cached immutable for one year while `index.html` is not cached (upgrades take effect immediately).

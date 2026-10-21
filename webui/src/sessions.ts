@@ -8,7 +8,7 @@
 import { computed, ref } from 'vue';
 import { api, AuthError } from './api/client.js';
 import { showToast } from './toast.js';
-import { drop as dropStream } from './chat-stream.js';
+import { drop as dropStream, dropAndBroadcast } from './chat-stream.js';
 
 export interface SessionMeta {
   id: string;
@@ -122,6 +122,8 @@ export function onDelSession(s: SessionMeta): void {
       }
       if (activeId.value === s.id) activeId.value = null; // ChatView watch 后清空消息
       dropStream(s.id);
+      // 广播他页移除该会话（Task-20261021-002-07）：B 页收后 drop + 列表刷新
+      dropAndBroadcast(s.id);
       showToast('会话已删除', 'success');
     } catch (e) {
       if (e instanceof AuthError) return;

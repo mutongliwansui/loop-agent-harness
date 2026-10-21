@@ -24,7 +24,12 @@ import {
   onRunFinished,
   runningCount,
   unreadCount,
+  handleRemoteRunStarted,
+  handleRemoteRunFinished,
+  markReadRemote,
+  drop,
 } from './chat-stream';
+import { onTab } from './tab-sync';
 import TokenGate from './components/TokenGate.vue';
 import Toast from './components/Toast.vue';
 
@@ -61,16 +66,38 @@ function toggleTheme(): void {
 
 // run 结束（含后台完成的会话）后刷新侧栏列表：messageCount / 运行中标记随之后更新
 let offRunFinished: (() => void) | null = null;
+// 跨标签页广播反注册（Task-20261021-002-07）
+let offTab: (() => void) | null = null;
 
 onMounted(() => {
   const saved = localStorage.getItem('theme');
   if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
   offRunFinished = onRunFinished(() => void loadSessions());
+  // 他页派生状态同步（Task-20261021-002-07）：只做「唤醒 + 对齐」，内容以服务端为准（方案 D8）
+  offTab = onTab((m) => {
+    switch (m.t) {
+      case 'run-started':
+        handleRemoteRunStarted(m.id);
+        break;
+      case 'run-finished':
+        handleRemoteRunFinished(m.id);
+        break;
+      case 'unread-cleared':
+        markReadRemote(m.id);
+        break;
+      case 'session-dropped':
+        drop(m.id);
+        break;
+    }
+    void loadSessions(); // 侧栏运行点/未读点/列表随广播事件即时刷新
+  });
 });
 
 onUnmounted(() => {
   offRunFinished?.();
   offRunFinished = null;
+  offTab?.();
+  offTab = null;
 });
 </script>
 

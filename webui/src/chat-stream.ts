@@ -13,6 +13,8 @@ import { computed, reactive } from 'vue';
 import { api, apiStatus, AuthError } from './api/client.js';
 import { sseFetch, sseGet, type SseEvent } from './api/sse.js';
 import { showToast } from './toast.js';
+import { postTab } from './tab-sync.js';
+import { getNotifySettings, notifyRunDone, playChime } from './notify.js';
 
 export interface TextSeg {
   type: 'text';
@@ -86,6 +88,8 @@ export interface SessionStreamState {
    * lastRun=interrupted → 「⚠ 上次运行被中断（服务已重启）…」；lastRun=aborted → 「上次运行由用户停止」
    */
   note?: string;
+  /** 本轮 run 起始时间戳（task-07：finishRun 计算耗时供通知/广播展示；无记录为 undefined） */
+  runStartedAt?: number;
 }
 
 const EMPTY_MESSAGES: ChatMsg[] = [];
@@ -161,7 +165,10 @@ export function isUnread(id: string): boolean {
 
 export function markRead(id: string): void {
   const st = states.get(id);
+  const wasUnread = st?.unread === true;
   if (st) st.unread = false;
+  // 跨标签页收敛（Task-20261021-002-07 D8）：他页也清未读，但接收端不回播（防乒乓）
+  if (wasUnread) postTab({ t: 'unread-cleared', id });
 }
 
 export function setActiveSession(id: string | null): void {
@@ -313,6 +320,39 @@ export function drop(id: string): void {
   states.delete(id);
 }
 
+/**
+ * 删除会话的完整收尾（Task-20261021-002-07）：drop 内存状态 + 广播他页移除。
+ * 广播独立成函数而非内联 drop：非删除场景（如收他页广播后的本端清理）复用 drop 不产生回环
+ */
+export function dropAndBroadcast(id: string): void {
+  drop(id);
+  postTab({ t: 'session-dropped', id });
+}
+
+/* ================= 跨标签页广播接收（Task-20261021-002-07，App.vue onTab 转发） ================= */
+
+/** 收到他页 run-started：本端空闲则唤醒为 running 并 attach 续传（001 多订阅能力复用） */
+export function handleRemoteRunStarted(id: string): void {
+  const st = stateOf(id);
+  if (st.status !== 'running') {
+    st.status = 'running';
+    void attach(id);
+  }
+}
+
+/** 收到他页 run-finished：本端在跟则 reconcile 对齐；非活跃/聊天页不在场记未读 */
+export function handleRemoteRunFinished(id: string): void {
+  const st = stateOf(id);
+  if (st.status === 'running') void reconcile(id);
+  if (!chatViewMounted || activeSessionId !== id) st.unread = true;
+}
+
+/** 他页已读收敛（D8 不回播）：仅清本端未读，不再广播，防两页同看一会话时乒乓清零 */
+export function markReadRemote(id: string): void {
+  const st = states.get(id);
+  if (st) st.unread = false;
+}
+
 /* ================= SSE 事件 → 消息时间线 ================= */
 
 /** 取/建当前 run 的助手消息（末尾不是助手消息时新建响应式占位） */
@@ -338,6 +378,7 @@ type RunEndStatus = 'done' | 'failed' | 'aborted';
 
 function finishRun(id: string, st: SessionStreamState, status: RunEndStatus = 'done'): void {
   if (st.status !== 'running') return;
+  const startedAt = st.runStartedAt ?? 0;
   st.status = 'idle';
   st.controller = null;
   st.attachCtrl?.abort();
@@ -347,8 +388,23 @@ function finishRun(id: string, st: SessionStreamState, status: RunEndStatus = 'd
   // 聊天页不在场或看的是别的会话：记未读 + 提醒（切回时 ChatView 会 markRead）
   if (!chatViewMounted || activeSessionId !== id) {
     st.unread = true;
-    showToast(status === 'aborted' ? '后台会话已被停止' : '后台会话已生成完成');
+    // 前后台分流（Task-20261021-002-07 D3）：后台 → 系统通知 + 提示音；前台 → 页内 toast（001 现状）
+    // 非浏览器环境（node 单测）document 未定义：按前台处理（与 001 行为一致）
+    const background =
+      typeof document !== 'undefined' && (document.hidden || !document.hasFocus());
+    const cfg = getNotifySettings();
+    // 会话标题由 App 侧栏持有（sessions.ts），chat-stream 不引入避免循环依赖；
+    // 通知标题用 sessionId 兜底（notifyRunDone 内部处理）
+    const durationMs = startedAt > 0 ? Date.now() - startedAt : undefined;
+    if (background) {
+      notifyRunDone({ sessionId: id, title: id, status, durationMs });
+      if (cfg.sound) playChime();
+    } else {
+      showToast(status === 'aborted' ? '后台会话已被停止' : '后台会话已生成完成');
+    }
   }
+  // 跨标签页广播（Task-20261021-002-07）：让他页收敛未读/刷新侧栏（B 页自行 reconcile）
+  postTab({ t: 'run-finished', id, status, durationMs: startedAt > 0 ? Date.now() - startedAt : undefined });
   notifyActivity(id);
   for (const cb of finishHandlers) cb(id);
 }
@@ -502,7 +558,7 @@ function applyEvent(id: string, ev: SseEvent): void {
       asst.live = null;
       asst.failed = true;
       asst.failedText = String(d.message ?? '生成失败');
-      finishRun(id, st);
+      finishRun(id, st, 'failed');
       break;
     }
     case 'aborted': {
@@ -679,6 +735,9 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
   st.controller = ctrl;
   notifyActivity(id);
   st.note = undefined; // 新一轮 run 开始：清掉上次的中断/停止注记（task-06）
+  st.runStartedAt = Date.now(); // 本轮起始时间（finishRun 计算耗时、通知展示用）
+  // 跨标签页广播（Task-20261021-002-07）：他页唤醒为 running 并 attach 续传
+  postTab({ t: 'run-started', id });
 
   try {
     if (opts.stream) {
@@ -714,6 +773,9 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
     asst.live = null;
     asst.streaming = false;
     asst.meta = `${(r.durationMs / 1000).toFixed(1)}s · ${r.iterations} 轮`;
+    // 非流式成功也走统一收尾（Task-20261021-002-07）：此前漏调 finishRun，
+    // 状态滞留 running（侧栏运行点不灭）且绕过未读/通知/广播漏斗
+    finishRun(id, st);
     for (const w of r.warnings ?? []) showToast(w, 'error');
     return 'done';
   } catch (e) {
