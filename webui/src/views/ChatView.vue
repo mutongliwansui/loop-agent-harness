@@ -21,6 +21,7 @@ import { showToast } from '../toast.js';
 import { renderMarkdown, highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
 import FilesView from './FilesView.vue';
+import LiveStatus from '../components/LiveStatus.vue';
 import {
   workspaces,
   activeId,
@@ -44,9 +45,18 @@ interface ToolSeg {
   args: string;
   result: string;
   done: boolean;
+  /** 执行耗时：tool_end 时按本地时间计算；历史消息无此值 */
+  elapsedMs?: number;
+  /** 执行开始时间戳（仅流式期间用于算耗时，不渲染） */
+  startedAt?: number;
 }
 /** 时间线分段：思考/最终答案文本段与工具段按事件到达顺序交错 */
 type Segment = TextSeg | ToolSeg;
+/** 流式实时阶段（文案与 CLI spinner 对齐；仅内存态，不随历史消息持久化） */
+type LivePhase =
+  | { kind: 'thinking'; iteration?: number; since: number }
+  | { kind: 'arg_gen'; tool: string; bytes: number; since: number }
+  | { kind: 'tool_run'; tool: string; elapsedMs: number; since: number };
 /** GET /sessions/:id 的历史消息（OpenAI 消息序：含带 tool_calls 的 assistant 与带 tool_call_id 的 tool） */
 interface ApiHistoryMsg {
   role: string;
@@ -68,6 +78,8 @@ interface ChatMsg {
   failed?: boolean;
   failedText?: string; // fatal 终止原因
   meta?: string; // done 后的耗时/轮数标注
+  live?: LivePhase | null; // 实时状态行（思考中/生成参数/执行中）
+  lastEventAt?: number; // 最近一次收到 SSE 事件的时间（长时间无事件时提示仍在响应）
 }
 interface UploadChip {
   id: number;
@@ -144,6 +156,20 @@ function scrollBottom(): void {
   nextTick(() => {
     if (msgsEl.value) msgsEl.value.scrollTop = msgsEl.value.scrollHeight;
   });
+}
+
+// 高频事件（llm_stream / tool_call_delta）合并到下一帧：避免逐 chunk 读取 scrollHeight 强制重排
+let scrollRaf = 0;
+function scrollBottomSoon(): void {
+  if (scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0;
+    scrollBottom();
+  });
+}
+
+function fmtSecs(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function errText(e: unknown): string {
@@ -359,25 +385,58 @@ async function selectSession(id: string): Promise<void> {
 
 function handleEvent(ev: SseEvent, asst: ChatMsg): void {
   const d = (ev.data ?? {}) as Record<string, unknown>;
+  const now = Date.now();
+  asst.lastEventAt = now; // 统一刷新“最近事件”时间，供长时间静默时提示
   switch (ev.event) {
+    case 'start':
+      asst.live = { kind: 'thinking', since: now };
+      break;
+    case 'iteration_start':
+      // 服务端轮次从 0 起算，与 CLI 一致展示为「第 N+1 轮」
+      asst.live = { kind: 'thinking', iteration: Number(d.iteration ?? 0) + 1, since: now };
+      break;
     case 'llm_stream': {
       // 思考/最终答案 delta：上一段是工具段时开新文本段，天然形成 思考→工具→思考 交错
+      if (!asst.live || asst.live.kind !== 'thinking') asst.live = { kind: 'thinking', since: now };
       const last = asst.segments[asst.segments.length - 1];
       const seg = last && last.type === 'text' ? last : { type: 'text' as const, text: '' };
       if (seg !== last) asst.segments.push(seg);
       seg.text += String(d.text ?? '');
-      scrollBottom();
+      scrollBottomSoon();
+      break;
+    }
+    case 'tool_call_delta': {
+      // 工具参数逐 token 生成（fileWrite 写长代码时可持续数十秒）：显示已生成体积与耗时
+      const elapsed = Number(d.elapsedMs ?? 0);
+      asst.live = {
+        kind: 'arg_gen',
+        tool: String(d.tool ?? ''),
+        bytes: Number(d.accumulatedBytes ?? 0),
+        since: now - elapsed, // 用服务端耗时反推起点，对象重建但耗时连续
+      };
+      scrollBottomSoon();
       break;
     }
     case 'tool_start':
+      asst.live = { kind: 'tool_run', tool: String(d.tool ?? ''), elapsedMs: 0, since: now };
       asst.segments.push({
         type: 'tool',
         tool: String(d.tool ?? ''),
         args: JSON.stringify(d.args ?? null),
         result: '',
         done: false,
+        startedAt: now,
       });
       scrollBottom();
+      break;
+    case 'tool_progress':
+      // 执行期每秒心跳：以服务端 elapsedMs 为准，LiveStatus 内再用本地时钟兜底
+      asst.live = {
+        kind: 'tool_run',
+        tool: String(d.tool ?? ''),
+        elapsedMs: Number(d.elapsedMs ?? 0),
+        since: now - Number(d.elapsedMs ?? 0),
+      };
       break;
     case 'tool_end': {
       // 从尾部反查第一个未完成同名工具段回填结果
@@ -386,20 +445,25 @@ function handleEvent(ev: SseEvent, asst: ChatMsg): void {
         if (s.type === 'tool' && !s.done && s.tool === String(d.tool ?? '')) {
           s.result = typeof d.result === 'string' ? d.result : JSON.stringify(d.result ?? null);
           s.done = true;
+          s.elapsedMs = s.startedAt != null ? now - s.startedAt : undefined;
           break;
         }
       }
+      // 工具结束后模型重新思考（并行工具仍在跑时，下一次 tool_progress 会覆盖回来）
+      asst.live = { kind: 'thinking', since: now };
       scrollBottom();
       break;
     }
     case 'compaction_start':
-      // 压缩开始（flush 提取期间有一次额外 LLM 调用，主输出会暂停）：显示 loading
+      // 压缩开始（flush 提取期间有一次额外 LLM 调用，主输出会暂停）：显示压缩 loading
       asst.compacting = true;
+      asst.live = null;
       scrollBottom();
       break;
     case 'compaction': {
       // 压缩结束事件（成功/失败/异常兜底均会到达，与 compaction_start 配对）：移除 loading
       asst.compacting = false;
+      asst.live = { kind: 'thinking', since: now };
       const info = (d.info ?? {}) as { failed?: boolean; fallback?: string };
       if (info.failed) {
         showToast(
@@ -419,6 +483,7 @@ function handleEvent(ev: SseEvent, asst: ChatMsg): void {
       const last = asst.segments[asst.segments.length - 1];
       if (!last || last.type !== 'text') asst.segments.push({ type: 'text', text: answer });
       else if (!last.text) last.text = answer;
+      asst.live = null;
       break;
     }
     case 'error':
@@ -429,17 +494,19 @@ function handleEvent(ev: SseEvent, asst: ChatMsg): void {
       break;
     case 'fatal':
       asst.streaming = false;
+      asst.live = null;
       asst.failed = true;
       asst.failedText = String(d.message ?? '生成失败');
       scrollBottom();
       break;
     case 'done':
       asst.streaming = false;
+      asst.live = null;
       asst.meta = `${(Number(d.durationMs ?? 0) / 1000).toFixed(1)}s · ${String(d.iterations ?? '?')} 轮`;
       scrollBottom();
       break;
     default:
-      break; // start/iteration_start/llm_end/end 等事件 P0 不展示
+      break; // llm_end/end 等事件不改变可见状态
   }
 }
 
@@ -474,9 +541,16 @@ async function send(): Promise<void> {
   };
   // 必须 reactive：流式期间 handleEvent 持有此引用做 += 累加，若为普通对象，
   // 写入绕过响应式代理不触发渲染 → 表现为“全部生成完后才一次性出现”
-  const asst = reactive<ChatMsg>({ id: ++msgSeq, role: 'assistant', segments: [], streaming: true });
-  if (streamChk.value) messages.value.push(userMsg, asst);
-  else messages.value.push(userMsg);
+  const asst = reactive<ChatMsg>({
+    id: ++msgSeq,
+    role: 'assistant',
+    segments: [],
+    streaming: true,
+    // 非流式模式没有 SSE 事件驱动状态行，先置“思考中”，响应回来后清空
+    live: { kind: 'thinking', since: Date.now() },
+    lastEventAt: Date.now(),
+  });
+  messages.value.push(userMsg, asst);
 
   uploads.value = [];
   draft.value = '';
@@ -493,6 +567,7 @@ async function send(): Promise<void> {
         abortCtrl.signal,
       );
       asst.streaming = false;
+      asst.live = null;
     } else {
       const r = await api<{
         answer: string;
@@ -504,6 +579,7 @@ async function send(): Promise<void> {
         json: { message: full, stream: false },
       });
       asst.segments = [{ type: 'text', text: r.answer }];
+      asst.live = null;
       asst.streaming = false;
       asst.meta = `${(r.durationMs / 1000).toFixed(1)}s · ${r.iterations} 轮`;
       for (const w of r.warnings ?? []) showToast(w, 'error');
@@ -511,6 +587,7 @@ async function send(): Promise<void> {
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
       asst.streaming = false; // 用户主动停止：保留已收内容
+      asst.live = null;
       showToast('已停止生成（服务端将照常完成并保存）');
     } else {
       // 请求未成功：乐观消息回滚 + 恢复输入
@@ -525,6 +602,7 @@ async function send(): Promise<void> {
   } finally {
     streaming.value = false;
     abortCtrl = null;
+    asst.live = null; // 兜底：任何终止路径都不残留状态行
     scrollBottom();
     void postRenderMsgs(); // 流式/非流式/停止/失败统一在此做代码高亮 + mermaid
     void loadSessions(); // 刷新 messageCount / updatedAt
@@ -622,6 +700,7 @@ onMounted(() => {
 onUnmounted(() => {
   registerChatBridge(null);
   window.removeEventListener('keydown', onGlobalKeydown);
+  if (scrollRaf) cancelAnimationFrame(scrollRaf);
 });
 </script>
 
@@ -671,6 +750,7 @@ onUnmounted(() => {
                   <summary>
                     <span class="arrow">▶</span>
                     <span class="tc-badge" :class="seg.done ? 'ok' : 'run'">{{ seg.done ? '✓' : '⟳' }} {{ seg.tool }}</span>
+                    <span v-if="seg.elapsedMs != null" class="tc-took">· {{ fmtSecs(seg.elapsedMs) }}</span>
                     <span class="tc-args">{{ seg.args }}</span>
                   </summary>
                   <div class="tc-body">{{ seg.result || '（执行中…）' }}</div>
@@ -678,7 +758,12 @@ onUnmounted(() => {
                 <div v-else-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(seg.text)"></div>
                 <div v-else class="plain">{{ seg.text }}</div>
               </template>
-              <span v-if="m.streaming" class="cursor"></span>
+              <LiveStatus
+                v-if="m.streaming && !m.compacting && !m.failed && m.live"
+                :live="m.live ?? null"
+                :last-event-at="m.lastEventAt"
+              />
+              <span v-if="m.streaming && !m.compacting && !m.live" class="cursor"></span>
               <div v-if="m.failed" class="fatal">⚠ {{ m.failedText }}</div>
               <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
             </div>
@@ -1061,6 +1146,7 @@ onUnmounted(() => {
 .tc-badge { font-weight: 600; }
 .tc-badge.ok { color: var(--brand); }
 .tc-badge.run { color: var(--warn); }
+.tc-took { flex: none; color: var(--muted); font-size: 11.5px; }
 .tc-args {
   color: var(--muted);
   font-size: 11.5px;
