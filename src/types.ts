@@ -12,7 +12,10 @@ import type { Spinner } from './ui/spinner.js';
 export interface ToolContext {
   /** run 级取消信号：来自 AgentOptions.signal，贯穿 LLM/工具/子进程三层 */
   signal?: AbortSignal;
-  /** 工作空间根目录（Task-20261021-002 2b 接口位；本期工具不消费） */
+  /**
+   * 工作空间根目录：由 runner 注入（Task-20261021-010-02 起工具必须消费）。
+   * 工具解析相对路径时以此为准，不再依赖 process.cwd()。
+   */
   workspaceRoot?: string;
 }
 

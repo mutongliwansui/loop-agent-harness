@@ -33,6 +33,7 @@ import type { ConfigLoader } from '../config/loader.js';
 import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
+import type { WorkspaceRegistry } from './workspace-runtime.js';
 
 /**
  * 命令资源化运行时依赖（Task-20261016-002 D8）：
@@ -56,6 +57,11 @@ export interface ApiServerDeps {
    */
   runAgent: (sessionId: string, input: string, options: AgentOptions) => Promise<AgentResult>;
   sessionStore: SessionStore;
+  /**
+   * 会话缓存与互斥层（Task-20261021-010-01）：由工作空间 runtime 持有并注入，
+   * 避免 server 自建一份导致缓存分叉。缺省时 server 自行新建（既有单测零改动）。
+   */
+  sessions?: SessionManager;
   /** 每次请求时读取生效配置（鉴权 token / 健康探针的 model 名） */
   getConfig: () => AgentConfig;
   /** 服务版本号（/health 返回） */
@@ -66,6 +72,8 @@ export interface ApiServerDeps {
   reinitMemory?: (cwd: string) => Promise<void>;
   /** 命令资源化运行时依赖（D8）；缺省字段回落全局单例 */
   runtime?: Partial<ApiRuntimeDeps>;
+  /** 工作空间运行时注册表（Task-20261021-010-01）；本阶段仅透传给 handler，后续任务消费 */
+  registry?: WorkspaceRegistry;
 }
 
 export interface ApiServer {
@@ -81,7 +89,9 @@ export interface ApiServer {
  * 请求流：matchRoute → 鉴权 → handler（未注册 GET 先静态回落；抛 ApiHttpError 统一转 JSON 响应）。
  */
 export function createApiServer(deps: ApiServerDeps): ApiServer {
-  const sessions = new SessionManager(deps.sessionStore);
+  // Task-20261021-010-01：会话缓存由工作空间 runtime 注入（多空间并存时每空间一份），
+  // 缺省自建以保持既有单测/嵌入用法零改动。
+  const sessions = deps.sessions ?? new SessionManager(deps.sessionStore);
   const runs = new RunHub();
   const routes = createRoutes();
   let httpServer: http.Server | null = null;
@@ -104,6 +114,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     skillLoader: rt.skillLoader ?? skillLoader,
     uploadsRoot: rt.uploadsRoot ?? defaultUploadsRoot(),
     createMemoryKit: rt.createMemoryKit ?? defaultMemoryKitFactory,
+    // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅透传，后续任务消费
+    registry: deps.registry,
   };
 
   /** 统一入口：路由 → 鉴权 → 处理器 → 错误转 JSON（D6：静态页免鉴权，已注册端点鉴权语义不变） */

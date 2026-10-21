@@ -29,6 +29,7 @@ import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
 import type { MemoryKit } from './memory-kit.js';
+import type { WorkspaceRegistry } from './workspace-runtime.js';
 
 /** 处理器共享上下文（createApiServer 构造一次，路由分发时透传） */
 export interface HandlerContext {
@@ -55,6 +56,12 @@ export interface HandlerContext {
   uploadsRoot: string;
   /** 记忆子系统工厂（/memory 组；API 无共享 agent，独立组装，D8） */
   createMemoryKit: () => Promise<MemoryKit>;
+  /**
+   * 工作空间运行时注册表（Task-20261021-010-01）。
+   * 本任务只挂载不消费（L1：字段不变，避免一次性打穿 15 个 handler）；
+   * 后续任务据此把"请求携带空间"解析成对应 runtime。
+   */
+  registry?: WorkspaceRegistry;
 }
 
 export type RouteHandler = (

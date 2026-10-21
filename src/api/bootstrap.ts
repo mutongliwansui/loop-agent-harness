@@ -5,21 +5,24 @@
 import { createRequire } from 'node:module';
 import { createApiServer, type ApiServer } from './server.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
+import { WorkspaceRegistry } from './workspace-runtime.js';
 
 export async function startApiServer(): Promise<ApiServer> {
   const { configLoader } = await import('../config/index.js');
-  const { configWriter } = await import('../config/writer.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
   const { skillLoader } = await import('../skill/loader.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
-  const { getMemoryKit, resetMemoryKitCache } = await import('./memory-kit.js');
-  const { AgentPool } = await import('../agent/agent-pool.js');
-  const { SessionStore: Store } = await import('../session/index.js');
+  const { resetMemoryKitCache } = await import('./memory-kit.js');
   const { initAgentMemory } = await import('../runtime/init.js');
 
   const { config: cfg } = configLoader.load();
-  const store = new Store(process.cwd(), cfg.session.encryptionEnabled);
-  await store.init();
+
+  // 工作空间运行时注册表（Task-20261021-010-01）：本阶段只装启动目录一个 runtime，
+  // store / configLoader / configWriter / sessions / pool / memory-kit 全部自该 runtime 解构，
+  // 对外行为与改造前一致（L1：HandlerContext 字段不变）。
+  const registry = new WorkspaceRegistry();
+  const rt = await registry.get(process.cwd());
+  const store = rt.store;
 
   // 启动扫描（Task-20261021-002-06）：上个进程遗留的 running journal 标记为 interrupted。
   // fire-and-forget：不阻塞启动；bootId 不匹配即判中断（pid 复用不可靠，见 run-journal.ts D1）
@@ -34,11 +37,7 @@ export async function startApiServer(): Promise<ApiServer> {
   // Agent 实例池（Task-20261021-002-05）：替代单例 agent，同工作空间多会话并发。
   // D1：容量默认 4（含 busy）；D2：记忆按 workspaceId 共享 kit，禁止每实例自建；
   // D5：attachMemory 注入共享 kit；容量 1 等价回退旧串行语义（经环境变量可调）。
-  const capacity = Number.parseInt(process.env.LOOP_AGENT_POOL_CAPACITY ?? '', 10);
-  const pool = new AgentPool(
-    { capacity: Number.isFinite(capacity) && capacity > 0 ? capacity : undefined },
-    async (a) => a.attachMemory(await getMemoryKit(process.cwd()), process.cwd()),
-  );
+  // Task-20261021-010-01：池由 runtime 持有（每空间一池），容量读 LOOP_AGENT_POOL_CAPACITY。
 
   // 读取 package.json 版本（/health 返回）
   let version = '';
@@ -51,25 +50,29 @@ export async function startApiServer(): Promise<ApiServer> {
 
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
-    runAgent: (sessionId, input, options) => pool.withAgent(sessionId, (a) => a.run(input, options)),
+    runAgent: (sessionId, input, options) => rt.pool.withAgent(sessionId, (a) => a.run(input, options)),
     sessionStore: store,
+    // 会话缓存/互斥层由 runtime 持有，server 不再自建（避免两份缓存分叉）
+    sessions: rt.sessions,
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
     // 切换工作空间：池内实例的记忆绑定旧 workspaceId，整体重建（D6）+ 清共享 kit 缓存
     reinitMemory: async () => {
       resetMemoryKitCache();
-      pool.reset();
+      rt.pool.reset();
     },
-    // D8：命令资源化运行时依赖（真实单例组装）
+    // D8：命令资源化运行时依赖（真实单例组装；workspace 层一律指向当前 runtime 根）
     runtime: {
-      configLoader,
-      configWriter,
+      configLoader: rt.configLoader,
+      configWriter: rt.configWriter,
       mcpManager,
       skillLoader,
       uploadsRoot: defaultUploadsRoot(),
-      createMemoryKit: () => getMemoryKit(process.cwd()),
+      createMemoryKit: () => rt.getMemoryKit(),
     },
+    // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅装载启动目录，后续任务据此多空间并存
+    registry,
   });
 
   const { port } = await server.start();

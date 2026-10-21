@@ -6,33 +6,24 @@
 //   + 重置记忆缓存 + 重建 agent 记忆 → 创建
 // - GET /fs/dirs：服务端目录浏览（新建会话选择工作空间；纯 Web 拿不到本地绝对路径）
 // - GET /sessions/:id：跨空间会话自动切换到会话所在空间（switchWorkspace 导出供 messages 兜底复用）
+//
+// 路径归一（Task-20261021-010-01 L2）：'D:' 盘符特例与绝对化统一由 session/path-utils 提供，
+// 本文件不再保留私有实现——展示型回显用 lexicalWorkspacePath（取值与改造前一致），
+// 空间身份比较用 canonicalWorkspacePath + isSameWorkspace。
 
-import { constants, type Dirent } from 'node:fs';
+import { type Dirent } from 'node:fs';
 import { access, readdir, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
 import { resetMemoryKitCache } from '../memory-kit.js';
+import { ensureDirUsable } from '../workspace-runtime.js';
+import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
 import { SessionStore } from '../../session/index.js';
 import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
 import { readJournal, dropJournal } from '../run-journal.js';
-
-/** 归一化目录输入：'D:' → 'D:\'；其余走 resolve（相对路径基于服务端 cwd 展开） */
-function normalizeDirPath(input: string): string {
-  const p = input.trim();
-  const m = p.match(/^([A-Za-z]:)\\?$/);
-  if (m) return m[1].toUpperCase() + '\\';
-  return resolve(p);
-}
-
-/** Windows 路径比较忽略大小写与分隔符差异 */
-function samePath(a: string, b: string): boolean {
-  return process.platform === 'win32'
-    ? a.toLowerCase() === b.toLowerCase()
-    : a === b;
-}
 
 /** 枚举本机盘符（Windows；返回 'C:\' 形式，非 Windows 返回空） */
 async function listDrives(): Promise<string[]> {
@@ -53,7 +44,7 @@ async function listDrives(): Promise<string[]> {
 /** GET /fs/dirs?path=：列出目录下的子目录；path 缺省为当前空间，盘根 parent=null，drives 供跳盘 */
 export async function handleListDirs(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
-  const target = normalizeDirPath(query.get('path')?.trim() || ctx.deps.sessionStore.path);
+  const target = lexicalWorkspacePath(query.get('path')?.trim() || ctx.deps.sessionStore.path);
   let isDir: boolean;
   try {
     isDir = (await stat(target)).isDirectory();
@@ -88,8 +79,10 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
 
   let switched = false;
   if (requested) {
-    const target = normalizeDirPath(requested);
-    if (!samePath(target, ctx.deps.sessionStore.path)) {
+    // 空间身份按 canonical 形式比较（'D:' 特例 + 绝对化 + win32 真实大小写，D2/L2）
+    const target = await canonicalWorkspacePath(requested);
+    const current = await canonicalWorkspacePath(ctx.deps.sessionStore.path);
+    if (!isSameWorkspace(target, current)) {
       await ensureDirUsable(target);
       if (ctx.sessions.hasInFlight()) {
         throw new ApiHttpError('busy', '存在正在处理的会话，暂不能切换工作空间');
@@ -110,22 +103,6 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
     messageCount: meta.messageCount,
     workspace: { path: ctx.deps.sessionStore.path, id: ctx.deps.sessionStore.id, switched },
   });
-}
-
-/** 校验目标目录存在且可进入（stat + access R|X） */
-async function ensureDirUsable(target: string): Promise<void> {
-  let isDir: boolean;
-  try {
-    isDir = (await stat(target)).isDirectory();
-  } catch {
-    throw new ApiHttpError('not_found', `目录不存在: ${target}`);
-  }
-  if (!isDir) throw new ApiHttpError('not_found', `不是目录: ${target}`);
-  try {
-    await access(target, constants.R_OK | constants.X_OK);
-  } catch {
-    throw new ApiHttpError('forbidden', `无权访问目录: ${target}`);
-  }
 }
 
 /** 切换服务端工作空间：chdir + store 原地重绑 + 配置分层跟随 + 目录初始化（scaffold）+ 重置记忆缓存 + 重建 agent 实例记忆；rebind 失败时回滚 chdir */
