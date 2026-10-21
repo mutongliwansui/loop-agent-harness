@@ -42,6 +42,8 @@ export async function handleMessage(
 
   const startedAt = Date.now();
   const warnings: string[] = []; // 持久化失败降级收集（不失败请求）
+  // run 注册（流式/非流式一致）：/workspaces 运行中标记、GET /sessions/:id 的 run、attach 端点均据此判断
+  ctx.runs.start(id);
 
   // D5：空历史 → resetHistory（忽略 agent 实例残留 _chatHistory）；非空 → 显式 messages
   const historyBefore = entry.history;
@@ -73,13 +75,18 @@ export async function handleMessage(
       Connection: 'keep-alive',
     });
     let clientGone = false;
+    let unsubscribe = (): void => {};
     res.on('close', () => {
       clientGone = true; // 停止写流，但 run 照常完成并持久化
+      unsubscribe();
     });
-    const forwarder = createSseForwarder((event, data) => {
-      if (!clientGone) sseFrame(res, event, data);
+    // 本连接作为 RunHub 的首个订阅者（cursor=0 → 全量回放；此刻尚无事件）
+    const sub = ctx.runs.subscribe(id, 0, (ev) => {
+      if (!clientGone) sseFrame(res, ev.event, ev.data, ev.seq);
     });
-    runOptions.events = [forwarder];
+    unsubscribe = sub?.unsubscribe ?? ((): void => {});
+    // Agent 事件先入 Hub（供断线续传），再由 Hub fan-out 到当前连接
+    runOptions.events = [createSseForwarder((event, data) => void ctx.runs.publish(id, event, data))];
   }
 
   entry.inFlight = (async () => {
@@ -108,9 +115,12 @@ export async function handleMessage(
         iterations: result.iterations,
         steps: result.steps.length,
       };
+      // 终态统一经 Hub 发布（断线重连可回放）：warnings 先于 done
+      for (const w of warnings) {
+        ctx.runs.publish(id, 'warning', { level: 'warning', message: w });
+      }
+      ctx.runs.finish(id, 'done', { event: 'done', data: donePayload });
       if (stream) {
-        for (const w of warnings) sseFrame(res, 'warning', { level: 'warning', message: w });
-        sseFrame(res, 'done', donePayload); // D4 合成终态：正常结束
         res.end();
       } else {
         sendJson(res, 200, {
@@ -127,8 +137,8 @@ export async function handleMessage(
       // run 抛错：流式先推已发生事件再合成 fatal 关流；非流式 500（失败轮不持久化，保留原历史）
       const msg = e instanceof Error ? e.message : String(e);
       log(`[api] 会话 ${id} 运行失败: ${msg}`);
+      ctx.runs.finish(id, 'failed', { event: 'fatal', data: { message: msg } });
       if (stream) {
-        sseFrame(res, 'fatal', { message: msg }); // D4 合成终态：异常
         res.end();
       } else {
         sendError(res, 'internal', msg);

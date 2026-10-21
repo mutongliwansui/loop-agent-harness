@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
 import { handleCreateSession, handleDeleteSession, handleGetSession, handleListDirs, handleListSessions, handleListWorkspaces } from './handlers/sessions.js';
 import { handleMessage } from './handlers/messages.js';
+import { handleAttachStream } from './handlers/stream.js';
 import { uploadRoutes } from './handlers/uploads.js';
 import { fsRoutes } from './handlers/fs.js';
 import { configRoutes } from './handlers/config.js';
@@ -21,6 +22,7 @@ import { visionRoutes } from './handlers/vision.js';
 import { doctorRoutes } from './handlers/doctor.js';
 import type { ApiServerDeps } from './server.js';
 import type { SessionManager } from './session-manager.js';
+import type { RunHub } from './run-hub.js';
 import type { ConfigLoader } from '../config/loader.js';
 import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
@@ -32,6 +34,8 @@ export interface HandlerContext {
   deps: ApiServerDeps;
   /** 会话缓存与互斥状态（D5） */
   sessions: SessionManager;
+  /** run 事件缓冲与订阅（断线续传）：运行中标记 / attach 端点数据源 */
+  runs: RunHub;
   /** 日志输出（默认静默） */
   log: (msg: string) => void;
   /** 服务版本号（/health 返回） */
@@ -85,6 +89,8 @@ export function createRoutes(): Route[] {
     // 跨工作空间聚合（会话按工作空间分组展示）
     { method: 'GET', path: '/workspaces', handler: (ctx, _req, res) => handleListWorkspaces(ctx, res) },
     { method: 'POST', path: '/sessions/:id/messages', handler: (ctx, req, res, p) => handleMessage(ctx, req, res, p.id) },
+    // 附着当前 run 续传事件（3 段静态尾段，先于 2 段 /sessions/:id 注册以保持可读性）
+    { method: 'GET', path: '/sessions/:id/stream', handler: (ctx, req, res, p) => handleAttachStream(ctx, req, res, p.id) },
     { method: 'GET', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleGetSession(ctx, res, p.id) },
     { method: 'DELETE', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleDeleteSession(ctx, res, p.id) },
     // 命令资源化（Task-20261016-002）：每组一工厂，D2 无参静态可组合

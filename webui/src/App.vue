@@ -2,13 +2,12 @@
 // 应用壳：左侧菜单（logo + 新建对话 + 会话列表 + 底部管理分组，主题切换并入管理）+ 右侧视图（hash 路由见 router.ts）
 // 结构对齐原型-20261018-001：会话列表并入左侧菜单（搜索过滤 + 工作空间分组 + 删除二次确认），
 // 原独立会话侧栏取消；管理 7 项 + 主题默认收起，主题跟随系统、手动选择经 localStorage 记忆
-import { onMounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { adminItems, currentPath, currentView } from './router';
 import {
   sessKw,
   activeId,
   delArmedId,
-  chatStreaming,
   filteredGroups,
   collapsedWs,
   wsColor,
@@ -17,9 +16,38 @@ import {
   clickSession,
   onDelSession,
   requestNewChat,
+  loadSessions,
 } from './sessions';
+import {
+  isRunning,
+  isUnread,
+  onRunFinished,
+  runningCount,
+  unreadCount,
+  stop as stopStream,
+} from './chat-stream';
+import { showToast } from './toast';
 import TokenGate from './components/TokenGate.vue';
 import Toast from './components/Toast.vue';
+
+// 运行中 / 有未读时给浏览器标签加前缀，便于在其他页面察觉后台完成
+const BASE_TITLE = document.title;
+watch(
+  [runningCount, unreadCount],
+  ([r, u]) => {
+    const parts: string[] = [];
+    if (r > 0) parts.push(`● ${r}`);
+    if (u > 0) parts.push(`✉ ${u}`);
+    document.title = parts.length > 0 ? `(${parts.join(' ')}) ${BASE_TITLE}` : BASE_TITLE;
+  },
+  { immediate: true },
+);
+
+/** 侧栏停止：仅中断本端查看，服务端 run 继续并落盘 */
+function stopSession(id: string): void {
+  stopStream(id);
+  showToast('已停止查看该会话（服务端将照常完成并保存）');
+}
 
 // 管理分组默认收起；位于管理页时自动展开（否则活动项不可见）
 const mgrpOpen = ref(currentPath.value !== '#/chat');
@@ -39,9 +67,18 @@ function toggleTheme(): void {
   localStorage.setItem('theme', next);
 }
 
+// run 结束（含后台完成的会话）后刷新侧栏列表：messageCount / 运行中标记随之后更新
+let offRunFinished: (() => void) | null = null;
+
 onMounted(() => {
   const saved = localStorage.getItem('theme');
   if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+  offRunFinished = onRunFinished(() => void loadSessions());
+});
+
+onUnmounted(() => {
+  offRunFinished?.();
+  offRunFinished = null;
 });
 </script>
 
@@ -49,7 +86,7 @@ onMounted(() => {
   <div class="app">
     <aside class="nav">
       <div class="logo"><span class="dot">L</span><span class="name">Loop Agent</span></div>
-      <button class="new-chat" :disabled="chatStreaming" title="新建会话" @click="requestNewChat">
+      <button class="new-chat" title="新建会话" @click="requestNewChat">
         <span class="ico">＋</span><span class="lbl">新建对话</span>
       </button>
       <div class="sess-list">
@@ -78,9 +115,25 @@ onMounted(() => {
             @click="clickSession(s.id)"
           >
             <div class="t">
-              <div class="n">{{ s.title || '新会话' }}</div>
+              <div class="n">
+                <span
+                  v-if="isRunning(s.id) || s.running"
+                  class="run-dot"
+                  title="运行中"
+                ></span>
+                <span v-else-if="isUnread(s.id)" class="unread-dot" title="已完成，有未读内容"></span>
+                {{ s.title || '新会话' }}
+              </div>
               <div class="s">{{ s.messageCount }} 条 · {{ fmtTime(s.updatedAt) }}</div>
             </div>
+            <button
+              v-if="isRunning(s.id)"
+              class="sess-stop"
+              title="停止查看（服务端会照常完成并保存）"
+              @click.stop="stopSession(s.id)"
+            >
+              ■
+            </button>
             <button
               class="del"
               :class="{ armed: delArmedId === s.id }"

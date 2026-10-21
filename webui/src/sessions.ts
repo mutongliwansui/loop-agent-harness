@@ -8,6 +8,7 @@
 import { computed, ref } from 'vue';
 import { api, AuthError } from './api/client.js';
 import { showToast } from './toast.js';
+import { drop as dropStream } from './chat-stream.js';
 
 export interface SessionMeta {
   id: string;
@@ -15,6 +16,8 @@ export interface SessionMeta {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  /** 服务端 run 状态快照（GET /workspaces 注入；与 chat-stream 实时状态取并集展示） */
+  running?: boolean;
 }
 export interface WorkspaceGroup {
   id: string;
@@ -31,8 +34,6 @@ export const sessKw = ref('');
 export const collapsedWs = ref<Set<string>>(new Set());
 export const activeId = ref<string | null>(null);
 export const delArmedId = ref<string | null>(null);
-/** ChatView 同步写入：流式生成中（App「新建对话」按钮禁用态） */
-export const chatStreaming = ref(false);
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -118,6 +119,7 @@ export function onDelSession(s: SessionMeta): void {
         }
       }
       if (activeId.value === s.id) activeId.value = null; // ChatView watch 后清空消息
+      dropStream(s.id);
       showToast('会话已删除', 'success');
     } catch (e) {
       if (e instanceof AuthError) return;

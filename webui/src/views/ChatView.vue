@@ -14,9 +14,8 @@
 //          FilesView md 预览同款；动态 import 独立 chunk，主题跟随 prefers-color-scheme；
 //          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
 
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api, AuthError, ApiError, uploadRaw } from '../api/client.js';
-import { sseFetch, type SseEvent } from '../api/sse.js';
 import { showToast } from '../toast.js';
 import { renderMarkdown, highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
@@ -25,7 +24,6 @@ import LiveStatus from '../components/LiveStatus.vue';
 import {
   workspaces,
   activeId,
-  chatStreaming,
   foreignActive,
   currentWsPath,
   wsColor,
@@ -35,52 +33,18 @@ import {
   consumePendingSelect,
   type SessionMeta,
 } from '../sessions.js';
-interface TextSeg {
-  type: 'text';
-  text: string;
-}
-interface ToolSeg {
-  type: 'tool';
-  tool: string;
-  args: string;
-  result: string;
-  done: boolean;
-  /** 执行耗时：tool_end 时按本地时间计算；历史消息无此值 */
-  elapsedMs?: number;
-  /** 执行开始时间戳（仅流式期间用于算耗时，不渲染） */
-  startedAt?: number;
-}
-/** 时间线分段：思考/最终答案文本段与工具段按事件到达顺序交错 */
-type Segment = TextSeg | ToolSeg;
-/** 流式实时阶段（文案与 CLI spinner 对齐；仅内存态，不随历史消息持久化） */
-type LivePhase =
-  | { kind: 'thinking'; iteration?: number; since: number }
-  | { kind: 'arg_gen'; tool: string; bytes: number; since: number }
-  | { kind: 'tool_run'; tool: string; elapsedMs: number; since: number };
-/** GET /sessions/:id 的历史消息（OpenAI 消息序：含带 tool_calls 的 assistant 与带 tool_call_id 的 tool） */
-interface ApiHistoryMsg {
-  role: string;
-  content: string | null;
-  tool_calls?: { id: string; function: { name: string; arguments: string } }[];
-  tool_call_id?: string;
-  /** 是否在会话界面展示（system 与压缩总结消息为 false；缺省视为展示） */
-  is_show?: boolean;
-  /** 展示内容；缺省或为空时取 content（content 为 LLM 可见原文，可能含记忆注入前缀） */
-  show_content?: string;
-}
-interface ChatMsg {
-  id: number;
-  role: 'user' | 'assistant';
-  segments: Segment[]; // 按序渲染形成 思考→命令→思考→命令→总结 的完整过程
-  files?: string[]; // 该消息附带的上传文件名（仅用户消息展示）
-  streaming?: boolean;
-  compacting?: boolean; // 压缩中 loading（compaction_start 置 true，compaction 结束事件置 false）
-  failed?: boolean;
-  failedText?: string; // fatal 终止原因
-  meta?: string; // done 后的耗时/轮数标注
-  live?: LivePhase | null; // 实时状态行（思考中/生成参数/执行中）
-  lastEventAt?: number; // 最近一次收到 SSE 事件的时间（长时间无事件时提示仍在响应）
-}
+import {
+  messagesOf,
+  isRunning,
+  ensureLoaded,
+  initEmpty,
+  sendMessage,
+  stop as stopStream,
+  setActiveSession,
+  setChatViewMounted,
+  setActivityHandler,
+  onRunFinished,
+} from '../chat-stream.js';
 interface UploadChip {
   id: number;
   fileName: string;
@@ -88,9 +52,10 @@ interface UploadChip {
   contextNote: string;
 }
 
-const messages = ref<ChatMsg[]>([]);
+// 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
+const messages = computed(() => messagesOf(activeId.value));
 const draft = ref('');
-const streaming = ref(false);
+const streaming = computed(() => (activeId.value ? isRunning(activeId.value) : false));
 const streamChk = ref(true);
 const uploads = ref<UploadChip[]>([]);
 const upPopOpen = ref(false);
@@ -124,9 +89,7 @@ const activeWs = computed(
 // 工作空间文件浏览器（原型-20261018-001）：右侧面板默认展开
 const filesOpen = ref(true);
 
-let msgSeq = 0;
 let chipSeq = 0;
-let abortCtrl: AbortController | null = null;
 let composing = false; // 中文输入法组词中的 Enter 不发送
 /** 模板经此函数改写 composing：vue-tsc 对模板内直接赋值顶层 let 存在字面量收窄误报（TS2322） */
 function setComposing(v: boolean): void {
@@ -183,10 +146,6 @@ function errText(e: unknown): string {
  * 从弹窗发起（传参）时整体刷新列表——切换后「当前」标记随之移动、分组顺序不变。
  */
 async function createSession(workspacePath?: string): Promise<string | null> {
-  if (streaming.value) {
-    showToast('正在生成回复，请先停止', 'error');
-    return null;
-  }
   const fromPop = workspacePath !== undefined;
   if (fromPop) newBusy.value = true;
   try {
@@ -197,7 +156,7 @@ async function createSession(workspacePath?: string): Promise<string | null> {
     const switched = r.workspace?.switched === true;
     await loadSessions();
     activeId.value = r.id;
-    messages.value = [];
+    initEmpty(r.id);
     scrollBottom();
     if (fromPop) {
       closeNewPop();
@@ -303,77 +262,25 @@ const createInDirLabel = computed(() => {
   return '切换到此目录并新建会话';
 });
 
-/**
- * GET messages（OpenAI 消息序）→ ChatMsg 时间线：
- * user 消息开新一轮；assistant(content+tool_calls) 拆成文本段+工具段；tool 消息按 tool_call_id 回填结果。
- * 与流式渲染的 segments 模型对齐——重进会话同样还原 思考→工具→思考→总结 的完整过程。
- */
-function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
-  const out: ChatMsg[] = [];
-  let pending: Segment[] = [];
-  const toolSegById = new Map<string, ToolSeg>();
-  const flush = (): void => {
-    if (pending.length > 0) out.push({ id: ++msgSeq, role: 'assistant', segments: pending });
-    pending = [];
-  };
-  for (const m of list) {
-    // 不展示的消息：system 与压缩总结消息（is_show=false）
-    if (m.is_show === false) continue;
-    if (m.role === 'user') {
-      flush();
-      // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原
-      const text = m.show_content || m.content || '';
-      out.push({ id: ++msgSeq, role: 'user', segments: [{ type: 'text', text }] });
-    } else if (m.role === 'assistant') {
-      if (m.content) pending.push({ type: 'text', text: m.content });
-      for (const tc of m.tool_calls ?? []) {
-        let args = tc.function.arguments;
-        try {
-          args = JSON.stringify(JSON.parse(args)); // 历史存的是 JSON 串，重排与流式路径展示一致
-        } catch {
-          /* 非法 JSON 保留原串 */
-        }
-        const seg: ToolSeg = { type: 'tool', tool: tc.function.name, args, result: '', done: true };
-        pending.push(seg);
-        toolSegById.set(tc.id, seg);
-      }
-    } else if (m.role === 'tool') {
-      const seg = toolSegById.get(m.tool_call_id ?? '');
-      if (seg) seg.result = m.content ?? '';
-    }
-  }
-  flush();
-  return out;
-}
-
 async function selectSession(id: string): Promise<void> {
-  if (streaming.value) {
-    showToast('正在生成回复，请先停止', 'error');
-    return;
-  }
-  // 同会话且消息已在场（含从管理页返回重挂载场景）不重复拉取；消息为空则视为需恢复
-  if (id === activeId.value && messages.value.length > 0) return;
+  // 同会话且消息已在场（含从管理页返回重挂载场景）不重复拉取；运行中的会话由 chat-stream 续传
+  if (id === activeId.value && messagesOf(id).length > 0) return;
   try {
-    const r = await api<{
-      meta: SessionMeta;
-      messages: ApiHistoryMsg[];
-      workspace?: { path: string; id: string; switched: boolean };
-    }>(`/sessions/${encodeURIComponent(id)}`);
-    // 跨空间会话：后端已自动切换服务端工作空间——先刷新列表（「当前」标记移动、只读徽标消失，分组顺序不变）再恢复消息
-    const switched = r.workspace?.switched === true;
-    if (switched) await loadSessions();
+    // 跨空间会话：后端在 GET 详情时自动切换服务端工作空间，随后刷新列表（「当前」标记移动）
+    const r = await ensureLoaded(id);
     activeId.value = id;
-    messages.value = rebuildChatMsgs(r.messages);
     scrollBottom();
     void postRenderMsgs();
-    if (switched) showToast(`已切换工作空间：${r.workspace?.path}`, 'success');
+    if (r.switched) {
+      await loadSessions();
+      showToast(`已切换工作空间：${r.workspacePath ?? ''}`, 'success');
+    }
   } catch (e) {
     if (e instanceof AuthError) return;
     // 会话不存在（落盘数据被清理等）：重置视图并刷新列表，让僵尸条目消失
     if (e instanceof ApiError && e.code === 'not_found') {
       showToast('会话不存在或已被删除，列表已刷新', 'error');
       activeId.value = '';
-      messages.value = [];
       await loadSessions();
       return;
     }
@@ -381,137 +288,20 @@ async function selectSession(id: string): Promise<void> {
   }
 }
 
-/* ================= 消息发送与 SSE 渲染 ================= */
-
-function handleEvent(ev: SseEvent, asst: ChatMsg): void {
-  const d = (ev.data ?? {}) as Record<string, unknown>;
-  const now = Date.now();
-  asst.lastEventAt = now; // 统一刷新“最近事件”时间，供长时间静默时提示
-  switch (ev.event) {
-    case 'start':
-      asst.live = { kind: 'thinking', since: now };
-      break;
-    case 'iteration_start':
-      // 服务端轮次从 0 起算，与 CLI 一致展示为「第 N+1 轮」
-      asst.live = { kind: 'thinking', iteration: Number(d.iteration ?? 0) + 1, since: now };
-      break;
-    case 'llm_stream': {
-      // 思考/最终答案 delta：上一段是工具段时开新文本段，天然形成 思考→工具→思考 交错
-      if (!asst.live || asst.live.kind !== 'thinking') asst.live = { kind: 'thinking', since: now };
-      const last = asst.segments[asst.segments.length - 1];
-      const seg = last && last.type === 'text' ? last : { type: 'text' as const, text: '' };
-      if (seg !== last) asst.segments.push(seg);
-      seg.text += String(d.text ?? '');
-      scrollBottomSoon();
-      break;
-    }
-    case 'tool_call_delta': {
-      // 工具参数逐 token 生成（fileWrite 写长代码时可持续数十秒）：显示已生成体积与耗时
-      const elapsed = Number(d.elapsedMs ?? 0);
-      asst.live = {
-        kind: 'arg_gen',
-        tool: String(d.tool ?? ''),
-        bytes: Number(d.accumulatedBytes ?? 0),
-        since: now - elapsed, // 用服务端耗时反推起点，对象重建但耗时连续
-      };
-      scrollBottomSoon();
-      break;
-    }
-    case 'tool_start':
-      asst.live = { kind: 'tool_run', tool: String(d.tool ?? ''), elapsedMs: 0, since: now };
-      asst.segments.push({
-        type: 'tool',
-        tool: String(d.tool ?? ''),
-        args: JSON.stringify(d.args ?? null),
-        result: '',
-        done: false,
-        startedAt: now,
-      });
-      scrollBottom();
-      break;
-    case 'tool_progress':
-      // 执行期每秒心跳：以服务端 elapsedMs 为准，LiveStatus 内再用本地时钟兜底
-      asst.live = {
-        kind: 'tool_run',
-        tool: String(d.tool ?? ''),
-        elapsedMs: Number(d.elapsedMs ?? 0),
-        since: now - Number(d.elapsedMs ?? 0),
-      };
-      break;
-    case 'tool_end': {
-      // 从尾部反查第一个未完成同名工具段回填结果
-      for (let i = asst.segments.length - 1; i >= 0; i--) {
-        const s = asst.segments[i];
-        if (s.type === 'tool' && !s.done && s.tool === String(d.tool ?? '')) {
-          s.result = typeof d.result === 'string' ? d.result : JSON.stringify(d.result ?? null);
-          s.done = true;
-          s.elapsedMs = s.startedAt != null ? now - s.startedAt : undefined;
-          break;
-        }
-      }
-      // 工具结束后模型重新思考（并行工具仍在跑时，下一次 tool_progress 会覆盖回来）
-      asst.live = { kind: 'thinking', since: now };
-      scrollBottom();
-      break;
-    }
-    case 'compaction_start':
-      // 压缩开始（flush 提取期间有一次额外 LLM 调用，主输出会暂停）：显示压缩 loading
-      asst.compacting = true;
-      asst.live = null;
-      scrollBottom();
-      break;
-    case 'compaction': {
-      // 压缩结束事件（成功/失败/异常兜底均会到达，与 compaction_start 配对）：移除 loading
-      asst.compacting = false;
-      asst.live = { kind: 'thinking', since: now };
-      const info = (d.info ?? {}) as { failed?: boolean; fallback?: string };
-      if (info.failed) {
-        showToast(
-          info.fallback === 'archive'
-            ? '压缩提取失败：已降级存档原始对话后压缩'
-            : '压缩提取失败：已保留全部历史',
-          'error',
-        );
-      }
-      scrollBottom();
-      break;
-    }
-    case 'final': {
-      // 最终答案已随最后一轮 llm_stream 流入末尾文本段，覆盖会把前面各轮思考全部抹掉；
-      // 仅在末尾没有文本段（异常路径）或其为空时兜底写入
-      const answer = String(d.answer ?? '');
-      const last = asst.segments[asst.segments.length - 1];
-      if (!last || last.type !== 'text') asst.segments.push({ type: 'text', text: answer });
-      else if (!last.text) last.text = answer;
-      asst.live = null;
-      break;
-    }
-    case 'error':
-      showToast(`模型错误: ${String(d.message ?? d.name ?? '')}`, 'error');
-      break;
-    case 'warning':
-      showToast(String(d.message ?? ''), 'error');
-      break;
-    case 'fatal':
-      asst.streaming = false;
-      asst.live = null;
-      asst.failed = true;
-      asst.failedText = String(d.message ?? '生成失败');
-      scrollBottom();
-      break;
-    case 'done':
-      asst.streaming = false;
-      asst.live = null;
-      asst.meta = `${(Number(d.durationMs ?? 0) / 1000).toFixed(1)}s · ${String(d.iterations ?? '?')} 轮`;
-      scrollBottom();
-      break;
-    default:
-      break; // llm_end/end 等事件不改变可见状态
-  }
-}
+/* ================= 消息发送（事件渲染见 chat-stream） ================= */
 
 async function ensureSession(): Promise<string | null> {
   return activeId.value ?? (await createSession());
+}
+
+/** 其他会话中正在运行的第一个（服务端单 run：同一时刻只允许一个会话生成） */
+function otherRunningSession(): SessionMeta | null {
+  for (const w of workspaces.value) {
+    for (const s of w.sessions) {
+      if (s.id !== activeId.value && isRunning(s.id)) return s;
+    }
+  }
+  return null;
 }
 
 async function send(): Promise<void> {
@@ -521,7 +311,16 @@ async function send(): Promise<void> {
   }
   const text = draft.value.trim();
   if (!text && uploads.value.length === 0) return;
-  if (streaming.value) return;
+  if (streaming.value) {
+    showToast('当前会话正在生成回复，请先停止', 'error');
+    return;
+  }
+  // 服务端单 run（runAgent/agent 实例共享）：另一会话在跑时不允许再发，避免并发写乱历史
+  const other = otherRunningSession();
+  if (other) {
+    showToast(`会话「${other.title || '新会话'}」正在生成回复，请先停止或稍后再试`, 'error');
+    return;
+  }
   const sessionId = await ensureSession();
   if (!sessionId) return;
 
@@ -531,86 +330,29 @@ async function send(): Promise<void> {
 
   const chipsSnapshot = uploads.value;
   const draftSnapshot = draft.value;
-  const baseLen = messages.value.length;
-
-  const userMsg: ChatMsg = {
-    id: ++msgSeq,
-    role: 'user',
-    segments: [{ type: 'text', text }],
-    files: chipsSnapshot.map((u) => u.fileName),
-  };
-  // 必须 reactive：流式期间 handleEvent 持有此引用做 += 累加，若为普通对象，
-  // 写入绕过响应式代理不触发渲染 → 表现为“全部生成完后才一次性出现”
-  const asst = reactive<ChatMsg>({
-    id: ++msgSeq,
-    role: 'assistant',
-    segments: [],
-    streaming: true,
-    // 非流式模式没有 SSE 事件驱动状态行，先置“思考中”，响应回来后清空
-    live: { kind: 'thinking', since: Date.now() },
-    lastEventAt: Date.now(),
-  });
-  messages.value.push(userMsg, asst);
-
   uploads.value = [];
   draft.value = '';
-  streaming.value = true;
   scrollBottom();
 
-  abortCtrl = new AbortController();
-  try {
-    if (streamChk.value) {
-      await sseFetch(
-        `/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { message: full, stream: true },
-        (ev) => handleEvent(ev, asst),
-        abortCtrl.signal,
-      );
-      asst.streaming = false;
-      asst.live = null;
-    } else {
-      const r = await api<{
-        answer: string;
-        iterations: number;
-        durationMs: number;
-        warnings?: string[];
-      }>(`/sessions/${encodeURIComponent(sessionId)}/messages`, {
-        method: 'POST',
-        json: { message: full, stream: false },
-      });
-      asst.segments = [{ type: 'text', text: r.answer }];
-      asst.live = null;
-      asst.streaming = false;
-      asst.meta = `${(r.durationMs / 1000).toFixed(1)}s · ${r.iterations} 轮`;
-      for (const w of r.warnings ?? []) showToast(w, 'error');
-    }
-  } catch (e) {
-    if ((e as Error).name === 'AbortError') {
-      asst.streaming = false; // 用户主动停止：保留已收内容
-      asst.live = null;
-      showToast('已停止生成（服务端将照常完成并保存）');
-    } else {
-      // 请求未成功：乐观消息回滚 + 恢复输入
-      messages.value = messages.value.slice(0, baseLen);
-      uploads.value = chipsSnapshot;
-      draft.value = draftSnapshot;
-      if (!(e instanceof AuthError)) {
-        const msg = (e as { code?: string }).code === 'busy' ? '正在处理上一条消息，请稍后再试' : errText(e);
-        showToast(msg, 'error');
-      }
-    }
-  } finally {
-    streaming.value = false;
-    abortCtrl = null;
-    asst.live = null; // 兜底：任何终止路径都不残留状态行
-    scrollBottom();
-    void postRenderMsgs(); // 流式/非流式/停止/失败统一在此做代码高亮 + mermaid
-    void loadSessions(); // 刷新 messageCount / updatedAt
+  // 发送与流式累加在 chat-stream（模块级状态，切换会话/离开聊天页不中断）
+  const outcome = await sendMessage(sessionId, {
+    message: full,
+    text,
+    files: chipsSnapshot.map((u) => u.fileName),
+    stream: streamChk.value,
+  });
+  if (outcome === 'failed') {
+    // 请求未成功：恢复输入，用户可直接重试
+    uploads.value = chipsSnapshot;
+    draft.value = draftSnapshot;
   }
+  scrollBottom();
+  void postRenderMsgs(); // 流式/非流式/停止/失败统一在此做代码高亮 + mermaid
+  void loadSessions(); // 刷新 messageCount / updatedAt
 }
 
 function stopGen(): void {
-  abortCtrl?.abort();
+  if (activeId.value) stopStream(activeId.value);
 }
 
 function onEnter(e: KeyboardEvent): void {
@@ -670,22 +412,29 @@ function onCleanUploads(): void {
   })();
 }
 
-// 与共享 store 双向联动：
-//   写 —— streaming 状态同步给 App「新建对话」按钮禁用态
-//   读 —— store 删除活跃会话后 activeId 置 null，这里清空消息区
-watchEffect(() => {
-  chatStreaming.value = streaming.value;
-});
-watch(activeId, (v) => {
-  if (v === null) messages.value = [];
-});
+// 活跃会话同步给 chat-stream：离开聊天页时 run 完成要记未读并提示
+watch(activeId, (v) => setActiveSession(v));
 
 // Esc 关闭新建会话弹窗（window 级监听：焦点可能落在弹窗内输入框，元素级 @keydown 不可靠）
 function onGlobalKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && newPopOpen.value) closeNewPop();
 }
 
+let offRunFinished: (() => void) | null = null;
+
 onMounted(() => {
+  setChatViewMounted(true);
+  setActiveSession(activeId.value);
+  // 流式事件到达时仅活跃会话滚动（组件卸载后 handler 置空，run 不受影响）
+  setActivityHandler((id) => {
+    if (id === activeId.value) scrollBottomSoon();
+  });
+  offRunFinished = onRunFinished((id) => {
+    if (id === activeId.value) {
+      scrollBottom();
+      void postRenderMsgs();
+    }
+  });
   // 会话切换/新建弹窗依赖本组件的流式与消息状态，注册给 App 侧栏委托调用
   registerChatBridge({ select: (id) => void selectSession(id), openNewPop });
   window.addEventListener('keydown', onGlobalKeydown);
@@ -698,6 +447,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  // 只清理视图侧监听：run / SSE 连接由 chat-stream 持有，离开页面继续运行
+  setChatViewMounted(false);
+  setActivityHandler(null);
+  offRunFinished?.();
+  offRunFinished = null;
   registerChatBridge(null);
   window.removeEventListener('keydown', onGlobalKeydown);
   if (scrollRaf) cancelAnimationFrame(scrollRaf);

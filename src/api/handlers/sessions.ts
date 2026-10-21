@@ -161,10 +161,15 @@ export async function handleListSessions(ctx: HandlerContext, res: ServerRespons
   sendJson(res, 200, { sessions: list });
 }
 
-/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；当前空间置顶） */
+/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；当前空间置顶；注入 running 供侧栏标记） */
 export async function handleListWorkspaces(ctx: HandlerContext, res: ServerResponse): Promise<void> {
   const workspaces = await ctx.deps.sessionStore.listAllWorkspaces();
-  sendJson(res, 200, { workspaces });
+  sendJson(res, 200, {
+    workspaces: workspaces.map((w) => ({
+      ...w,
+      sessions: w.sessions.map((s) => ({ ...s, running: ctx.runs.isRunning(s.id) })),
+    })),
+  });
 }
 
 /** GET /sessions/:id：会话详情（完整历史，不含 system；支持跨工作空间会话——点击时自动切换到会话所在空间） */
@@ -194,6 +199,7 @@ export async function handleGetSession(ctx: HandlerContext, res: ServerResponse,
   sendJson(res, 200, {
     meta,
     messages,
+    run: ctx.runs.snapshot(id), // 运行中概览（前端决定是否 attach 续传）
     workspace: { path: ctx.deps.sessionStore.path, id: ctx.deps.sessionStore.id, switched },
   });
 }
@@ -210,6 +216,7 @@ export async function handleDeleteSession(ctx: HandlerContext, res: ServerRespon
   if (!owner) throw new ApiHttpError('not_found', `会话不存在: ${id}`);
   await ctx.deps.sessionStore.deleteSession(id);
   ctx.sessions.delete(id);
+  ctx.runs.drop(id);
   ctx.log(`[api] 会话已删除: ${id}`);
   sendJson(res, 200, { deleted: true });
 }

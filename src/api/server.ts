@@ -17,6 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ApiHttpError } from './errors.js';
 import { LOOPBACK_HOST, isAuthorized, sendError } from './http-utils.js';
 import { SessionManager } from './session-manager.js';
+import { RunHub } from './run-hub.js';
 import { createRoutes, matchRoute, type HandlerContext } from './router.js';
 import { resolveStaticHandler, type StaticHandler } from './static.js';
 import { SessionStore, SessionNotFoundError } from '../session/index.js';
@@ -79,6 +80,7 @@ export interface ApiServer {
  */
 export function createApiServer(deps: ApiServerDeps): ApiServer {
   const sessions = new SessionManager(deps.sessionStore);
+  const runs = new RunHub();
   const routes = createRoutes();
   let httpServer: http.Server | null = null;
   /** WebUI 静态资源处理器（start 时按 webRoot 构建；index.html 缺失时整体降级为回落 API） */
@@ -90,6 +92,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
   const ctx: HandlerContext = {
     deps,
     sessions,
+    runs,
     log,
     version: deps.version,
     reinitMemory: deps.reinitMemory,
@@ -193,6 +196,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       const server = httpServer;
       httpServer = null;
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      runs.dispose(); // 清理结束态保留定时器
     },
   };
 }

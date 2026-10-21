@@ -4,9 +4,15 @@ import type { ServerResponse } from 'node:http';
 import type { AgentEvents } from '../types.js';
 import { serializeError } from './http-utils.js';
 
-/** SSE 帧写入：`event: <type>\n` + `data: <JSON>\n\n` */
-export function sseFrame(res: ServerResponse, event: string, data: unknown): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+/**
+ * SSE 帧写入：`[id: <seq>\n]` + `event: <type>\n` + `data: <JSON>\n\n`
+ *
+ * id 为 run 内单调递增序号（RunHub），供客户端断线后以 cursor 续传；
+ * 缺省时不写 id 行，保持非续传场景（如 reset/错误提示）的帧格式不变。
+ */
+export function sseFrame(res: ServerResponse, event: string, data: unknown, id?: number): void {
+  const idLine = id !== undefined ? `id: ${id}\n` : '';
+  res.write(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 /**
