@@ -1,7 +1,0 @@
-At line:1 char:120
-+ ... streamChk|composer|opts' | ForEach-Object { $($_.LineNumber): $($_.Li ...
-+                                                                 ~
-Unexpected token ':' in expression or statement.
-    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
-    + FullyQualifiedErrorId : UnexpectedToken
- 
