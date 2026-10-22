@@ -1,9 +1,9 @@
 /**
  * A4 静态收口断言（Task-20261021-010-03 6.4.5）
  *
- * - `process.chdir` 在 src/ 下零出现（切换空间不再改变进程 cwd）
+ * - `process.chdir` 在 src/ 下零出现（工作空间解析不再改变进程 cwd）
  * - `process.cwd()` 仅剩"保留"类，且逐文件白名单：应用自身资源 / CLI 单空间 / 共享默认值
- * - switchWorkspace 不再调用 rebindWorkspace / setWorkspacePath / resetMemoryKitCache
+ * - 工作空间解析不再调用 rebindWorkspace / setWorkspacePath / resetMemoryKitCache
  */
 
 import { describe, it, expect } from 'vitest';
@@ -74,7 +74,7 @@ describe('A4 process.chdir 零出现', () => {
     expect(offenders.map(rel)).toEqual([]);
   });
 
-  it('switchWorkspace 不再原地重绑 / 改写配置层 / 重置记忆缓存', () => {
+  it('工作空间解析不再原地重绑 / 改写配置层 / 重置记忆缓存', () => {
     const text = readFileSync(join(SRC, 'api', 'handlers', 'sessions.ts'), 'utf-8');
     for (const banned of ['rebindWorkspace(', 'setWorkspacePath(', 'resetMemoryKitCache(']) {
       expect(text.includes(banned), `sessions.ts 不应再调用 ${banned}`).toBe(false);

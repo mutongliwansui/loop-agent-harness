@@ -52,15 +52,6 @@ export async function locateSession(registry: WorkspaceRegistry, id: string): Pr
   throw new ApiHttpError('not_found', `会话不存在: ${id}`);
 }
 
-/** 解析 "最近使用空间" → runtime（registry.currentRoot 优先，否则回落 fallbackRoot） */
-export async function resolveCurrentRuntime(
-  registry: WorkspaceRegistry,
-  fallbackRoot: string,
-): Promise<WorkspaceRuntime> {
-  const target = registry.currentRoot ?? (await canonicalWorkspacePath(fallbackRoot));
-  return registry.getCanonical(target);
-}
-
 /** 按 wsId8 扫 <userDir>/sessions/* 目录名前缀，读 meta.json 反查 canonical root */
 async function rootByWsId8(registry: WorkspaceRegistry, wsId8: string): Promise<string | null> {
   const sessionsRoot = join(resolveUserDir(registry), 'sessions');

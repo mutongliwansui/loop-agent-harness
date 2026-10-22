@@ -4,7 +4,7 @@
  * 覆盖：
  * - 6.2.4 bootstrap 收编后 /sessions、/workspaces、/fs/dirs 响应字段与改造前完全一致
  *         （对照改造前实现的字段清单做形状断言，不多不少）
- * - 6.2.5（task-03 重写）switchWorkspace 退化为"当前空间指针刷新"：
+ * - 6.2.5（task-03 重写）目标空间解析退化为"最近使用指针刷新"：
  *         零 process.chdir、零 store 原地重绑、零 setWorkspacePath、不触发记忆/池重建；
  *         目标空间由 registry 懒建独立 runtime，旧空间 runtime 保持不可变
  * - registry 提供的 runtime 与 server 注入的 deps 指向同一 root（无两份缓存分叉）
@@ -28,12 +28,11 @@ const USER_DIR = join(ROOT, 'user');
 const WS_A = join(ROOT, 'ws-a');
 const WS_B = join(ROOT, 'ws-b');
 
-/** 改造前 /workspaces 单项字段（真实实现的返回值形状，6.2.4 快照基线） */
+/** /workspaces 单项字段（真实实现的返回值形状，6.2.4 快照基线） */
 const WORKSPACE_KEYS = [
   'id',
   'name',
   'path',
-  'current',
   'createdAt',
   'lastAccessedAt',
   'sessions',
@@ -45,7 +44,6 @@ const SESSION_DETAIL_KEYS = ['meta', 'messages', 'run', 'lastRun', 'workspace'].
 let registry: WorkspaceRegistry;
 let server: ApiServer;
 let base = '';
-let reinitCalls: string[] = [];
 
 const fakeRunAgent = async (_sid: string, input: string, _options: AgentOptions): Promise<AgentResult> => ({
   answer: `回复:${input}`,
@@ -67,9 +65,6 @@ async function startServer(workspace: string): Promise<void> {
     sessions: rt.sessions,
     getConfig: () => cfg,
     version: 'test-0.0.0',
-    reinitMemory: async (cwd) => {
-      reinitCalls.push(cwd);
-    },
     runtime: {
       configLoader: rt.configLoader,
       configWriter: rt.configWriter,
@@ -106,10 +101,6 @@ afterAll(async () => {
   }
 });
 
-afterEach(() => {
-  reinitCalls = [];
-});
-
 describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', () => {
   it('GET /sessions 返回 { sessions: [{ id,title,createdAt,updatedAt,messageCount,file }] }', async () => {
     const created = await req('POST', '/sessions', { title: '形状校验' });
@@ -142,13 +133,13 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
     expect(Object.keys(body)).toEqual(['workspaces']);
     expect(body.workspaces.length).toBeGreaterThan(0);
 
-    const current = body.workspaces.find((w) => w.current === true)!;
-    expect(current).toBeTruthy();
-    expect(Object.keys(current).sort()).toEqual(WORKSPACE_KEYS);
-    expect(current.path).toBe(await canonicalWorkspacePath(WS_A));
-    expect(current.id).toBe(workspaceId(await canonicalWorkspacePath(WS_A)));
+    const canonicalA = await canonicalWorkspacePath(WS_A);
+    const ws = body.workspaces.find((w) => w.path === canonicalA)!;
+    expect(ws).toBeTruthy();
+    expect(Object.keys(ws).sort()).toEqual(WORKSPACE_KEYS);
+    expect(ws.id).toBe(workspaceId(canonicalA));
 
-    const sessions = current.sessions as Record<string, unknown>[];
+    const sessions = ws.sessions as Record<string, unknown>[];
     expect(sessions.length).toBeGreaterThan(0);
     // running / lastRun 由 handler 注入（改造前既有行为）
     expect(Object.keys(sessions[0]).sort()).toEqual(
@@ -182,7 +173,7 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
   });
 });
 
-describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重绑）', () => {
+describe('6.2.5 目标空间解析只刷新最近使用指针（零 chdir / 零原地重绑）', () => {
   it('异空间创建会话：cwd 不变、旧空间 runtime 不变、新空间 runtime 懒建、指针整体切换（task-04：switched 恒 false）', async () => {
     const rootA = await canonicalWorkspacePath(WS_A);
     const rootB = await canonicalWorkspacePath(WS_B);
@@ -218,10 +209,8 @@ describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重
     };
     expect(cfgPath.workspacePath).toBe(join(rootB, '.loop-agent', '.agent-config.json'));
     expect(cfgPath.workspaceExists).toBe(true);
-    // 6) 不再触发"记忆缓存重置 / 整池重建"
-    expect(reinitCalls).toHaveLength(0);
 
-    // 复原当前空间指针（后续用例仍以 WS_A 为当前空间）：切回同样零 chdir（task-04：switched 恒 false）
+    // 复原最近使用指针（后续用例仍以 WS_A 为当前空间）：同样零 chdir（task-04：switched 恒 false）
     const back = await req('POST', '/sessions', { title: '切回', workspacePath: rootA });
     expect(back.status).toBe(201);
     const backBody = (await back.json()) as { workspace: { path: string; switched: boolean } };
@@ -237,7 +226,6 @@ describe('6.2.5 switchWorkspace 退化为指针刷新（零 chdir / 零原地重
     const body = (await res.json()) as { workspace: { switched: boolean; path: string } };
     expect(body.workspace.switched).toBe(false);
     expect(body.workspace.path).toBe(rootA);
-    expect(reinitCalls).toHaveLength(0);
   });
 
   it('目标目录不存在：not_found（错误码与文案沿用改造前）', async () => {

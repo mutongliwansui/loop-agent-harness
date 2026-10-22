@@ -13,7 +13,7 @@
 //
 // 不变量：
 // - 同一 canonical root 任意时刻只有一个 runtime
-// - root / id / store 创建后不可变（与 SessionStore.rebindWorkspace 的原地改写相反）
+// - root / id / store 创建后不可变（运行期不原地改写）
 // - list().length <= maxRuntimes
 
 import { constants } from 'node:fs';
@@ -46,7 +46,7 @@ export interface WorkspaceRuntime {
   /** workspaceId(root)：会话目录名，公式未变（D2） */
   readonly id: string;
   readonly store: SessionStore;
-  /** workspace 层指向 root 的独立加载器（不再 setWorkspacePath 原地改写，后续任务的 P0 形态） */
+  /** workspace 层指向 root 的独立加载器（构造期定根，运行期不改写） */
   readonly configLoader: ConfigLoader;
   readonly configWriter: ConfigWriter;
   /** 本空间的会话缓存与互斥状态（hasInFlight 即"本空间是否有 run"） */
@@ -57,7 +57,7 @@ export interface WorkspaceRuntime {
   readonly pool: AgentPool;
   /** 本空间共享记忆 kit（按 workspaceId 缓存，池内实例共享） */
   getMemoryKit(): Promise<MemoryKit>;
-  /** 在本空间 ALS 上下文内租用本空间池实例执行 run（切换空间后 handler 改用新 runtime 的此方法） */
+  /** 在本空间 ALS 上下文内租用本空间池实例执行 run（handler 按会话归属解析到本 runtime 后调用） */
   runAgent: RuntimeRunAgent;
   /** LRU 依据（可变） */
   lastUsedAt: number;
@@ -98,7 +98,7 @@ const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000;
  * 校验目录存在且可进入（stat + access R|X），返回 canonical root。
  *
  * 原 sessions.ts 私有 `ensureDirUsable` 上移为共享实现，供 registry 建 runtime 前
- * 与 handler 侧切换空间前复用（保持 not_found / forbidden 的错误码与文案一致）。
+ * 与 handler 侧解析目标空间前复用（保持 not_found / forbidden 的错误码与文案一致）。
  */
 export async function ensureDirUsable(input: string): Promise<string> {
   const root = await canonicalWorkspacePath(input);
@@ -139,8 +139,6 @@ export class WorkspaceRegistry {
    * 夹在每个 runtime 的 runAgent 外层（FIFO 排队，不拒绝）。
    */
   private readonly gate: Semaphore;
-  /** 最近使用指针（D9）：get/getCanonical 取用即更新；/workspaces 的 current 由它标注 */
-  private current: string | null = null;
 
   constructor(opts: WorkspaceRegistryOptions = {}) {
     this.maxRuntimes = opts.maxRuntimes ?? intFromEnv('LOOP_AGENT_MAX_WORKSPACES', DEFAULT_MAX_RUNTIMES);
@@ -168,16 +166,6 @@ export class WorkspaceRegistry {
     return this.gate.max;
   }
 
-  /** 最近使用空间（canonical root；无则为 null，调用方回落启动空间） */
-  get currentRoot(): string | null {
-    return this.current;
-  }
-
-  /** 显式更新最近使用指针（一般无需调用——get/getCanonical 已自动 touch） */
-  touch(root: string): void {
-    this.current = root;
-  }
-
   /**
    * 取（必要时懒建）指定空间的 runtime。
    * 入参可以是任意书写形式（相对/大小写/尾斜杠），内部先 canonical 化。
@@ -191,7 +179,6 @@ export class WorkspaceRegistry {
     const hit = this.runtimes.get(root);
     if (hit) {
       hit.lastUsedAt = Date.now();
-      this.current = root;
       return hit;
     }
     const inflight = this.building.get(root);
@@ -200,7 +187,6 @@ export class WorkspaceRegistry {
     const task = this.build(root)
       .then((rt) => {
         this.building.delete(root);
-        this.current = root;
         return rt;
       })
       .catch((e: unknown) => {
@@ -259,13 +245,12 @@ export class WorkspaceRegistry {
     for (const rt of this.runtimes.values()) rt.pool.reset();
     this.runtimes.clear();
     this.building.clear();
-    this.current = null;
     debug.log('[registry] 已重置（全部工作空间运行时释放）');
   }
 
   /** 建造一个 runtime：store 按 root 构造并 init（init 幂等），池钩子注入本空间共享 kit */
   private async build(root: string): Promise<WorkspaceRuntime> {
-    // 构造期定根（D7）：workspace 层永远指向本空间，serve 侧不再 setWorkspacePath 原地改写
+    // 构造期定根（D7）：workspace 层永远指向本空间，运行期不改写
     const configLoader = new ConfigLoader(root);
     const { config: cfg } = configLoader.load();
     const store = new SessionStore(root, cfg.session.encryptionEnabled, this.userDir);
@@ -304,7 +289,7 @@ export class WorkspaceRegistry {
       pool,
       getMemoryKit: () => getMemoryKit(root),
       // run 全程处于本空间 ALS 上下文（漏传显式根的深层代码仍能取到正确的根）；
-      // 每空间一池，run 只可能落在本空间实例上（切换空间仅更换 handler 指针）；
+      // 每空间一池，run 只可能落在本空间实例上（handler 指针切换仅更换引用）；
       // 跨空间并发总上限由进程级 Semaphore 把关（FIFO 排队，不拒绝）
       runAgent: (sessionId, input, options) => this.gate.run(() => raw(sessionId, input, options)),
       lastUsedAt: Date.now(),
@@ -321,10 +306,9 @@ export class WorkspaceRegistry {
     return rt.sessions.hasInFlight();
   }
 
-  /** 释放单个 runtime：池内实例 dispose，缓存移除；最近使用指针同步失效（回落启动空间） */
+  /** 释放单个 runtime：池内实例 dispose，缓存移除 */
   private dispose(root: string, rt: WorkspaceRuntime): void {
     this.runtimes.delete(root);
-    if (this.current === root) this.current = null;
     try {
       rt.pool.reset();
     } catch (e) {

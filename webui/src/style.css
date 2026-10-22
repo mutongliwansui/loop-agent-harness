@@ -249,7 +249,6 @@ input:focus, textarea:focus { outline: none; border-color: var(--brand); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.nav .ws-head .cur { flex: none; font-size: 10px; color: var(--brand); background: var(--brand-weak); padding: 1px 6px; border-radius: 999px; }
 .nav .ws-head .cnt { flex: none; font-size: 10.5px; color: var(--muted); background: var(--bg); padding: 1px 6px; border-radius: 999px; }
 .nav .ws-group.collapsed .sess { display: none; }
 

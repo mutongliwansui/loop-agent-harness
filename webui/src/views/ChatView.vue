@@ -2,11 +2,11 @@
 // ChatView：会话 CRUD + SSE 流式对话 + 停止生成 + 对话内上传（Task-20261017-001 D5/D7）
 // 端点映射：
 //   GET    /workspaces          → 左侧菜单会话列表（sessions.ts 共享 store；按工作空间分组聚合）
-//   POST   /sessions            → 新建会话（body 可带 workspacePath 异空间切换；发送前无会话时也自动创建）
+//   POST   /sessions            → 新建会话（body 可带 workspacePath 直接在目标空间创建；发送前无会话时也自动创建）
 //   GET    /fs/dirs             → 服务端目录浏览（新建弹窗「浏览磁盘」；纯 Web 拿不到本地目录绝对路径）
-//   GET    /sessions/:id        → 恢复历史消息（{meta, messages, workspace}；跨空间会话自动切换到其所在空间）
+//   GET    /sessions/:id        → 恢复历史消息（{meta, messages, workspace}；按 id 定位归属空间，不再切换）
 //   DELETE /sessions/:id        → 删除（二次确认；in-flight 409；支持跨工作空间会话）
-//   POST   /sessions/:id/messages → 发消息（默认 SSE；stream:false 非流式 JSON；跨空间会话自动切换空间）
+//   POST   /sessions/:id/messages → 发消息（默认 SSE；stream:false 非流式 JSON；跨空间会话在归属空间内执行）
 //   POST   /uploads/raw         → 📎 文件选择框上传 → chip（contextNote 随下一条消息注入）
 //   DELETE /uploads             → 上传面板「清空全部」（二次确认）
 // 停止生成：POST /sessions/:id/stop 服务端真取消（Task-20261021-002-04），终态由 SSE aborted 事件驱动
@@ -178,17 +178,17 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/* ================= 会话创建与切换（列表数据见 sessions.ts 共享 store） ================= */
+/* ================= 会话创建（列表数据见 sessions.ts 共享 store） ================= */
 
 /**
- * 创建会话；带 workspacePath 时可异空间切换（后端同空间自动识别为直建）。
- * 从弹窗发起（传参）时整体刷新列表——切换后「当前」标记随之移动、分组顺序不变。
+ * 创建会话；带 workspacePath 时直接在目标空间创建（同空间视为直建）。
+ * 从弹窗发起（传参）时整体刷新列表——分组顺序不变。
  */
 async function createSession(workspacePath?: string): Promise<string | null> {
   const fromPop = workspacePath !== undefined;
   if (fromPop) newBusy.value = true;
   try {
-    const r = await api<SessionMeta & { workspace?: { path: string; id: string; switched: boolean } }>(
+    const r = await api<SessionMeta & { workspace?: { path: string; id: string } }>(
       '/sessions',
       { method: 'POST', json: fromPop ? { workspacePath } : undefined },
     );
@@ -282,19 +282,16 @@ const dirCrumbs = computed(() => {
   return crumbs;
 });
 
-/** 当前浏览目录与已知空间的匹配：current=当前空间 known=已知（非当前）空间 fresh=未知目录 */
+/** 当前浏览目录与已知空间的匹配：known=已知空间 fresh=未知目录 */
 const dirTargetKind = computed(() => {
   const p = dirPath.value.toLowerCase();
-  const cur = workspaces.value.find((w) => w.current);
-  if (cur && cur.path.toLowerCase() === p) return 'current';
-  return workspaces.value.some((w) => !w.current && w.path.toLowerCase() === p) ? 'known' : 'fresh';
+  return workspaces.value.some((w) => w.path.toLowerCase() === p) ? 'known' : 'fresh';
 });
 
 const createInDirLabel = computed(() => {
   if (newBusy.value) return '创建中…';
-  if (dirTargetKind.value === 'current') return '＋ 在此新建会话';
   if (dirTargetKind.value === 'known') {
-    const w = workspaces.value.find((x) => !x.current && x.path.toLowerCase() === dirPath.value.toLowerCase());
+    const w = workspaces.value.find((x) => x.path.toLowerCase() === dirPath.value.toLowerCase());
     return `在 ${w?.name ?? '该空间'} 中新建会话`;
   }
   return '在此目录中新建会话';
@@ -304,7 +301,7 @@ async function selectSession(id: string): Promise<void> {
   // 同会话且消息已在场（含从管理页返回重挂载场景）不重复拉取；运行中的会话由 chat-stream 续传
   if (id === activeId.value && messagesOf(id).length > 0) return;
   try {
-    // task-05：跨空间会话不再切换服务端状态，ensureLoaded 的 switched 字段保留读取但不再分支
+    // task-05：跨空间会话不再切换服务端状态，按 id 定位归属空间后直接加载
     await ensureLoaded(id);
     activeId.value = id;
     scrollBottom();
@@ -516,9 +513,6 @@ onUnmounted(() => {
             </div>
             <div :class="m.role === 'user' ? 'bubble' : 'body'">
               <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
-              <div v-if="m.compacting" class="compact-loading">
-                <span class="cl-spin"></span>正在压缩对话历史…
-              </div>
               <template v-for="(seg, i) in m.segments" :key="i">
                 <details v-if="seg.type === 'tool'" class="tool-call">
                   <summary>
@@ -532,6 +526,10 @@ onUnmounted(() => {
                 <div v-else-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(seg.text)"></div>
                 <div v-else class="plain">{{ seg.text }}</div>
               </template>
+              <!-- 压缩 loading 放在消息末尾：长链路时仍可见（滚动由 compaction_start 的 notifyActivity 驱动） -->
+              <div v-if="m.compacting" class="compact-loading">
+                <span class="cl-spin"></span>正在压缩对话历史…
+              </div>
               <LiveStatus
                 v-if="m.streaming && !m.compacting && !m.failed && m.live"
                 :live="m.live ?? null"
@@ -915,12 +913,12 @@ onUnmounted(() => {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
-/* ===== 压缩中 loading（compaction_start/compaction 事件配对驱动） ===== */
+/* ===== 压缩中 loading（compaction_start/compaction 事件配对驱动；渲染在消息末尾） ===== */
 .compact-loading {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-top: 8px;
   padding: 6px 10px;
   font-size: 12.5px;
   color: var(--muted);

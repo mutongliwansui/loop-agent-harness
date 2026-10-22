@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // FilesView：工作空间文件浏览器（原型-20261018-001）
 // 端点：GET /fs/tree?path=（懒加载单层目录）、GET /fs/file?path=（文本预览）、GET /fs/raw?path=（二进制文档）、
-//       GET /fs/search?q=&hidden=1（搜索）
+//       GET /fs/search?q=&hidden=1（搜索）、GET /fs/fingerprint（目录指纹轮询，自动刷新）；
+//       写操作与下载：DELETE /fs/entry、POST /fs/rename、POST /fs/mkdir、POST /fs/upload、GET /fs/download
+//       （优化建议 20261021-005：行内/右键菜单、拖拽上传、删除与覆盖二次确认、目录 zip 下载）
 // 布局：v-model:open 面板展开态；默认宽度使对话区恰占 1/3（面板 = 容器 2/3 − 会话侧栏 220px），
 //       左缘分割条拖拽调宽（360 ~ 父宽-340），双击复位；左侧预览按类型分流：md 渲染 markdown、
 //       html/htm 沙箱 iframe 预览 + 源码、pdf iframe 原生渲染、图片 blob 直显（svg 另附源码模式）、
@@ -14,7 +16,15 @@
 // 工作空间路径（wsPath）变化时重置状态并重新加载。
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { api, fetchRaw } from '../api/client.js';
+import {
+  api,
+  deleteFsEntry,
+  downloadFsEntry,
+  fetchRaw,
+  mkdirFs,
+  renameFsEntry,
+  uploadToWorkspace,
+} from '../api/client.js';
 import { showToast } from '../toast.js';
 import DOMPurify from 'dompurify';
 import { highlightIn, renderMarkdown } from '../markdown.js';
@@ -64,32 +74,45 @@ const rows = computed(() => {
   walk(tree.value, 0);
   return out;
 });
-const emptyHint = computed(() => (props.wsPath ? '（空）' : '无当前工作空间'));
+const emptyHint = computed(() => (props.wsPath ? '（空）' : '无活跃会话所属工作空间'));
+
+/** 请求工作空间参数：显式传活跃会话所属空间，后端据此解析 /fs/* 根 */
+function wsQuery(): string {
+  return props.wsPath ? `&ws=${encodeURIComponent(props.wsPath)}` : '';
+}
 
 /** 拉取单个目录的直接子项（懒加载，无深度上限） */
 async function fetchDir(path: string): Promise<FsNode[]> {
   const r = await api<{ children: FsNode[]; truncated: boolean }>(
-    `/fs/tree?path=${encodeURIComponent(path)}&hidden=${showHidden.value ? 1 : 0}`,
+    `/fs/tree?path=${encodeURIComponent(path)}&hidden=${showHidden.value ? 1 : 0}${wsQuery()}`,
   );
   if (r.truncated) showToast('目录条目过多，仅显示前 2000 条', 'warn');
   return r.children ?? [];
 }
 
+/** 整树重载序号：wsPath 变化会重置并重载，旧空间在途响应按序号丢弃 */
+let treeSeq = 0;
+
 async function loadTree(): Promise<void> {
+  const seq = ++treeSeq;
   if (!props.wsPath) {
+    treeLoading.value = false;
     tree.value = [];
     return;
   }
   treeLoading.value = true;
   treeError.value = '';
   try {
-    tree.value = await fetchDir(''); // 只拉根目录，子目录按需展开
+    const children = await fetchDir(''); // 只拉根目录，子目录按需展开
+    if (seq !== treeSeq) return; // 空间已变化，丢弃过期响应
+    tree.value = children;
     loadedDirs.value = new Set(['']);
   } catch (e) {
+    if (seq !== treeSeq) return;
     tree.value = [];
     treeError.value = e instanceof Error ? e.message : String(e);
   } finally {
-    treeLoading.value = false;
+    if (seq === treeSeq) treeLoading.value = false;
   }
 }
 
@@ -124,6 +147,148 @@ function onRowClick(n: FsNode): void {
     void openFile(n.path);
   }
 }
+
+/* ================= 自动刷新（目录指纹轮询） ================= */
+// 已加载目录按 1s 轮询 GET /fs/fingerprint，只重拉指纹变化的目录；
+// 页面隐藏 / 面板收起 / 关闭自动刷新时停表，不留后台请求。
+
+const AUTO_REFRESH_KEY = 'loop_agent_fs_autorefresh';
+const autoRefresh = ref(localStorage.getItem(AUTO_REFRESH_KEY) !== '0'); // 默认开启
+const refreshing = ref(false);
+/** 目录 path → 指纹基线（未记录视为新展开目录，首轮只建基线不重拉） */
+const fpSigs = new Map<string, string | null>();
+let fpTimer: ReturnType<typeof setInterval> | null = null;
+let fpBusy = false;
+
+/** 按 path 在已加载树中定位节点（只遍历已拉取的层级） */
+function findNodeByPath(path: string): FsNode | undefined {
+  let list = tree.value;
+  let node: FsNode | undefined;
+  for (const seg of path.split('/')) {
+    node = list.find((n) => n.name === seg);
+    if (!node) return undefined;
+    list = node.children ?? [];
+  }
+  return node;
+}
+
+/** 合并新旧子项：同名目录保留已加载的 children，刷新不丢失展开内容 */
+function mergeNodes(prev: FsNode[], next: FsNode[]): FsNode[] {
+  const byPath = new Map(prev.map((n) => [n.path, n]));
+  return next.map((n) => {
+    const old = byPath.get(n.path);
+    return old && old.type === 'dir' && old.children ? { ...n, type: 'dir' as const, children: old.children } : n;
+  });
+}
+
+/** 清理已消失目录的展开/加载记录、指纹基线与选中项 */
+function pruneState(): void {
+  const alive = (p: string): boolean => p === '' || findNodeByPath(p) !== undefined;
+  expanded.value = new Set([...expanded.value].filter(alive));
+  loadedDirs.value = new Set([...loadedDirs.value].filter(alive));
+  loadingDirs.value = new Set([...loadingDirs.value].filter(alive));
+  for (const p of [...fpSigs.keys()]) if (!alive(p)) fpSigs.delete(p);
+  if (selected.value && !alive(selected.value)) {
+    selected.value = '';
+    fileData.value = null;
+    fileError.value = '';
+    releaseBinary();
+  }
+}
+
+/** 重拉单个已加载目录（根目录合并后保留子级；目录已删由父级指纹触发移除） */
+async function reloadDir(path: string): Promise<void> {
+  if (path === '') {
+    tree.value = mergeNodes(tree.value, await fetchDir(''));
+    return;
+  }
+  const node = findNodeByPath(path);
+  if (!node || node.type !== 'dir') return;
+  try {
+    node.children = mergeNodes(node.children ?? [], await fetchDir(path));
+  } catch {
+    // 目录已在刷新间隙被删除：等待父级指纹触发合并移除
+  }
+}
+
+/** 轮询一次；baseline=true 时仅重建基线 */
+async function pollChanges(baseline = false): Promise<void> {
+  if (fpBusy || !props.wsPath || document.hidden) return;
+  const paths = [...loadedDirs.value];
+  if (paths.length === 0) return;
+  fpBusy = true;
+  try {
+    const q = paths.map((p) => `path=${encodeURIComponent(p)}`).join('&');
+    const r = await api<{ dirs: { path: string; sig: string | null }[] }>(
+      `/fs/fingerprint?${q}${wsQuery()}`,
+    );
+    if (baseline || fpSigs.size === 0) {
+      for (const d of r.dirs) fpSigs.set(d.path, d.sig);
+      return;
+    }
+    const changed = r.dirs.filter((d) => fpSigs.get(d.path) !== d.sig);
+    for (const d of changed) {
+      if (!fpSigs.has(d.path) && d.sig !== null) {
+        fpSigs.set(d.path, d.sig); // 新展开目录：只建基线，不重拉
+        continue;
+      }
+      if (d.sig === null) {
+        // 目录本身消失：重拉父级，由合并结果移除该节点
+        const parent = d.path.includes('/') ? d.path.slice(0, d.path.lastIndexOf('/')) : '';
+        await reloadDir(parent);
+        fpSigs.delete(d.path);
+      } else {
+        await reloadDir(d.path);
+        fpSigs.set(d.path, d.sig);
+      }
+    }
+    if (changed.length > 0) pruneState();
+  } catch {
+    // 轮询失败静默：下一 tick 自然重试，不打断用户操作
+  } finally {
+    fpBusy = false;
+  }
+}
+
+/** 手动刷新：重拉所有已加载目录并重建基线 */
+async function refreshNow(): Promise<void> {
+  if (!props.wsPath || fpBusy || refreshing.value) return;
+  fpBusy = true;
+  refreshing.value = true;
+  try {
+    for (const p of [...loadedDirs.value]) await reloadDir(p);
+    pruneState();
+    fpSigs.clear();
+    fpBusy = false; // 交给 pollChanges 自持锁
+    await pollChanges(true);
+  } catch (e) {
+    showToast(e instanceof Error ? e.message : String(e), 'error');
+  } finally {
+    fpBusy = false;
+    refreshing.value = false;
+  }
+}
+
+function stopAutoRefresh(): void {
+  if (fpTimer) clearInterval(fpTimer);
+  fpTimer = null;
+}
+
+/** 面板展开 + 有空间 + 已开启 + 页面可见时才轮询，其余情况停表 */
+function syncAutoRefresh(): void {
+  stopAutoRefresh();
+  if (!autoRefresh.value || !props.wsPath || !open.value || document.hidden) return;
+  fpTimer = setInterval(() => void pollChanges(), 1000);
+}
+
+function onVisibilityChange(): void {
+  syncAutoRefresh();
+  if (!document.hidden) void pollChanges(); // 回到前台立即对齐一次
+}
+
+watch([autoRefresh, open, () => props.wsPath], syncAutoRefresh, { immediate: true });
+watch(autoRefresh, (v) => localStorage.setItem(AUTO_REFRESH_KEY, v ? '1' : '0'));
+document.addEventListener('visibilitychange', onVisibilityChange);
 
 /* ================= 预览 ================= */
 const selected = ref('');
@@ -267,7 +432,7 @@ function selectSheet(name: string): void {
 
 /** 二进制文档拉取与解析：pdf/图片 → objectURL；svg → objectURL + 源码文本；docx → mammoth；xlsx/xls → SheetJS */
 async function openBinary(path: string, k: ViewKind, seq: number): Promise<void> {
-  const blob = await fetchRaw(path);
+  const blob = await fetchRaw(path, props.wsPath);
   if (seq !== openSeq) return;
   binData.value = blob;
   if (k === 'pdf') {
@@ -341,7 +506,7 @@ async function openFile(path: string, anchor = ''): Promise<void> {
       // doc 走后端提取端点（word-extractor + 转 markdown），响应结构与 /fs/file 同构
       const ep = k === 'doc' ? 'doc2md' : 'file';
       fileData.value = await api<{ name: string; bytes: number; truncated: boolean; content: string }>(
-        `/fs/${ep}?path=${encodeURIComponent(path)}`,
+        `/fs/${ep}?path=${encodeURIComponent(path)}${wsQuery()}`,
       );
       if (seq !== openSeq) return;
       if (k === 'csv') parseDelimited(fileData.value.content, ',');
@@ -366,6 +531,333 @@ async function openFile(path: string, anchor = ''): Promise<void> {
     if (seq === openSeq) fileLoading.value = false;
   }
 }
+
+/* ================= 写操作与下载（优化建议 20261021-005） ================= */
+// 删除 / 重命名 / 新建目录 / 上传（按钮、右键菜单、拖拽）/ 下载（文件附件、目录 zip）。
+// 操作成功后只局部刷新对应目录，并清掉该目录的指纹基线，避免下一轮轮询重复重拉。
+
+interface UploadItem {
+  file: File;
+  /** 相对目标目录的层级路径（目录上传保留原层级） */
+  rel: string;
+}
+
+type DropEntry = {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  file: (cb: (f: File) => void, err: (e: unknown) => void) => void;
+  createReader: () => {
+    readEntries: (cb: (es: DropEntry[]) => void, err: (e: unknown) => void) => void;
+  };
+};
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const dirInput = ref<HTMLInputElement | null>(null);
+const uploading = ref<{ done: number; total: number } | null>(null);
+const dropTarget = ref<string | null>(null); // 高亮中的拖拽目标目录（'' 为根）
+let pendingUploadDir = '';
+const MENU_MAX_FILES = 1000;
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** 写操作前置守卫：无活跃会话所属工作空间时不允许落到启动空间 */
+function requireWs(): boolean {
+  if (props.wsPath) return true;
+  showToast('无活跃会话所属工作空间，无法操作文件', 'warn');
+  return false;
+}
+
+function parentOf(path: string): string {
+  return path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+}
+
+function joinRel(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
+/** 操作后局部刷新目录：重拉子项并标记已加载，同时清掉该目录指纹基线 */
+async function afterMutation(dir: string): Promise<void> {
+  await reloadDir(dir);
+  loadedDirs.value = new Set(loadedDirs.value).add(dir);
+  fpSigs.delete(dir);
+  pruneState();
+}
+
+/** 触发浏览器下载（Blob → 临时 <a download>） */
+function saveBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** 删除（目录递归；二次确认） */
+async function removeEntry(node: FsNode): Promise<void> {
+  if (!requireWs()) return;
+  const what = node.type === 'dir' ? '目录（含全部内容）' : '文件';
+  if (!window.confirm(`确定删除${what}？\n\n${node.path}`)) return;
+  try {
+    await deleteFsEntry(node.path, node.type === 'dir', props.wsPath);
+    if (selected.value === node.path || selected.value.startsWith(`${node.path}/`)) {
+      selected.value = '';
+      fileData.value = null;
+      fileError.value = '';
+      releaseBinary();
+    }
+    await afterMutation(parentOf(node.path));
+    showToast(`已删除 ${node.path}`, 'success');
+  } catch (e) {
+    showToast(errMsg(e), 'error');
+  }
+}
+
+/** 重命名 / 移动（输入不含 / 视为同目录改名，含 / 视为工作空间相对路径） */
+async function startRename(node: FsNode): Promise<void> {
+  if (!requireWs()) return;
+  const input = window.prompt(
+    `重命名${node.type === 'dir' ? '目录' : '文件'}（输入含 / 的路径可移动到其他目录）`,
+    node.name,
+  );
+  if (input === null) return;
+  const typed = input.trim().replace(/\\/g, '/');
+  if (!typed) return;
+  if (typed.split('/').some((s) => s === '..')) {
+    showToast('路径不能包含 ..', 'error');
+    return;
+  }
+  const to = typed.includes('/') ? typed.replace(/^\/+/, '') : joinRel(parentOf(node.path), typed);
+  if (to === node.path) return;
+  try {
+    const r = await renameFsEntry(node.path, to, props.wsPath);
+    if (selected.value === node.path || selected.value.startsWith(`${node.path}/`)) {
+      if (node.type === 'file') void openFile(r.to);
+      else {
+        selected.value = '';
+        fileData.value = null;
+        releaseBinary();
+      }
+    }
+    await afterMutation(parentOf(node.path));
+    if (parentOf(r.to) !== parentOf(node.path)) await afterMutation(parentOf(r.to));
+    showToast(`已重命名 → ${r.to}`, 'success');
+  } catch (e) {
+    showToast(errMsg(e), 'error');
+  }
+}
+
+/** 新建目录（parent 为空串表示工作空间根） */
+async function createDir(parent: string): Promise<void> {
+  if (!requireWs()) return;
+  const input = window.prompt(`在 ${parent || '/'} 下新建目录`, '新建目录');
+  if (input === null) return;
+  const name = input.trim();
+  if (!name) return;
+  if (/[\\/]/.test(name) || name === '.' || name === '..') {
+    showToast('目录名不能包含路径分隔符', 'error');
+    return;
+  }
+  const path = joinRel(parent, name);
+  try {
+    await mkdirFs(path, props.wsPath);
+    if (parent) expanded.value = new Set(expanded.value).add(parent);
+    await afterMutation(parent);
+    showToast(`已创建 ${path}`, 'success');
+  } catch (e) {
+    showToast(errMsg(e), 'error');
+  }
+}
+
+/** 下载文件或目录（目录后端打包 zip） */
+async function downloadEntry(node: FsNode): Promise<void> {
+  if (!requireWs()) return;
+  try {
+    const { blob, name } = await downloadFsEntry(node.path, props.wsPath);
+    saveBlob(blob, name);
+    showToast(`开始下载 ${name}`, 'success');
+  } catch (e) {
+    showToast(errMsg(e), 'error');
+  }
+}
+
+/* ---- 上传（按钮选择 / 拖拽，多文件逐个请求，展示进度） ---- */
+
+function pickFiles(dir: string): void {
+  if (!requireWs()) return;
+  pendingUploadDir = dir;
+  fileInput.value?.click();
+}
+
+function pickDir(dir: string): void {
+  if (!requireWs()) return;
+  pendingUploadDir = dir;
+  dirInput.value?.click();
+}
+
+function onFilesPicked(e: Event): void {
+  const input = e.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = ''; // 允许连续选择同一文件
+  const dir = pendingUploadDir;
+  pendingUploadDir = '';
+  const items = files.map((f) => {
+    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+    return { file: f, rel: rel || f.name };
+  });
+  void uploadItems(items, dir);
+}
+
+async function uploadItems(items: UploadItem[], targetDir: string): Promise<void> {
+  if (!items.length || !props.wsPath || uploading.value) return;
+  uploading.value = { done: 0, total: items.length };
+  let ok = 0;
+  const errors: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    try {
+      await uploadToWorkspace(items[i].file, targetDir, { relativePath: items[i].rel, ws: props.wsPath });
+      ok++;
+    } catch (e) {
+      errors.push(`${items[i].rel}: ${errMsg(e)}`);
+    }
+    uploading.value = { done: i + 1, total: items.length };
+  }
+  uploading.value = null;
+  if (ok) {
+    if (targetDir) expanded.value = new Set(expanded.value).add(targetDir);
+    await afterMutation(targetDir);
+    showToast(`已上传 ${ok} 个文件`, 'success');
+  }
+  if (errors.length) {
+    showToast(`上传失败 ${errors.length} 个：${errors.slice(0, 2).join('；')}`, 'error', 8000);
+  }
+}
+
+function entryFile(entry: DropEntry): Promise<File> {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+function readEntries(reader: ReturnType<DropEntry['createReader']>): Promise<DropEntry[]> {
+  return new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+}
+
+/** webkitGetAsEntry 递归：目录拖拽保留原层级 */
+async function walkEntry(entry: DropEntry, prefix: string, out: UploadItem[]): Promise<void> {
+  if (out.length >= MENU_MAX_FILES) return;
+  if (entry.isFile) {
+    out.push({ file: await entryFile(entry), rel: prefix ? `${prefix}/${entry.name}` : entry.name });
+    return;
+  }
+  if (!entry.isDirectory) return;
+  const dirRel = prefix ? `${prefix}/${entry.name}` : entry.name;
+  const reader = entry.createReader();
+  for (;;) {
+    const batch = await readEntries(reader);
+    if (batch.length === 0) break;
+    for (const child of batch) await walkEntry(child, dirRel, out);
+  }
+}
+
+async function collectDropItems(dt: DataTransfer | null): Promise<UploadItem[]> {
+  const out: UploadItem[] = [];
+  if (!dt) return out;
+  if (dt.items?.length) {
+    const roots: DropEntry[] = [];
+    for (const item of Array.from(dt.items)) {
+      if (item.kind !== 'file') continue;
+      const getEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => DropEntry | null })
+        .webkitGetAsEntry;
+      const entry = getEntry ? getEntry.call(item) : null;
+      if (entry) roots.push(entry);
+      else {
+        const f = item.getAsFile();
+        if (f) out.push({ file: f, rel: f.name });
+      }
+    }
+    for (const entry of roots) await walkEntry(entry, '', out);
+  } else {
+    for (const f of Array.from(dt.files)) out.push({ file: f, rel: f.name });
+  }
+  return out;
+}
+
+function onDragOver(e: DragEvent, dir: string): void {
+  if (!e.dataTransfer?.types.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  dropTarget.value = dir;
+}
+
+function onDragLeave(): void {
+  dropTarget.value = null;
+}
+
+async function onDrop(e: DragEvent, dir: string): Promise<void> {
+  e.preventDefault();
+  dropTarget.value = null;
+  if (!props.wsPath) return;
+  const items = await collectDropItems(e.dataTransfer);
+  if (items.length >= MENU_MAX_FILES) showToast(`单次最多上传 ${MENU_MAX_FILES} 个文件`, 'warn');
+  await uploadItems(items.slice(0, MENU_MAX_FILES), dir);
+}
+
+/** 行级拖拽：仅目录行可作为落点（文件行忽略，避免误传到根） */
+function onDragOverRow(e: DragEvent, node: FsNode): void {
+  if (node.type === 'dir') onDragOver(e, node.path);
+}
+
+function onDropRow(e: DragEvent, node: FsNode): void {
+  e.preventDefault();
+  e.stopPropagation();
+  if (node.type === 'dir') void onDrop(e, node.path);
+}
+
+/* ---- 右键菜单 ---- */
+interface MenuState {
+  x: number;
+  y: number;
+  node: FsNode | null; // null = 树空白处（操作根目录）
+}
+const menu = ref<MenuState | null>(null);
+
+function openMenu(e: MouseEvent, node: FsNode | null): void {
+  e.preventDefault();
+  e.stopPropagation();
+  menu.value = { x: e.clientX, y: e.clientY, node };
+}
+
+function closeMenu(): void {
+  menu.value = null;
+}
+
+/** 树空白处菜单代表的根节点（下载整个工作空间用） */
+const rootNode = computed<FsNode>(() => ({ name: props.wsPath, path: '', type: 'dir' }));
+
+/** 菜单动作分发：先关菜单再执行，node 为 null 表示根目录 */
+function menuAction(
+  kind: 'upload' | 'uploadDir' | 'mkdir' | 'download' | 'rename' | 'delete',
+  node: FsNode | null,
+): void {
+  closeMenu();
+  if (kind === 'upload') return pickFiles(node?.path ?? '');
+  if (kind === 'uploadDir') return pickDir(node?.path ?? '');
+  if (kind === 'mkdir') {
+    void createDir(node?.path ?? '');
+    return;
+  }
+  const target = node ?? rootNode.value;
+  if (kind === 'download') void downloadEntry(target);
+  else if (kind === 'rename' && node) void startRename(node);
+  else if (kind === 'delete' && node) void removeEntry(node);
+}
+
+document.addEventListener('click', closeMenu);
+window.addEventListener('scroll', closeMenu, true);
 
 /* ================= md 内链跳转 ================= */
 const viewerHistory = ref<string[]>([]); // md 跳转来源文件栈（← 返回用）
@@ -449,7 +941,7 @@ async function doSearch(): Promise<void> {
   searching.value = true;
   try {
     const r = await api<{ truncated: boolean; results: SearchResult[] }>(
-      `/fs/search?q=${encodeURIComponent(q)}&hidden=${showHidden.value ? 1 : 0}`,
+      `/fs/search?q=${encodeURIComponent(q)}&hidden=${showHidden.value ? 1 : 0}${wsQuery()}`,
     );
     if (seq !== searchSeq) return; // 已有更新的请求，丢弃过期响应
     searchResults.value = r.results;
@@ -556,7 +1048,7 @@ watch(viewMode, async (m) => {
   if (viewerKw.value.trim()) applyHits(); // 分支切换会丢掉 mark，重扫
 });
 
-/* ================= 工作空间切换 ================= */
+/* ================= 工作空间变化（活跃会话所属空间） ================= */
 watch(
   () => props.wsPath,
   () => {
@@ -573,14 +1065,25 @@ watch(
     viewerHistory.value = [];
     viewMode.value = 'prev';
     clearSearch();
+    fpSigs.clear(); // 新空间的指纹基线重来
+    closeMenu();
+    dropTarget.value = null;
+    uploading.value = null;
     void loadTree();
   },
   { immediate: true },
 );
-onBeforeUnmount(releaseBinary); // 组件卸载释放 blob objectURL
+onBeforeUnmount(() => {
+  releaseBinary(); // 释放 blob objectURL
+  stopAutoRefresh();
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+  document.removeEventListener('click', closeMenu);
+  window.removeEventListener('scroll', closeMenu, true);
+});
 watch(showHidden, () => {
   expanded.value = new Set(); // 隐藏目录开关改变可见集合，已加载的子项需重新拉取
   loadedDirs.value = new Set();
+  fpSigs.clear();
   void loadTree();
   if (searchKw.value.trim()) void doSearch(); // 隐藏目录开关同时影响搜索范围
 });
@@ -788,11 +1291,36 @@ function fmtBytes(n: number): string {
             <input v-model="searchKw" type="text" placeholder="搜索文件内容…">
             <button v-if="searchKw || searchResults.length" title="清除搜索" @click="clearSearch">✕</button>
           </div>
-          <label class="fs-chk" title="在树与搜索中显示 dot 开头的隐藏目录">
-            <input v-model="showHidden" type="checkbox"> 隐藏目录
-          </label>
+          <div class="fs-chk-row">
+            <label class="fs-chk" title="在树与搜索中显示 dot 开头的隐藏目录">
+              <input v-model="showHidden" type="checkbox"> 隐藏目录
+            </label>
+            <label class="fs-chk" title="每 1 秒比对目录指纹，外部新增/删除/改名后自动更新">
+              <input v-model="autoRefresh" type="checkbox"> 自动刷新
+            </label>
+            <button
+              class="fs-refresh"
+              :disabled="refreshing || !wsPath"
+              title="立即重拉已展开的目录"
+              @click="refreshNow"
+            >{{ refreshing ? '刷新中…' : '↻' }}</button>
+          </div>
+          <!-- 写操作入口（优化建议 20261021-005）：根目录下的新建/上传，目录行另有行内入口 -->
+          <div class="fs-actions">
+            <button :disabled="!wsPath" title="在工作空间根目录新建目录" @click="createDir('')">＋ 目录</button>
+            <button :disabled="!wsPath" title="上传文件到工作空间根目录" @click="pickFiles('')">↑ 文件</button>
+            <button :disabled="!wsPath" title="上传整个目录（保留层级）到工作空间根目录" @click="pickDir('')">↑ 目录</button>
+            <span v-if="uploading" class="fs-up">上传 {{ uploading.done }}/{{ uploading.total }}</span>
+          </div>
         </div>
-        <div class="fs-list">
+        <div
+          class="fs-list"
+          :class="{ 'drop-root': dropTarget === '' }"
+          @contextmenu.prevent="openMenu($event, null)"
+          @dragover="onDragOver($event, '')"
+          @dragleave="onDragLeave"
+          @drop="onDrop($event, '')"
+        >
           <div v-if="treeLoading" class="fs-hint">加载中…</div>
           <div v-else-if="treeError" class="fs-hint">⚠ {{ treeError }}</div>
           <template v-else-if="searchKw.trim()">
@@ -820,18 +1348,58 @@ function fmtBytes(n: number): string {
               v-for="r in rows"
               :key="r.node.path"
               class="tree-row"
-              :class="{ sel: r.node.type === 'file' && r.node.path === selected }"
+              :class="{
+                sel: r.node.type === 'file' && r.node.path === selected,
+                drop: r.node.type === 'dir' && dropTarget === r.node.path,
+              }"
               :style="{ paddingLeft: 6 + r.depth * 13 + 'px' }"
               :title="r.node.path"
               @click="onRowClick(r.node)"
+              @contextmenu="openMenu($event, r.node)"
+              @dragover="onDragOverRow($event, r.node)"
+              @dragleave="onDragLeave"
+              @drop="onDropRow($event, r.node)"
             >
               <span class="tw">{{ r.node.type !== 'dir' ? '' : loadingDirs.has(r.node.path) ? '…' : (expanded.has(r.node.path) ? '▼' : '▶') }}</span>
               <span class="nm">{{ r.node.type === 'dir' ? '📁' : '📄' }} {{ r.node.name }}</span>
               <span v-if="r.node.type === 'file'" class="sz">{{ fmtBytes(r.node.size ?? 0) }}</span>
+              <!-- 行内操作：悬停显示（右键菜单提供同一组操作） -->
+              <span class="ops" @click.stop>
+                <button
+                  v-if="r.node.type === 'dir'"
+                  title="上传文件到该目录"
+                  @click="pickFiles(r.node.path)"
+                >↑</button>
+                <button title="重命名 / 移动" @click="startRename(r.node)">✎</button>
+                <button :title="r.node.type === 'dir' ? '下载目录（zip）' : '下载文件'" @click="downloadEntry(r.node)">⤓</button>
+                <button class="danger" title="删除" @click="removeEntry(r.node)">✕</button>
+              </span>
             </div>
           </template>
         </div>
       </div>
+    </div>
+
+    <!-- 上传入口（点击触发；目录上传保留 webkitRelativePath 层级） -->
+    <input ref="fileInput" type="file" multiple hidden @change="onFilesPicked">
+    <input ref="dirInput" type="file" webkitdirectory multiple hidden @change="onFilesPicked">
+
+    <!-- 右键菜单（空白处 = 根目录操作） -->
+    <div v-if="menu" class="fs-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop>
+      <template v-if="menu.node">
+        <button v-if="menu.node.type === 'dir'" @click="menuAction('upload', menu.node)">↑ 上传到此目录</button>
+        <button v-if="menu.node.type === 'dir'" @click="menuAction('uploadDir', menu.node)">↑ 上传目录到此</button>
+        <button v-if="menu.node.type === 'dir'" @click="menuAction('mkdir', menu.node)">＋ 新建子目录</button>
+        <button @click="menuAction('download', menu.node)">⤓ {{ menu.node.type === 'dir' ? '下载目录（zip）' : '下载文件' }}</button>
+        <button @click="menuAction('rename', menu.node)">✎ 重命名 / 移动</button>
+        <button class="danger" @click="menuAction('delete', menu.node)">✕ 删除</button>
+      </template>
+      <template v-else>
+        <button @click="menuAction('upload', null)">↑ 上传到根目录</button>
+        <button @click="menuAction('uploadDir', null)">↑ 上传目录（保留层级）</button>
+        <button @click="menuAction('mkdir', null)">＋ 新建目录</button>
+        <button @click="menuAction('download', null)">⤓ 下载整个工作空间（zip）</button>
+      </template>
     </div>
   </div>
 </template>
@@ -1048,6 +1616,35 @@ function fmtBytes(n: number): string {
   color: var(--muted);
 }
 .fs-chk { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+/* 工具行：隐藏目录 / 自动刷新 / 手动刷新按钮 */
+.fs-chk-row { display: flex; align-items: center; gap: 10px; }
+.fs-refresh {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  cursor: pointer;
+}
+.fs-refresh:hover:not(:disabled) { color: var(--brand); border-color: var(--brand-weak); }
+.fs-refresh:disabled { opacity: 0.45; cursor: default; }
+/* 写操作入口行（新建目录 / 上传文件 / 上传目录） */
+.fs-actions { display: flex; align-items: center; gap: 6px; }
+.fs-actions button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 7px;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.fs-actions button:hover:not(:disabled) { color: var(--brand); border-color: var(--brand-weak); }
+.fs-actions button:disabled { opacity: 0.45; cursor: default; }
+.fs-up { margin-left: auto; font-size: 11px; color: var(--brand); white-space: nowrap; }
 .fs-list { flex: 1; overflow: auto; padding: 6px; }
 .fs-hint { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0; }
 .tree-row {
@@ -1064,8 +1661,53 @@ function fmtBytes(n: number): string {
 .tree-row.sel { background: var(--brand-weak); }
 .tree-row.sel .nm { color: var(--brand); font-weight: 600; }
 .tree-row .tw { width: 11px; font-size: 8.5px; color: var(--muted); flex: none; text-align: center; }
-.tree-row .nm { overflow: hidden; text-overflow: ellipsis; }
+.tree-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tree-row .sz { margin-left: auto; font-size: 10px; color: var(--muted); flex: none; padding-left: 6px; }
+/* 行内操作：默认隐藏，悬停显示（右键菜单提供同一组操作） */
+.tree-row .ops { display: none; flex: none; gap: 1px; margin-left: 4px; }
+.tree-row:hover .ops { display: inline-flex; }
+.tree-row .ops button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 0 3px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tree-row .ops button:hover { background: var(--brand-weak); color: var(--brand); }
+.tree-row .ops button.danger:hover { background: var(--danger-weak); color: var(--danger); }
+/* 拖拽落点高亮 */
+.tree-row.drop { background: var(--brand-weak); outline: 1px dashed var(--brand); outline-offset: -1px; }
+.fs-list.drop-root { outline: 1px dashed var(--brand); outline-offset: -4px; }
+/* 右键菜单：fixed 定位（面板 overflow:hidden 不影响） */
+.fs-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 176px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.18);
+}
+.fs-menu button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fs-menu button:hover { background: var(--bg); color: var(--brand); }
+.fs-menu button.danger { color: var(--danger); }
+.fs-menu button.danger:hover { background: var(--danger-weak); }
 .sr-cap { font-size: 11px; color: var(--muted); padding: 4px 6px; }
 .sr-row { padding: 5px 6px; border-radius: 6px; cursor: pointer; }
 .sr-row:hover { background: var(--bg); }

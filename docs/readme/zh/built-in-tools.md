@@ -5,7 +5,7 @@
 | 工具 | 名称 | 说明 | 参数 |
 |---|---|---|---|
 | 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认 30000ms） |
-| 📄 **文件读取** | `fileRead` | 读取文件内容，支持按行范围部分读取，默认每行带 `行号: ` 前缀 | `path`（必填）, `startLine`（可选）, `endLine`（可选）, `encoding`（可选）, `lineNumbers`（可选，默认 `true`） |
+| 📄 **文件读取** | `fileRead` | 读取文件内容，支持按行范围部分读取，默认每行带 `行号: ` 前缀。默认读取上限：全文最多 2000 行 / 256KB，单行超过 8192 字符会截断，超出时末尾附截断提示；超过 16MB 的全文读取直接拒绝（需分段）；二进制文件（前 8000 字节含 NUL）拒绝读取 | `path`（必填）, `startLine`（可选）, `endLine`（可选）, `offset`（可选，1-based 起始行，与 `startLine` 等价）, `limit`（可选，读取行数）, `maxBytes`（可选，返回内容字节上限）, `encoding`（可选）, `lineNumbers`（可选，默认 `true`） |
 | ✏️ **文件写入** | `fileWrite` | **整文件写入**：`overwrite` 用 `content` 完整替换文件全部内容（**原内容会永久丢失，不支持区域/局部覆盖**，局部修改请用 `editFile`）；`append` 追加到末尾，自动创建父目录 | `path`（必填）, `content`（必填，overwrite 时为覆盖后的完整文件内容）, `mode`（可选，`overwrite` / `append`） |
 | 🔁 **文件编辑** | `editFile` | 三种模式：①字面量替换（要求唯一出现，多处匹配报错以防误改）；②`regex=true` 正则替换（支持 `$1`/`$&` 捕获引用）；③指定 `startLine`/`endLine` 整段行替换 | `path`（必填）, `newText`（必填）, `oldText`（未指定行范围时必填）, `startLine`（可选）, `endLine`（可选）, `replaceAll`（可选，默认 `false`）, `regex`（可选，默认 `false`）, `flags`（可选，如 `i`/`m`/`s`） |
 | 🔍 **内容检索** | `grep` | 在文件或目录中检索内容，支持正则、忽略大小写、递归搜索 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选）, `recursive`（可选）, `maxResults`（可选，默认 50） |

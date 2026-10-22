@@ -10,7 +10,6 @@
  * - 6.2.6 两空间 run 并行时 /workspaces 的 running 标记各自正确
  * - 6.3.1 Semaphore 超上限排队而非失败，active <= max（FIFO）
  * - 6.3.2 LOOP_AGENT_MAX_CONCURRENCY 非法值回退 8
- * - 6.3.3 /workspaces 的 current 随最近使用指针变化（D9）
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -226,19 +225,5 @@ describe('6.3 全局并发信号量（D18）', () => {
       if (prev === undefined) delete process.env.LOOP_AGENT_MAX_CONCURRENCY;
       else process.env.LOOP_AGENT_MAX_CONCURRENCY = prev;
     }
-  });
-
-  it('6.3.3 /workspaces 的 current 随最近使用指针变化（D9）', async () => {
-    // 上一用例已把指针带到 B（GET /sessions/:id 经 locateSession 取用 B 的 runtime）
-    const res = await req('GET', '/workspaces');
-    const body = (await res.json()) as { workspaces: { id: string; current: boolean }[] };
-    expect(body.workspaces.find((w) => w.current)?.id).toBe(workspaceId(rootB));
-
-    // 显式在 A 空间创建会话 → 指针回到 A
-    const create = await req('POST', '/sessions', { title: '回A', workspacePath: WS_A });
-    expect(create.status).toBe(201);
-    const res2 = await req('GET', '/workspaces');
-    const body2 = (await res2.json()) as { workspaces: { id: string; current: boolean }[] };
-    expect(body2.workspaces.find((w) => w.current)?.id).toBe(workspaceId(rootA));
   });
 });

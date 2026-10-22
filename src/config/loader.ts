@@ -19,7 +19,7 @@ import { getCliOverrides } from './cli-overrides.js';
  */
 function loadDotEnvToProcessEnv(): void {
   // 仅当 process.env 中未标记过已加载时加载，避免重复读取
-  // 应用自身资源：.env 读取锚定启动目录（非工作空间资源，切换空间不改变）
+  // 应用自身资源：.env 读取锚定启动目录（非工作空间资源，不受工作空间解析影响）
   const paths = [join(process.cwd(), '.env')];
   for (const p of paths) {
     if (!existsSync(p)) continue;

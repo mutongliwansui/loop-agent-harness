@@ -91,7 +91,7 @@ export async function createMemoryKit(
 
 // Task-20261021-002-05 D2：记忆 kit 按 workspaceId 缓存（Map）——
 // serve 模式下 AgentPool 的多个 agent 实例共享同一 kit 实例（同空间并发的写一致性前提）；
-// 切换工作空间后 resetMemoryKitCache() 清空 Map（对应 AgentPool.reset()）。
+// serve 侧每空间各自的 kit 由 WorkspaceRuntime 持有，本 Map 仅供无 registry 的嵌入/测试场景。
 const kits = new Map<string, Promise<MemoryKit>>();
 
 /**
@@ -116,9 +116,8 @@ export function defaultMemoryKitFactory(root: string): Promise<MemoryKit> {
 }
 
 /**
- * 重置全部缓存 kit：切换工作空间后调用（记忆目录含 workspaceId(cwd)，必须按新 cwd 重新组装）。
- * 注意：仅清 Map 引用，不 dispose 旧实例（Kit 无统一释放口；sqlite 句柄由 GC/进程管理，
- * 与切空间前 hasInFlight() 全局空闲的前提共同保证无并发写残留）。
+ * 清空全部缓存 kit（测试隔离 / 嵌入场景使用；serve 侧无需调用——每空间 kit 随 runtime 生命周期管理）。
+ * 注意：仅清 Map 引用，不 dispose 旧实例（Kit 无统一释放口；sqlite 句柄由 GC/进程管理）。
  */
 export function resetMemoryKitCache(): void {
   kits.clear();

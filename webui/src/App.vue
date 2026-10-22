@@ -123,7 +123,6 @@ onUnmounted(() => {
             <span class="arrow">▼</span>
             <span class="dot" :style="{ background: wsColor(w.name) }"></span>
             <span class="nm">{{ w.name }}</span>
-            <span v-if="w.current" class="cur">当前</span>
             <span class="cnt">{{ w.sessions.length }}</span>
           </div>
           <div

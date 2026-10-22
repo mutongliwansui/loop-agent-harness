@@ -196,7 +196,7 @@ export class ReActAgent {
   }
 
   /**
-   * 初始化记忆系统（启动时调用；切换工作空间时可重入重建——先释放旧实例的 sqlite 句柄）
+   * 初始化记忆系统（启动时调用；重复调用时先释放旧实例的 sqlite 句柄再重建）
    */
   async initMemory(cwd: string): Promise<void> {
     const { config: cfg } = this._configLoader.load();

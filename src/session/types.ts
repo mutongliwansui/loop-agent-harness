@@ -51,8 +51,6 @@ export interface WorkspaceSummary {
   name: string;
   /** 工作目录绝对路径 */
   path: string;
-  /** 是否为当前服务进程的工作空间 */
-  current: boolean;
   createdAt: string;
   lastAccessedAt: string;
   /** 该空间下的会话索引（按 updatedAt 降序） */

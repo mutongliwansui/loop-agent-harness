@@ -25,7 +25,6 @@ export interface WorkspaceGroup {
   id: string;
   name: string;
   path: string;
-  current: boolean;
   createdAt: string;
   lastAccessedAt: string;
   sessions: SessionMeta[];

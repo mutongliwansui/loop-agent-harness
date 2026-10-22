@@ -6,7 +6,6 @@
  * - 新格式 id：未装载空间按 wsId8 扫 meta.json 反查 root 并懒建
  * - 老格式 id：全扫回退定位 + 进程内映射缓存复用
  * - 未知 id：not_found
- * - resolveCurrentRuntime：最近使用指针优先，缺省回落启动空间
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -14,7 +13,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkspaceRegistry } from '../src/api/workspace-runtime.js';
-import { locateSession, resolveCurrentRuntime } from '../src/api/session-locator.js';
+import { locateSession } from '../src/api/session-locator.js';
 import { ApiHttpError } from '../src/api/errors.js';
 import { canonicalWorkspacePath } from '../src/session/path-utils.js';
 import { workspaceId } from '../src/session/index.js';
@@ -103,19 +102,5 @@ describe('异常路径', () => {
     await expect(locateSession(registry, 'sess_00000000_20990101_000000')).rejects.toBeInstanceOf(
       ApiHttpError,
     );
-  });
-});
-
-describe('resolveCurrentRuntime（D9 最近使用指针）', () => {
-  it('无指针时回落 fallback 空间；取用后跟随最近使用', async () => {
-    const fresh = new WorkspaceRegistry({ userDir: USER_DIR });
-    // currentRoot 为空 → fallback（启动空间）
-    const boot = await resolveCurrentRuntime(fresh, rootA);
-    expect(boot.root).toBe(rootA);
-    // 显式取用 B（如跨空间定位/创建）后，最近使用指针跟随 B
-    await fresh.get(rootB);
-    const again = await resolveCurrentRuntime(fresh, rootA);
-    expect(again.root).toBe(rootB);
-    fresh.reset();
   });
 });

@@ -3,14 +3,14 @@
 // POST /sessions 支持 { title?, workspacePath? }（原型-20261017-004）：
 // - 同空间：直接创建空会话
 // - 异空间：校验目录 → 直接在目标空间的 runtime 创建（task-04 起不再全局 busy 互斥；
-//   仅做"当前空间指针刷新"，不 chdir、不影响其他空间运行中的 run）
+//   不改变任何全局状态，不影响其他空间运行中的 run）
 // - GET /fs/dirs：服务端目录浏览（新建会话选择工作空间；纯 Web 拿不到本地绝对路径）
 // - GET /sessions/:id / DELETE /sessions/:id：按 sessionId 定位归属 runtime（D17），
-//   跨空间会话只读/删除均不再切换"当前空间"
+//   跨空间会话只读/删除均不改变任何空间状态
 //
 // 解耦（Task-20261021-010-03/04）：每个空间由 registry 懒建不可变 runtime
 // （store/configLoader/configWriter/skillLoader/sessions/pool 均为该 runtime 的实例）；
-// "当前空间"退化为 registry 的最近使用指针（D9），/workspaces 的 current 由它标注。
+// 缺省操作一律落启动空间，空间之间完全并列、无"当前空间"概念。
 //
 // 路径归一（Task-20261021-010-01 L2）：'D:' 盘符特例与绝对化统一由 session/path-utils 提供，
 // 本文件不再保留私有实现——展示型回显用 lexicalWorkspacePath（取值与改造前一致），
@@ -24,9 +24,9 @@ import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
 import { ensureDirUsable, type WorkspaceRuntime } from '../workspace-runtime.js';
-import { locateSession, resolveCurrentRuntime } from '../session-locator.js';
+import { locateSession } from '../session-locator.js';
 import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
-import { SessionStore, workspaceId } from '../../session/index.js';
+import { SessionStore } from '../../session/index.js';
 import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
 import { readJournal, dropJournal } from '../run-journal.js';
 
@@ -77,15 +77,14 @@ export async function handleListDirs(ctx: HandlerContext, req: IncomingMessage, 
 }
 
 /**
- * 切换"当前空间指针"（Task-20261021-010-03 D7；task-04 D9 退化语义）：
- * registry 为目标空间懒建不可变 runtime，handler 侧六项依赖整体指向它——
- * 不 chdir、不原地重绑、不重置记忆/池、不干预其他空间运行中的 run。
- * task-04 起不再做全局 busy 互斥（per-space 互斥由归属 runtime 的 sessions 保证）。
+ * 解析目标工作空间的运行时（task-04 起不再改变任何"当前空间"指针）：
+ * registry 为目标空间懒建不可变 runtime，不 chdir、不原地重绑、不重置记忆/池、
+ * 不干预其他空间运行中的 run；per-space 互斥由归属 runtime 的 sessions 保证。
  */
-export async function switchWorkspace(ctx: HandlerContext, target: string): Promise<WorkspaceRuntime> {
+export async function resolveWorkspaceRuntime(ctx: HandlerContext, target: string): Promise<WorkspaceRuntime> {
   const registry = ctx.registry;
   if (!registry) {
-    throw new ApiHttpError('internal', '工作空间注册表未初始化，无法切换工作空间');
+    throw new ApiHttpError('internal', '工作空间注册表未初始化，无法解析工作空间运行时');
   }
   const root = await registry.ensureRoot(target);
   const rt = await registry.getCanonical(root);
@@ -111,8 +110,8 @@ export async function switchWorkspace(ctx: HandlerContext, target: string): Prom
 }
 
 /** POST /sessions：创建空会话；body 可带 { title?, workspacePath? }
- *  task-04：带 workspacePath 时直接在目标空间创建（只刷新当前空间指针，无 busy 判定）；
- *  响应 workspace.switched 字段保留但恒 false（L2，task-05 前端移除依赖）。 */
+ *  task-04：带 workspacePath 时直接在目标空间创建（无 busy 判定、不改变任何全局状态）；
+ *  响应 workspace.switched 字段保留但恒 false（L2，task-05 前端移除依赖）。缺省时落启动空间。 */
 export async function handleCreateSession(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJsonBody(req);
   const title = typeof body.title === 'string' ? body.title : '';
@@ -122,16 +121,13 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
   if (requested) {
     // 空间身份按 canonical 形式比较（'D:' 特例 + 绝对化 + win32 真实大小写，D2/L2）
     const target = await canonicalWorkspacePath(requested);
-    const current = await canonicalWorkspacePath(ctx.deps.sessionStore.path);
-    if (!isSameWorkspace(target, current)) {
+    const startup = await canonicalWorkspacePath(ctx.deps.sessionStore.path);
+    if (!isSameWorkspace(target, startup)) {
       // 目录校验先于创建（保持改造前错误优先级）
       if (ctx.registry) await ctx.registry.ensureRoot(target);
       else await ensureDirUsable(target);
-      rt = await switchWorkspace(ctx, target);
+      rt = await resolveWorkspaceRuntime(ctx, target);
     }
-  } else if (ctx.registry) {
-    // 缺省建在"最近使用空间"（D9）：registry.currentRoot 优先，回落注入 store 所在空间
-    rt = await resolveCurrentRuntime(ctx.registry, ctx.deps.sessionStore.path);
   }
 
   const sessions = rt?.sessions ?? ctx.sessions;
@@ -149,11 +145,9 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
   });
 }
 
-/** GET /sessions：当前空间（D9 最近使用指针）的会话列表 */
+/** GET /sessions：启动空间的会话列表 */
 export async function handleListSessions(ctx: HandlerContext, res: ServerResponse): Promise<void> {
-  const store = ctx.registry
-    ? (await resolveCurrentRuntime(ctx.registry, ctx.deps.sessionStore.path)).store
-    : ctx.deps.sessionStore;
+  const store = ctx.deps.sessionStore;
   const list = await store.listSessions();
   sendJson(res, 200, { sessions: list });
 }
@@ -167,15 +161,12 @@ async function readJournalSummary(
   return jr ? { status: jr.status, finishedAt: jr.finishedAt } : null;
 }
 
-/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；当前空间置顶；注入 running 与 lastRun 概要供侧栏标记）
- *  task-04（D9）：current 标记改由 registry 的"最近使用指针"覆写，不再依赖单一 store 视角。 */
+/** GET /workspaces：跨工作空间聚合（名称 + 会话列表；注入 running 与 lastRun 概要供侧栏标记） */
 export async function handleListWorkspaces(ctx: HandlerContext, res: ServerResponse): Promise<void> {
   const workspaces = await ctx.deps.sessionStore.listAllWorkspaces();
-  const currentId = ctx.registry?.currentRoot ? workspaceId(ctx.registry.currentRoot) : null;
   const enriched = await Promise.all(
     workspaces.map(async (w) => ({
       ...w,
-      current: currentId ? w.id === currentId : w.current,
       sessions: await Promise.all(
         w.sessions.map(async (s) => ({
           ...s,
@@ -193,7 +184,7 @@ export async function handleListWorkspaces(ctx: HandlerContext, res: ServerRespo
 export async function handleGetSession(ctx: HandlerContext, res: ServerResponse, id: string): Promise<void> {
   if (ctx.registry) {
     // 按 sessionId 定位归属 runtime（D17：新 id 段解析 / 老 id 映射缓存 + 全扫回退）；
-    // 不切换"当前空间"，读取/续聊都在会话所属 runtime 内完成
+    // 不改变任何空间状态，读取/续聊都在会话所属 runtime 内完成
     const rt = await locateSession(ctx.registry, id);
     const meta = (await rt.store.listSessions()).find((s) => s.id === id);
     const data = await rt.store.loadSession(id);

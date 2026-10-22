@@ -21,6 +21,7 @@ import { ConfigWriter } from '../src/config/writer.js';
 import { MCPManager } from '../src/config/mcp-manager.js';
 import { createMemoryKit } from '../src/api/memory-kit.js';
 import { DEFAULT_CONFIG, type AgentConfig } from '../src/config/schema.js';
+import { canonicalWorkspacePath } from '../src/session/path-utils.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -288,5 +289,386 @@ describe('GET /fs/search（全文搜索）', () => {
     const res = await req('/fs/search?q=' + encodeURIComponent('NULL'));
     const body = (await res.json()) as { results: { path: string }[] };
     expect(body.results.map((r) => r.path)).not.toContain('blob.bin');
+  });
+});
+
+// ===== 4. /fs/*?ws=（文件面板跟随活跃会话所属空间） =====
+
+describe('GET /fs/*?ws=（显式指定工作空间根）', () => {
+  const WS_B = join(TEST_DIR, 'workspace-b');
+  const wsQuery = `&ws=${encodeURIComponent(WS_B)}`;
+
+  beforeAll(async () => {
+    mkdirSync(join(WS_B, 'sub'), { recursive: true });
+    writeFileSync(join(WS_B, 'ONLY_B.md'), '# B\n\nonly b needle\n', 'utf-8');
+    writeFileSync(join(WS_B, 'sub', 'b.txt'), 'B_SPACE_NEEDLE\n', 'utf-8');
+    // 第二空间落 meta.json → 进入 listAllWorkspaces，成为「已注册工作空间」
+    await new SessionStore(WS_B, false, join(TEST_DIR, 'sessions')).init();
+  });
+
+  it('?ws=B：树根切到 B，只列 B 的条目', async () => {
+    const res = await req('/fs/tree?ws=' + encodeURIComponent(WS_B));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { root: string; name: string; children: FsNode[] };
+    expect(body.root).toBe(await canonicalWorkspacePath(WS_B));
+    expect(body.name).toBe('workspace-b');
+    const names = body.children.map((n) => n.name);
+    expect(names).toContain('ONLY_B.md');
+    expect(names).toContain('sub');
+    expect(names).not.toContain('README.md');
+  });
+
+  it('?ws=B：path 相对 B 解析，跨空间文件 404', async () => {
+    const sub = (await (
+      await req('/fs/tree?path=' + encodeURIComponent('sub') + wsQuery)
+    ).json()) as { children: FsNode[] };
+    expect(sub.children.map((n) => n.name)).toEqual(['b.txt']);
+
+    const hit = await req('/fs/file?path=' + encodeURIComponent('ONLY_B.md') + wsQuery);
+    expect(hit.status).toBe(200);
+    expect(((await hit.json()) as { content: string }).content).toContain('only b needle');
+    // 启动空间的文件在 B 根下不存在
+    expect((await req('/fs/file?path=' + encodeURIComponent('README.md') + wsQuery)).status).toBe(404);
+  });
+
+  it('?ws=B：搜索与 raw 同样以 B 为根', async () => {
+    const search = await req('/fs/search?q=' + encodeURIComponent('B_SPACE_NEEDLE') + wsQuery);
+    expect(search.status).toBe(200);
+    const body = (await search.json()) as { results: { path: string }[] };
+    expect(body.results.map((r) => r.path)).toEqual(['sub/b.txt']);
+
+    const raw = await req('/fs/raw?path=' + encodeURIComponent('ONLY_B.md') + wsQuery);
+    expect(raw.status).toBe(200);
+    expect(await raw.text()).toContain('only b needle');
+  });
+
+  it('未知空间 → 403 forbidden（存在但未注册的目录同样拒绝）', async () => {
+    const outsider = join(TEST_DIR, 'not-a-workspace');
+    mkdirSync(outsider, { recursive: true });
+    const res = await req('/fs/tree?ws=' + encodeURIComponent(outsider));
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('forbidden');
+    expect(body.error.message).toContain('未知工作空间');
+  });
+
+  it('缺省 ?ws=：回落启动空间，既有行为不变', async () => {
+    const body = (await (await req('/fs/tree')).json()) as { root: string };
+    expect(body.root).toBe(TEST_WORKSPACE);
+  });
+});
+
+// ===== 5. /fs/fingerprint =====
+
+describe('GET /fs/fingerprint（目录变更指纹）', () => {
+  interface FpBody {
+    root: string;
+    dirs: { path: string; sig: string | null }[];
+  }
+
+  async function fp(paths: string[], extra = ''): Promise<FpBody> {
+    const q = paths.map((p) => `path=${encodeURIComponent(p)}`).join('&');
+    const res = await req(`/fs/fingerprint?${q}${extra}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as FpBody;
+  }
+  const sigOf = (body: FpBody, path: string): string | null =>
+    body.dirs.find((d) => d.path === path)?.sig ?? null;
+
+  it('缺 path → 400；越界路径 → 403', async () => {
+    expect((await req('/fs/fingerprint')).status).toBe(400);
+    expect((await req('/fs/fingerprint?path=' + encodeURIComponent('../outside'))).status).toBe(403);
+  });
+
+  it('各目录返回 sha1 指纹；文件与不存在路径为 null', async () => {
+    const body = await fp(['', 'src', 'README.md', 'no-such-dir']);
+    expect(body.root).toBe(TEST_WORKSPACE);
+    expect(sigOf(body, '')).toMatch(/^[0-9a-f]{40}$/);
+    expect(sigOf(body, 'src')).toMatch(/^[0-9a-f]{40}$/);
+    expect(sigOf(body, 'src')).not.toBe(sigOf(body, ''));
+    expect(sigOf(body, 'README.md')).toBeNull();
+    expect(sigOf(body, 'no-such-dir')).toBeNull();
+  });
+
+  it('新增/删除文件：本目录指纹变化，父目录只受直接子项影响', async () => {
+    const before = await fp(['', 'src']);
+    const srcBefore = sigOf(before, 'src');
+    const rootBefore = sigOf(before, '');
+
+    const added = join(TEST_WORKSPACE, 'src', 'fp-new.txt');
+    writeFileSync(added, 'fp needle\n', 'utf-8');
+    const afterAdd = await fp(['', 'src']);
+    expect(sigOf(afterAdd, 'src')).not.toBe(srcBefore);
+    expect(sigOf(afterAdd, '')).toBe(rootBefore); // 根的直接子项（src）未变
+
+    rmSync(added);
+    expect(sigOf(await fp(['', 'src']), 'src')).toBe(srcBefore);
+  });
+
+  it('文件改写（大小变化）→ 所在目录指纹变化', async () => {
+    const file = join(TEST_WORKSPACE, 'README.md');
+    const original = '# Workspace\n\nhello fs browser\n';
+    writeFileSync(file, original, 'utf-8');
+    const before = await fp(['']);
+    writeFileSync(file, `${original}appended line\n`, 'utf-8');
+    const after = await fp(['']);
+    expect(sigOf(after, '')).not.toBe(sigOf(before, ''));
+    writeFileSync(file, original, 'utf-8');
+  });
+
+  it('恒排除目录不参与指纹：node_modules 内容变化不影响根', async () => {
+    const before = await fp(['']);
+    writeFileSync(join(TEST_WORKSPACE, 'node_modules', 'pkg', 'index.js'), 'NEEDLE in node_modules changed\n', 'utf-8');
+    expect(sigOf(await fp(['']), '')).toBe(sigOf(before, ''));
+  });
+
+  it('?ws=B：指纹以 B 为根', async () => {
+    const wsB = join(TEST_DIR, 'workspace-b');
+    const body = await fp(['', 'sub'], `&ws=${encodeURIComponent(wsB)}`);
+    expect(body.root).toBe(await canonicalWorkspacePath(wsB));
+    expect(sigOf(body, 'sub')).toMatch(/^[0-9a-f]{40}$/);
+    // B 根下没有启动空间的 README.md
+    expect(sigOf(await fp(['README.md'], `&ws=${encodeURIComponent(wsB)}`), 'README.md')).toBeNull();
+  });
+});
+
+// ===== 6. 写操作与下载（优化建议 20261021-005） =====
+
+/** JSON / 无体请求辅助 */
+async function call(method: string, path: string, body?: unknown): Promise<Res> {
+  return fetch(`${base}${path}`, {
+    method,
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+/** 最小 zip 解析：从 EOCD → 中央目录 → 本地头，取出条目名与存储数据 */
+function zipEntries(buf: Buffer): { name: string; dir: boolean; size: number; data: Buffer }[] {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  expect(eocd).toBeGreaterThanOrEqual(0);
+  const count = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+  const out: { name: string; dir: boolean; size: number; data: Buffer }[] = [];
+  for (let i = 0; i < count; i++) {
+    expect(buf.readUInt32LE(off)).toBe(0x02014b50);
+    const size = buf.readUInt32LE(off + 24);
+    const nameLen = buf.readUInt16LE(off + 28);
+    const extraLen = buf.readUInt16LE(off + 30);
+    const commentLen = buf.readUInt16LE(off + 32);
+    const localOff = buf.readUInt32LE(off + 42);
+    const name = buf.subarray(off + 46, off + 46 + nameLen).toString('utf8');
+    expect(buf.readUInt32LE(localOff)).toBe(0x04034b50);
+    const dataStart = localOff + 30 + buf.readUInt16LE(localOff + 26) + buf.readUInt16LE(localOff + 28);
+    out.push({ name, dir: name.endsWith('/'), size, data: buf.subarray(dataStart, dataStart + size) });
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+describe('DELETE /fs/entry（删除）', () => {
+  it('删除文件：返回类型与路径，文件消失', async () => {
+    const file = join(TEST_WORKSPACE, 'del-me.txt');
+    writeFileSync(file, 'bye\n', 'utf-8');
+    const res = await call('DELETE', '/fs/entry?path=del-me.txt');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ path: 'del-me.txt', type: 'file' });
+    expect((await call('DELETE', '/fs/entry?path=del-me.txt')).status).toBe(404);
+  });
+
+  it('删除目录：未带 recursive → 400；recursive=1 → 200 且递归清除', async () => {
+    mkdirSync(join(TEST_WORKSPACE, 'del-dir', 'inner'), { recursive: true });
+    writeFileSync(join(TEST_WORKSPACE, 'del-dir', 'inner', 'x.txt'), 'x\n', 'utf-8');
+    expect((await call('DELETE', '/fs/entry?path=del-dir')).status).toBe(400);
+    expect((await call('DELETE', '/fs/entry?path=del-dir&recursive=1')).status).toBe(200);
+    expect((await req('/fs/tree?path=' + encodeURIComponent('del-dir'))).status).toBe(404);
+  });
+
+  it('保护与越界：根、.git、.loop-agent、../ 一律拒绝', async () => {
+    expect((await call('DELETE', '/fs/entry?path=')).status).toBe(403);
+    for (const p of ['.git', 'src/.git', '.loop-agent', 'src/.loop-agent/config']) {
+      expect((await call('DELETE', '/fs/entry?path=' + encodeURIComponent(p))).status).toBe(403);
+    }
+    expect((await call('DELETE', '/fs/entry?path=' + encodeURIComponent('../outside'))).status).toBe(403);
+  });
+});
+
+describe('POST /fs/rename（重命名 / 移动）', () => {
+  it('同目录改名：旧名消失、新名内容不变', async () => {
+    writeFileSync(join(TEST_WORKSPACE, 'old-name.txt'), 'rename body\n', 'utf-8');
+    const res = await call('POST', '/fs/rename', { from: 'old-name.txt', to: 'new-name.txt' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ from: 'old-name.txt', to: 'new-name.txt', type: 'file' });
+    expect((await req('/fs/file?path=' + encodeURIComponent('new-name.txt'))).status).toBe(200);
+    expect((await req('/fs/file?path=' + encodeURIComponent('old-name.txt'))).status).toBe(404);
+  });
+
+  it('跨目录移动：目录节点同样可改名', async () => {
+    mkdirSync(join(TEST_WORKSPACE, 'mv-src'), { recursive: true });
+    writeFileSync(join(TEST_WORKSPACE, 'mv-src', 'm.txt'), 'm\n', 'utf-8');
+    const res = await call('POST', '/fs/rename', { from: 'mv-src', to: 'src/mv-dst' });
+    expect(res.status).toBe(200);
+    expect((await req('/fs/file?path=' + encodeURIComponent('src/mv-dst/m.txt'))).status).toBe(200);
+    await call('DELETE', '/fs/entry?path=' + encodeURIComponent('src/mv-dst') + '&recursive=1');
+  });
+
+  it('校验：缺参数 400、源不存在 404、目标已存在 409、父目录缺失 404、根与保护名 403', async () => {
+    expect((await call('POST', '/fs/rename', {})).status).toBe(400);
+    expect((await call('POST', '/fs/rename', { from: 'nope.txt', to: 'x.txt' })).status).toBe(404);
+    expect((await call('POST', '/fs/rename', { from: 'README.md', to: 'src' })).status).toBe(409);
+    expect((await call('POST', '/fs/rename', { from: 'README.md', to: 'no-dir/x.txt' })).status).toBe(404);
+    expect((await call('POST', '/fs/rename', { from: 'README.md', to: '' })).status).toBe(400);
+    expect((await call('POST', '/fs/rename', { from: '', to: 'x.txt' })).status).toBe(400);
+    expect((await call('POST', '/fs/rename', { from: 'README.md', to: '.git/x' })).status).toBe(403);
+    expect((await call('POST', '/fs/rename', { from: 'README.md', to: '../x' })).status).toBe(403);
+  });
+});
+
+describe('POST /fs/mkdir（新建目录）', () => {
+  it('新建目录：201、树中可见；重复创建 409', async () => {
+    const res = await call('POST', '/fs/mkdir', { path: 'made-dir' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ path: 'made-dir', type: 'dir' });
+    const tree = (await (await req('/fs/tree?path=')).json()) as { children: FsNode[] };
+    expect(tree.children.map((n) => n.name)).toContain('made-dir');
+    expect((await call('POST', '/fs/mkdir', { path: 'made-dir' })).status).toBe(409);
+    await call('DELETE', '/fs/entry?path=made-dir&recursive=1');
+  });
+
+  it('校验：空/根 400、父目录缺失 404、保护名 403', async () => {
+    expect((await call('POST', '/fs/mkdir', {})).status).toBe(400);
+    expect((await call('POST', '/fs/mkdir', { path: '' })).status).toBe(400);
+    expect((await call('POST', '/fs/mkdir', { path: 'no-parent/child' })).status).toBe(404);
+    expect((await call('POST', '/fs/mkdir', { path: '.git' })).status).toBe(403);
+    expect((await call('POST', '/fs/mkdir', { path: '../outside' })).status).toBe(403);
+  });
+});
+
+describe('POST /fs/upload（原始字节上传）', () => {
+  async function upload(
+    targetDir: string,
+    fileName: string,
+    data: Buffer | string,
+    extra: { rel?: string; conflict?: string; ws?: string } = {},
+  ): Promise<Res> {
+    const headers: Record<string, string> = { 'x-file-name': encodeURIComponent(fileName) };
+    if (extra.rel) headers['x-relative-path'] = encodeURIComponent(extra.rel);
+    if (extra.conflict) headers['x-conflict'] = extra.conflict;
+    const ws = extra.ws ? `&ws=${encodeURIComponent(extra.ws)}` : '';
+    return fetch(`${base}/fs/upload?path=${encodeURIComponent(targetDir)}${ws}`, {
+      method: 'POST',
+      headers,
+      body: data,
+    });
+  }
+
+  it('上传到根目录：201、路径与字节数正确、内容可读', async () => {
+    const res = await upload('', 'up.txt', 'upload body\n');
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ path: 'up.txt', bytes: 12, skipped: false });
+    const file = (await (await req('/fs/file?path=' + encodeURIComponent('up.txt'))).json()) as { content: string };
+    expect(file.content).toBe('upload body\n');
+  });
+
+  it('冲突策略：rename 生成 `name (1).ext`、overwrite 覆盖、skip 跳过', async () => {
+    const r1 = await upload('', 'dup.txt', 'first\n', { conflict: 'rename' });
+    const r2 = await upload('', 'dup.txt', 'second\n', { conflict: 'rename' });
+    expect(await r2.json()).toMatchObject({ path: 'dup (1).txt', skipped: false });
+    expect(r1.status).toBe(201);
+
+    const over = await upload('', 'dup.txt', 'third\n', { conflict: 'overwrite' });
+    expect(over.status).toBe(201);
+    const content = (await (await req('/fs/file?path=' + encodeURIComponent('dup.txt'))).json()) as { content: string };
+    expect(content.content).toBe('third\n');
+
+    const skip = await upload('', 'dup.txt', 'ignored\n', { conflict: 'skip' });
+    expect(skip.status).toBe(200);
+    expect(await skip.json()).toEqual({ path: 'dup.txt', bytes: 8, skipped: true });
+    const after = (await (await req('/fs/file?path=' + encodeURIComponent('dup.txt'))).json()) as { content: string };
+    expect(after.content).toBe('third\n');
+  });
+
+  it('目录上传：X-Relative-Path 嵌套层级 + 父目录自动创建', async () => {
+    const res = await upload('', 'a.txt', 'nested\n', { rel: 'uploaded/sub/a.txt' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ path: 'uploaded/sub/a.txt' });
+    expect((await req('/fs/file?path=' + encodeURIComponent('uploaded/sub/a.txt'))).status).toBe(200);
+
+    const into = await upload('uploaded', 'a.txt', 'into sub\n', { rel: 'sub/a.txt', conflict: 'overwrite' });
+    expect(into.status).toBe(201);
+  });
+
+  it('校验：缺 X-File-Name 400、目标目录不存在 404、相对路径非法 400/403', async () => {
+    const noName = await fetch(`${base}/fs/upload?path=`, { method: 'POST', body: 'x' });
+    expect(noName.status).toBe(400);
+    expect((await upload('no-such-dir', 'a.txt', 'x')).status).toBe(404);
+    expect(
+      (await upload('', 'a.txt', 'x', { rel: '../escape.txt', conflict: 'rename' })).status,
+    ).toBe(400);
+    expect((await upload('', 'a.txt', 'x', { rel: 'C:/escape.txt' })).status).toBe(400);
+    expect((await upload('', 'a.txt', 'x', { rel: '.git/a.txt' })).status).toBe(403);
+  });
+
+  it('?ws=B：上传落到指定工作空间而非启动空间', async () => {
+    const wsB = join(TEST_DIR, 'workspace-b');
+    const res = await upload('', 'in-b.txt', 'b space\n', { ws: wsB });
+    expect(res.status).toBe(201);
+    expect((await req('/fs/file?path=' + encodeURIComponent('in-b.txt') + `&ws=${encodeURIComponent(wsB)}`)).status).toBe(200);
+    expect((await req('/fs/file?path=' + encodeURIComponent('in-b.txt'))).status).toBe(404);
+    await call('DELETE', `/fs/entry?path=in-b.txt&ws=${encodeURIComponent(wsB)}`);
+  });
+});
+
+describe('GET /fs/download（文件附件 / 目录 zip）', () => {
+  it('文件：返回原始字节与附件头（中文名 RFC5987）', async () => {
+    writeFileSync(join(TEST_WORKSPACE, '下载样例.txt'), 'download me\n', 'utf-8');
+    const res = await req('/fs/download?path=' + encodeURIComponent('下载样例.txt'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    const cd = res.headers.get('content-disposition') ?? '';
+    expect(cd).toContain("attachment; filename=");
+    expect(cd).toContain("filename*=UTF-8''");
+    expect(cd).toContain(encodeURIComponent('下载样例.txt'));
+    expect(await res.text()).toBe('download me\n');
+    rmSync(join(TEST_WORKSPACE, '下载样例.txt'));
+  });
+
+  it('目录：zip 可解析，层级与内容正确、中文名 UTF-8、跳过 node_modules', async () => {
+    mkdirSync(join(TEST_WORKSPACE, 'zipcase', 'inner', 'empty'), { recursive: true });
+    writeFileSync(join(TEST_WORKSPACE, 'zipcase', 'top.txt'), 'TOP\n', 'utf-8');
+    writeFileSync(join(TEST_WORKSPACE, 'zipcase', 'inner', '中文.txt'), '中文内容\n', 'utf-8');
+    mkdirSync(join(TEST_WORKSPACE, 'zipcase', 'node_modules'), { recursive: true });
+    writeFileSync(join(TEST_WORKSPACE, 'zipcase', 'node_modules', 'skip.js'), 'SKIP\n', 'utf-8');
+
+    const res = await req('/fs/download?path=' + encodeURIComponent('zipcase'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/zip');
+    expect(res.headers.get('content-disposition')).toContain(encodeURIComponent('zipcase.zip'));
+
+    const entries = zipEntries(Buffer.from(await res.arrayBuffer()));
+    const names = entries.map((e) => e.name);
+    expect(names).toEqual([
+      'inner/',
+      'inner/empty/',
+      'inner/中文.txt',
+      'top.txt',
+    ]);
+    expect(entries.find((e) => e.name === 'top.txt')?.data.toString('utf8')).toBe('TOP\n');
+    expect(entries.find((e) => e.name === 'inner/中文.txt')?.data.toString('utf8')).toBe('中文内容\n');
+    expect(names.some((n) => n.startsWith('node_modules'))).toBe(false); // ALWAYS_SKIP 恒排除
+    expect(entries.find((e) => e.name === 'inner/')?.dir).toBe(true);
+
+    await call('DELETE', '/fs/entry?path=zipcase&recursive=1');
+  });
+
+  it('校验：不存在 404、保护路径 403', async () => {
+    expect((await req('/fs/download?path=' + encodeURIComponent('no-such.txt'))).status).toBe(404);
+    expect((await req('/fs/download?path=' + encodeURIComponent('../outside'))).status).toBe(403);
   });
 });

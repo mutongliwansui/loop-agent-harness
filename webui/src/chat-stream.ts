@@ -82,7 +82,7 @@ export interface SessionStreamState {
   reloading: boolean;
   pending: SseEvent[];
   /** 首次加载去重（并发 ensureLoaded 共享同一请求） */
-  loadTask: Promise<{ switched: boolean; workspacePath?: string }> | null;
+  loadTask: Promise<void> | null;
   /**
    * 时间线尾注记（task-06，前端态不进消息数组）：
    * lastRun=interrupted → 「⚠ 上次运行被中断（服务已重启）…」；lastRun=aborted → 「上次运行由用户停止」
@@ -238,14 +238,12 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
 
 interface SessionDetail {
   messages: ApiHistoryMsg[];
-  /** task-05 L2 兼容：switched 字段后端仍返回（恒 false），前端调用方已不再分支 */
-  workspace?: { path: string; id: string; switched: boolean };
   run?: { runId: string; status: 'running' | 'done' | 'failed' | 'aborted' } | null;
   /** run journal 磁盘态（task-06）：服务重启后 run=null，lastRun 仍可判中断/停止 */
   lastRun?: { status: string; finishedAt?: number } | null;
 }
 
-async function fetchDetail(id: string, st: SessionStreamState): Promise<{ switched: boolean; workspacePath?: string }> {
+async function fetchDetail(id: string, st: SessionStreamState): Promise<void> {
   const r = await api<SessionDetail>(`/sessions/${encodeURIComponent(id)}`);
   const msgs = rebuildChatMsgs(r.messages);
   const running = r.run?.status === 'running';
@@ -286,13 +284,12 @@ async function fetchDetail(id: string, st: SessionStreamState): Promise<{ switch
   } else if (st.note?.startsWith('⚠') || st.note === '上次运行由用户停止') {
     st.note = undefined;
   }
-  return { switched: r.workspace?.switched === true, workspacePath: r.workspace?.path };
 }
 
 /** 首次进入会话时加载历史（已加载直接返回）；加载中共享同一请求 */
-export function ensureLoaded(id: string): Promise<{ switched: boolean; workspacePath?: string }> {
+export function ensureLoaded(id: string): Promise<void> {
   const st = stateOf(id);
-  if (st.loaded) return Promise.resolve({ switched: false });
+  if (st.loaded) return Promise.resolve();
   if (!st.loadTask) {
     st.loadTask = fetchDetail(id, st).finally(() => {
       st.loadTask = null;

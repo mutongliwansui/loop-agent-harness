@@ -1,7 +1,7 @@
 // Agent 实例池（Task-20261021-002-05）：同工作空间多会话并发的核心。
 //
 // 背景：API 模式原为单例 agent（deps.runAgent 闭包捕获），_chatHistory/_workingMemory
-// 等实例字段被多会话并发覆盖，靠 entry.inFlight + hasInFlight 两层互斥兜底。
+// 等实例字段被多会话并发覆盖，靠 entry.inFlight（per-session）+ hasInFlight（per-space）兜底。
 // 本池以「每个 run 一份 agent 实例」替代单例假设：
 // - 同 sessionId 粘性复用（D4，性能优化非正确性依赖——历史由 API 层显式传入）
 // - LRU 容量上限含 busy（D1 默认 4）；只淘汰空闲实例，busy 永不淘汰（D3）
@@ -119,7 +119,7 @@ export class AgentPool<T extends PooledAgent = ReActAgent> {
     }
   }
 
-  /** 切换工作空间/配置变更：idle 全部 dispose；busy 实例标记死亡（归还时 dispose）；唤醒等待者 */
+  /** 释放本空间池：idle 全部 dispose；busy 实例标记死亡（归还时 dispose）；唤醒等待者 */
   reset(): void {
     for (const { agent } of this.idle.values()) agent.dispose();
     this.idle.clear();

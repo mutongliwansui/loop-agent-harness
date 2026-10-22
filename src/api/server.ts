@@ -68,11 +68,9 @@ export interface ApiServerDeps {
   version?: string;
   /** 日志输出（默认静默；startApiServer 注入 console.log） */
   log?: (msg: string) => void;
-  /** 切换工作空间后重建记忆与实例池（Task-20261021-002-05 D6：缺省时仅重置 memory-kit 缓存） */
-  reinitMemory?: (cwd: string) => Promise<void>;
   /** 命令资源化运行时依赖（D8）；缺省字段回落全局单例 */
   runtime?: Partial<ApiRuntimeDeps>;
-  /** 工作空间运行时注册表（Task-20261021-010-01）；本阶段仅透传给 handler，后续任务消费 */
+  /** 工作空间运行时注册表（Task-20261021-010-01）；透传给 handler 做按会话/空间路由 */
   registry?: WorkspaceRegistry;
 }
 
@@ -107,7 +105,6 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     runs,
     log,
     version: deps.version,
-    reinitMemory: deps.reinitMemory,
     configLoader: rt.configLoader ?? configLoader,
     configWriter: rt.configWriter ?? configWriter,
     mcpManager: rt.mcpManager ?? mcpManager,

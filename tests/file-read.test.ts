@@ -62,4 +62,76 @@ describe('fileRead 工具', () => {
       /必须同时指定/,
     );
   });
+
+  // ===== 20261021-007：默认读取上限 / 截断 / 二进制探测 / offset-limit =====
+
+  it('超过 2000 行只返回前 2000 行并附截断提示', async () => {
+    const content = Array.from({ length: 100000 }, (_, i) => `line-${i + 1}`).join('\n');
+    const p = seed('big.txt', content);
+    const r = await fileRead.execute({ path: p });
+
+    const body = r.split('\n\n')[0];
+    const lines = body.split('\n');
+    expect(lines).toHaveLength(2000);
+    expect(lines[0]).toBe('1: line-1');
+    expect(lines[1999]).toBe('2000: line-2000');
+    expect(r).toContain('共 100000 行');
+    expect(r).toContain('[已截断]');
+    expect(r).toContain('offset/limit');
+  });
+
+  it('超过 256KB 时按字节截断（未到 2000 行）', async () => {
+    const content = Array.from({ length: 3000 }, () => 'x'.repeat(200)).join('\n');
+    const p = seed('bytes.txt', content);
+    const r = await fileRead.execute({ path: p });
+
+    expect(r).toContain('[已截断]');
+    expect(r).toContain('256.0 KB');
+    expect(r).toContain('共 3000 行');
+    const body = r.split('\n\n')[0];
+    const returned = body.split('\n').length;
+    expect(returned).toBeGreaterThan(1000);
+    expect(returned).toBeLessThan(2000);
+  });
+
+  it('二进制文件（含 NUL）拒绝读取', async () => {
+    const p = file('bin.dat');
+    writeFileSync(p, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]));
+    await expect(fileRead.execute({ path: p })).rejects.toThrow(/二进制文件不支持读取/);
+  });
+
+  it('offset/limit 分段读取使用 1-based 真实行号', async () => {
+    const content = Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join('\n');
+    const p = seed('range.txt', content);
+    const r = await fileRead.execute({ path: p, offset: 3, limit: 2 });
+    expect(r).toBe(`文件 ${p} 第 3-4 行（共 10 行）:\n3: l3\n4: l4`);
+  });
+
+  it('startLine/endLine 与 offset/limit 混用时报错', async () => {
+    const p = seed('mix.txt', 'a\nb');
+    await expect(
+      fileRead.execute({ path: p, startLine: 1, endLine: 2, offset: 1 }),
+    ).rejects.toThrow(/不能同时使用/);
+  });
+
+  it('显式行范围 + maxBytes 截断并提示继续 offset', async () => {
+    const content = Array.from(
+      { length: 100 },
+      (_, i) => `row-${i + 1}-${'y'.repeat(80)}`,
+    ).join('\n');
+    const p = seed('range-bytes.txt', content);
+    const r = await fileRead.execute({ path: p, startLine: 1, endLine: 100, maxBytes: 500 });
+
+    expect(r).toContain('[已截断]');
+    expect(r).toMatch(/offset=\d+/);
+    const body = r.split('\n\n')[0];
+    expect(body.split('\n').length).toBeLessThan(20);
+  });
+
+  it('单行超长按 8192 字符截断', async () => {
+    const p = seed('min.js', 'a'.repeat(20000));
+    const r = await fileRead.execute({ path: p, lineNumbers: false });
+    expect(r.length).toBeLessThan(8500);
+    expect(r).toContain('本行过长已截断');
+  });
 });

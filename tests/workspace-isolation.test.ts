@@ -115,14 +115,14 @@ describe('6.4.2 会话存储与配置按空间隔离', () => {
     expect(rtA.configWriter.workspaceConfigPath).not.toBe(rtB.configWriter.workspaceConfigPath);
   });
 
-  it('listAllWorkspaces 从任一 store 均可看全两个空间，current 标记各自正确', async () => {
+  it('listAllWorkspaces 从任一 store 均可看全两个空间（无"当前"标记）', async () => {
     const fromA = await rtA.store.listAllWorkspaces();
     expect(fromA).toHaveLength(2);
-    expect(fromA.find((w) => w.current)?.path).toBe(rootA);
+    expect(fromA.every((w) => !('current' in w))).toBe(true);
 
     const fromB = await rtB.store.listAllWorkspaces();
     expect(fromB).toHaveLength(2);
-    expect(fromB.find((w) => w.current)?.path).toBe(rootB);
+    expect(fromB.map((w) => w.path).sort()).toEqual(fromA.map((w) => w.path).sort());
   });
 });
 

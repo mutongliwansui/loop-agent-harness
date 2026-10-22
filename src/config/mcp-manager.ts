@@ -10,9 +10,9 @@ import type { ConfigLoader } from './loader.js';
 import type { ResolvedConfig } from './schema.js';
 
 /**
- * 进程启动目录（模块加载时捕获，早于 serve 的任何 chdir）。
+ * 进程启动目录（模块加载时捕获，独立于任何工作空间运行时）。
  * Task-20261021-010-02 D19：MCPManager 是进程级单例、启动期一次性连接，
- * stdio server 的 cwd 固定为「配置显式值 ?? 启动目录」，不随 WebUI 切换空间。
+ * stdio server 的 cwd 固定为「配置显式值 ?? 启动目录」，不随会话所属工作空间变化。
  */
 const startupRoot = process.cwd();
 

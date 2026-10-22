@@ -11,7 +11,6 @@ export async function startApiServer(): Promise<ApiServer> {
   const { configLoader } = await import('../config/index.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
-  const { resetMemoryKitCache } = await import('./memory-kit.js');
   const { initAgentMemory } = await import('../runtime/init.js');
 
   const { config: cfg } = configLoader.load();
@@ -52,7 +51,7 @@ export async function startApiServer(): Promise<ApiServer> {
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
     // D3：run 全程处于该空间 ALS 上下文（runtime.runAgent 内部已包裹）。
-    // Task-20261021-010-03：runtime 自带 runAgent，切换空间时 handler 指针指向新 runtime 即可。
+    // 启动空间的 run 走注入的 rt.runAgent；其他空间由 handler 按会话归属路由到各自 runtime。
     runAgent: (sessionId, input, options) => rt.runAgent(sessionId, input, options),
     sessionStore: store,
     // 会话缓存/互斥层由 runtime 持有，server 不再自建（避免两份缓存分叉）
@@ -60,12 +59,6 @@ export async function startApiServer(): Promise<ApiServer> {
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
-    // 切换工作空间：P1 起 switchWorkspace 不再调用本回调（每空间独立 pool/kit，无需重建）。
-    // 保留可选 seam 以兼容外部嵌入与后续 /config、/model 变更场景（L1 兼容约束）。
-    reinitMemory: async () => {
-      resetMemoryKitCache();
-      rt.pool.reset();
-    },
     // D8：命令资源化运行时依赖（真实单例组装；workspace 层一律指向当前 runtime 根）
     runtime: {
       configLoader: rt.configLoader,

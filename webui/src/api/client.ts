@@ -97,9 +97,13 @@ export async function apiStatus(path: string, init: RequestInit & { json?: unkno
   return res.status;
 }
 
-/** 原始文件下载（GET /fs/raw：自动注入 Bearer；供 pdf iframe / Office 文档前端解析） */
-export async function fetchRaw(path: string): Promise<Blob> {
-  const res = await fetch(`/fs/raw?path=${encodeURIComponent(path)}`, { headers: authHeaders() });
+/** 原始文件下载（GET /fs/raw：自动注入 Bearer；供 pdf iframe / Office 文档前端解析）
+ *  ws 为会话所属工作空间绝对路径（后端据此切换根；缺省回落启动空间） */
+export async function fetchRaw(path: string, ws?: string): Promise<Blob> {
+  const wsParam = ws ? `&ws=${encodeURIComponent(ws)}` : '';
+  const res = await fetch(`/fs/raw?path=${encodeURIComponent(path)}${wsParam}`, {
+    headers: authHeaders(),
+  });
   if (!res.ok) await throwFor(res);
   return await res.blob();
 }
@@ -122,4 +126,93 @@ export async function uploadRaw(
   const entry = body.entries[0];
   if (!entry) throw new ApiError('empty_response', '上传响应缺少条目', res.status);
   return { fileName: entry.fileName, bytes: entry.bytes, contextNote: body.contextNote };
+}
+
+/* ================= 工作空间文件写操作与下载（优化建议 20261021-005） ================= */
+
+/** ws 查询参数（文件面板跟随活跃会话所属工作空间） */
+function wsParam(ws?: string): string {
+  return ws ? `&ws=${encodeURIComponent(ws)}` : '';
+}
+
+/** 删除文件/目录（目录必须 recursive=true；根目录与 .git/.loop-agent 后端拒绝） */
+export async function deleteFsEntry(
+  path: string,
+  recursive: boolean,
+  ws?: string,
+): Promise<{ path: string; type: 'dir' | 'file' }> {
+  const qs = `path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}${wsParam(ws)}`;
+  const res = await fetch(`/fs/entry?${qs}`, { method: 'DELETE', headers: authHeaders() });
+  if (!res.ok) await throwFor(res);
+  return (await res.json()) as { path: string; type: 'dir' | 'file' };
+}
+
+/** 重命名/移动（同空间内相对路径；目标已存在 409） */
+export async function renameFsEntry(
+  from: string,
+  to: string,
+  ws?: string,
+): Promise<{ from: string; to: string; type: 'dir' | 'file' }> {
+  const res = await fetch(`/fs/rename?ws=${encodeURIComponent(ws ?? '')}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ from, to }),
+  });
+  if (!res.ok) await throwFor(res);
+  return (await res.json()) as { from: string; to: string; type: 'dir' | 'file' };
+}
+
+/** 新建目录（父目录必须存在） */
+export async function mkdirFs(path: string, ws?: string): Promise<{ path: string }> {
+  const res = await fetch(`/fs/mkdir?ws=${encodeURIComponent(ws ?? '')}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) await throwFor(res);
+  return (await res.json()) as { path: string };
+}
+
+/** 上传单个文件到工作空间目录（X-Relative-Path 支持目录上传的层级；冲突策略默认 rename） */
+export async function uploadToWorkspace(
+  file: File,
+  dir: string,
+  opts: { relativePath?: string; conflict?: 'rename' | 'overwrite' | 'skip'; ws?: string } = {},
+): Promise<{ path: string; bytes: number; skipped?: boolean }> {
+  const headers = new Headers(authHeaders());
+  headers.set('x-file-name', encodeURIComponent(file.name));
+  if (opts.relativePath) headers.set('x-relative-path', encodeURIComponent(opts.relativePath));
+  if (opts.conflict) headers.set('x-conflict', opts.conflict);
+  const res = await fetch(`/fs/upload?path=${encodeURIComponent(dir)}${wsParam(opts.ws)}`, {
+    method: 'POST',
+    headers,
+    body: file,
+  });
+  if (!res.ok) await throwFor(res);
+  return (await res.json()) as { path: string; bytes: number; skipped?: boolean };
+}
+
+/** 从 Content-Disposition 解析文件名：优先 filename*=UTF-8''，回退 filename="" */
+function dispositionName(cd: string): string {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // 非法编码回退 ASCII 分支
+    }
+  }
+  const plain = /filename="([^"]*)"/i.exec(cd);
+  return plain?.[1] ?? '';
+}
+
+/** 下载文件或目录 zip：返回 Blob 与建议文件名（Bearer 走请求头，故不能直接用 <a href>） */
+export async function downloadFsEntry(path: string, ws?: string): Promise<{ blob: Blob; name: string }> {
+  const res = await fetch(`/fs/download?path=${encodeURIComponent(path)}${wsParam(ws)}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) await throwFor(res);
+  const fallback = (path.split('/').pop() || 'download').replace(/\/+$/, '');
+  const name = dispositionName(res.headers.get('content-disposition') ?? '') || fallback;
+  return { blob: await res.blob(), name };
 }

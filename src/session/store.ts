@@ -622,7 +622,7 @@ export class SessionStore {
   /**
    * 聚合所有工作空间：扫描 <userDir>/sessions/* 下的 meta.json 与 sessions.json
    * （两者均为明文索引，无需解密）；按空间首次使用时间（createdAt）升序——顺序稳定，
-   * 切换当前空间不影响排列，仅「当前」标记随空间移动。
+   * 空间之间完全并列，不存在"当前空间"标记。
    * 旧 meta.json 无 workspaceName 时回退为工作路径目录名。
    */
   async listAllWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -654,7 +654,6 @@ export class SessionStore {
         id: dir,
         name: meta.workspaceName || basename(meta.workspacePath) || dir,
         path: meta.workspacePath,
-        current: dir === this.workspaceId,
         createdAt: meta.createdAt,
         lastAccessedAt: meta.lastAccessedAt,
         sessions: sessions.sort(
