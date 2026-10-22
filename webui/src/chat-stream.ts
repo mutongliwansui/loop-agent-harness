@@ -15,6 +15,7 @@ import { sseFetch, sseGet, type SseEvent } from './api/sse.js';
 import { showToast } from './toast.js';
 import { postTab } from './tab-sync.js';
 import { getNotifySettings, notifyRunDone, playChime } from './notify.js';
+import { toolSummary } from './tool-meta.js';
 
 export interface TextSeg {
   type: 'text';
@@ -471,12 +472,23 @@ function applyEvent(id: string, ev: SseEvent): void {
     case 'tool_progress': {
       const asst = currentAssistant(st);
       asst.lastEventAt = now;
-      // 执行期每秒心跳：以服务端 elapsedMs 为准，LiveStatus 内再用本地时钟兜底
+      // 执行期每秒心跳：以服务端 elapsedMs 为准，LiveStatus 内再用本地时钟兜底；
+      // brief 从最近的同名未完成工具段 args 计算（D6）
+      const progTool = String(d.tool ?? '');
+      let brief = '';
+      for (let i = asst.segments.length - 1; i >= 0; i--) {
+        const s = asst.segments[i];
+        if (s.type === 'tool' && !s.done && s.tool === progTool) {
+          brief = toolSummary(progTool, s.args);
+          break;
+        }
+      }
       asst.live = {
         kind: 'tool_run',
-        tool: String(d.tool ?? ''),
+        tool: progTool,
         elapsedMs: Number(d.elapsedMs ?? 0),
         since: now - Number(d.elapsedMs ?? 0),
+        brief,
       };
       break;
     }

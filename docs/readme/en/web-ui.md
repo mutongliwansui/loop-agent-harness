@@ -39,7 +39,7 @@ Eight items in the left navigation (Chinese UI, light/dark follows the system, n
 
 | View | Capabilities | Endpoints |
 |---|---|---|
-| 💬 Chat | Multi-session (create/switch/delete, 409 notice when deleting in-flight), SSE streaming render (thought / collapsible tool-call blocks / final answer), stop generation, in-chat upload | `/sessions`, `/sessions/:id/messages`, `/uploads/raw`, `/uploads` |
+| 💬 Chat | Multi-session (create/switch/delete, 409 notice when deleting in-flight), SSE streaming render (thought / collapsible tool-call blocks / final answer), stop generation, in-chat upload. Localized tool-call cards: status badge (✓/⟳/✗) + display name (e.g. "读取文件" read-file, "执行命令" run-command) + argument summary phrase; MCP/unknown tools fall back to the raw English name. Expanding a card reveals a localized parameter table, the raw JSON, and the result block (long results collapsed by default with an expand button; failures marked with a red ✗) | `/sessions`, `/sessions/:id/messages`, `/uploads/raw`, `/uploads` |
 | ⚙️ Config | Browse masked config tree, single-key read (with source layer), write/delete (workspace/global layering), restart notice for `api.*` changes | `/config`, `/config/path`, `/config/:key` |
 | 🤖 Models | Registry management (add/delete), one-click active switch, connectivity test (latency), current effective snapshot | `/models`, `/model`, `/models/:alias/test` |
 | 🔧 Tools | Enable/disable built-in tools (effective immediately), view parameter schema, hot reload | `/tools`, `/tools/:name`, `/tools/reload` |

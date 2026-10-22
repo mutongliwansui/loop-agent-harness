@@ -52,6 +52,37 @@ import {
   notifySupported,
   type NotifySettings,
 } from '../notify.js';
+import {
+  toolDisplay,
+  toolSummary,
+  toolParamRows,
+  prettyJson,
+  toolResultLooksFailed,
+} from '../tool-meta.js';
+
+/* ===== 工具调用卡片辅助（Task-20261022-001）===== */
+/** 「展开全部结果」状态：msgId:segIdx → 已展开（默认截断，D4） */
+const expandedTools = ref(new Set<string>());
+/** 结果文本：空 → （空）/执行中…；超 2 万字符截断兜底 */
+function resultText(seg: { result: string; done: boolean }): string {
+  const r = seg.result ?? '';
+  if (!r) return seg.done ? '（空）' : '执行中…';
+  const MAX_RESULT_CHARS = 20000;
+  if (r.length > MAX_RESULT_CHARS) {
+    return `${r.slice(0, MAX_RESULT_CHARS)}\n…（已截断，原文共 ${r.length} 字符）`;
+  }
+  return r;
+}
+function isExpanded(msgId: number, idx: number): boolean {
+  return expandedTools.value.has(`${msgId}:${idx}`);
+}
+function toggleExpand(msgId: number, idx: number): void {
+  const key = `${msgId}:${idx}`;
+  const next = new Set(expandedTools.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedTools.value = next;
+}
 interface UploadChip {
   id: number;
   fileName: string;
@@ -515,13 +546,39 @@ onUnmounted(() => {
               <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
               <template v-for="(seg, i) in m.segments" :key="i">
                 <details v-if="seg.type === 'tool'" class="tool-call">
-                  <summary>
+                  <summary :title="seg.args">
                     <span class="arrow">▶</span>
-                    <span class="tc-badge" :class="seg.done ? 'ok' : 'run'">{{ seg.done ? '✓' : '⟳' }} {{ seg.tool }}</span>
+                    <span class="tc-badge" :class="!seg.done ? 'run' : toolResultLooksFailed(seg.result) ? 'fail' : 'ok'">
+                      <span v-if="!seg.done" class="tc-spin">⟳</span>
+                      <template v-else>{{ toolResultLooksFailed(seg.result) ? '✗' : '✓' }}</template>
+                    </span>
+                    <span class="tc-icon">{{ toolDisplay(seg.tool).icon }}</span>
+                    <span class="tc-name">{{ toolDisplay(seg.tool).name }}</span>
+                    <span class="tc-sum">{{ toolSummary(seg.tool, seg.args) }}</span>
                     <span v-if="seg.elapsedMs != null" class="tc-took">· {{ fmtSecs(seg.elapsedMs) }}</span>
-                    <span class="tc-args">{{ seg.args }}</span>
                   </summary>
-                  <div class="tc-body">{{ seg.result || '（执行中…）' }}</div>
+                  <div class="tc-body">
+                    <template v-if="toolParamRows(seg.tool, seg.args).length">
+                      <div class="tc-sec-title">输入参数</div>
+                      <table class="ptable">
+                        <tbody>
+                          <tr v-for="row in toolParamRows(seg.tool, seg.args)" :key="row.key">
+                            <td>{{ row.zh }}<span class="en">{{ row.key }}</span></td>
+                            <td class="val">{{ row.text }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </template>
+                    <details v-if="toolDisplay(seg.tool).known && seg.args && seg.args !== 'null'" class="jv">
+                      <summary>原始 JSON</summary>
+                      <pre>{{ prettyJson(seg.args) }}</pre>
+                    </details>
+                    <div class="tc-sec-title">{{ seg.done ? '结果' : '结果（执行中…）' }}</div>
+                    <div class="tc-result" :class="{ clamped: !isExpanded(m.id, i), 'result-fail': seg.done && toolResultLooksFailed(seg.result) }">{{ resultText(seg) }}</div>
+                    <button v-if="seg.done && seg.result.length > 4000" class="tc-expand" @click="toggleExpand(m.id, i)">
+                      {{ isExpanded(m.id, i) ? '▲ 收起结果' : '▼ 展开全部结果' }}
+                    </button>
+                  </div>
                 </details>
                 <div v-else-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(seg.text)"></div>
                 <div v-else class="plain">{{ seg.text }}</div>
@@ -936,7 +993,7 @@ onUnmounted(() => {
 }
 @keyframes cl-rotate { to { transform: rotate(360deg); } }
 
-/* ===== 工具调用折叠块 ===== */
+/* ===== 工具调用折叠块（Task-20261022-001：徽章+图标中文名+摘要；展开=参数表+原始JSON+结果截断） ===== */
 .tool-call {
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -952,33 +1009,99 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   list-style: none;
-  font-family: ui-monospace, Consolas, monospace;
-}
-.tool-call summary::-webkit-details-marker { display: none; }
-.tool-call summary .arrow { transition: transform 0.15s; color: var(--muted); font-size: 10px; }
-.tool-call[open] summary .arrow { transform: rotate(90deg); }
-.tc-badge { font-weight: 600; }
-.tc-badge.ok { color: var(--brand); }
-.tc-badge.run { color: var(--warn); }
-.tc-took { flex: none; color: var(--muted); font-size: 11.5px; }
-.tc-args {
-  color: var(--muted);
-  font-size: 11.5px;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
-.tool-call .tc-body {
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--line);
+.tool-call summary::-webkit-details-marker { display: none; }
+.tool-call summary .arrow { transition: transform 0.15s; color: var(--muted); font-size: 10px; flex: none; }
+.tool-call[open] summary .arrow { transform: rotate(90deg); }
+.tool-call summary:hover { background: var(--panel); }
+.tc-badge {
+  flex: none;
   font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+.tc-badge.ok { background: var(--ok-weak); color: var(--ok); }
+.tc-badge.run { background: var(--warn-weak); color: var(--warn); }
+.tc-badge.fail { background: var(--danger-weak); color: var(--danger); }
+.tc-badge .tc-spin { display: inline-block; animation: tc-rotate 0.8s linear infinite; }
+@keyframes tc-rotate { to { transform: rotate(360deg); } }
+.tc-icon { flex: none; }
+.tc-name { font-weight: 600; color: var(--text); flex: none; }
+.tc-sum {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tc-took { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tc-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.tc-sec-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 8px 0 5px;
+}
+.ptable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ptable td { border: 1px solid var(--line); padding: 4px 9px; vertical-align: top; }
+.ptable td:first-child { width: 130px; color: var(--muted); white-space: nowrap; background: var(--bg); }
+.ptable td .en { font-family: ui-monospace, Consolas, monospace; font-size: 11px; opacity: 0.75; margin-left: 5px; }
+.ptable td.val { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; white-space: pre-wrap; }
+.tool-call .jv { margin-top: 8px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg); }
+.tool-call .jv summary {
+  cursor: pointer;
+  padding: 5px 10px;
   font-size: 12px;
   color: var(--muted);
+  list-style: none;
+  display: block;
+}
+.tool-call .jv summary::-webkit-details-marker { display: none; }
+.tool-call .jv summary:hover { color: var(--brand); }
+.tool-call .jv pre {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  padding: 4px 12px 10px;
+  overflow-x: auto;
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+.tc-result {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 280px;
+  max-height: 260px;
   overflow-y: auto;
+  line-height: 1.55;
 }
+.tc-result.clamped { max-height: 120px; overflow: hidden; position: relative; }
+.tc-result.clamped::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46px;
+  background: linear-gradient(transparent, var(--code-bg));
+}
+.tc-result.result-fail { border-left: 3px solid var(--danger); padding-left: 10px; }
+.tc-expand { margin-top: 6px; font-size: 12px; }
 
 /* ===== 输入区 ===== */
 .composer {

@@ -39,7 +39,7 @@ HTTP API 服务已启动
 
 | 视图 | 能力 | 背后端点 |
 |---|---|---|
-| 💬 聊天 | 多会话（新建/切换/删除，删除 in-flight 409 提示）、SSE 流式渲染（思考/工具调用折叠块/最终回答）、停止生成、对话内上传 | `/sessions`、`/sessions/:id/messages`、`/uploads/raw`、`/uploads` |
+| 💬 聊天 | 多会话（新建/切换/删除，删除 in-flight 409 提示）、SSE 流式渲染（思考/工具调用折叠块/最终回答）、停止生成、对话内上传。工具调用卡片中文化：状态徽章（✓/⟳/✗）+ 中文名（如「读取文件」「执行命令」）+ 参数摘要短语，MCP/未知工具回退英文名；展开可见中文参数表、原始 JSON 与结果区（长结果默认截断可展开，失败红 ✗ 标识） | `/sessions`、`/sessions/:id/messages`、`/uploads/raw`、`/uploads` |
 | ⚙️ 配置 | 遮蔽配置树浏览、单键读取（含来源层）、写入/删除（workspace/global 分层）、`api.*` 修改提示重启 | `/config`、`/config/path`、`/config/:key` |
 | 🤖 模型 | 登记簿管理（增/删/改）、一键切换 active、连通性测试（延迟）、当前生效快照 | `/models`、`/model`、`/models/:alias/test` |
 | 🔧 工具 | 内置工具启用/禁用（开关即生效）、参数 schema 查看、热重载 | `/tools`、`/tools/:name`、`/tools/reload` |
