@@ -11,6 +11,12 @@ Run the Agent as a long-lived REST service callable over HTTP (zero new dependen
 npm run serve
 # or
 npx tsx src/index.ts --serve
+
+# Temporarily override the port (highest priority, not persisted)
+npm run serve -- --port 3001
+
+# Or via env var (Windows PowerShell: $env:LOOP_AGENT_PORT=3001; npm run serve)
+LOOP_AGENT_PORT=3001 npm run serve
 ```
 
 ```

@@ -10,6 +10,12 @@
 npm run serve
 # 或
 npx tsx src/index.ts --serve
+
+# 临时覆盖端口（优先级最高，不写入配置文件）
+npm run serve -- --port 3001
+
+# 也可用环境变量（Windows PowerShell：$env:LOOP_AGENT_PORT=3001; npm run serve）
+LOOP_AGENT_PORT=3001 npm run serve
 ```
 
 ```
