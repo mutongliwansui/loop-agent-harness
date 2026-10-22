@@ -4,7 +4,10 @@
 
 | Tool | Name | Description | Parameters |
 |---|---|---|---|
-| 🖥️ **Command Execution** | `commandRun` | Execute a shell command locally, returning stdout + stderr | `command` (required), `cwd` (optional), `timeout` (optional, defaults to 30000ms) |
+| 🖥️ **Command Execution** | `commandRun` | Execute a shell command locally, returning stdout + stderr; long tasks can run with `background:true` (returns a `taskId` immediately, not subject to the 30s timeout) | `command` (required), `cwd` (optional), `timeout` (optional, defaults to 30000ms, foreground only), `background` (optional, defaults to `false`) |
+| ⏱️ **Background Status** | `commandStatus` | Query a background command task's status (running/exited/killed/orphaned-*), exit code, duration and log size; without `taskId`, returns the 5 most recent tasks | `taskId` (optional) |
+| 📜 **Background Logs** | `commandLogs` | Read a background task's log incrementally: without `sinceOffset`, returns new bytes since the last read and advances the cursor; capped at 8KB per call; `tail:true` reads only the last 2KB | `taskId` (required), `sinceOffset` (optional, byte offset), `tail` (optional) |
+| ⏹️ **Background Stop** | `commandStop` | Kill a background task's process tree (Windows `taskkill /T /F`; POSIX process group). Idempotent; stopping a session does NOT stop background tasks — call this explicitly | `taskId` (required) |
 | 📄 **File Read** | `fileRead` | Read file content; supports reading a line range; each line is prefixed with `line: ` by default. Default caps: full reads return at most 2000 lines / 256KB, lines longer than 8192 chars are clipped, and a truncation note is appended; full reads above 16MB are rejected (use a range instead); binary files (NUL in the first 8000 bytes) are rejected | `path` (required), `startLine` (optional), `endLine` (optional), `offset` (optional, 1-based start line, alias of `startLine`), `limit` (optional, number of lines), `maxBytes` (optional, output byte cap), `encoding` (optional), `lineNumbers` (optional, defaults to `true`) |
 | ✏️ **File Write** | `fileWrite` | **Whole-file write**: `overwrite` fully replaces the entire file with `content` (**the original content is permanently lost; partial/regional overwrite is NOT supported — use `editFile` for partial edits**); `append` appends to the end; parent directories are created automatically | `path` (required), `content` (required; the complete file content when overwriting), `mode` (optional, `overwrite` / `append`) |
 | 🔁 **File Edit** | `editFile` | Three modes: ① literal replacement (must appear exactly once; multiple matches error out to avoid accidental edits); ② `regex=true` regex replacement (supports `$1`/`$&` capture references); ③ whole-line-range replacement when `startLine`/`endLine` are given | `path` (required), `newText` (required), `oldText` (required unless a line range is given), `startLine` (optional), `endLine` (optional), `replaceAll` (optional, defaults to `false`), `regex` (optional, defaults to `false`), `flags` (optional, e.g. `i`/`m`/`s`) |
@@ -22,6 +25,18 @@
 ```bash
 # Command execution
 commandRun({ "command": "dir", "cwd": "." })
+
+# Run a long task in the background (dev server / watch / long tests); returns a taskId immediately
+commandRun({ "command": "npm run dev", "background": true })
+
+# Query background task status (without taskId: the 5 most recent tasks)
+commandStatus({ "taskId": "bg_a1b2c3d4_1737500000" })
+
+# Read log incrementally (no args: continue from last read; tail:true: latest 2KB only)
+commandLogs({ "taskId": "bg_a1b2c3d4_1737500000", "tail": true })
+
+# Stop a background task (kills the whole process tree)
+commandStop({ "taskId": "bg_a1b2c3d4_1737500000" })
 
 # File read (full file, numbered by default)
 fileRead({ "path": "package.json" })

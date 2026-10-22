@@ -204,3 +204,33 @@ describe('失败启发式回归：正文包含错误词不误判（用户截图�
     expect(toolResultLooksFailed('Error: 工具执行超时 (30000ms)')).toBe(true);
   });
 });
+
+describe('后台任务三工具映射（Task-20261022-002）', () => {
+  it('commandStatus/commandLogs/commandStop 中文名、图标、参数中文标签', () => {
+    expect(toolDisplay('commandStatus')).toEqual({ icon: '⏱️', name: '查询后台任务', known: true });
+    expect(toolDisplay('commandLogs')).toEqual({ icon: '📜', name: '读取后台日志', known: true });
+    expect(toolDisplay('commandStop')).toEqual({ icon: '⏹️', name: '停止后台任务', known: true });
+
+    const st = toolParamRows('commandStatus', JSON.stringify({ taskId: 'bg_a_1' }));
+    expect(st.map((r) => r.key)).toEqual(['taskId']);
+    expect(st[0].zh).toBe('任务 ID');
+
+    const lg = toolParamRows('commandLogs', JSON.stringify({ taskId: 'bg_a_1', tail: true }));
+    expect(lg.map((r) => r.key)).toEqual(['taskId', 'tail']);
+    expect(lg[1].zh).toBe('只看尾部');
+  });
+
+  it('commandRun 后台模式摘要带「后台启动」前缀；管理工具摘要短语', () => {
+    expect(toolSummary('commandRun', JSON.stringify({ command: 'npm run dev', background: true }))).toBe(
+      '后台启动 npm run dev',
+    );
+    expect(toolSummary('commandRun', JSON.stringify({ command: 'dir' }))).toBe('dir');
+    expect(toolSummary('commandStatus', JSON.stringify({ taskId: 'bg_a_1' }))).toBe('查询 bg_a_1');
+    expect(toolSummary('commandStatus', JSON.stringify({}))).toBe('查询最近后台任务');
+    expect(toolSummary('commandLogs', JSON.stringify({ taskId: 'bg_a_1', tail: true }))).toBe('查看 bg_a_1 最新输出');
+    expect(toolSummary('commandLogs', JSON.stringify({ taskId: 'bg_a_1', sinceOffset: 1024 }))).toBe(
+      '续读 bg_a_1（自 1024 字节起）',
+    );
+    expect(toolSummary('commandStop', JSON.stringify({ taskId: 'bg_a_1' }))).toBe('终止 bg_a_1');
+  });
+});

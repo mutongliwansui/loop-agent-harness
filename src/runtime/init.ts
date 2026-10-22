@@ -8,6 +8,7 @@
 import { agent } from '../agent/react-agent.js';
 import { ensureBootstrap } from '../bootstrap/index.js';
 import { registerBuiltinTools, mcpManager } from '../tools/index.js';
+import { backgroundTasks } from '../tools/background-tasks.js';
 import { configLoader } from '../config/index.js';
 import { skillLoader } from '../skill/index.js';
 import { COLORS as C } from '../ui/colors.js';
@@ -39,6 +40,8 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
 
   // 1. 注册内置工具（根据配置的 enabled/disabled 过滤；vision 配置决定视觉工具是否注册）
   registerBuiltinTools(config.tools, config.vision);
+  // 1.1 后台任务孤儿清扫（Task-20261022-002 D6）：恢复上次进程遗留的后台任务状态
+  await backgroundTasks.sweepOrphans();
 
   // 2. 加载 MCP 配置
   try {

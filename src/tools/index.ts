@@ -5,6 +5,8 @@ export type { RunOptions } from './runner.js';
 
 // 内置工具
 export { commandRun } from './commandRun.js';
+// 后台任务管理三工具（Task-20261022-002）
+export { commandStatus, commandLogs, commandStop } from './command-status.js';
 export { fileRead } from './fileRead.js';
 export { fileWrite } from './fileWrite.js';
 export { editFile } from './editFile.js';
@@ -31,6 +33,7 @@ export {
 
 import { registry } from './registry.js';
 import { commandRun } from './commandRun.js';
+import { commandStatus, commandLogs, commandStop } from './command-status.js';
 import { fileRead } from './fileRead.js';
 import { fileWrite } from './fileWrite.js';
 import { editFile } from './editFile.js';
@@ -48,7 +51,8 @@ import type { ToolsConfig, VisionConfig } from '../config/schema.js';
 export function registerBuiltinTools(toolsConfig?: ToolsConfig, visionConfig?: VisionConfig): string[] {
   const visionEnabled = visionConfig?.enabled === true;
   const allTools = [
-    commandRun, fileRead, fileWrite, editFile, grep, activateSkill,
+    commandRun, commandStatus, commandLogs, commandStop,
+    fileRead, fileWrite, editFile, grep, activateSkill,
     ...(visionEnabled ? visionTools : []),
   ];
 

@@ -150,8 +150,43 @@ const TOOL_META: Record<string, ToolMeta> = {
       command: '命令',
       cwd: '工作目录',
       timeout: '超时（毫秒）',
+      background: '后台运行',
     },
-    brief: (a) => clip(str(a, 'command'), BRIEF_TEXT_MAX * 2),
+    brief: (a) => {
+      const cmd = clip(str(a, 'command'), BRIEF_TEXT_MAX * 2);
+      // 后台模式在摘要中明示，与前台命令区分（Task-20261022-002）
+      if (a.background === true) return `后台启动 ${cmd}`;
+      return cmd;
+    },
+  },
+  commandStatus: {
+    zh: '查询后台任务',
+    icon: '⏱️',
+    params: { taskId: '任务 ID' },
+    brief: (a) => {
+      const id = str(a, 'taskId');
+      return id ? `查询 ${clip(id, BRIEF_TEXT_MAX)}` : '查询最近后台任务';
+    },
+  },
+  commandLogs: {
+    zh: '读取后台日志',
+    icon: '📜',
+    params: { taskId: '任务 ID', sinceOffset: '起始偏移（字节）', tail: '只看尾部' },
+    brief: (a) => {
+      const id = clip(str(a, 'taskId'), BRIEF_TEXT_MAX);
+      if (a.tail === true) return `查看 ${id} 最新输出`;
+      if (typeof a.sinceOffset === 'number') return `续读 ${id}（自 ${a.sinceOffset} 字节起）`;
+      return id ? `读取 ${id} 日志增量` : '';
+    },
+  },
+  commandStop: {
+    zh: '停止后台任务',
+    icon: '⏹️',
+    params: { taskId: '任务 ID' },
+    brief: (a) => {
+      const id = str(a, 'taskId');
+      return id ? `终止 ${clip(id, BRIEF_TEXT_MAX)}` : '';
+    },
   },
   activateSkill: {
     zh: '激活技能',

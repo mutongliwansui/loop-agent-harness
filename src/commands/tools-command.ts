@@ -2,6 +2,9 @@
 import {
   registerBuiltinTools,
   commandRun,
+  commandStatus,
+  commandLogs,
+  commandStop,
   fileRead,
   fileWrite,
   editFile,
@@ -21,6 +24,9 @@ import type { CommandContext, CommandHandler } from './registry.js';
 /** 内置工具名（供 /tools enable|disable 校验与 Tab 补全复用） */
 export const BUILTIN_TOOL_NAMES = [
   'commandRun',
+  'commandStatus',
+  'commandLogs',
+  'commandStop',
   'fileRead',
   'fileWrite',
   'editFile',
@@ -35,6 +41,9 @@ export const BUILTIN_TOOL_NAMES = [
 /** 内置工具注册表：名称 → 工具实例（供 /tools enable 与 API 端点同步 registry 复用） */
 export const BUILTIN_TOOL_MAP: Record<string, unknown> = {
   commandRun,
+  commandStatus,
+  commandLogs,
+  commandStop,
   fileRead,
   fileWrite,
   editFile,
