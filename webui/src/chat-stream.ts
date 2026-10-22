@@ -238,6 +238,7 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
 
 interface SessionDetail {
   messages: ApiHistoryMsg[];
+  /** task-05 L2 兼容：switched 字段后端仍返回（恒 false），前端调用方已不再分支 */
   workspace?: { path: string; id: string; switched: boolean };
   run?: { runId: string; status: 'running' | 'done' | 'failed' | 'aborted' } | null;
   /** run journal 磁盘态（task-06）：服务重启后 run=null，lastRun 仍可判中断/停止 */

@@ -13,11 +13,13 @@ The agent has built-in file-system-based session persistence: the conversation h
 ├── logs/
 │   └── debug-YYYY-MM-DD.log      # 📝 Debug logs (see the next section)
 └── sessions/
-    └── {workspaceId}/            # Isolated by workspace path (first 16 chars of the path's SHA-256)
+    └── {workspaceId}/            # Isolated by workspace (first 16 chars of the SHA-256 of the canonicalized path: case/separator/trailing-slash normalized)
         ├── meta.json             # Workspace metadata
         ├── sessions.json         # Session index (metadata only, no message content)
-        └── sess_YYYYMMDD_HHMMSS.enc   # Encrypted session data file
+        └── sess_{wsId8}_YYYYMMDD_HHMMSS.enc   # Encrypted session data file (id carries a workspace segment; wsId8 = first 8 chars of workspaceId)
 ```
+
+> **sessionId workspace namespace**: the new format is `sess_<wsId8>_<timestamp>` — the owning workspace is located from the id alone (HTTP endpoints no longer switch the "current workspace" because of this); legacy `sess_<timestamp>` ids (no workspace segment) remain readable forever, located via a full-scan fallback.
 
 ### Encryption
 

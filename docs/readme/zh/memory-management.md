@@ -9,8 +9,10 @@
 | 层级 | 存储形态 | 生命周期 | 自动进 context | 说明 |
 |---|---|---|---|---|
 | **L1 Working** | 内存 `_chatHistory` | 单次会话 | ✅ 始终在 | 超阈值自动压缩（默认 8000 token / 80% 阈值，保留最近 3 轮）：先让 LLM 提取关键笔记写 L2，再以 `[历史摘要]` 临时占位（`is_show=false` 标记，LLM 可见、写盘过滤）注入上下文；磁盘全量历史为唯一真源，内存压缩与磁盘恢复共用同一 `buildCompactedView` 生成器 |
-| **L2 Episodic** | `{cwd}/memory/YYYY-MM-DD.md` | 永久存档 | ❌ 按需检索 | 按天分文件，工具调用结果自动记录，支持 `/memory search` 召回 |
-| **L3 Curated** | `{cwd}/SOUL.md` / `USER.md` / `MEMORY.md` | 永久常驻 | ✅ 启动注入 | Agent 人格 / 用户画像 / 精炼事实，常驻 System Prompt |
+| **L2 Episodic** | `{工作空间根}/memory/YYYY-MM-DD.md` | 永久存档 | ❌ 按需检索 | 按天分文件，工具调用结果自动记录，支持 `/memory search` 召回 |
+| **L3 Curated** | `{工作空间根}/SOUL.md` / `USER.md` / `MEMORY.md` | 永久常驻 | ✅ 启动注入 | Agent 人格 / 用户画像 / 精炼事实，常驻 System Prompt |
+
+> **多工作空间（serve 模式）**：记忆 kit 由每个空间的 WorkspaceRuntime 持有（按 workspaceId 隔离），随运行时 LRU 淘汰释放句柄；CLI 单空间模式即启动目录，行为不变。
 
 ### 目录结构
 

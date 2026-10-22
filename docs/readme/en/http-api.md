@@ -14,11 +14,11 @@ npx tsx src/index.ts --serve
 ```
 
 ```
-HTTP API server started
-  Address:  http://127.0.0.1:3000
-  Auth:     localhost only (api.token not configured)
-  Endpoints: 46 (sessions 5 + health 1 + command resources 40), see the endpoint tables below
-  Tips:     Ctrl+C to exit; config changes require a restart
+HTTP API 服务已启动
+  地址:    http://127.0.0.1:3000
+  鉴权:    仅本机（未配置 api.token）
+  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory
+  提示:    Ctrl+C 退出；配置变更需重启生效
 ```
 
 ### Configuration & Auth
@@ -52,11 +52,12 @@ Three auth modes:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health probe `{status, version, model}` |
-| POST | `/sessions` | Create an empty session → 201 `{id, title, createdAt, ...}` |
-| GET | `/sessions` | List sessions `{sessions: [...]}` |
-| GET | `/sessions/:id` | Session detail `{meta, messages}` (restore view, without system) |
-| DELETE | `/sessions/:id` | Delete a session `{deleted: true}` (409 while in-flight) |
-| POST | `/sessions/:id/messages` | Send a message (SSE streaming by default; `"stream": false` for JSON) |
+| POST | `/sessions` | Create an empty session (body may carry `{title?, workspacePath?}`; with `workspacePath` the session is **created directly in that workspace** without switching the "current workspace") → 201 `{id, title, createdAt, workspace: {path, id, switched}}` (`switched` is kept for compatibility and is always `false`) |
+| GET | `/sessions` | Sessions of the current workspace (most-recently-used pointer) `{sessions: [...]}` |
+| GET | `/workspaces` | Cross-workspace aggregate `{workspaces: [{id, name, current, sessions}]}` (`current` is marked by the most-recently-used pointer; session entries carry `running` and a `lastRun` summary) |
+| GET | `/sessions/:id` | Session detail `{meta, messages, run, lastRun, workspace}` (locates the owning workspace by id and reads from it — **pure read, no server-state change**; `messages` is the full history, system and compaction-summary messages carry `is_show=false` for the frontend to filter) |
+| DELETE | `/sessions/:id` | Delete a session `{deleted: true}` (409 while in-flight in its owning workspace; runs in other workspaces are unaffected) |
+| POST | `/sessions/:id/messages` | Send a message (SSE streaming by default; `"stream": false` for JSON; the owning workspace is located by id) |
 
 #### Command Resources (CLI commands → REST, 10 groups, 40 endpoints)
 
@@ -185,17 +186,22 @@ Semantic conventions:
 ### curl Examples
 
 ```bash
-# Create a session
+# Create a session (current workspace)
 curl -X POST http://127.0.0.1:3000/sessions
-# → {"id":"sess_20261016_103000","title":"...","messageCount":0}
+# → {"id":"sess_8dcc67b6_20261016_103000","title":"...","messageCount":0,...}
+
+# Create a session in a specific workspace (created there directly, no "current workspace" switch)
+curl -X POST http://127.0.0.1:3000/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"workspacePath": "D:\\other-project"}'
 
 # Send a message (SSE streaming, -N disables buffering)
-curl -N -X POST http://127.0.0.1:3000/sessions/sess_20261016_103000/messages \
+curl -N -X POST http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000/messages \
   -H "Content-Type: application/json" \
   -d '{"message": "Show me the project structure"}'
 
 # Send a message (non-streaming JSON)
-curl -X POST http://127.0.0.1:3000/sessions/sess_20261016_103000/messages \
+curl -X POST http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000/messages \
   -H "Content-Type: application/json" \
   -d '{"message": "hello", "stream": false}'
 # → {"sessionId":"...","answer":"...","iterations":1,"steps":[...],"durationMs":123}
@@ -204,13 +210,16 @@ curl -X POST http://127.0.0.1:3000/sessions/sess_20261016_103000/messages \
 curl -H "Authorization: Bearer my-secret" http://127.0.0.1:3000/health
 
 # Get / delete a session
-curl http://127.0.0.1:3000/sessions/sess_20261016_103000
-curl -X DELETE http://127.0.0.1:3000/sessions/sess_20261016_103000
+curl http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000
+curl -X DELETE http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000
 ```
 
 ### Behavior Notes
 
 - **Multi-session isolation**: each session's history is injected into the shared agent independently (empty history uses `resetHistory`, non-empty uses explicit `messages`) — no cross-talk
 - **Session persistence**: answers are written to the session pool (shared with the CLI); after a restart, keep chatting by posting to the existing session ID
-- **Per-session mutex**: a session processes one message at a time; concurrent requests get 409; different sessions run in parallel
+- **Per-session mutex (workspace-scoped)**: a session processes one message at a time; concurrent requests get 409 (`busy`). The mutex only constrains the **same session in the same workspace** — a run in flight in workspace A does not block creating/deleting sessions or starting new runs in workspace B
+- **Cross-workspace parallelism**: each workspace gets its own lazily-created `WorkspaceRuntime` from the `WorkspaceRegistry` (session store, config, skills, memory, agent pool; LRU cap 4); the process-level `process.chdir` has been removed, and tool relative paths resolve against the owning workspace root; a global concurrency semaphore (8) caps the total number of simultaneous runs
+- **sessionId workspace namespace**: new ids look like `sess_<wsId8>_<timestamp>` (e.g. `sess_8dcc67b6_20261016_103000`), so the owning workspace is located from the id alone and endpoints like `GET /sessions/:id` no longer trigger a "workspace switch"; legacy `sess_<timestamp>` ids remain readable forever
 - **Config changes** (token/port/host) require a server restart to take effect
+- **Run journal (Task-20261021-002-06)**: each run's lifecycle (running/done/failed/aborted) is journaled to `<userDir>/.loop-agent/sessions/<workspaceId>/runs/<sessionId>.json` (cleaned up together with session deletion); on startup, a scan rewrites leftover `running` records from the previous process to `interrupted`. The `GET /sessions/:id` response carries a `lastRun` field (journal disk state), and session entries in `GET /workspaces` carry a `lastRun: {status, finishedAt}` summary — the frontend uses these to show the "last run was interrupted (server restarted)" note and the sidebar ⚠ marker. Diagnostic logs also go to `~/.loop-agent/logs/runs-YYYY-MM-DD.jsonl` (start/finish/abort/failed/interrupted event stream)

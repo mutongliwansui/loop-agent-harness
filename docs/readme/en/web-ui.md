@@ -16,12 +16,11 @@ npx tsx src/index.ts --serve
 Open `http://127.0.0.1:3000/` in your browser.
 
 ```
-HTTP API service started
-  Address:   http://127.0.0.1:3000
-  Auth:      local-only (no api.token configured)
-  Endpoints: 47 (sessions 5 + health 1 + command resources 40 + raw upload 1)
-  Static:    webui/dist hosted (chat + admin console)
-  Note:      Ctrl+C to exit; config changes require a restart
+HTTP API 服务已启动
+  地址:    http://127.0.0.1:3000
+  鉴权:    仅本机（未配置 api.token）
+  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory
+  提示:    Ctrl+C 退出；配置变更需重启生效
 ```
 
 > If `webui/dist` is missing (e.g. cleaned manually), the static layer is skipped and the pure API service is unaffected; run `npm run build:webui` again to restore it.
@@ -60,6 +59,10 @@ The 📎 button in the composer opens the upload panel: file picker (multi-selec
 When multiple tabs of the same browser are open, run state syncs automatically (Task-20261021-002-07): a run started/finished in tab A shows a running dot / unread dot in tab B within ~1s and refreshes the sidebar; deleting a session in A removes it in B; marking a session read in A clears the unread dot in B as well. The channel is `BroadcastChannel('loop-agent')` with automatic localStorage fallback in older browsers; only derived state is broadcast (run started/finished/read/deleted) — message content always comes from the server.
 
 Background-completion alerts are configured in the 🔔 panel above the composer, with two independent persisted toggles: **system notification** (fires only when the window is hidden or unfocused; same-session notifications replace each other to avoid spam; clicking one focuses the window and jumps to the session; permission is requested only when you tick the switch — if the browser denied it, re-enable from browser settings) and **chime** (a WebAudio synthesized two-tone sound, no permission needed). Foreground completion keeps the in-page toast. When accessed via LAN IP + http the browser provides no Notification API; the 🔔 panel shows a degradation notice, while the chime and in-page alerts keep working.
+
+### Cross-Workspace Sessions
+
+The sidebar groups sessions by workspace (`GET /workspaces`): sessions from other workspaces have **exactly the same rights** as the current one — you can open them and keep chatting directly, run them in parallel with runs in the current workspace, and delete them normally. A workspace's "current" marker only means most-recently-used and imposes no sending restriction. Cross-workspace runs never interfere with each other; a 409 busy only occurs when you send concurrent messages to the **same session**.
 
 ### Security Details
 

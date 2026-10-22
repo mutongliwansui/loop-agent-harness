@@ -105,3 +105,30 @@
            > 环境变量 (.env)
            > 默认值 (DEFAULT_CONFIG)
 ```
+
+### 工作空间运行时（WorkspaceRuntime）
+
+HTTP 服务模式（`--serve`）下，进程内不再只有"一个当前工作空间"。每个空间由 `WorkspaceRegistry` 按需懒建一个不可变的 `WorkspaceRuntime`，并以 LRU（上限 4 个）缓存：
+
+```
+WorkspaceRegistry（懒建 + LRU，上限 4）
+  key   = canonicalWorkspacePath(root) → workspaceId
+  value = WorkspaceRuntime（不可变）
+            ├─ SessionStore         会话存储（每空间一例）
+            ├─ ConfigLoader/Writer  配置加载/写入（每空间一例，构造期定根）
+            ├─ SkillLoader          技能加载（以空间根扫描）
+            ├─ sessions             会话调度（busy 仅约束同空间同会话）
+            ├─ AgentPool            Agent 池（按 sessionId 租用）
+            └─ memoryKit            三层记忆（随 LRU 淘汰释放句柄）
+
+兜底与限流：
+  ├─ AsyncLocalStorage<{root,id}>：漏改的深层代码可读到当前空间
+  └─ 全局并发信号量（8）：限制进程内同时运行的 run 总数
+```
+
+要点：
+
+- `sessionId` 携带空间段（`sess_<wsId8>_<ts>`），按 id 即可定位所属 runtime；`GET /sessions/:id`、`POST /sessions {workspacePath}` 等端点不再触发"切换空间"，`switched` 恒为 `false`；
+- 工具相对路径以 `ToolContext.workspaceRoot` 为基准（`commandRun` 的默认 cwd 即会话所属空间根），进程级 `process.chdir` 已移除；
+- 不同空间的 run 互不阻塞：A 空间运行中，B 空间可新建会话、发起新 run；
+- CLI 单空间模式不经过 Registry：启动目录即唯一空间，行为与此前一致。

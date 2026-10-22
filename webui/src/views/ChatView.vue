@@ -24,8 +24,7 @@ import LiveStatus from '../components/LiveStatus.vue';
 import {
   workspaces,
   activeId,
-  foreignActive,
-  currentWsPath,
+  activeWsPath,
   wsColor,
   loadSessions,
   registerChatBridge,
@@ -191,14 +190,13 @@ async function createSession(workspacePath?: string): Promise<string | null> {
       '/sessions',
       { method: 'POST', json: fromPop ? { workspacePath } : undefined },
     );
-    const switched = r.workspace?.switched === true;
     await loadSessions();
     activeId.value = r.id;
     initEmpty(r.id);
     scrollBottom();
     if (fromPop) {
       closeNewPop();
-      showToast(switched ? `已切换工作空间：${r.workspace?.path}` : '会话已创建', 'success');
+      showToast('会话已创建', 'success');
     }
     return r.id;
   } catch (e) {
@@ -295,24 +293,20 @@ const createInDirLabel = computed(() => {
   if (dirTargetKind.value === 'current') return '＋ 在此新建会话';
   if (dirTargetKind.value === 'known') {
     const w = workspaces.value.find((x) => !x.current && x.path.toLowerCase() === dirPath.value.toLowerCase());
-    return `切换到 ${w?.name ?? '该空间'} 并新建会话`;
+    return `在 ${w?.name ?? '该空间'} 中新建会话`;
   }
-  return '切换到此目录并新建会话';
+  return '在此目录中新建会话';
 });
 
 async function selectSession(id: string): Promise<void> {
   // 同会话且消息已在场（含从管理页返回重挂载场景）不重复拉取；运行中的会话由 chat-stream 续传
   if (id === activeId.value && messagesOf(id).length > 0) return;
   try {
-    // 跨空间会话：后端在 GET 详情时自动切换服务端工作空间，随后刷新列表（「当前」标记移动）
-    const r = await ensureLoaded(id);
+    // task-05：跨空间会话不再切换服务端状态，ensureLoaded 的 switched 字段保留读取但不再分支
+    await ensureLoaded(id);
     activeId.value = id;
     scrollBottom();
     void postRenderMsgs();
-    if (r.switched) {
-      await loadSessions();
-      showToast(`已切换工作空间：${r.workspacePath ?? ''}`, 'success');
-    }
   } catch (e) {
     if (e instanceof AuthError) return;
     // 会话不存在（落盘数据被清理等）：重置视图并刷新列表，让僵尸条目消失
@@ -333,10 +327,6 @@ async function ensureSession(): Promise<string | null> {
 }
 
 async function send(): Promise<void> {
-  if (foreignActive.value) {
-    showToast('跨工作空间会话仅支持查看与删除，不支持继续对话', 'error');
-    return;
-  }
   const text = draft.value.trim();
   if (!text && uploads.value.length === 0) return;
   if (streaming.value) {
@@ -496,7 +486,6 @@ onUnmounted(() => {
         <b>{{ activeMeta?.title || (activeId ? '会话' : '开始新对话') }}</b>
         <span v-if="activeMeta" class="sid">#{{ activeMeta.id }}</span>
         <span v-if="activeWs" class="ws-badge" :title="activeWs.path">📁 {{ activeWs.name }}</span>
-        <span v-if="foreignActive" class="ro-badge">只读</span>
         <span class="spacer"></span>
         <span class="muted-hint">{{ streamChk ? 'SSE 流式' : '非流式' }}</span>
         <button
@@ -566,11 +555,10 @@ onUnmounted(() => {
             </span>
           </div>
           <div class="box">
-            <button class="attach" title="上传文件" :disabled="streaming || foreignActive" @click="upPopOpen = !upPopOpen">📎</button>
+            <button class="attach" title="上传文件" :disabled="streaming" @click="upPopOpen = !upPopOpen">📎</button>
             <textarea
               v-model="draft"
-              :disabled="foreignActive"
-              :placeholder="foreignActive ? '跨工作空间会话仅支持查看与删除' : '输入消息，Enter 发送，Shift+Enter 换行'"
+              :placeholder="'输入消息，Enter 发送，Shift+Enter 换行'"
               @keydown.enter="onEnter"
               @compositionstart="setComposing(true)"
               @compositionend="setComposing(false)"
@@ -579,7 +567,7 @@ onUnmounted(() => {
             <button
               v-else
               class="primary send"
-              :disabled="foreignActive || (!draft.trim() && uploads.length === 0)"
+              :disabled="!draft.trim() && uploads.length === 0"
               @click="send"
             >
               发送
@@ -650,7 +638,7 @@ onUnmounted(() => {
     </div>
 
     <!-- ===== 工作空间文件浏览器（对话右侧，v-model 控制展开） ===== -->
-    <FilesView v-model:open="filesOpen" :ws-path="currentWsPath" />
+    <FilesView v-model:open="filesOpen" :ws-path="activeWsPath" />
 
     <!-- ===== 新建会话弹窗（已知工作空间 + 服务端目录浏览器） ===== -->
     <div v-if="newPopOpen" class="np-mask" @click.self="closeNewPop">
@@ -668,7 +656,7 @@ onUnmounted(() => {
               <span class="dot" :style="{ background: wsColor(w.name) }"></span>
               <span class="nm">{{ w.name }}</span>
               <span class="pth">{{ w.path }}</span>
-              <span class="act">{{ w.current ? '新建会话' : '切换并新建' }}</span>
+              <span class="act">新建会话</span>
             </button>
             <div v-if="workspaces.length === 0" class="np-empty">暂无已知工作空间</div>
           </div>
@@ -742,15 +730,6 @@ onUnmounted(() => {
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: none;
-}
-.chat-head .ro-badge {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--warn);
-  background: var(--warn-weak, rgba(180, 83, 9, 0.12));
-  border-radius: 999px;
-  padding: 2px 8px;
   flex: none;
 }
 

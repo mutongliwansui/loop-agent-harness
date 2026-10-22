@@ -50,6 +50,8 @@ description: An example skill demonstrating how to create and use a Skill
 3. **After loading**: The tool returns the full SKILL.md content **along with the skill's directory**; the agent continues reasoning from there. If the skill references internal scripts/docs, it can concatenate paths using that directory before reading
 4. **Manual management**: View and refresh via the `/skill` command
 
+> **Multiple workspaces (serve mode)**: the server scans skills from **each workspace root** separately, and each workspace holds its own skill loader instance so they never overwrite each other; `scan(root)` yields the same result for a given directory as the CLI's `scan(process.cwd())`.
+
 ### Programmatic Activation
 
 ```typescript

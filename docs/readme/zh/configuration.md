@@ -8,11 +8,13 @@
 
 | 层级 | 文件位置 | 说明 |
 |---|---|---|
-| CLI 参数 | 运行时传入 | 最高优先级，仅内存中生效 |
+| CLI 参数 | 运行时传入 | 最高优先级，仅内存中生效（`--serve` 的 `--port` / `--host` / `--token` / `--web-root` 启动参数即属此层） |
 | 工作空间 (workspace) | `{项目目录}/.loop-agent/.agent-config.json` | 项目级配置（.loop-agent/ 整体不进入版本控制） |
 | 全局 (global) | `~/.loop-agent/config.json` | 用户级配置，跨项目共享 |
 | 环境变量 (env) | `.env` 或 `process.env` | 向后兼容，支持原有环境变量 |
 | 默认值 (default) | `DEFAULT_CONFIG` | 代码内置的默认值 |
+
+> **多工作空间（serve 模式）**：每个工作空间持有独立的 ConfigLoader / ConfigWriter 实例，路径在构造期固定，运行期不再重绑——A 空间的 `/config` 读写不会影响 B 空间。CLI 单空间模式即启动目录，行为不变。
 
 ### 配置结构
 

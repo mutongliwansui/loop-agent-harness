@@ -112,3 +112,30 @@ Load priority (high → low):
            > environment variables (.env)
            > defaults (DEFAULT_CONFIG)
 ```
+
+### Workspace Runtime
+
+In HTTP serve mode (`--serve`), the process no longer has a single "current workspace". A `WorkspaceRegistry` lazily creates one immutable `WorkspaceRuntime` per workspace and caches them with an LRU (up to 4 entries):
+
+```
+WorkspaceRegistry (lazy creation + LRU, up to 4)
+  key   = canonicalWorkspacePath(root) → workspaceId
+  value = WorkspaceRuntime (immutable)
+            ├─ SessionStore         session storage (one per workspace)
+            ├─ ConfigLoader/Writer  config load/write (one per workspace, root fixed at construction)
+            ├─ SkillLoader          skill loading (scanned from the workspace root)
+            ├─ sessions             session scheduling (busy only applies to the same workspace + session)
+            ├─ AgentPool            agent pool (leased by sessionId)
+            └─ memoryKit            three-tier memory (handles released on LRU eviction)
+
+Fallback and throttling:
+  ├─ AsyncLocalStorage<{root,id}>: deep code paths that missed the refactor can still read the current workspace
+  └─ Global concurrency semaphore (8): caps the total number of runs in the process
+```
+
+Key points:
+
+- `sessionId` carries a workspace segment (`sess_<wsId8>_<ts>`), so the owning runtime is located by id alone; endpoints such as `GET /sessions/:id` and `POST /sessions {workspacePath}` no longer "switch workspace", and `switched` is always `false`;
+- Tool relative paths resolve against `ToolContext.workspaceRoot` (the default cwd of `commandRun` is the owning workspace root); the process-level `process.chdir` has been removed;
+- Runs in different workspaces never block each other: while a run is active in workspace A, you can create sessions and start new runs in workspace B;
+- The CLI single-space mode bypasses the Registry: the launch directory is the only workspace, exactly as before.

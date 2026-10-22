@@ -15,6 +15,8 @@
 | 🧾 **结构化提取** | `extract_json` | 按字段列表从图片提取结构化数据并返回 JSON（表单 / 表格 / 配置界面等场景）；解析失败自动降级返回原始文本 | `image`（必填）, `fields`（必填，字段名数组） |
 | 📝 **文字识别** | `ocr_image` | 识别图片中全部文字（OCR），保持原始阅读顺序与换行输出 | `image`（必填） |
 
+> **路径基准**：`commandRun` 省略 `cwd` 时、以及文件类工具（`fileRead` / `fileWrite` / `editFile` / `grep`）的相对路径，均以**会话所属工作空间根**为基准（`ToolContext.workspaceRoot`，越界路径会被拒绝）。MCP server 的工作目录固定为进程启动目录（或配置中的显式值），不随空间切换。
+
 ### 工具使用示例
 
 ```bash

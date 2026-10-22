@@ -9,8 +9,10 @@ A three-tier memory architecture (Tier Model) in the OpenClaw style. Core ideas:
 | Tier | Storage Form | Lifecycle | Auto in context | Description |
 |---|---|---|---|---|
 | **L1 Working** | In-memory `_chatHistory` | Single session | ✅ Always | Compacts automatically past a threshold (default 8000 tokens / 80% threshold, keeping the last 3 turns): first asks the LLM to extract key notes into L2, then injects a `[历史摘要]` placeholder (marked `is_show=false`, visible to the LLM, filtered on disk write) into the context; on-disk full history is the single source of truth, and in-memory compaction + on-disk restore share one `buildCompactedView` generator |
-| **L2 Episodic** | `{cwd}/memory/YYYY-MM-DD.md` | Permanent archive | ❌ Retrieved on demand | Split by day; tool-call results are auto-recorded; recall via `/memory search` |
-| **L3 Curated** | `{cwd}/SOUL.md` / `USER.md` / `MEMORY.md` | Permanent, always present | ✅ Injected on startup | Agent persona / user profile / distilled facts, always present in the System Prompt |
+| **L2 Episodic** | `{workspace root}/memory/YYYY-MM-DD.md` | Permanent archive | ❌ Retrieved on demand | Split by day; tool-call results are auto-recorded; recall via `/memory search` |
+| **L3 Curated** | `{workspace root}/SOUL.md` / `USER.md` / `MEMORY.md` | Permanent, always present | ✅ Injected on startup | Agent persona / user profile / distilled facts, always present in the System Prompt |
+
+> **Multiple workspaces (serve mode)**: each workspace's memory kit is held by its WorkspaceRuntime (isolated by workspaceId) and its handles are released when the runtime is evicted from the LRU; the CLI single-workspace mode uses the launch directory — behavior is unchanged.
 
 ### Directory Structure
 

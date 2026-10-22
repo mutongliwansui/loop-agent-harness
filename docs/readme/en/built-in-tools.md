@@ -15,6 +15,8 @@
 | 🧾 **Structured Extraction** | `extract_json` | Extract structured data from an image by a list of fields and return JSON (forms / tables / config screens, etc.); falls back to the raw text automatically when parsing fails | `image` (required), `fields` (required, array of field names) |
 | 📝 **Text Recognition** | `ocr_image` | Recognize all text in an image (OCR), preserving the original reading order and line breaks | `image` (required) |
 
+> **Path base**: when `commandRun` omits `cwd`, and for relative paths of the file tools (`fileRead` / `fileWrite` / `editFile` / `grep`), the base is the **root of the session's owning workspace** (`ToolContext.workspaceRoot`; out-of-bounds paths are rejected). An MCP server's working directory is fixed to the process launch directory (or an explicit value in config) and never follows workspace switches.
+
 ### Tool Usage Examples
 
 ```bash

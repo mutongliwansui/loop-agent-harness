@@ -2,7 +2,7 @@
 
 > 本文用 Mermaid 绘制本项目的**结构类图**——分层架构、ReAct 循环、三层记忆、配置合并、工具装配、核心类关系。
 >
-> 与 [mermaid-diagram.md](mermaid-diagram.md) 互补：那边画的是**一次 `run()` 的时序**与模块规模，这边画的是**系统长什么样**。
+> 一次 `run()` 的内部控制流见 [图 3](#3️⃣-react-循环控制流)；这边画的是**系统长什么样**。
 > 所有图均以 `src/` 实际代码为准（标注了对应文件），可直接当阅读源码的地图用。
 >
 > 相关文档：[架构设计](readme/zh/architecture.md) · [记忆管理](readme/zh/memory-management.md) · [工具扩展](readme/zh/tool-extension.md) · [配置管理](readme/zh/configuration.md)
@@ -42,9 +42,17 @@ flowchart TB
         AUTH["鉴权 Bearer + 回环限制<br/>api/http-utils.ts"]
         ROUTER["声明式路由表<br/>api/router.ts"]
         H["13 组 handler<br/>api/handlers/*"]
-        SM["会话互斥<br/>api/session-manager.ts"]
+        LOCATE["locateSession 定位归属空间<br/>api/session-locator.ts"]
         SSE["SSE 事件透传<br/>api/sse.ts"]
         STATIC["WebUI 静态资源<br/>api/static.ts"]
+    end
+
+    subgraph WSR["🗂 工作空间运行时（serve 多空间并行）"]
+        direction LR
+        REG["WorkspaceRegistry 懒建 + LRU(4)<br/>api/workspace-runtime.ts"]
+        RT["WorkspaceRuntime 每空间六件套<br/>store · configLoader/Writer<br/>skillLoader · sessions · pool · memoryKit"]
+        SEM["全局并发信号量(8)<br/>api/semaphore.ts"]
+        ALSW["AsyncLocalStorage 兜底<br/>runtime/workspace-context.ts"]
     end
 
     subgraph Core["🧠 核心"]
@@ -71,13 +79,17 @@ flowchart TB
 
     CLI --> AGENT
     LIB --> AGENT
-    HTTP --> AUTH --> ROUTER --> H --> SM --> AGENT
+    HTTP --> AUTH --> ROUTER --> H --> LOCATE --> RT
+    REG -->|"按 canonical root 懒建"| RT
+    RT -->|"pool.acquire(sessionId)"| AGENT
+    SEM -->|"跨空间 run 总数上限，FIFO 排队"| RT
     H --> SSE
     H --> STATIC --> WEB
     WEB -->|"fetch / EventSource"| HTTP
 
     AGENT --> LLM
-    AGENT --> TOOLS
+    AGENT -->|"runner 注入 ctx.workspaceRoot"| TOOLS
+    ALSW -.->|"显式根缺失时兜底"| TOOLS
     AGENT --> SKILL
     AGENT --> MEM
     AGENT --> SESS
@@ -94,18 +106,21 @@ flowchart TB
     classDef core fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     classDef cap fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
     classDef out fill:#eceff1,stroke:#455a64,color:#263238
+    classDef ws fill:#e0f7fa,stroke:#00838f,color:#006064
     class CLI,LIB,HTTP,WEB entry
-    class AUTH,ROUTER,H,SM,SSE,STATIC api
+    class AUTH,ROUTER,H,LOCATE,SSE,STATIC api
     class AGENT core
     class LLM,TOOLS,MCPC,SKILL,MEM,SESS,CFG cap
     class LLMAPI,MCPAPI,DISK out
+    class REG,RT,SEM,ALSW ws
 ```
 
 **读图要点**
 
 - `--serve` 时 **WebUI 与 API 同端口**：`api/static.ts` 对未注册的 `GET` 先做静态回落，命中 `webui/dist` 就返回页面，否则再进路由（见 `server.ts` 请求流注释）。
-- API 层**自持 `SessionStore`**、不注入共享 agent 单例，靠「显式 `messages` 隔离 + 会话级互斥」实现多会话并发（`server.ts` D5）。
-- CLI 与 API 共享 `ConfigLoader` / `ConfigWriter` / `MCPManager` / `SkillLoader` 四个单例，所以 `/config` 与 `PUT /config/:key` 改的是同一份文件。
+- 请求处理链：**HTTP → 鉴权 → 路由 → handler → `locateSession`（按 sessionId 定位归属空间）→ WorkspaceRuntime → pool.acquire → agent → tool(ctx.workspaceRoot)**。每个空间由 `WorkspaceRegistry` 懒建独立 runtime（会话存储、配置、技能、记忆、Agent 池六件套，LRU 上限 4），互斥只约束**同空间同会话**，跨空间 run 并行互不影响；进程级 `Semaphore(8)` 限制全局并发 run 总数（FIFO 排队不拒绝）。
+- 工具路径基准：`runner.run` 显式注入 `ctx.workspaceRoot`（会话所属空间根，优先）；漏改的深层代码由 `AsyncLocalStorage`（`runtime/workspace-context.ts`）兜底——进程级 `process.chdir` 已全量移除。
+- CLI 与 API 仍共享进程级 `MCPManager` 单例（MCP server 的 cwd 固定为启动目录或配置显式值，不随空间切换）；`ConfigLoader/Writer` 与 `SkillLoader` 在 serve 侧按空间各持实例，CLI 单空间模式行为不变。
 
 ---
 
@@ -223,7 +238,7 @@ flowchart TD
 
     HAS -->|"是"| PUSH["push assistant 消息，携带 tool_calls"]
     PUSH --> TS["对每个 tool_call 触发 onToolStart"]
-    TS --> PAR["runner.run 并发执行<br/>Promise.all + 单工具超时"]
+    TS --> PAR["runner.run 并发执行<br/>Promise.all + 单工具超时<br/>注入 ctx.workspaceRoot（会话所属空间根）"]
     PAR --> ISO["失败隔离：单个工具抛错<br/>转成错误 Observation 不中断"]
     ISO --> TE["onToolProgress / onToolEnd"]
     TE --> TMSG["push role=tool 的 Observation 消息"]
@@ -503,6 +518,33 @@ classDiagram
         +close()
     }
 
+    class WorkspaceRegistry {
+        +get(input) WorkspaceRuntime
+        +getCanonical(root) WorkspaceRuntime
+        +evictIdle()
+    }
+
+    class WorkspaceRuntime {
+        +string root
+        +SessionStore store
+        +ConfigLoader configLoader
+        +ConfigWriter configWriter
+        +SkillLoader skillLoader
+        +SessionManager sessions
+        +AgentPool pool
+        +MemoryKit memoryKit
+    }
+
+    class WorkspaceContext {
+        +AsyncLocalStorage als
+        +currentWorkspaceRoot() string
+    }
+
+    class Semaphore {
+        +acquire()
+        +release()
+    }
+
     ReActAgent --> ConfigLoader : 每次 run 重载
     ReActAgent --> ToolRegistry : 取 OpenAI tools
     ReActAgent --> SkillLoader : 扫描技能包
@@ -524,8 +566,16 @@ classDiagram
     ToolRunner ..> ToolRegistry : 按名查找
 
     ApiServer --> ReActAgent : 注入 runAgent
-    ApiServer --> SessionStore : 自持实例
-    ApiServer --> ConfigLoader : 读生效配置
+    ApiServer --> WorkspaceRegistry : locateSession 定位归属空间
+    WorkspaceRegistry --> WorkspaceRuntime : 懒建 + LRU(4)
+    WorkspaceRuntime *-- SessionStore : 每空间一例
+    WorkspaceRuntime *-- ConfigLoader : 构造期定根
+    WorkspaceRuntime *-- SkillLoader : 实例级隔离
+    WorkspaceRuntime --> Semaphore : 全局并发上限(8)
+    WorkspaceRuntime --> ReActAgent : pool.acquire(sessionId)
+    ToolRunner ..> WorkspaceContext : workspaceRoot 兜底（ALS）
+    ApiServer --> SessionStore : 经 runtime 取用
+    ApiServer --> ConfigLoader : 经 runtime 取用
 ```
 
 **图例**：`-->` 关联 · `*--` 组合（记忆组件生命周期跟随 agent）· `..>` 依赖（不持有）。
@@ -560,4 +610,4 @@ classDiagram
 
 1. **图必须跟着代码走**：改动 `run()` 的控制流、记忆层落盘路径、或 API 路由时，顺手更新对应图——本文件所有节点都标了源码文件名，方便核对。
 2. **不在图里放会漂移的数字**（迭代上限、阈值、文件数），只写机制；确需数字时用配置项名代替（如 `maxIterations`）。
-3. 渲染方式见 [mermaid-diagram.md](mermaid-diagram.md#-附如何查看这些图)：GitHub/GitLab 自动渲染；VS Code 装 *Markdown Preview Mermaid Support*；本地 `webui` 已依赖 `mermaid@12`。
+3. 渲染方式：GitHub/GitLab 自动渲染 Mermaid；VS Code 装 *Markdown Preview Mermaid Support*；本地 `webui` 已依赖 `mermaid@12`。

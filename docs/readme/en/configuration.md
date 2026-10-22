@@ -8,11 +8,13 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 
 | Layer | File Location | Description |
 |---|---|---|
-| CLI args | Passed at runtime | Highest priority; in-memory only |
+| CLI args | Passed at runtime | Highest priority; in-memory only (the `--serve` startup flags `--port` / `--host` / `--token` / `--web-root` belong to this layer) |
 | Workspace | `{project dir}/.loop-agent/.agent-config.json` | Project-level config (the whole `.loop-agent/` is kept out of version control) |
 | Global | `~/.loop-agent/config.json` | User-level config, shared across projects |
 | Environment | `.env` or `process.env` | Backward compatible, supports the existing env vars |
 | Defaults | `DEFAULT_CONFIG` | Defaults built into the code |
+
+> **Multiple workspaces (serve mode)**: each workspace holds its own ConfigLoader / ConfigWriter instance whose paths are fixed at construction time and never rebound at runtime — a `/config` read/write in workspace A never affects workspace B. The CLI single-workspace mode uses the launch directory; behavior is unchanged.
 
 ### Config Structure
 

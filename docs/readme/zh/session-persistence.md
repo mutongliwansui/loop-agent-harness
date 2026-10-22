@@ -13,11 +13,13 @@ Agent 内置了基于文件系统的会话持久化能力：对话历史（messa
 ├── logs/
 │   └── debug-YYYY-MM-DD.log      # 📝 调试日志（见下节）
 └── sessions/
-    └── {workspaceId}/            # 按工作空间路径隔离（路径 SHA-256 前 16 位）
+    └── {workspaceId}/            # 按工作空间隔离（canonical 化路径的 SHA-256 前 16 位：大小写/分隔符/尾斜杠归一）
         ├── meta.json             # 工作空间元信息
         ├── sessions.json         # 会话索引（仅元信息，不含消息内容）
-        └── sess_YYYYMMDD_HHMMSS.enc   # 加密的会话数据文件
+        └── sess_{wsId8}_YYYYMMDD_HHMMSS.enc   # 加密的会话数据文件（id 含空间段，wsId8 = workspaceId 前 8 位）
 ```
+
+> **sessionId 空间命名空间**：新格式为 `sess_<wsId8>_<时间戳>`，按 id 即可定位会话所属空间（HTTP 端点不再因此切换"当前空间"）；老格式 `sess_<时间戳>`（无空间段）永久兼容读取，经全量扫描回退定位。
 
 ### 加密机制
 

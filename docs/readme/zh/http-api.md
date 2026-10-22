@@ -16,7 +16,7 @@ npx tsx src/index.ts --serve
 HTTP API 服务已启动
   地址:    http://127.0.0.1:3000
   鉴权:    仅本机（未配置 api.token）
-  端点:    46 个（会话 5 + 健康 1 + 命令资源化 40），详见下方端点表
+  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory
   提示:    Ctrl+C 退出；配置变更需重启生效
 ```
 
@@ -51,11 +51,12 @@ HTTP API 服务已启动
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康探针 `{status, version, model}` |
-| POST | `/sessions` | 创建空会话 → 201 `{id, title, createdAt, ...}` |
-| GET | `/sessions` | 会话列表 `{sessions: [...]}` |
-| GET | `/sessions/:id` | 会话详情 `{meta, messages}`（恢复视图，不含 system） |
-| DELETE | `/sessions/:id` | 删除会话 `{deleted: true}`（in-flight 时 409） |
-| POST | `/sessions/:id/messages` | 发消息（默认 SSE 流式，`"stream": false` 切非流式 JSON） |
+| POST | `/sessions` | 创建空会话（body 可带 `{title?, workspacePath?}`；带 `workspacePath` 时**直接建在目标空间**，不切换"当前空间"）→ 201 `{id, title, createdAt, workspace: {path, id, switched}}`（`switched` 字段保留、恒为 `false`） |
+| GET | `/sessions` | 当前空间（最近使用指针）的会话列表 `{sessions: [...]}` |
+| GET | `/workspaces` | 跨工作空间聚合 `{workspaces: [{id, name, current, sessions}]}`（`current` 由最近使用指针标注；会话项含 `running` 与 `lastRun` 概要） |
+| GET | `/sessions/:id` | 会话详情 `{meta, messages, run, lastRun, workspace}`（按 id 定位归属空间读取，**纯读不改变服务端状态**；`messages` 为全量历史，system 与压缩总结消息带 `is_show=false` 由前端过滤） |
+| DELETE | `/sessions/:id` | 删除会话 `{deleted: true}`（归属空间内 in-flight 时 409；其他空间的运行不影响） |
+| POST | `/sessions/:id/messages` | 发消息（默认 SSE 流式，`"stream": false` 切非流式 JSON；按 id 定位归属空间执行） |
 
 #### 命令资源化（CLI 命令 → REST，10 组 40 端点）
 
@@ -184,17 +185,22 @@ HTTP API 服务已启动
 ### curl 示例
 
 ```bash
-# 创建会话
+# 创建会话（当前空间）
 curl -X POST http://127.0.0.1:3000/sessions
-# → {"id":"sess_20261016_103000","title":"...","messageCount":0}
+# → {"id":"sess_8dcc67b6_20261016_103000","title":"...","messageCount":0,...}
+
+# 创建会话（指定工作空间，直接建在目标空间，不切换"当前空间"）
+curl -X POST http://127.0.0.1:3000/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"workspacePath": "D:\\other-project"}'
 
 # 发消息（SSE 流式，-N 关闭缓冲）
-curl -N -X POST http://127.0.0.1:3000/sessions/sess_20261016_103000/messages \
+curl -N -X POST http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000/messages \
   -H "Content-Type: application/json" \
   -d '{"message": "帮我看看项目结构"}'
 
 # 发消息（非流式 JSON）
-curl -X POST http://127.0.0.1:3000/sessions/sess_20261016_103000/messages \
+curl -X POST http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000/messages \
   -H "Content-Type: application/json" \
   -d '{"message": "你好", "stream": false}'
 # → {"sessionId":"...","answer":"...","iterations":1,"steps":[...],"durationMs":123}
@@ -203,14 +209,16 @@ curl -X POST http://127.0.0.1:3000/sessions/sess_20261016_103000/messages \
 curl -H "Authorization: Bearer my-secret" http://127.0.0.1:3000/health
 
 # 查看会话 / 删除会话
-curl http://127.0.0.1:3000/sessions/sess_20261016_103000
-curl -X DELETE http://127.0.0.1:3000/sessions/sess_20261016_103000
+curl http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000
+curl -X DELETE http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000
 ```
 
 ### 行为要点
 
 - **多会话隔离**：各会话历史独立注入共享 agent（空历史走 `resetHistory`，非空显式 `messages`），互不串话
 - **会话持久化**：回答完成后写入会话池（与 CLI 共用存储），服务重启后直接对已有会话 ID 发消息即可续聊
-- **会话级互斥**：同一会话同时只处理一条消息，并发请求返回 409；不同会话可并行
+- **会话级互斥（按空间隔离）**：同一会话同时只处理一条消息，并发请求返回 409（`busy`）；互斥仅约束**同空间同会话**——A 空间有运行中的 run，不影响 B 空间新建/删除会话、发起新 run
+- **跨工作空间并行**：每个空间由 `WorkspaceRegistry` 懒建独立的 `WorkspaceRuntime`（会话存储、配置、技能、记忆、Agent 池，LRU 上限 4）；进程级 `process.chdir` 已移除，工具相对路径以会话所属空间根为基准；全局并发信号量（8）限制同时运行的 run 总数
+- **sessionId 空间命名空间**：新 id 形如 `sess_<wsId8>_<时间戳>`（如 `sess_8dcc67b6_20261016_103000`），按 id 即可定位归属空间，`GET /sessions/:id` 等端点不再触发"切换空间"；老格式 `sess_<时间戳>` 永久兼容读取
 - **配置变更**（token/port/host）需重启服务生效
 - **run journal（Task-20261021-002-06）**：每次 run 的生命周期（running/done/failed/aborted）落到 `<用户目录>/.loop-agent/sessions/<空间ID>/runs/<会话ID>.json`（随会话删除联动清理）；服务重启时启动扫描把上个进程遗留的 `running` 记录改写为 `interrupted`。`GET /sessions/:id` 响应含 `lastRun` 字段（journal 磁盘态），`GET /workspaces` 的会话项含 `lastRun: {status, finishedAt}` 概要——前端据此展示「上次运行被中断（服务已重启）」注记与侧栏 ⚠ 标记。诊断日志另写 `~/.loop-agent/logs/runs-YYYY-MM-DD.jsonl`（start/finish/abort/failed/interrupted 事件流）

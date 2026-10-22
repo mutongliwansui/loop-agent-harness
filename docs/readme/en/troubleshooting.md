@@ -97,3 +97,15 @@ Error: Key not loaded; cannot read session
 ### Config Source Tracing
 
 When config doesn't take effect as expected, use `/config list` to see each field's actual source (cli / workspace / global / env / default) and quickly identify which layer overrode it.
+
+### Cross-workspace sessions can't send messages (Web UI)
+
+**Symptom**: sessions from other workspaces in the sidebar can't send messages (older frontends marked them "read-only").
+
+**Fix**: cross-workspace sessions have been fully continuable since 20261021-010. Seeing this means the browser cached an old frontend — hard-refresh (`Ctrl+F5`); if you built the frontend yourself, run `npm run build:webui` again.
+
+### 409 busy on concurrent messages to the same session
+
+**Symptom**: sending two messages concurrently to the same session — the second returns 409 (`busy`).
+
+**Note**: this is expected — a session processes one message at a time. Workspaces never block each other: while workspace A is running, workspace B can create sessions and send messages normally; if you still hit busy across workspaces, upgrade to a build that includes 20261021-010.

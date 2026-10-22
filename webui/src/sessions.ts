@@ -64,9 +64,8 @@ export const activeMeta = computed<SessionMeta | null>(() => {
 export const activeWs = computed<WorkspaceGroup | null>(
   () => workspaces.value.find((w) => w.sessions.some((s) => s.id === activeId.value)) ?? null,
 );
-/** 活跃会话不在服务端「当前」工作空间（跨空间会话，只读） */
-export const foreignActive = computed(() => activeWs.value !== null && !activeWs.value.current);
-export const currentWsPath = computed(() => workspaces.value.find((w) => w.current)?.path ?? '');
+/** 活跃会话所属工作空间的路径（供 FilesView 根目录使用；task-05：跨空间会话不再切换服务端状态，FilesView 应跟随活跃会话） */
+export const activeWsPath = computed(() => activeWs.value?.path ?? '');
 
 /* ================= 列表操作 ================= */
 
