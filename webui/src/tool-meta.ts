@@ -318,8 +318,9 @@ export function toolResultLooksFailed(result: string): boolean {
   if (/^(Error|ERR)[:：\s]/i.test(text)) return true;
   if (/^(错误|异常)[:：]/.test(text)) return true;
   if (text.startsWith('缺少必需参数')) return true;
-  if (text.includes('Traceback')) return true;
-  if (text.includes('工具执行超时')) return true;
+  // 仅锚定结果开头：正文包含这些词不算失败（如 fileRead 读到含「工具执行超时」/Traceback 的文档内容）
+  if (text.startsWith('Traceback')) return true;
+  if (text.startsWith('工具执行超时')) return true;
   return false;
 }
 

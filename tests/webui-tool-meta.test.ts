@@ -136,7 +136,8 @@ describe('toolResultLooksFailed：失败启发式（D5）', () => {
     expect(toolResultLooksFailed('错误：参数缺失')).toBe(true);
     expect(toolResultLooksFailed('异常：堆栈如下')).toBe(true);
     expect(toolResultLooksFailed('缺少必需参数 path')).toBe(true);
-    expect(toolResultLooksFailed('  File "x.py"\nTraceback (most recent call last)')).toBe(true);
+    // Traceback 仅开头锚定：第二行才出现视为正文引用（真崩溃走 [exit=非0] 主判定）
+    expect(toolResultLooksFailed('Traceback (most recent call last):')).toBe(true);
     expect(toolResultLooksFailed('工具执行超时（30000ms）')).toBe(true);
   });
 
@@ -176,5 +177,22 @@ describe('stripAnsi / RESULT_EXPAND_THRESHOLD（20261022-001 补丁）', () => {
   it('阈值语义：去 ANSI 后 >400 才截断（584 字节日志可展开，短结果完整显示）', () => {
     expect('x'.repeat(584).length > RESULT_EXPAND_THRESHOLD).toBe(true);
     expect('未在目录中找到匹配内容'.length > RESULT_EXPAND_THRESHOLD).toBe(false);
+  });
+});
+
+describe('失败启发式回归：正文包含错误词不误判（用户截图反馈 20261022）', () => {
+  it('fileRead 读到含「工具执行超时」的文档正文（优化建议 20261021-006 场景）→ 不误判', () => {
+    const doc =
+      '1: | 20261021-006 | commandRun 后台运行命令机制（长任务不阻塞、不被超时误杀） | …30s 被杀… | 2026-10-21 | 否 |  |\n' +
+      '2: 要么在 30s 被杀，要么长时间阻塞整个 ReAct 循环（工具执行超时）';
+    expect(toolResultLooksFailed(doc)).toBe(false);
+  });
+
+  it('fileRead 读到中间含 Traceback 的文档/日志行 → 不误判；真超时（开头）→ 判失败', () => {
+    expect(toolResultLooksFailed('12:   File "x.py", line 1\nTraceback (most recent call last):')).toBe(false);
+    expect(toolResultLooksFailed('grep 命中: 3:Traceback (most recent call last):')).toBe(false);
+    // runner.ts 真实输出形态：以工具执行超时开头
+    expect(toolResultLooksFailed('工具执行超时 (30000ms)')).toBe(true);
+    expect(toolResultLooksFailed('Error: 工具执行超时 (30000ms)')).toBe(true);
   });
 });
