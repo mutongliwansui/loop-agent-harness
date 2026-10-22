@@ -559,9 +559,9 @@ onUnmounted(() => {
                 <details v-if="seg.type === 'tool'" class="tool-call">
                   <summary :title="seg.args">
                     <span class="arrow">▶</span>
-                    <span class="tc-badge" :class="!seg.done ? 'run' : toolResultLooksFailed(seg.result) ? 'fail' : 'ok'">
+                    <span class="tc-badge" :class="!seg.done ? 'run' : toolResultLooksFailed(seg.result, seg.tool) ? 'fail' : 'ok'">
                       <span v-if="!seg.done" class="tc-spin">⟳</span>
-                      <template v-else>{{ toolResultLooksFailed(seg.result) ? '✗' : '✓' }}</template>
+                      <template v-else>{{ toolResultLooksFailed(seg.result, seg.tool) ? '✗' : '✓' }}</template>
                     </span>
                     <span class="tc-icon">{{ toolDisplay(seg.tool).icon }}</span>
                     <span class="tc-name">{{ toolDisplay(seg.tool).name }}</span>
@@ -585,7 +585,7 @@ onUnmounted(() => {
                       <pre>{{ prettyJson(seg.args) }}</pre>
                     </details>
                     <div class="tc-sec-title">{{ seg.done ? '结果' : '结果（执行中…）' }}</div>
-                    <div class="tc-result" :class="{ clamped: needsExpand(seg) && !isExpanded(m.id, i), 'result-fail': seg.done && toolResultLooksFailed(seg.result) }">{{ resultText(seg) }}</div>
+                    <div class="tc-result" :class="{ clamped: needsExpand(seg) && !isExpanded(m.id, i), 'result-fail': seg.done && toolResultLooksFailed(seg.result, seg.tool) }">{{ resultText(seg) }}</div>
                     <button v-if="seg.done && needsExpand(seg)" class="tc-expand" @click="toggleExpand(m.id, i)">
                       {{ isExpanded(m.id, i) ? '▲ 收起结果' : '▼ 展开全部结果' }}
                     </button>

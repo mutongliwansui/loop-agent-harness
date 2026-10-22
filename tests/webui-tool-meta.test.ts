@@ -124,10 +124,18 @@ describe('toolParamRows：中文参数表', () => {
 });
 
 describe('toolResultLooksFailed：失败启发式（D5）', () => {
-  it('[exit=N] 任意位置：非 0 失败，0 成功', () => {
-    expect(toolResultLooksFailed('some output\n[exit=1]')).toBe(true);
-    expect(toolResultLooksFailed('ok\n[exit=0]')).toBe(false);
-    expect(toolResultLooksFailed('x [exit= 2 ]')).toBe(true);
+  it('[exit=N] 仅 commandRun 命中且行首锚定；其他工具读到该字面量不误判（20261022 第二次用户反馈）', () => {
+    // commandRun 真实输出形态（commandRun.ts:40）：标记行首、后跟错误消息，整段收尾
+    expect(toolResultLooksFailed('some output\n[exit=1] Error: command failed', 'commandRun')).toBe(true);
+    expect(toolResultLooksFailed('[exit=0] done', 'commandRun')).toBe(false);
+    // 真实输出中标记总是行首（parts 以 \n 拼接）；行中间的标记视为正文内容
+    expect(toolResultLooksFailed('x [exit= 2 ]', 'commandRun')).toBe(false);
+    // 未传工具名时保持旧行为（兜底调用方）
+    expect(toolResultLooksFailed('some output\n[exit=1] Error: command failed')).toBe(true);
+    // fileRead 读到测试/文档正文中的 [exit=1] 字面量 → 不再误判（本次反馈场景）
+    expect(
+      toolResultLooksFailed("126:     expect(toolResultLooksFailed('some output\\n[exit=1]')).toBe(true);", 'fileRead'),
+    ).toBe(false);
   });
 
   it('Error / 中文错误词 / Traceback / 超时', () => {

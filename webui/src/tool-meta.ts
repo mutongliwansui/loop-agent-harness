@@ -306,14 +306,20 @@ export function toolParamRows(tool: string, argsJson: string): ParamRow[] {
 
 /**
  * 失败启发式判定（D5，前端仅见结果文本）：
- * - 出现 `[exit=非0]`（commandRun 的退出码标记在结果尾部，任意位置匹配）→ 失败；`[exit=0]` → 明确成功；
- * - 结果以 Error/错误/异常/缺少必需参数 开头、含 Traceback、或含「工具执行超时」→ 失败。
+ * - `[exit=N]` 行首标记：仅对 commandRun 生效（真实输出中该标记总是行首、后跟错误消息）；
+ *   其他工具（如 fileRead 读到含该字面量的测试/文档正文）不套用，杜绝正文误判（20261022 用户反馈）；
+ * - 结果以 Error/错误/异常/缺少必需参数 开头 → 失败；Traceback/「工具执行超时」仅开头锚定。
+ * 已知边界：文件正文恰好以错误词开头仍会误判——本判定仅是 UI 徽章提示，结果文本始终完整展示。
  */
-export function toolResultLooksFailed(result: string): boolean {
+export function toolResultLooksFailed(result: string, tool?: string): boolean {
   const text = result.trimStart();
   if (!text) return false;
-  const exit = text.match(/\[exit=([^\]]+)\]/);
-  if (exit) return exit[1].trim() !== '0';
+  if (!tool || tool === 'commandRun') {
+    for (const line of text.split('\n')) {
+      const m = line.trimStart().match(/^\[exit=([^\]]+)\]/);
+      if (m) return m[1].trim() !== '0';
+    }
+  }
   // 错误词需后跟冒号/空白才判失败，避免「错误处理示例代码：…」这类正常内容误判
   if (/^(Error|ERR)[:：\s]/i.test(text)) return true;
   if (/^(错误|异常)[:：]/.test(text)) return true;
