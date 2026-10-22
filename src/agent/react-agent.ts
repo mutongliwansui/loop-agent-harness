@@ -735,6 +735,9 @@ export class ReActAgent {
                 shortQueryMinLength: cfg.memory.episodic.shortQueryMinLength,
                 stopwords: cfg.memory.episodic.stopwords,
                 recencyHalfLifeDays: cfg.memory.episodic.recencyHalfLifeDays,
+                // 20261021-008 R3：复用首轮构建的 system prompt（单一来源），
+                // 保证开启记忆时每轮 assemble 重建的 system 与首轮字节级一致
+                systemPrompt,
               },
             );
           } catch {

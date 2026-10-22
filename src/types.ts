@@ -167,6 +167,16 @@ export interface LLMStatsSummary {
   /** 有缓存数据轮次的输入 token 合计（缓存命中率分母；无任何缓存字段时为 0） */
   promptTokensWithCache?: number;
   avgCacheHitRate?: number;
+  /**
+   * 20261021-008 R5：首轮（第 1 次迭代）缓存命中率——含 system/工具 schema 冷启动 miss，
+   * 天然偏低，仅作参考口径。
+   */
+  firstIterationHitRate?: number;
+  /**
+   * 20261021-008 R5：第 2 轮起命中率（token 加权）——前缀缓存稳定后的真实口径，
+   * 是缓存优化效果的主指标；无缓存字段或第 2 轮起无数据时为 undefined。
+   */
+  subsequentIterationsHitRate?: number;
   peakContextTokens: number;
   peakContextMaxTokens: number;
 }

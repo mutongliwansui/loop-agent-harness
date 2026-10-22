@@ -1,7 +1,7 @@
 // L3 Curated Core Memory：精炼常驻文件
 // SOUL.md (Agent 人格) / USER.md (用户画像) / MEMORY.md (精炼事实)
 // 启动时注入 system prompt，由 Dreaming 晋升写入
-import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { CuratedFileKey } from './types.js';
@@ -67,7 +67,15 @@ export class CuratedMemory {
   /** 全局用户目录（SOUL/USER 所在；未提供时回退到 workspaceDir，保持旧行为） */
   private globalDir: string | null;
   private overflow: CuratedOverflowOptions | null = null;
-
+  /**
+   * 20261021-008 R2：buildSystemPromptCached 的 section 缓存。
+   * key → { mtimeMs, size, hash, section }；stat 未变化直接复用 section。
+   * hash 字段保留内容指纹位（当前以长度近似，后续可换 djb2/FNV）。
+   */
+  private sectionCache: Map<
+    CuratedFileKey,
+    { mtimeMs: number; size: number; hash: number; section: string }
+  > | null = null;
   constructor(
     workspaceDir: string,
     overflow?: CuratedOverflowOptions | null,
@@ -151,6 +159,67 @@ export class CuratedMemory {
         sections.push(`# ${title}\n${content.trim()}`);
       }
     }
+    return sections.join('\n\n');
+  }
+
+  /**
+   * 20261021-008 R2：buildSystemPrompt 的缓存版。
+   * 按 key 记录 mtime+size+hash，stat 未变化时直接复用上次拼接结果，
+   * 避免 assemble 每轮重读文件（读盘本身无缓存问题，风险在于文件变化后
+   * system 段字节变化 → 其后全部消息前缀缓存 miss）。
+   * 供 ContextAssembler 注入使用；buildSystemPrompt 原方法保留（CLI/命令直读场景）。
+   */
+  async buildSystemPromptCached(): Promise<string> {
+    const keys = Object.keys(FILE_MAP) as CuratedFileKey[];
+    // 全部文件 stat 短路检查
+    const allUnchanged = this.sectionCache !== null
+      && (await Promise.all(
+        keys.map(async (key) => {
+          const cached = this.sectionCache!.get(key);
+          if (!cached) return false;
+          try {
+            const st = await stat(this.filepathFor(key));
+            return st.mtimeMs === cached.mtimeMs && st.size === cached.size;
+          } catch {
+            return false; // 文件消失视为变化
+          }
+        }),
+      )).every(Boolean);
+    if (allUnchanged && this.sectionCache !== null) {
+      return keys
+        .map((key) => this.sectionCache!.get(key)?.section ?? '')
+        .filter((s) => s !== '')
+        .join('\n\n');
+    }
+
+    // 有变化：重读全部、重算 section 与 hash
+    const newCache = new Map<CuratedFileKey, { mtimeMs: number; size: number; hash: number; section: string }>();
+    const sections: string[] = [];
+    for (const key of keys) {
+      const filepath = this.filepathFor(key);
+      let section = '';
+      try {
+        const content = (await readFile(filepath, 'utf-8')).trim();
+        if (content) {
+          const title = FILE_MAP[key].replace('.md', '');
+          section = `# ${title}\n${content}`;
+          sections.push(section);
+        }
+      } catch {
+        section = ''; // 读失败视同空文件（与 buildSystemPrompt 的容错语义一致）
+      }
+      let mtimeMs = 0;
+      let size = 0;
+      try {
+        const st = await stat(filepath);
+        mtimeMs = st.mtimeMs;
+        size = st.size;
+      } catch {
+        // 文件不存在：mtime/size 保持 0
+      }
+      newCache.set(key, { mtimeMs, size, hash: section.length, section });
+    }
+    this.sectionCache = newCache;
     return sections.join('\n\n');
   }
 

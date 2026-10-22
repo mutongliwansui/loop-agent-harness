@@ -31,6 +31,12 @@ export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
   let hasCache = false;
   let peakContextTokens = 0;
   let peakContextMaxTokens = 0;
+  // 20261021-008 R5：首轮 / 第 2 轮起拆分口径（均只统计有缓存字段的轮次）
+  let firstPrompt = 0;
+  let firstHit = 0;
+  let subsequentPrompt = 0;
+  let subsequentHit = 0;
+  let hasSubsequentCache = false;
 
   for (const s of statsList) {
     totalPrompt += s.promptTokens;
@@ -41,6 +47,14 @@ export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
       // 分母用「有缓存字段轮次」的 promptTokens（与 hit 同源，口径一致）
       promptTokensWithCache += s.promptTokens;
       hasCache = true;
+      if (s.iteration === 0) {
+        firstPrompt += s.promptTokens;
+        firstHit += s.cacheHitTokens;
+      } else {
+        subsequentPrompt += s.promptTokens;
+        subsequentHit += s.cacheHitTokens;
+        hasSubsequentCache = true;
+      }
     }
     if (s.contextTokens > peakContextTokens) peakContextTokens = s.contextTokens;
     if (s.contextMaxTokens > peakContextMaxTokens) peakContextMaxTokens = s.contextMaxTokens;
@@ -54,6 +68,10 @@ export function buildLLMStatsSummary(statsList: LLMStats[]): LLMStatsSummary {
     totalCacheHit,
     promptTokensWithCache,
     avgCacheHitRate: hasCache && promptTokensWithCache > 0 ? totalCacheHit / promptTokensWithCache : undefined,
+    // R5：首轮/第 2 轮起命中率拆分（token 加权；无数据保持 undefined）
+    firstIterationHitRate: hasCache && firstPrompt > 0 ? firstHit / firstPrompt : undefined,
+    subsequentIterationsHitRate:
+      hasSubsequentCache && subsequentPrompt > 0 ? subsequentHit / subsequentPrompt : undefined,
     peakContextTokens,
     peakContextMaxTokens,
   };

@@ -100,6 +100,20 @@ export function repairMessageSequence(messages: ChatMessage[]): ChatMessage[] {
 export class ContextAssembler {
   private curated: CuratedMemory;
   private episodic: EpisodicMemory;
+  /**
+   * 20261021-008 R1：L2 检索结果的 run 级缓存。
+   * 同一 run 内每轮迭代都会调用 assemble()（userMessage/sessionId 不变），
+   * 而工具结果持续写入 L2、检索结果集可能漂移——注入「最后一条 user 消息」的
+   * memoryBlock 一旦变化，其后所有 tool/assistant 消息的前缀缓存整段 miss。
+   * 这里按 (userMessage, sessionId) 冻结检索结果：同 run 复用首轮结果，
+   * 新 run 的 userMessage 必然不同，天然失效，无需显式 invalidate。
+   * 另顺带消除 safeSearch 超时导致的「有注入 ↔ 无注入」前缀翻转。
+   */
+  private runCache: {
+    userMessage: string;
+    sessionId: string | null;
+    memoryBlock: string;
+  } | null = null;
 
   constructor(curated: CuratedMemory, episodic: EpisodicMemory) {
     this.curated = curated;
@@ -132,6 +146,13 @@ export class ContextAssembler {
       stopwords?: string[];
       /** Task-19 方案 3：时间衰减半衰期（天，0=禁用） */
       recencyHalfLifeDays?: number;
+      /**
+       * 20261021-008 R3：run() 首轮构建的 system prompt 产物（含
+       * `cfg.agent.systemPrompt` 覆盖与 workspaceDir/visionEnabled 段）。
+       * 传入后 assemble 直接复用，保证同一会话 system 字节级稳定；
+       * 缺省时回退 buildSystemPrompt(skills)（旧行为，既有调用方兼容）。
+       */
+      systemPrompt?: string;
     } = {},
   ): Promise<ChatMessage[]> {
     const searchTopK = options.searchTopK ?? 3;
@@ -145,18 +166,36 @@ export class ContextAssembler {
     // 1. L3 常驻：system prompt（含 SOUL/USER/MEMORY）
     let curatedContent = '';
     try {
-      curatedContent = await this.curated.buildSystemPrompt();
+      // 20261021-008 R2：走缓存版（mtime+size 短路，未变化不重读不重拼）
+      curatedContent = await this.curated.buildSystemPromptCached();
     } catch {
       // L3 读取失败不影响主流程
     }
-
-    const basePrompt = buildSystemPrompt(skills);
     const curatedSection = curatedContent
       ? `\n\n## 你的长期记忆（Curated Memory）\n以下是关于你服务的用户和积累的知识，请在回答时参考：\n${curatedContent}`
       : '';
 
+    // 20261021-008 R3：优先复用 run() 首轮构建的 system prompt（单一来源），
+    // 保证同一会话内 system 与首轮产物字节级一致（含 workspaceDir/vision 段）。
+    const basePrompt = options.systemPrompt ?? buildSystemPrompt(skills);
     // 2. L2 检索：召回相关历史片段
     // Task-19 三层防线：短查询保护 → 查询增强 → 最低阈值过滤
+    // 20261021-008 R1：同 (userMessage, sessionId) 直接复用 run 级缓存的检索结果——
+    // 避免同 run 内工具写入 L2 后检索结果漂移（注入内容变化 → 其后全部消息前缀 miss）。
+    const cachedKeySessionId = options.sessionId ?? null;
+    if (
+      this.runCache
+      && this.runCache.userMessage === userMessage
+      && this.runCache.sessionId === cachedKeySessionId
+    ) {
+      return this.assembleWithMemoryBlock(
+        this.runCache.memoryBlock,
+        basePrompt,
+        curatedSection,
+        userMessage,
+        currentMessages,
+      );
+    }
     let memoryBlock = '';
     try {
       // 方案 1：查询增强——拼接最近 N 轮对话，使搜索词更有区分度
@@ -202,17 +241,38 @@ export class ContextAssembler {
     } catch {
       // 检索失败不影响主流程
     }
+    // R1：冻结本次 run 的检索结果（含空结果——超时/失败也冻结，避免「有注入 ↔ 无注入」翻转）
+    this.runCache = { userMessage, sessionId: cachedKeySessionId, memoryBlock };
 
     // 3. 组装完整 messages + 修复损坏的 tool-assistant 配对
     // L2 检索结果不注入 system prompt：system 前缀必须保持稳定才能命中 DeepSeek 前缀缓存。
     // 检索结果改为附加到最后一条 user 消息之前（通常即本次用户输入），避免污染 system 前缀。
+    return this.assembleWithMemoryBlock(
+      memoryBlock,
+      basePrompt,
+      curatedSection,
+      userMessage,
+      currentMessages,
+    );
+  }
+
+  /**
+   * 用确定的 memoryBlock 组装最终视图（R1 抽取：缓存命中与冷启动两条路径共用，
+   * 保证同一 run 内产物逐字节一致）。
+   */
+  private assembleWithMemoryBlock(
+    memoryBlock: string,
+    basePrompt: string,
+    curatedSection: string,
+    _userMessage: string,
+    currentMessages: ChatMessage[],
+  ): ChatMessage[] {
     const finalSystemPrompt = basePrompt + curatedSection;
 
     const rawMessages: ChatMessage[] = [
       { role: 'system', content: finalSystemPrompt },
       ...currentMessages.filter((m) => m.role !== 'system'),
     ];
-
     if (memoryBlock) {
       // 拼接/剥离格式约定见 memory-section.ts（SessionStore 生成会话标题时依赖哨兵剥离前缀）
       // 只注入最后一条「真实用户消息」：压缩总结消息也是 role=user（头部占位），

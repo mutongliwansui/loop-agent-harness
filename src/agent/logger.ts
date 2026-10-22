@@ -141,6 +141,10 @@ export class ConsoleLogger implements AgentEvents {
       summary.avgCacheHitRate !== undefined
         ? `${(summary.avgCacheHitRate * 100).toFixed(1)}%`
         : 'N/A';
+    // 20261021-008 R5：双口径拆分（首轮含冷启动 miss；第 2 轮起为优化效果主指标）
+    const fmtRate = (rate: number | undefined): string =>
+      rate !== undefined ? `${(rate * 100).toFixed(1)}%` : 'N/A';
+    const cacheDetail = `(首轮 ${fmtRate(summary.firstIterationHitRate)} / 后续 ${fmtRate(summary.subsequentIterationsHitRate)})`;
     const peak =
       summary.peakContextMaxTokens > 0
         ? `${summary.peakContextTokens}/${summary.peakContextMaxTokens} ` +
@@ -152,7 +156,7 @@ export class ConsoleLogger implements AgentEvents {
         `${COLORS.cyan}总输入${COLORS.reset} ${summary.totalPrompt} | ` +
         `${COLORS.cyan}总输出${COLORS.reset} ${summary.totalCompletion} | ` +
         `${COLORS.cyan}总 token${COLORS.reset} ${summary.totalTokens} | ` +
-        `${COLORS.cyan}平均缓存命中${COLORS.reset} ${cache} | ` +
+        `${COLORS.cyan}平均缓存命中${COLORS.reset} ${cache} ${COLORS.gray}${cacheDetail}${COLORS.reset} | ` +
         `${COLORS.cyan}上下文峰值${COLORS.reset} ${peak}`,
     );
   }
