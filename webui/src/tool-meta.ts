@@ -322,3 +322,15 @@ export function toolResultLooksFailed(result: string): boolean {
   if (text.includes('工具执行超时')) return true;
   return false;
 }
+
+/** 结果区「展开全部结果」阈值：去 ANSI 后字符数超过该值才截断并显示展开按钮（D4 细化：短结果直接完整展示） */
+export const RESULT_EXPAND_THRESHOLD = 400;
+
+/** 剥离 ANSI 转义序列（OSC/CSI）：CLI 彩色输出（如 vitest）直接渲染会变成乱码方块 */
+export function stripAnsi(s: string): string {
+  return s
+    // OSC：ESC ] ... BEL 或 ESC ] ... ESC \（终端标题等）
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // CSI：ESC [ 参数字节 中间字节 终止字节（颜色/光标控制等）
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}

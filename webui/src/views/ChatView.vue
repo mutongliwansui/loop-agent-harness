@@ -574,8 +574,8 @@ onUnmounted(() => {
                       <pre>{{ prettyJson(seg.args) }}</pre>
                     </details>
                     <div class="tc-sec-title">{{ seg.done ? '结果' : '结果（执行中…）' }}</div>
-                    <div class="tc-result" :class="{ clamped: !isExpanded(m.id, i), 'result-fail': seg.done && toolResultLooksFailed(seg.result) }">{{ resultText(seg) }}</div>
-                    <button v-if="seg.done && seg.result.length > 4000" class="tc-expand" @click="toggleExpand(m.id, i)">
+                    <div class="tc-result" :class="{ clamped: needsExpand(seg) && !isExpanded(m.id, i), 'result-fail': seg.done && toolResultLooksFailed(seg.result) }">{{ resultText(seg) }}</div>
+                    <button v-if="seg.done && needsExpand(seg)" class="tc-expand" @click="toggleExpand(m.id, i)">
                       {{ isExpanded(m.id, i) ? '▲ 收起结果' : '▼ 展开全部结果' }}
                     </button>
                   </div>

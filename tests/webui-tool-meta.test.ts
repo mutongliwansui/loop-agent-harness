@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   compactJson,
   prettyJson,
+  RESULT_EXPAND_THRESHOLD,
+  stripAnsi,
   toolDisplay,
   toolParamRows,
   toolResultLooksFailed,
@@ -157,5 +159,22 @@ describe('compactJson / prettyJson', () => {
     expect(prettyJson('{"a":1}')).toBe('{\n  "a": 1\n}');
     expect(prettyJson('bad')).toBe('bad');
     expect(prettyJson('')).toBe('');
+  });
+});
+
+describe('stripAnsi / RESULT_EXPAND_THRESHOLD（20261022-001 补丁）', () => {
+  it('剥离 CSI/OSC 转义序列（vitest 彩色输出场景）', () => {
+    const vitestLine =
+      '\x1b[32m✓\x1b[39m tests/memory-kit-cache.test.ts \x1b[2m(\x1b[22m\x1b[2m3 tests\x1b[22m\x1b[2m)\x1b[22m \x1b[32m32\x1b[2mms\x1b[39m';
+    expect(stripAnsi(vitestLine)).toBe('✓ tests/memory-kit-cache.test.ts (3 tests) 32ms');
+    expect(stripAnsi('\x1b]0;window title\x07plain')).toBe('plain');
+    expect(stripAnsi('\x1b[1m\x1b[30m\x1b[46m RUN \x1b[49m\x1b[39m\x1b[22m v4.1.10')).toBe(' RUN  v4.1.10');
+    expect(stripAnsi('no escape')).toBe('no escape');
+    expect(stripAnsi('')).toBe('');
+  });
+
+  it('阈值语义：去 ANSI 后 >400 才截断（584 字节日志可展开，短结果完整显示）', () => {
+    expect('x'.repeat(584).length > RESULT_EXPAND_THRESHOLD).toBe(true);
+    expect('未在目录中找到匹配内容'.length > RESULT_EXPAND_THRESHOLD).toBe(false);
   });
 });
