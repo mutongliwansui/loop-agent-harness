@@ -9,7 +9,7 @@
 | 📜 **Background Logs** | `commandLogs` | Read a background task's log incrementally: without `sinceOffset`, returns new bytes since the last read and advances the cursor; capped at 8KB per call; `tail:true` reads only the last 2KB | `taskId` (required), `sinceOffset` (optional, byte offset), `tail` (optional) |
 | ⏹️ **Background Stop** | `commandStop` | Kill a background task's process tree (Windows `taskkill /T /F`; POSIX process group). Idempotent; stopping a session does NOT stop background tasks — call this explicitly | `taskId` (required) |
 | 📄 **File Read** | `fileRead` | Read file content; supports reading a line range; each line is prefixed with `line: ` by default. Default caps: full reads return at most 2000 lines / 256KB, lines longer than 8192 chars are clipped, and a truncation note is appended; full reads above 16MB are rejected (use a range instead); binary files (NUL in the first 8000 bytes) are rejected | `path` (required), `startLine` (optional), `endLine` (optional), `offset` (optional, 1-based start line, alias of `startLine`), `limit` (optional, number of lines), `maxBytes` (optional, output byte cap), `encoding` (optional), `lineNumbers` (optional, defaults to `true`) |
-| ✏️ **File Write** | `fileWrite` | **Whole-file write**: `overwrite` fully replaces the entire file with `content` (**the original content is permanently lost; partial/regional overwrite is NOT supported — use `editFile` for partial edits**); `append` appends to the end; parent directories are created automatically | `path` (required), `content` (required; the complete file content when overwriting), `mode` (optional, `overwrite` / `append`) |
+| ✏️ **File Write** | `fileWrite` | **Whole-file write**: `overwrite` fully replaces the entire file with `content` (**the original content is permanently lost; partial/regional overwrite is NOT supported — use `editFile` for partial edits**); `append` appends to the end; parent directories are created automatically. For existing files, line endings are adapted to the file's dominant EOL (e.g. CRLF); new files keep LF; writes to the same file are automatically serialized | `path` (required), `content` (required; the complete file content when overwriting), `mode` (optional, `overwrite` / `append`) |
 | 🔁 **File Edit** | `editFile` | Three modes: ① literal replacement (must appear exactly once; multiple matches error out to avoid accidental edits); ② `regex=true` regex replacement (supports `$1`/`$&` capture references); ③ whole-line-range replacement when `startLine`/`endLine` are given | `path` (required), `newText` (required), `oldText` (required unless a line range is given), `startLine` (optional), `endLine` (optional), `replaceAll` (optional, defaults to `false`), `regex` (optional, defaults to `false`), `flags` (optional, e.g. `i`/`m`/`s`) |
 | 🔍 **Content Search** | `grep` | Search content in a file or directory; supports regex, case-insensitivity and recursive search | `pattern` (required), `path` (required), `ignoreCase` (optional), `recursive` (optional), `maxResults` (optional, defaults to 50) |
 | 🎯 **Skill Activation** | `activate_skill` | Activate a Skill, returning the full SKILL.md instructions **plus the skill's directory (skill dir / absolute SKILL.md path)**, making it easy to locate bundled scripts, reference docs, etc. | `name` (required) |
@@ -79,6 +79,14 @@ describe_image({ "image": "screenshots/login.png" })
 
 # Image Q&A (accepts a local path or an http(s) URL)
 ask_image({ "image": "https://example.com/chart.png", "question": "Which month does the tallest bar in this chart correspond to?" })
+
+# Structured extraction (returns a JSON string; falls back to the raw text when parsing fails)
+extract_json({ "image": "invoice.png", "fields": ["title", "amount", "date"] })
+
+# Text recognition (OCR; preserves the original reading order and line breaks)
+ocr_image({ "image": "receipt.jpg" })
+```
+": "Which month does the tallest bar in this chart correspond to?" })
 
 # Structured extraction (returns a JSON string; falls back to the raw text when parsing fails)
 extract_json({ "image": "invoice.png", "fields": ["title", "amount", "date"] })
