@@ -73,6 +73,17 @@ function resultText(seg: { result: string; done: boolean }): string {
   }
   return r;
 }
+/**
+ * 结果是否需要展开按钮：已完成且内容超过可视高度（120px ≈ 8 行 / 约 600 字符）。
+ * 与 .tc-result.clamped 的 max-height 配套，短结果不显示展开按钮。
+ */
+function needsExpand(seg: { result: string; done: boolean }): boolean {
+  const r = seg.result ?? '';
+  if (!seg.done || !r) return false;
+  const EXPAND_LINE_THRESHOLD = 8;
+  const EXPAND_CHAR_THRESHOLD = 600;
+  return r.length > EXPAND_CHAR_THRESHOLD || r.split('\n').length > EXPAND_LINE_THRESHOLD;
+}
 function isExpanded(msgId: number, idx: number): boolean {
   return expandedTools.value.has(`${msgId}:${idx}`);
 }
