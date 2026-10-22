@@ -105,7 +105,7 @@ function nextMsgId(): number {
   return ++msgSeq;
 }
 
-function stateOf(id: string): SessionStreamState {
+export function stateOf(id: string): SessionStreamState {
   let st = states.get(id);
   if (!st) {
     st = reactive<SessionStreamState>({

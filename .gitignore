@@ -11,6 +11,7 @@ sea-config.json
 
 # WebUI 前端工程（构建产物 webui/dist 按 D2 入库；依赖不入库）
 /webui/node_modules/
+/webui/dist/
 
 # Agent 运行时配置（workspace 配置与 Skill 统一存放于 {项目}/.loop-agent/，整体不进入版本控制）
 .loop-agent/

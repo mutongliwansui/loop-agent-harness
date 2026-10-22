@@ -34,6 +34,7 @@ import {
 } from '../sessions.js';
 import {
   messagesOf,
+  stateOf,
   isRunning,
   ensureLoaded,
   initEmpty,
@@ -60,6 +61,7 @@ interface UploadChip {
 
 // 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
 const messages = computed(() => messagesOf(activeId.value));
+const stream = computed(() => (activeId.value ? stateOf(activeId.value) : null));
 const draft = ref('');
 const streaming = computed(() => (activeId.value ? isRunning(activeId.value) : false));
 const streamChk = ref(true);
@@ -543,7 +545,7 @@ onUnmounted(() => {
           </div>
         </div>
         <!-- 时间线尾注记（task-06）：重启后的中断/停止说明，前端态灰条，不进消息数组 -->
-        <div v-if="stream.note" class="aborted-note run-note">{{ stream.note }}</div>
+        <div v-if="stream?.note" class="aborted-note run-note">{{ stream.note }}</div>
       </div>
 
       <div class="composer">
