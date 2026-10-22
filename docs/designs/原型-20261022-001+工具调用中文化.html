@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · 工具调用展示中文化与参数友好化 · 20261022-001</title>
+<style>
+/* ========== 主题令牌（与 原型-20261018-001 保持一致） ========== */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --border: #e4e6ea;
+  --text: #1b1f24;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --info-weak: #e0e7ff;
+  --info: #4f46e5;
+  --code-bg: #f3f4f6;
+  --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+  --radius: 10px;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+    --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+    --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+    --warn-weak: #3a2e10; --ok: #34d399; --ok-weak: #143528; --info: #a5b4fc;
+    --info-weak: #262a4a; --code-bg: #2a2e35;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #16181c; --surface: #1f2227; --surface-2: #262a31; --border: #33383f;
+  --text: #e6e8eb; --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528;
+  --brand-on: #0b221a; --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24;
+  --warn-weak: #3a2e10; --ok: #34d399; --ok-weak: #143528; --info: #a5b4fc;
+  --info-weak: #262a4a; --code-bg: #2a2e35;
+  --shadow: 0 1px 3px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--sans); background: var(--bg); color: var(--text);
+  font-size: 14px; line-height: 1.6;
+}
+button { font-family: inherit; font-size: 13px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 12px;
+  transition: background .12s, border-color .12s, color .12s; }
+button:hover { border-color: var(--brand); color: var(--brand); }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 5px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.brand { background: var(--brand-weak); color: var(--brand); }
+.badge.warn  { background: var(--warn-weak); color: var(--warn); }
+.badge.danger{ background: var(--danger-weak); color: var(--danger); }
+.badge.dim   { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+
+/* ========== 页面骨架 ========== */
+.topbar {
+  position: sticky; top: 0; z-index: 10; background: var(--surface);
+  border-bottom: 1px solid var(--border); padding: 12px 28px;
+  display: flex; align-items: center; gap: 12px;
+}
+.topbar .logo { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.topbar .logo .dot { width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
+.topbar .spacer { flex: 1; }
+main { max-width: 1060px; margin: 0 auto; padding: 24px 28px 80px; }
+section { margin-bottom: 34px; }
+h2.sec { font-size: 16px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+h2.sec .no { color: var(--brand); font-family: var(--mono); font-size: 13px; }
+.sec-desc { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 12px; }
+.card-h { font-weight: 700; font-size: 13.5px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+ul.plain { padding-left: 20px; }
+ul.plain li { margin: 4px 0; }
+
+/* ========== 聊天消息（复刻 webui 实际样式结构） ========== */
+.msg { margin-bottom: 14px; }
+.m-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ava { width: 24px; height: 24px; border-radius: 8px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; }
+.m-role { font-weight: 700; font-size: 13px; }
+.body { color: var(--text); }
+.md { margin-bottom: 4px; }
+.plain { white-space: pre-wrap; }
+
+/* 工具调用折叠块（类名与 ChatView.vue / 原型-20261017-001 对齐） */
+.tool-call { border: 1px solid var(--border); border-radius: 9px; margin: 8px 0; overflow: hidden;
+  background: var(--surface-2); }
+.tool-call summary { cursor: pointer; padding: 7px 12px; font-size: 12.5px; display: flex;
+  align-items: center; gap: 8px; list-style: none; white-space: nowrap; overflow: hidden; }
+.tool-call summary::-webkit-details-marker { display: none; }
+.tool-call summary .arrow { transition: transform .15s; color: var(--muted); font-size: 10px; flex: none; }
+.tool-call[open] summary .arrow { transform: rotate(90deg); }
+.tool-call summary:hover { background: var(--surface); }
+.tc-badge { font-family: var(--mono); font-size: 11.5px; font-weight: 700; padding: 1px 8px;
+  border-radius: 999px; flex: none; }
+.tc-badge.ok   { background: var(--ok-weak); color: var(--ok); }
+.tc-badge.run  { background: var(--warn-weak); color: var(--warn); }
+.tc-badge.fail { background: var(--danger-weak); color: var(--danger); }
+.tc-badge.run .spin-ico { display: inline-block; animation: tc-rotate .8s linear infinite; }
+@keyframes tc-rotate { to { transform: rotate(360deg); } }
+.tc-icon { flex: none; }
+.tc-name { font-weight: 600; flex: none; }
+.tc-sum { color: var(--muted); overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
+.tc-sum .mono { font-family: var(--mono); font-size: 12px; }
+.tc-took { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+
+/* 展开体：参数表 + 原始 JSON + 结果 */
+.tc-body { border-top: 1px solid var(--border); background: var(--surface); padding: 10px 12px 12px; }
+.tc-sec-title { font-size: 11.5px; font-weight: 700; color: var(--muted); margin: 8px 0 5px;
+  display: flex; align-items: center; gap: 6px; }
+.ptable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ptable td { border: 1px solid var(--border); padding: 4px 9px; vertical-align: top; }
+.ptable td:first-child { width: 130px; color: var(--muted); white-space: nowrap; background: var(--surface-2); }
+.ptable td .en { font-family: var(--mono); font-size: 11px; opacity: .75; margin-left: 5px; }
+.ptable td.val { font-family: var(--mono); font-size: 12px; word-break: break-all; white-space: pre-wrap; }
+details.jv { margin-top: 8px; border: 1px dashed var(--border); border-radius: 8px; background: var(--surface-2); }
+details.jv summary { cursor: pointer; padding: 5px 10px; font-size: 12px; color: var(--muted); list-style: none; }
+details.jv summary::-webkit-details-marker { display: none; }
+details.jv summary:hover { color: var(--brand); }
+details.jv pre { font-family: var(--mono); font-size: 11.5px; padding: 4px 12px 10px; overflow-x: auto;
+  color: var(--text); line-height: 1.5; }
+.tc-result { font-family: var(--mono); font-size: 12px; background: var(--code-bg); border-radius: 8px;
+  padding: 8px 10px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto; line-height: 1.55; }
+.tc-result.clamped { max-height: 120px; overflow: hidden; position: relative; }
+.tc-result.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 46px;
+  background: linear-gradient(transparent, var(--code-bg)); }
+.tc-expand { margin-top: 6px; font-size: 12px; }
+.result-fail { border-left: 3px solid var(--danger); padding-left: 10px; }
+
+/* 运行态状态行（LiveStatus） */
+.live-status { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.ls-spin { width: 12px; height: 12px; flex: none; border: 2px solid var(--muted); border-top-color: transparent;
+  border-radius: 50%; animation: tc-rotate .8s linear infinite; }
+.ls-text { font-variant-numeric: tabular-nums; }
+
+/* ========== 对照区 ========== */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 860px) { .compare { grid-template-columns: 1fr; } }
+.cmp-tag { font-size: 11px; font-weight: 700; margin-bottom: 8px; }
+.cmp-tag.before { color: var(--danger); }
+.cmp-tag.after { color: var(--ok); }
+
+/* ========== 目录表 ========== */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th, .tbl td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+.tbl th { background: var(--surface-2); font-size: 12px; color: var(--muted); font-weight: 600; }
+.tbl td .mono { font-family: var(--mono); font-size: 12px; }
+
+/* ========== 决策点卡片 ========== */
+.decision { border: 1px solid var(--border); border-left: 3px solid var(--brand); border-radius: 9px;
+  background: var(--surface); padding: 12px 16px; margin-bottom: 10px; }
+.decision .d-id { font-weight: 800; color: var(--brand); font-size: 13px; margin-right: 6px; }
+.decision .d-title { font-weight: 700; }
+.decision .d-body { margin-top: 6px; font-size: 13px; }
+.decision .d-body b { font-weight: 700; }
+.decision .d-reject { margin-top: 5px; font-size: 12.5px; color: var(--muted); }
+.decision .d-reject::before { content: "✕ 被否决："; color: var(--danger); font-weight: 600; }
+.confirm-note { margin-top: 18px; padding: 12px 16px; border: 1px dashed var(--brand); border-radius: 10px;
+  background: var(--brand-weak); color: var(--text); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="logo"><span class="dot">L</span>WebUI 原型 · 工具调用展示中文化</div>
+  <span class="badge dim">20261022-001</span>
+  <span class="badge dim">仅原型 · 不改代码</span>
+  <span class="spacer"></span>
+  <button id="themeBtn">🌙 主题：跟随系统</button>
+</header>
+
+<main>
+  <!-- ============ 一、背景 ============ -->
+  <section>
+    <h2 class="sec"><span class="no">01</span>背景与现状问题</h2>
+    <p class="sec-desc">对应优化建议台账 20261022-001。现状三类问题（截图场景均为真实调研过程产生）：① 工具卡片 summary 是英文名 + 行尾原始 JSON；② 运行态 LiveStatus 同样是英文名；③ 展开后只有裸文本结果，无结构。</p>
+    <div class="card">
+      <ul class="plain">
+        <li><b>问题 ①</b>：<code>✓ commandRun · 3s {"command":"npm run build","timeout":30000}</code> —— 英文名难懂，长参数挤成一行，一眼看不出「它到底干了什么」；</li>
+        <li><b>问题 ②</b>：模型生成参数期间/执行期间显示 <code>生成参数：fileWrite…</code>、<code>执行中：commandRun…</code>，同样是英文；</li>
+        <li><b>问题 ③</b>：展开后 <code>tc-body</code> 直接渲染工具原始返回，长结果（数千行日志）无限撑高，无截断、无参数结构。</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ 二、新旧对照 ============ -->
+  <section>
+    <h2 class="sec"><span class="no">02</span>新旧对照（同一调用：读取 ChatView.vue 470-620 行）</h2>
+    <p class="sec-desc">summary 一行从「英文函数签名」变为「状态 + 中文动作 + 摘要短语 + 耗时」，点开展开才有参数详情与结果。</p>
+    <div class="compare">
+      <div class="card">
+        <div class="cmp-tag before">改造前（现状）</div>
+        <details class="tool-call">
+          <summary>
+            <span class="arrow">▶</span>
+            <span class="tc-badge ok">✓ fileRead</span>
+            <span class="tc-took">· 12s</span>
+            <span class="tc-args mono" style="color:var(--muted);overflow:hidden;text-overflow:ellipsis">{"path":"webui/src/views/ChatView.vue","startLine":470,"endLine":620,"lineNumbers":true}</span>
+          </summary>
+          <div class="tc-body mono" style="font-size:12px">470:   setActivityHandler(null);
+471:   offRunFinished?.();
+472:   offRunFinished = null;
+…（原始文本直接铺开，无参数结构）</div>
+        </details>
+      </div>
+      <div class="card">
+        <div class="cmp-tag after">改造后（本原型）</div>
+        <details class="tool-call" open>
+          <summary>
+            <span class="arrow">▶</span>
+            <span class="tc-badge ok">✓</span>
+            <span class="tc-icon">📖</span>
+            <span class="tc-name">读取文件</span>
+            <span class="tc-sum"><span class="mono">webui/src/views/ChatView.vue（470-620 行）</span></span>
+            <span class="tc-took">· 12s</span>
+          </summary>
+          <div class="tc-body">
+            <div class="tc-sec-title">输入参数</div>
+            <table class="ptable">
+              <tr><td>文件路径<span class="en">path</span></td><td class="val">webui/src/views/ChatView.vue</td></tr>
+              <tr><td>起始行<span class="en">startLine</span></td><td class="val">470</td></tr>
+              <tr><td>结束行<span class="en">endLine</span></td><td class="val">620</td></tr>
+              <tr><td>显示行号<span class="en">lineNumbers</span></td><td class="val">true</td></tr>
+            </table>
+            <details class="jv">
+              <summary>原始 JSON（便于复制对照）</summary>
+              <pre>{"path":"webui/src/views/ChatView.vue","startLine":470,"endLine":620,"lineNumbers":true}</pre>
+            </details>
+            <div class="tc-sec-title">结果（默认截断，可展开）</div>
+            <div class="tc-result clamped">470:   setActivityHandler(null);
+471:   offRunFinished?.();
+472:   offRunFinished = null;
+473:   registerChatBridge(null);
+474:   window.removeEventListener('keydown', onGlobalKeydown);
+475:   if (scrollRaf) cancelAnimationFrame(scrollRaf);
+476: });
+477: &lt;/script&gt;
+…（此处省略 140 行）</div>
+            <button class="tc-expand" onclick="const r=this.previousElementSibling;r.classList.toggle('clamped');this.textContent=r.classList.contains('clamped')?'▼ 展开全部结果':'▲ 收起结果'">▼ 展开全部结果</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 三、改造后消息流示例 ============ -->
+  <section>
+    <h2 class="sec"><span class="no">03</span>改造后完整消息流示例（可点击交互）</h2>
+    <p class="sec-desc">覆盖：成功 / 运行中 / 失败 / MCP 未知工具回退 / 超长结果截断 / 视觉工具。数据取自真实调研场景。</p>
+    <div class="card">
+      <div class="msg">
+        <div class="m-head"><div class="ava">L</div><span class="m-role">Loop Agent</span></div>
+        <div class="body">
+          <div class="md">好的，我先查看 ChatView.vue 的工具段渲染逻辑，再检查构建是否通过。</div>
+
+          <details class="tool-call" open>
+            <summary>
+              <span class="arrow">▶</span><span class="tc-badge ok">✓</span>
+              <span class="tc-icon">📖</span><span class="tc-name">读取文件</span>
+              <span class="tc-sum"><span class="mono">webui/src/views/ChatView.vue（470-620 行）</span></span>
+              <span class="tc-took">· 12s</span>
+            </summary>
+            <div class="tc-body">
+              <div class="tc-sec-title">输入参数</div>
+              <table class="ptable">
+                <tr><td>文件路径<span class="en">path</span></td><td class="val">webui/src/views/ChatView.vue</td></tr>
+                <tr><td>起始行<span class="en">startLine</span></td><td class="val">470</td></tr>
+                <tr><td>结束行<span class="en">endLine</span></td><td class="val">620</td></tr>
+              </table>
+              <div class="tc-sec-title">结果</div>
+              <div class="tc-result">&lt;details v-if="seg.type === 'tool'" class="tool-call"&gt;
+  &lt;summary&gt;…✓ {{ seg.tool }}…&lt;/summary&gt;
+  &lt;div class="tc-body"&gt;{{ seg.result || '（执行中…）' }}&lt;/div&gt;
+&lt;/details&gt;</div>
+            </div>
+          </details>
+
+          <details class="tool-call" open>
+            <summary>
+              <span class="arrow">▶</span><span class="tc-badge run"><span class="spin-ico">⟳</span></span>
+              <span class="tc-icon">⚡</span><span class="tc-name">执行命令</span>
+              <span class="tc-sum"><span class="mono">npm run build</span></span>
+              <span class="tc-took">· 23s</span>
+            </summary>
+            <div class="tc-body">
+              <div class="tc-sec-title">输入参数</div>
+              <table class="ptable">
+                <tr><td>命令<span class="en">command</span></td><td class="val">npm run build</td></tr>
+                <tr><td>超时（毫秒）<span class="en">timeout</span></td><td class="val">120000</td></tr>
+              </table>
+              <div class="tc-sec-title">结果（执行中…）</div>
+              <div class="tc-result muted">vite v5.4.11 building for production...
+✓ 42 modules transformed.
+dist/index.html                  0.46 kB
+dist/assets/index-Bq3f.css      16.51 kB
+…</div>
+            </div>
+          </details>
+
+          <details class="tool-call">
+            <summary>
+              <span class="arrow">▶</span><span class="tc-badge fail">✗</span>
+              <span class="tc-icon">🔍</span><span class="tc-name">搜索内容</span>
+              <span class="tc-sum"><span class="mono">在 webui/src 中检索 /dict\.txt/</span></span>
+              <span class="tc-took">· 2s</span>
+            </summary>
+            <div class="tc-body">
+              <div class="tc-sec-title">输入参数</div>
+              <table class="ptable">
+                <tr><td>检索内容<span class="en">pattern</span></td><td class="val">/dict\.txt/</td></tr>
+                <tr><td>路径<span class="en">path</span></td><td class="val">webui/src</td></tr>
+                <tr><td>递归搜索<span class="en">recursive</span></td><td class="val">true（默认）</td></tr>
+                <tr><td>忽略大小写<span class="en">ignoreCase</span></td><td class="val">true</td></tr>
+              </table>
+              <div class="tc-sec-title">结果（失败）</div>
+              <div class="tc-result result-fail">未在 webui/src 中找到匹配内容（递归）</div>
+            </div>
+          </details>
+
+          <details class="tool-call">
+            <summary>
+              <span class="arrow">▶</span><span class="tc-badge ok">✓</span>
+              <span class="tc-icon">⚙️</span><span class="tc-name mono">atlasgraph_query</span>
+              <span class="tc-sum"><span class="mono">{"cypher":"MATCH (n:File) RETURN n.name LIMIT 5"}</span></span>
+              <span class="tc-took">· 4s</span>
+            </summary>
+            <div class="tc-body">
+              <div class="tc-sec-title muted">MCP / 未知工具：回退英文名 + 紧凑 JSON（D2 回退规则）</div>
+              <div class="tc-result">File.vue, ChatView.vue, chat-stream.ts, FilesView.vue, index.ts</div>
+            </div>
+          </details>
+
+          <details class="tool-call">
+            <summary>
+              <span class="arrow">▶</span><span class="tc-badge ok">✓</span>
+              <span class="tc-icon">📖</span><span class="tc-name">读取文件</span>
+              <span class="tc-sum"><span class="mono">dict.txt（全文）→ 已截断至 2,000 行 / 256KB</span></span>
+              <span class="tc-took">· 31s</span>
+            </summary>
+            <div class="tc-body">
+              <div class="tc-sec-title">输入参数</div>
+              <table class="ptable">
+                <tr><td>文件路径<span class="en">path</span></td><td class="val">dict.txt</td></tr>
+                <tr><td>显示行号<span class="en">lineNumbers</span></td><td class="val">true（默认）</td></tr>
+              </table>
+              <div class="tc-sec-title">结果（超长默认截断，点底部按钮展开 · D4）</div>
+              <div class="tc-result clamped">1: AT&amp;T 3 nz
+2: B超 3 n
+3: c# 3 nz
+4: C# 3 nz
+5: c++ 3 nz
+6: C++ 3 nz
+7: T恤 4 n
+8: A座 3 n
+9: A股 3 n
+…（此处省略 1,990 行）</div>
+              <button class="tc-expand" onclick="const r=this.previousElementSibling;r.classList.toggle('clamped');this.textContent=r.classList.contains('clamped')?'▼ 展开全部结果':'▲ 收起结果'">▼ 展开全部结果</button>
+            </div>
+          </details>
+
+          <details class="tool-call">
+            <summary>
+              <span class="arrow">▶</span><span class="tc-badge ok">✓</span>
+              <span class="tc-icon">❓</span><span class="tc-name">图片问答</span>
+              <span class="tc-sum"><span class="mono">error.png →「报错码是什么？」→ ECONNREFUSED</span></span>
+              <span class="tc-took">· 9s</span>
+            </summary>
+            <div class="tc-body">
+              <div class="tc-sec-title">输入参数</div>
+              <table class="ptable">
+                <tr><td>图片<span class="en">image</span></td><td class="val">C:\Users\muton\Desktop\error.png</td></tr>
+                <tr><td>问题<span class="en">question</span></td><td class="val">截图里的错误码是什么？</td></tr>
+              </table>
+              <div class="tc-sec-title">结果</div>
+              <div class="tc-result">ECONNREFUSED 127.0.0.1:9229</div>
+            </div>
+          </details>
+
+          <div class="md">构建通过。工具段在 517-525 行，summary 直接输出了 <code>seg.tool</code> 和 <code>seg.args</code>，这就是英文名和 JSON 串的来源。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 四、LiveStatus ============ -->
+  <section>
+    <h2 class="sec"><span class="no">04</span>运行态 LiveStatus 三态（中文化 · D6）</h2>
+    <p class="sec-desc">与 LiveStatus.vue 现有三态一一对应，仅文案映射；耗时数字、500ms 本地时钟兜底逻辑不动。</p>
+    <div class="card">
+      <div class="live-status" style="margin-bottom:12px"><span class="ls-spin"></span><span class="ls-text">思考中…（第 3 轮） · 12s</span></div>
+      <div class="live-status" style="margin-bottom:12px"><span class="ls-spin"></span><span class="ls-text">生成参数：写入文件 tool-meta.ts…（3.2KB / 18s）</span></div>
+      <div class="live-status"><span class="ls-spin"></span><span class="ls-text">执行中：执行命令 npm run build…（23s）</span></div>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">未知 / MCP 工具回退：<span class="mono">执行中：atlasgraph_query…（4s）</span>（保留英文名，不做伪翻译）</p>
+    </div>
+  </section>
+
+  <!-- ============ 五、映射目录 ============ -->
+  <section>
+    <h2 class="sec"><span class="no">05</span>内置工具映射目录（10 个全覆盖）</h2>
+    <p class="sec-desc">webui/src/tool-meta.ts 的初始白名单；映射表为前端常量，后端工具定义零改动。</p>
+    <div class="card" style="overflow-x:auto">
+      <table class="tbl">
+        <thead><tr><th style="width:150px">英文工具名</th><th style="width:130px">图标 + 中文名</th><th>summary 摘要短语示例</th><th>参数中文标签</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">fileRead</td><td>📖 读取文件</td><td class="mono">src/agent/react-agent.ts（430-500 行）/ dict.txt（全文）</td><td>文件路径 · 起始行 · 结束行 · 起始行 offset · 读取行数 · 字节上限 · 编码 · 显示行号</td></tr>
+          <tr><td class="mono">fileWrite</td><td>✏️ 写入文件</td><td class="mono">webui/src/tool-meta.ts（新增 128 行）</td><td>文件路径 · 内容 · 写入模式</td></tr>
+          <tr><td class="mono">editFile</td><td>🔧 编辑文件</td><td class="mono">package.json（替换 1 处）</td><td>文件路径 · 原文 · 新内容 · 正则模式 · 全部替换 · 正则标志 · 起始行 · 结束行</td></tr>
+          <tr><td class="mono">grep</td><td>🔍 搜索内容</td><td class="mono">在 webui/src 中检索 tool-call</td><td>检索内容 · 路径 · 忽略大小写 · 递归搜索 · 最大匹配数</td></tr>
+          <tr><td class="mono">commandRun</td><td>⚡ 执行命令</td><td class="mono">npm run build</td><td>命令 · 工作目录 · 超时（毫秒）</td></tr>
+          <tr><td class="mono">activateSkill</td><td>🧩 激活技能</td><td class="mono">task-driven-development</td><td>技能名称</td></tr>
+          <tr><td class="mono">describe_image</td><td>🖼️ 描述图片</td><td class="mono">error.png</td><td>图片</td></tr>
+          <tr><td class="mono">ask_image</td><td>❓ 图片问答</td><td class="mono">error.png →「报错码是什么？」</td><td>图片 · 问题</td></tr>
+          <tr><td class="mono">extract_json</td><td>📋 提取字段</td><td class="mono">invoice.png → 标题、金额</td><td>图片 · 字段列表</td></tr>
+          <tr><td class="mono">ocr_image</td><td>🔤 文字识别</td><td class="mono">screenshot.png</td><td>图片</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">MCP 与未登记工具：回退「⚙️ + 英文原名」，摘要回退紧凑 JSON（截断 80 字符），不做伪翻译。参数值展示规则：布尔 true 显示、false/缺省显示「false（默认）」；超长值截断 120 字符；object 折叠为 JSON。</p>
+    </div>
+  </section>
+
+  <!-- ============ 六、决策点 ============ -->
+  <section>
+    <h2 class="sec"><span class="no">06</span>关键决策点（请逐条确认）</h2>
+    <div class="decision">
+      <span class="d-id">D1</span><span class="d-title">映射层放前端，不动后端与 SSE 协议</span>
+      <div class="d-body">新增 <code>webui/src/tool-meta.ts</code> 纯前端常量映射（工具名→中文名+图标、参数名→中文标签、每工具摘要函数）。会话数据、SSE 事件、历史消息均不动，<b>历史会话回放天然兼容</b>。</div>
+      <div class="d-reject">在后端工具 description / SSE 事件里加中文字段——侵入协议层，历史数据不兼容，且 MCP 工具名后端同样不可控。</div>
+    </div>
+    <div class="decision">
+      <span class="d-id">D2</span><span class="d-title">summary 形态：「徽章 + 图标中文名 + 摘要短语 + 耗时」，未知工具回退英文</span>
+      <div class="d-body">10 个内置工具走白名单摘要函数（见 05 目录表）；MCP / 未登记工具回退「⚙️ 英文名 + 紧凑 JSON 截断」，保证永不出现空白或报错。</div>
+      <div class="d-reject">把完整参数全部平铺在 summary 行——回到「一行挤满 JSON」的老问题。</div>
+    </div>
+    <div class="decision">
+      <span class="d-id">D3</span><span class="d-title">展开详情 = 中文参数表 + 原始 JSON 折叠</span>
+      <div class="d-body">参数表两列（中文标签 + 值，英文参数名以小字附注，方便与后端 schema 对照）；「原始 JSON」保留为折叠块，排查问题/复制参数时用。</div>
+      <div class="d-reject">只留中文参数表——丢失与后端字段对照能力，报错排查（错误信息常引用英文参数名）会不便。</div>
+    </div>
+    <div class="decision">
+      <span class="d-id">D4</span><span class="d-title">结果区默认限高截断 + 一键展开</span>
+      <div class="d-body">结果默认限高约 120px（渐隐 + 「展开全部」按钮），展开后也限 260px 内滚动，避免数万行日志把消息流撑到不可用。</div>
+      <div class="d-reject">完全不限制高度——dict.txt 这类 34 万行文件会直接撑爆消息流。</div>
+    </div>
+    <div class="decision">
+      <span class="d-id">D5</span><span class="d-title">失败徽章用启发式判定（前端仅见结果文本）</span>
+      <div class="d-body">SSE 的 tool_end 无 status 字段，前端按结果文本启发式判定：<code>[exit=非0]</code> 开头、<code>Error</code>/<code>错误</code>/<code>异常</code> 开头、含 <code>Traceback</code> → 红色 ✗ 徽章；其余为绿 ✓。</div>
+      <div class="d-reject">改 SSE 协议增加 status 字段——更准确但要动后端与 chat-stream，超出「仅展示层」范围，可作为后续需求。</div>
+    </div>
+    <div class="decision">
+      <span class="d-id">D6</span><span class="d-title">LiveStatus 三态文案同步中文化，机制不动</span>
+      <div class="d-body">「思考中… / 生成参数：写入文件 xxx… / 执行中：执行命令 xxx…」；摘要复用 D2 的白名单函数；未知工具保留英文原名。旋转动画、500ms 时钟、停滞提示逻辑全部不动。</div>
+      <div class="d-reject">LiveStatus 显示完整摘要短语——状态行空间有限，只放「中文名 + 短对象」即可，详情留给工具卡片。</div>
+    </div>
+
+    <div class="confirm-note">
+      ✅ <b>请确认</b>：① 上述视觉与交互是否符合预期；② D1-D6 六个决策点逐条确认或纠偏；③ 05 表格里的中文名/图标/摘要短语措辞可任意调整。<br>
+      确认后我按 task-driven-development 流程建任务文档（P0 映射层+summary → P1 详情/截断/失败徽章 → P2 LiveStatus+回归），再动代码。
+    </div>
+  </section>
+</main>
+
+<script>
+// 主题：跟随系统 → 亮 → 暗 循环（与既有原型一致）
+const btn = document.getElementById('themeBtn');
+const modes = [
+  { t: '跟随系统', attr: null,        icon: '🌗' },
+  { t: '亮色',     attr: 'light',     icon: '☀️' },
+  { t: '暗色',     attr: 'dark',      icon: '🌙' },
+];
+let idx = 0;
+btn.addEventListener('click', () => {
+  idx = (idx + 1) % modes.length;
+  const m = modes[idx];
+  if (m.attr) document.documentElement.dataset.theme = m.attr;
+  else delete document.documentElement.dataset.theme;
+  btn.textContent = `${m.icon} 主题：${m.t}`;
+});
+</script>
+</body>
+</html>
