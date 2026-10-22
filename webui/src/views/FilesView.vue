@@ -29,6 +29,7 @@ import { showToast } from '../toast.js';
 import DOMPurify from 'dompurify';
 import { highlightIn, renderMarkdown } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
+import { renderEChartsIn } from '../echarts.js';
 // pptx Worker 脚本 URL：库默认按 import.meta.url 相对解析 worker 路径，vite 打包后失效，必须显式传入
 import pptxWorkerUrl from '@file-viewer/pptx/worker/pptx.worker.js?url';
 
@@ -520,6 +521,7 @@ async function openFile(path: string, anchor = ''): Promise<void> {
     if (k === 'pptx') void mountPptx(seq); // 容器已挂载，异步渲染不阻塞
     if (viewerEl.value && !(kind.value === 'md' && viewMode.value === 'prev')) highlightIn(viewerEl.value); // md 预览无需高亮；其余分支（含源码模式）高亮
     if (k === 'md' && viewMode.value === 'prev' && mdEl.value) void renderMermaidIn(mdEl.value); // md 预览：mermaid 图表后处理（../mermaid.ts 共享模块）
+    if (k === 'md' && viewMode.value === 'prev' && mdEl.value) void renderEChartsIn(mdEl.value); // md 预览：echarts 图表后处理（../echarts.ts 共享模块）
     if (viewerKw.value.trim()) applyHits(); // 打开新文件后沿用文内搜索关键词
     if (anchor) scrollToAnchor(anchor); // 跨文件锚点：渲染完成后滚动（仅 md）
   } catch (e) {
@@ -1045,6 +1047,7 @@ watch(viewMode, async (m) => {
   await nextTick(); // 等 v-if 分支重建 DOM
   if (m === 'src' && viewerEl.value) highlightIn(viewerEl.value); // 源码模式上高亮
   if (m === 'prev' && kind.value === 'md' && mdEl.value) void renderMermaidIn(mdEl.value); // 切回预览：重跑 mermaid
+  if (m === 'prev' && kind.value === 'md' && mdEl.value) void renderEChartsIn(mdEl.value); // 切回预览：重跑 echarts
   if (viewerKw.value.trim()) applyHits(); // 分支切换会丢掉 mark，重扫
 });
 

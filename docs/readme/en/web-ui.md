@@ -64,6 +64,15 @@ Background-completion alerts are configured in the 🔔 panel above the composer
 
 The sidebar groups sessions by workspace (`GET /workspaces`): sessions from other workspaces have **exactly the same rights** as the current one — you can open them and keep chatting directly, run them in parallel with runs in the current workspace, and delete them normally. A workspace's "current" marker only means most-recently-used and imposes no sending restriction. Cross-workspace runs never interfere with each other; a 409 busy only occurs when you send concurrent messages to the **same session**.
 
+### Rich Content Rendering (Math & Charts)
+
+Markdown bodies (the chat answers and md/doc file previews share one pipeline, `marked` + `DOMPurify` sanitization) support:
+
+- **Math**: `$E=mc^2$` inline and `$$..$$` block via KaTeX (in-diagram `$$..$$` math is built into mermaid v12, flowchart/sequence only); syntax errors render as an inline red fragment without blocking the rest.
+- **Mermaid charts**: mermaid code blocks render as SVG with a toolbar (zoom in/out / fit / fullscreen) plus wheel zoom and drag panning; parse failures keep the source block outlined in red.
+- **ECharts charts**: echarts code blocks (pure JSON options, declarative — no script execution surface) render as interactive SVG charts with the same container controls as Mermaid; invalid JSON keeps the source block outlined in red.
+- Both load on demand and adapt to light/dark themes (already-rendered charts re-render on theme switch); KaTeX fonts are bundled locally for offline use.
+
 ### Security Details
 
 - The static layer prevents path traversal (`..%2f` etc. → 403); `/assets/*` is cached immutable for one year while `index.html` is not cached (upgrades take effect immediately).

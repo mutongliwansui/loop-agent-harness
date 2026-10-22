@@ -1,4 +1,6 @@
-/* mermaid.css：图表容器全局样式（ChatView 对话流与 FilesView md 预览共用，类名专用无冲突） */
+/* mermaid.css：图表容器全局样式（ChatView 对话流与 FilesView md 预览共用，类名专用无冲突）
+ * mermaid 与 echarts 图表共用 .mermaid-block / .mmd-* 容器类（Task-20261023-001 D3，
+ * 容器构建见 chart-box.ts）；.echarts-host / .echarts-err 为 echarts 专属补充。 */
 
 /* mermaid 图表容器：工具栏 + 可缩放视口 */
 .mermaid-block {
@@ -53,3 +55,8 @@
 }
 .mermaid-block:fullscreen .mmd-view { max-height: none; flex: 1; }
 pre.mermaid-err { border-color: var(--danger); }
+
+/* echarts 图表宿主：尺寸由 echarts.ts 按视口宽设定（SVG 渲染器）；容器交互复用上方案 */
+.echarts-host { margin: 0 auto; }
+.echarts-host svg { display: block; }
+pre.echarts-err { border-color: var(--danger); }

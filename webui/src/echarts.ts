@@ -1,0 +1,120 @@
+// echarts.ts：```echarts 代码块 → ECharts 图表后处理（ChatView 对话流与 FilesView md 预览共用）
+//
+// renderEChartsIn(root) → 把 root 下 marked 输出的 <pre><code class="language-echarts"> 替换为
+// 图表容器（容器与交互复用 ../chart-box.ts，样式见 mermaid.css）。代码块内容必须为合法 JSON
+// option（D4 声明式无执行面）；JSON 非法或 init 失败保留代码块并标红（.echarts-err）；
+// echarts 动态加载失败静默保留代码块形态。内部串行排队，避免并发初始化。
+//
+// 尺寸（D4）：初始按视口可用宽 × 320 渲染（SVG 渲染器）；缩放/fit/全屏后经 chart-box 的
+// onResize 调 chart.resize()，矢量重绘保持 5x 缩放下清晰。
+// 主题（D7）：渲染时读取当前主题（逻辑同 ../mermaid.ts，dark → echarts 内置 dark 主题）；
+// MutationObserver 监听 html[data-theme] + matchMedia 监听系统主题，已渲染图表 dispose 后
+// 按新主题重建（echarts 主题在 init 时固化，不支持运行时切换）；宿主移出文档的实例顺带清理。
+
+import type { ECharts, EChartsOption } from 'echarts';
+import { buildChartBox } from './chart-box.js';
+
+type EChartsModule = typeof import('echarts');
+
+interface RenderedEntry {
+  chart: ECharts;
+  option: Record<string, unknown>;
+}
+
+let echartsPromise: Promise<EChartsModule> | null = null;
+let echartsSeq = 0;
+let echartsQueue: Promise<void> = Promise.resolve(); // 串行排队，避免并发初始化
+const rendered = new Map<HTMLElement, RenderedEntry>(); // 已渲染图表（主题切换重渲 / 泄漏清理）
+let themeWatcherStarted = false;
+
+/** 解析 echarts 代码块内容为 option 对象（纯函数，供单测）；空/非法 JSON/非对象返回 null */
+export function extractEChartsOption(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** 当前主题名（逻辑同 ../mermaid.ts）：手动 data-theme 优先，否则跟随系统；亮色用 echarts 默认主题 */
+function currentThemeName(): 'dark' | undefined {
+  const t = document.documentElement.dataset.theme;
+  return (t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : undefined;
+}
+
+/** 主题变化监听（一次性）：data-theme 手动切换 + 系统明暗切换，均对已渲染图表按新主题重建 */
+function ensureThemeWatcher(echarts: EChartsModule): void {
+  if (themeWatcherStarted) return;
+  themeWatcherStarted = true;
+  const rerenderAll = (): void => {
+    for (const [host, entry] of rendered) {
+      if (!host.isConnected) {
+        rendered.delete(host); // 视图重渲后旧宿主已移除：顺带清理防泄漏
+        continue;
+      }
+      entry.chart.dispose(); // echarts 主题 init 时固化：换主题必须重建实例
+      entry.chart = echarts.init(host, currentThemeName(), { renderer: 'svg' });
+      entry.chart.setOption(entry.option as EChartsOption);
+    }
+  };
+  new MutationObserver(rerenderAll).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme'],
+  });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', rerenderAll);
+}
+
+export function renderEChartsIn(root: HTMLElement): Promise<void> {
+  echartsQueue = echartsQueue.then(() => renderBlocks(root));
+  return echartsQueue;
+}
+
+async function renderBlocks(root: HTMLElement): Promise<void> {
+  const blocks = [...root.querySelectorAll<HTMLElement>('pre > code.language-echarts')];
+  if (blocks.length === 0) return;
+  echartsPromise ??= import('echarts');
+  let echarts: EChartsModule;
+  try {
+    echarts = await echartsPromise;
+  } catch {
+    return; // echarts 动态加载失败：静默保留代码块形态
+  }
+  // 清理已移出文档的旧实例（对话流重渲 / 文件切换后的孤儿图表）
+  for (const [host, entry] of rendered) {
+    if (!host.isConnected) {
+      entry.chart.dispose();
+      rendered.delete(host);
+    }
+  }
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    if (!pre || pre.tagName !== 'PRE') continue; // v-html 重渲后已被替换/移除
+    const option = extractEChartsOption(code.textContent ?? '');
+    if (!option) {
+      pre.classList.add('echarts-err'); // 非法 JSON：标红保留源码
+      continue;
+    }
+    const host = document.createElement('div');
+    host.className = 'echarts-host';
+    try {
+      const box = buildChartBox(host, 'echarts');
+      pre.replaceWith(box.el); // 先入 DOM 才能测视口宽
+      const view = box.el.querySelector<HTMLElement>('.mmd-view')!;
+      host.style.width = `${Math.max(200, view.clientWidth - 24)}px`; // 24 = .mmd-view 左右 padding
+      host.style.height = '320px';
+      const chart = echarts.init(host, currentThemeName(), { renderer: 'svg' });
+      chart.setOption(option as EChartsOption);
+      box.remeasure(); // host 现在有实际尺寸：重测基准并恢复缩放按钮
+      box.onResize(() => chart.resize()); // 缩放/fit/全屏后矢量重绘
+      rendered.set(host, { chart, option });
+      ensureThemeWatcher(echarts);
+    } catch {
+      host.remove();
+      pre.classList.add('echarts-err'); // init/setOption 失败：标红保留源码
+    }
+  }
+}

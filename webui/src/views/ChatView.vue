@@ -19,6 +19,7 @@ import { api, AuthError, ApiError, uploadRaw } from '../api/client.js';
 import { showToast } from '../toast.js';
 import { renderMarkdown, highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
+import { renderEChartsIn } from '../echarts.js';
 import FilesView from './FilesView.vue';
 import LiveStatus from '../components/LiveStatus.vue';
 import {
@@ -192,6 +193,7 @@ async function postRenderMsgs(): Promise<void> {
   if (!msgsEl.value) return;
   highlightIn(msgsEl.value); // 高亮在 mermaid 前：mermaid 块被跳过
   await renderMermaidIn(msgsEl.value); // mermaid 图表后处理（../mermaid.ts 共享模块）
+  void renderEChartsIn(msgsEl.value); // echarts 图表后处理（../echarts.ts 共享模块）
 }
 
 // mermaid 容器构建（缩放/平移/全屏）与渲染排队逻辑见 ../mermaid.ts，样式见 ../mermaid.css
