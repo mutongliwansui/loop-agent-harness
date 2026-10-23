@@ -1,89 +1,373 @@
 /* mermaid.css：图表容器全局样式（ChatView 对话流与 FilesView md 预览共用，类名专用无冲突）
- * mermaid 与 echarts 图表共用 .mermaid-block / .mmd-* 容器类（Task-20261023-001 D3，
- * 容器构建见 chart-box.ts）；.echarts-host / .echarts-err 为 echarts 专属补充。 */
+ *
+ * 外框重设计（Task-20261023-003，原型 docs/designs/原型-20261023-001+图表容器外框重设计.html）：
+ *   .chart-block > .chart-bar（类型标识 + 控件组）+ .chart-view（> .chart-stage + .chart-hint）
+ *   [+ .chart-source]，容器构建见 chart-box.ts，mermaid 与 echarts 共用同一套类名。
+ *
+ * 兼容策略：.mermaid-block 作为 .chart-block 的旧类别名保留一版——旧缓存页（旧 HTML + 新 CSS）
+ * 仍能拿到外框；pre.echarts-err / pre.mermaid-err 并入 pre.chart-err。
+ * emit 的 dist 资源带内容散列、index.html 每次取新，故旧模板仅降级为「内部无样式」，不会白屏。 */
 
-/* mermaid 图表容器：工具栏 + 可缩放视口 */
+/* ===== 1. 外框 ===== */
+.chart-block,
 .mermaid-block {
-  margin: 8px 0;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  margin: 10px 0;
   display: flex;
   flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
+  transition: box-shadow 0.18s ease, border-color 0.18s ease;
 }
-.mermaid-block .mmd-bar {
+.chart-block:hover,
+.mermaid-block:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* ===== 2. 工具栏 ===== */
+.chart-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 6px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 8px 4px 11px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bar-bg);
 }
-.mmd-cap {
-  font-size: 10.5px;
-  color: var(--muted);
-  font-family: ui-monospace, Consolas, monospace;
-  margin-left: 4px;
+
+/* 2.1 左侧类型标识：图标 + 中文名 + 可选副标题（替代原先像调试遗留的等宽 "echarts"） */
+.chart-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+  user-select: none;
 }
-.mmd-spring { flex: 1; }
-.mmd-bar button {
-  border: none;
-  background: none;
-  color: inherit;
+.chart-kind .kind-ico {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 6px;
+  color: var(--brand);
+  background: var(--brand-weak);
+  flex: 0 0 auto;
+}
+.chart-kind .kind-ico svg {
+  width: 12px;
+  height: 12px;
+}
+.chart-kind .kind-sub {
+  font-weight: 500;
   font-size: 11.5px;
-  padding: 2px 8px;
-  border-radius: 5px;
-  cursor: pointer;
-  font-family: ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  padding-left: 7px;
+  margin-left: 1px;
+  border-left: 1px solid var(--line);
 }
-.mmd-bar button:hover:not(:disabled) { background: var(--code-bg); }
-.mmd-bar button:disabled { opacity: 0.4; cursor: default; }
-.mermaid-block .mmd-view {
-  padding: 10px 12px;
+
+/* 2.2 右侧控件组（原 .mmd-spring 占位升级为容器，少一层节点） */
+.chart-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.tbtn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.tbtn svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tbtn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.tbtn:active:not(:disabled) {
+  background: var(--active);
+}
+.tbtn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+.tbtn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+/* 源码开关的「已开启」态：品牌弱底色锁定，hover 不回退灰底 */
+.tbtn.on,
+.tbtn.on:hover:not(:disabled) {
+  color: var(--brand);
+  background: var(--brand-weak);
+}
+
+/* 2.3 缩放读数：点击复位 100%，等宽数字保证不跳动 */
+.zoom-val {
+  min-width: 48px;
+  height: 26px;
+  padding: 0 7px;
+  font: 500 11.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.zoom-val:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.zoom-val:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+.zoom-val:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+/* 2.4 控件组分隔 */
+.tdiv {
+  width: 1px;
+  height: 15px;
+  margin: 0 5px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+/* ===== 3. 视口 ===== */
+.chart-view {
+  position: relative;
+  padding: 14px 16px;
   overflow: auto;
   max-height: 60vh;
+  background: var(--view-bg);
+  overscroll-behavior: contain;
 }
-.mmd-stage { min-width: max-content; margin: 0 auto; user-select: none; }
-.mmd-view.pan-able { cursor: grab; }
-.mmd-view.panning { cursor: grabbing; }
-.mmd-stage svg { display: block; }
+.chart-stage {
+  min-width: max-content;
+  margin: 0 auto;
+  user-select: none;
+}
+.chart-stage > svg {
+  display: block;
+}
+.chart-view.pan-able {
+  cursor: grab;
+}
+.chart-view.panning {
+  cursor: grabbing;
+}
+
+/* 3.1 拖拽提示：仅在可平移时、悬停淡入。
+ * 注意 .chart-hint 是 .chart-view 的子节点，必须用子选择器；
+ * 原型写的是 `.chart-view.pan-able ~ .chart-hint`（兄弟选择器），永远匹配不到，此处已修正。 */
+.chart-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  padding: 3px 8px;
+  font: 500 10.5px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: var(--muted);
+  background: var(--panel-glass);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+.chart-block:hover .chart-view.pan-able > .chart-hint {
+  opacity: 1;
+  transform: none;
+}
+
+/* 3.2 细滚动条：悬停才显形 */
+.chart-view::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.chart-view::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.chart-block:hover .chart-view::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+.chart-view::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+  background-clip: content-box;
+}
+.chart-view::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ===== 4. 全屏 ===== */
+.chart-block:fullscreen,
 .mermaid-block:fullscreen {
-  border: none;
-  border-radius: 0;
-  background: var(--bg);
-}
-.mermaid-block:fullscreen .mmd-view { max-height: none; flex: 1; }
-
-/* ===== 预览 ⇄ 源代码切换（Task-20261023-002 D6）=====
- * 只切 display，不 dispose 实例：切回预览时 chart-box 会重算 fit 并触发 resizers。
- * 源码态下缩放类按钮（＋/－/100%/⛶）由 chart-box 置 disabled。 */
-.mermaid-block .mmd-source {
-  display: none;
   margin: 0;
-  padding: 10px 12px;
-  max-height: 420px;
-  overflow: auto;
-  font: 12px/1.55 ui-monospace, Consolas, monospace;
-  white-space: pre;
-  tab-size: 2;
-  background: var(--code-bg);
-  color: inherit;
   border: none;
   border-radius: 0;
+  box-shadow: none;
+  background: var(--panel);
+  height: 100vh;
 }
-.mermaid-block.src-mode .mmd-view { display: none; }
-.mermaid-block.src-mode .mmd-source { display: block; }
+.chart-block:fullscreen .chart-view,
+.mermaid-block:fullscreen .chart-view {
+  max-height: none;
+  flex: 1;
+}
 
-pre.mermaid-err { border-color: var(--danger); }
+/* ===== 5. 预览 ⇄ 源代码（Task-20261023-002 D6）=====
+ * 只切 display，不 dispose 实例：切回预览时 chart-box 会重算 fit 并触发 resizers。
+ * 源码态下缩放/适应宽度/全屏由 chart-box 的 syncBtnState() 置 disabled，只有源码开关恒可用。 */
+.chart-source {
+  display: none;
+}
+.chart-block.src-mode .chart-view,
+.mermaid-block.src-mode .chart-view {
+  display: none;
+}
+.chart-block.src-mode .chart-source,
+.mermaid-block.src-mode .chart-source {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  max-height: 60vh; /* 与 .chart-view 同限高，切换时容器不跳高 */
+  background: var(--code-bg);
+  overscroll-behavior: contain;
+}
+/* 源码态下全屏按钮被禁用，此规则只在「先全屏、再切源码」时命中 */
+.chart-block:fullscreen.src-mode .chart-source,
+.mermaid-block:fullscreen.src-mode .chart-source {
+  max-height: none;
+  flex: 1;
+}
 
-/* ===== 流式图表块槽位（Task-20261023-002 D3）=====
+.src-head {
+  position: sticky;
+  top: 0;
+  z-index: 2; /* 长代码滚动时语言标签与复制按钮不滚走 */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.src-lang {
+  padding: 3px 6px;
+  border-radius: 5px;
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--brand);
+  background: var(--brand-weak);
+}
+.src-meta {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--muted);
+}
+.src-copy {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 9px;
+  font: 500 11px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.src-copy:hover {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.src-copy:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+.src-copy.done {
+  color: var(--brand);
+  border-color: var(--brand);
+}
+.src-code {
+  margin: 0;
+  padding: 12px 14px 16px;
+  font: 500 12px/1.7 var(--mono);
+  color: var(--text-2);
+  white-space: pre; /* 保留原始缩进，超宽时横向滚动而非折行 */
+  tab-size: 2;
+}
+
+/* ===== 6. 失败降级（原 pre.echarts-err 整圈红框 → 左侧重边框 + 错误标签 chip） ===== */
+pre.chart-err,
+pre.echarts-err,
+pre.mermaid-err {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--danger);
+  border-left-width: 3px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font: 500 11.5px/1.6 var(--mono);
+  overflow: auto;
+}
+pre.chart-err .err-tag {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 2px 6px;
+  font: 600 10px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  letter-spacing: 0.04em;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+}
+
+/* ===== 7. 流式图表块槽位（Task-20261023-002 D3）=====
  * 槽位由 Vue 的 v-for 渲染成空元素，渲染器往内部 append 图表容器（不替换槽位本身）。
- * 未渲染时高度为 0，避免占位抖动；渲染后由 .mermaid-block 撑开。 */
-.chart-slot { display: block; }
-.chart-slot:empty { min-height: 0; }
+ * 未渲染时高度为 0，避免占位抖动；渲染后由 .chart-block 撑开。 */
+.chart-slot {
+  display: block;
+}
+.chart-slot:empty {
+  min-height: 0;
+}
 
-/* ===== 生成中占位（D5）=====
+/* ===== 8. 生成中占位（D5）=====
  * 图表围栏已开头未闭合期间显示，替代逐字刷屏的裸代码块。 */
 .chart-pending {
   display: flex;
@@ -111,9 +395,16 @@ pre.mermaid-err { border-color: var(--danger); }
   font-variant-numeric: tabular-nums;
   opacity: 0.75;
 }
-@keyframes cp-rotate { to { transform: rotate(360deg); } }
+@keyframes cp-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
-/* echarts 图表宿主：尺寸由 echarts.ts 按视口宽设定（SVG 渲染器）；容器交互复用上方案 */
-.echarts-host { margin: 0 auto; }
-.echarts-host svg { display: block; }
-pre.echarts-err { border-color: var(--danger); }
+/* ===== 9. echarts 宿主：尺寸由 echarts.ts 按视口宽设定（SVG 渲染器）；容器交互复用上方案 ===== */
+.echarts-host {
+  margin: 0 auto;
+}
+.echarts-host svg {
+  display: block;
+}

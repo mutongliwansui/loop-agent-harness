@@ -6,7 +6,7 @@
 //      的 v-for 管理，replaceWith 会让 vnode.el 与真实 DOM 失联）。
 //   2) pre > code.language-echarts（兼容路径，仅 legacy=true）：整段 v-html 渲染场景。
 // 代码块内容必须为合法 JSON option（D4 声明式无执行面）；JSON 非法 / init 失败 → 槽位内
-// 保留源码并标红（.echarts-err）且打 data-done 排除重试；动态加载失败同样落源码（D7）。
+// 保留源码并标红（.chart-err）且打 data-done 排除重试；动态加载失败同样落源码（D7）。
 // 内部串行排队，避免并发初始化。
 //
 // 尺寸（D4）：初始按视口可用宽 × 320 渲染（SVG 渲染器）；缩放/fit/全屏后经 chart-box 的
@@ -17,6 +17,7 @@
 
 import type { ECharts, EChartsOption } from 'echarts';
 import { buildChartBox } from './chart-box.js';
+import { seriesLabel } from './chart-labels.js';
 
 type EChartsModule = typeof import('echarts');
 
@@ -87,11 +88,14 @@ function fallbackInSlot(slot: HTMLElement, src: string): void {
   slot.dataset.done = '1';
   slot.innerHTML = '';
   const pre = document.createElement('pre');
-  pre.className = 'echarts-err';
+  pre.className = 'chart-err';
+  const tag = document.createElement('span');
+  tag.className = 'err-tag';
+  tag.textContent = 'echarts 渲染失败';
   const code = document.createElement('code');
   code.className = 'language-echarts';
   code.textContent = src;
-  pre.appendChild(code);
+  pre.append(tag, '\n', code); // '\n' 在 white-space:pre 下换行，错误标签独占一行
   slot.appendChild(pre);
 }
 
@@ -105,10 +109,16 @@ function mountInSlot(
   const host = document.createElement('div');
   host.className = 'echarts-host';
   try {
-    const box = buildChartBox(host, 'echarts', src); // 第三参数启用「预览 ⇄ 源代码」（D6）
+    const box = buildChartBox(host, {
+      kind: 'chart',
+      sub: seriesLabel(option),
+      source: src, // 传 source 即启用「预览 ⇄ 源代码」（D6）
+      lang: 'echarts',
+      meta: 'option',
+    });
     slot.appendChild(box.el);
-    const view = box.el.querySelector<HTMLElement>('.mmd-view')!;
-    host.style.width = `${Math.max(200, view.clientWidth - 24)}px`; // 24 = .mmd-view 左右 padding
+    const view = box.el.querySelector<HTMLElement>('.chart-view')!;
+    host.style.width = `${Math.max(200, view.clientWidth - 32)}px`; // 32 = .chart-view 左右 padding
     host.style.height = '320px';
     const chart = echarts.init(host, currentThemeName(), { renderer: 'svg' });
     chart.setOption(option as EChartsOption);
@@ -160,16 +170,22 @@ async function renderBlocks(root: HTMLElement, opts: RenderEChartsOpts): Promise
     const src = code.textContent ?? '';
     const option = extractEChartsOption(src);
     if (!option) {
-      pre.classList.add('echarts-err'); // 非法 JSON：标红保留源码
+      pre.classList.add('chart-err'); // 非法 JSON：标红保留源码
       continue;
     }
     const host = document.createElement('div');
     host.className = 'echarts-host';
     try {
-      const box = buildChartBox(host, 'echarts', src);
+      const box = buildChartBox(host, {
+        kind: 'chart',
+        sub: seriesLabel(option),
+        source: src,
+        lang: 'echarts',
+        meta: 'option',
+      });
       pre.replaceWith(box.el); // 先入 DOM 才能测视口宽
-      const view = box.el.querySelector<HTMLElement>('.mmd-view')!;
-      host.style.width = `${Math.max(200, view.clientWidth - 24)}px`;
+      const view = box.el.querySelector<HTMLElement>('.chart-view')!;
+      host.style.width = `${Math.max(200, view.clientWidth - 32)}px`;
       host.style.height = '320px';
       const chart = echarts.init(host, currentThemeName(), { renderer: 'svg' });
       chart.setOption(option as EChartsOption);
@@ -179,7 +195,7 @@ async function renderBlocks(root: HTMLElement, opts: RenderEChartsOpts): Promise
       ensureThemeWatcher(echarts);
     } catch {
       host.remove();
-      pre.classList.add('echarts-err'); // init/setOption 失败：标红保留源码
+      pre.classList.add('chart-err'); // init/setOption 失败：标红保留源码
     }
   }
 }

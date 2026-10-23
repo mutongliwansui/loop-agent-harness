@@ -315,27 +315,30 @@ section { padding-top: 40px; }
 .chart-block:fullscreen .chart-bar { border-radius: 0; }
 
 /* ============================================================
-   3.5 预览 ⇄ 源代码（新增能力）
+   3.5 预览 ⇄ 源代码
+       命名对齐产品：状态类 .src-mode 与 chart-box.ts 完全同名（产品 .mmd-source 面板
+       随 .mmd-* → .chart-* 统一改前缀为 .chart-source，见「落地映射」表）
    ============================================================ */
 /* 开关按钮的「已开启」态：用品牌弱底色锁定，hover 不再回退成灰底 */
 .tbtn.on { color: var(--brand); background: var(--brand-weak); }
 .tbtn.on:hover:not(:disabled) { color: var(--brand); background: var(--brand-weak); }
 
-/* 源码面板与 .chart-view 平级：切换只改 .src-on 一个类，不动 DOM 结构，
+/* 源码面板与 .chart-view 平级：切换只改 .src-mode 一个类，不动 DOM 结构，
    所以 measure() 测得的 baseW/baseH 与当前 scale 在来回切换后都不会丢 */
-.chart-src { display: none; }
-.chart-block.src-on .chart-view { display: none; }
-.chart-block.src-on .chart-src {
+.chart-source { display: none; }
+.chart-block.src-mode .chart-view { display: none; }
+.chart-block.src-mode .chart-source {
   display: flex; flex-direction: column;
   overflow: auto;
   max-height: 60vh;              /* 与 .chart-view 同限高，切换时容器不跳高 */
   background: var(--code-bg);
   overscroll-behavior: contain;
 }
-.chart-block:fullscreen.src-on .chart-src { max-height: none; flex: 1; }
+/* 源码态下全屏按钮被禁用，此规则只在「先全屏、再切源码」时命中 */
+.chart-block:fullscreen.src-mode .chart-source { max-height: none; flex: 1; }
 
 /* 方案 B：源码态让悬浮工具条常驻，否则鼠标一移出就没有能切回去的控件 */
-.chart-block.floating.src-on .chart-bar { opacity: 1; transform: none; }
+.chart-block.floating.src-mode .chart-bar { opacity: 1; transform: none; }
 
 .src-head {
   position: sticky; top: 0; z-index: 2;   /* 长代码滚动时语言标签与复制按钮不滚走 */
@@ -687,8 +690,8 @@ table.map tr:last-child td { border-bottom: none; }
             </div>
             <span class="chart-hint">拖拽平移 · 滚轮缩放</span>
           </div>
-          <!-- 源代码视图：与 .chart-view 平级，切换只改 .chart-block.src-on -->
-          <div class="chart-src">
+          <!-- 源代码视图：与 .chart-view 平级，切换只改 .chart-block.src-mode -->
+          <div class="chart-source">
             <div class="src-head">
               <span class="src-lang">echarts</span>
               <span class="src-meta">option</span>
@@ -814,7 +817,7 @@ table.map tr:last-child td { border-bottom: none; }
         </div>
         <span class="chart-hint">拖拽平移 · 滚轮缩放</span>
       </div>
-      <div class="chart-src">
+      <div class="chart-source">
         <div class="src-head">
           <span class="src-lang">mermaid</span>
           <span class="src-meta">flowchart</span>
@@ -903,7 +906,7 @@ table.map tr:last-child td { border-bottom: none; }
           </button>
         </span>
       </div>
-      <div class="chart-src">
+      <div class="chart-source">
         <div class="src-head">
           <span class="src-lang">mermaid</span>
           <span class="src-meta">flowchart</span>
@@ -1046,6 +1049,13 @@ table.map tr:last-child td { border-bottom: none; }
       建议保留旧类名做别名一个版本，避免 <code>dist</code> 旧产物与缓存页白屏。
       末尾新增的「预览 ⇄ 源代码」除了模板与 CSS，还要求 <code>chart-box.ts</code> 把原始源码留存下来。
     </p>
+    <p class="sec-desc" style="border-left:3px solid var(--ok,#10b981);padding-left:10px">
+      <b>落地状态：已按本表实施</b>（2026-10-23，<a href="../tasks/task-20261023-003-图表容器外框重设计落地.md">Task-20261023-003</a>）。
+      额外新增 <code>webui/src/chart-labels.ts</code> 承担副标题推导（<code>seriesLabel</code> / <code>diagramLabel</code>，纯函数可单测）。
+      与本原型的 3 处偏差：①<code>.chart-hint</code> 选择器本页写成 <code>~</code> 兄弟选择器，但它是 <code>.chart-view</code> 的子节点，落地改为 <code>&gt;</code> 子选择器；
+      ②源码面板 <code>max-height: 420px</code> 落地改为 <code>60vh</code>，与预览态等高、切换不跳高；
+      ③类型名 / 副标题由真实数据推导，不再是本页演示用的写死文案。
+    </p>
     <div class="map-wrap">
       <table class="map">
         <tr><th style="width:26%">现状</th><th style="width:30%">重设计</th><th>动作</th></tr>
@@ -1090,9 +1100,9 @@ table.map tr:last-child td { border-bottom: none; }
           <td>padding 10/12 → 14/16；细滚动条（hover 才显形）；<code>overscroll-behavior:contain</code>；新增 <code>.chart-hint</code> 拖拽提示</td>
         </tr>
         <tr>
-          <td>无（源码渲染完即丢弃）</td>
-          <td><code>.chart-src</code> + <code>[data-act="src"]</code> 开关 + <code>.src-on</code></td>
-          <td><b>新增「预览 ⇄ 源代码」</b>：<code>chart-box.ts</code> 需把原始代码块字符串存到实例上（不要只留渲染结果），模板里输出 <code>&lt;pre class="src-code"&gt;</code>；切换只改 <code>.src-on</code> 一个类，缩放/适应按钮随之置灰，全屏保留</td>
+          <td><code>.mmd-source</code>（纯 <code>&lt;pre&gt;</code>）+ <code>.src-mode</code></td>
+          <td><code>.chart-source</code>（<code>.src-head</code> + <code>.src-code</code>）+ <code>.src-mode</code></td>
+          <td>面板类名 <code>.mmd-source</code> → <code>.chart-source</code>（随 <code>.mmd-*</code> 一起改前缀）；<b>状态类 <code>.src-mode</code> 与产品同名，不改</b>。面板由「纯 pre 直接承载文本」升级为「语言标签 + 复制按钮 + 代码区」；切换只改 <code>.src-mode</code> 一个类不动 DOM，源码态缩放/适应宽度/全屏一并置灰（对齐 <code>syncBtnState()</code> 的 <code>fsBtn.disabled = srcMode</code>），只有 <code>[data-act="src"]</code> 开关恒可用</td>
         </tr>
         <tr>
           <td><code>pre.echarts-err</code> 整圈红框</td>
@@ -1165,10 +1175,16 @@ table.map tr:last-child td { border-bottom: none; }
       }
       var zoomable = baseW > 0 && baseH > 0;
       canZoom = zoomable;
+      var inSrc = el.classList.contains('src-mode');
       /* 排除源码开关：它不依赖内容尺寸，任何状态下都必须可点 */
       Array.prototype.forEach.call(
-        el.querySelectorAll('.tbtn:not([data-act="src"]), .zoom-val'),
-        function (b) { b.disabled = !zoomable || el.classList.contains('src-on'); }
+        el.querySelectorAll('.tbtn:not([data-act="src"]):not([data-act="fs"]), .zoom-val'),
+        function (b) { b.disabled = !zoomable || inSrc; }
+      );
+      /* 全屏只受源码态影响（产品 fsBtn.disabled = srcMode），与能否缩放无关 */
+      Array.prototype.forEach.call(
+        el.querySelectorAll('[data-act="fs"]'),
+        function (b) { b.disabled = inSrc; }
       );
       return zoomable;
     }
@@ -1203,10 +1219,10 @@ table.map tr:last-child td { border-bottom: none; }
       view.scrollTop = 0;
     }
 
-    /* 预览 ⇄ 源代码：只切换 .src-on 一个类，不销毁/重建 DOM，
+    /* 预览 ⇄ 源代码：只切换 .src-mode 一个类，不销毁/重建 DOM，
        因此已测得的 baseW/baseH 与当前 scale 在来回切换后保持不变 */
     function setSrc(on) {
-      el.classList.toggle('src-on', on);
+      el.classList.toggle('src-mode', on);
       if (srcBtn) {
         srcBtn.classList.toggle('on', on);
         srcBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -1214,10 +1230,15 @@ table.map tr:last-child td { border-bottom: none; }
         srcBtn.title = tip;
         srcBtn.setAttribute('aria-label', tip);
       }
-      /* 源码态下缩放 / 适应宽度没有意义 → 置灰；全屏仍然可用 */
+      /* 源码态下缩放 / 适应宽度无意义 → 置灰；缩放类还要求内容可测出尺寸 */
       Array.prototype.forEach.call(
         el.querySelectorAll('[data-act="in"], [data-act="out"], [data-act="fit"], .zoom-val'),
         function (b) { b.disabled = on || !canZoom; }
+      );
+      /* 全屏只受源码态影响（对齐产品 fsBtn.disabled = srcMode） */
+      Array.prototype.forEach.call(
+        el.querySelectorAll('[data-act="fs"]'),
+        function (b) { b.disabled = on; }
       );
       /* 切回预览时重算一次：隐藏期间 clientWidth 为 0，pan-able 判断会失真 */
       if (!on && canZoom) apply(scale);
@@ -1233,7 +1254,7 @@ table.map tr:last-child td { border-bottom: none; }
       else if (act === 'out') zoomTo(scale / 1.25);
       else if (act === 'fit') fit();
       else if (act === 'reset') zoomTo(1);
-      else if (act === 'src') setSrc(!el.classList.contains('src-on'));
+      else if (act === 'src') setSrc(!el.classList.contains('src-mode'));
       else if (act === 'fs') {
         if (document.fullscreenElement) document.exitFullscreen();
         else el.requestFullscreen();

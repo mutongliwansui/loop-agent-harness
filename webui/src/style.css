@@ -17,6 +17,21 @@
   --ok-weak: #d1fae5;
   --code-bg: #f1f3f5;
   --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+
+  /* 图表容器外框令牌（Task-20261023-003，取值同原型亮色套） */
+  --line-soft: #eef0f3;
+  --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;
+  --bar-bg: #fbfcfd;
+  --view-bg: #ffffff;
+  --panel-glass: rgba(255, 255, 255, .86);
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-card-hover: 0 1px 2px rgba(16, 24, 40, .05), 0 16px 38px -18px rgba(16, 24, 40, .26);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
 }
 
 /* 深色：跟随系统（data-theme="light" 可强制浅色） */
@@ -37,6 +52,19 @@
     --ok: #34d399;
     --ok-weak: #143528;
     --code-bg: #22272f;
+
+    /* 图表容器外框令牌（暗色：阴影改纯黑低透明，描边提亮） */
+    --line-soft: #242a32;
+    --line-strong: #3a424d;
+    --hover: rgba(255, 255, 255, .07);
+    --active: rgba(255, 255, 255, .12);
+    --text-2: #b6bdc6;
+    --bar-bg: #1f242b;
+    --view-bg: #1b1f26;
+    --panel-glass: rgba(31, 36, 43, .88);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+    --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
+    --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
   }
 }
 
@@ -57,6 +85,19 @@
   --ok: #34d399;
   --ok-weak: #143528;
   --code-bg: #22272f;
+
+  /* 图表容器外框令牌（暗色：阴影改纯黑低透明，描边提亮） */
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --panel-glass: rgba(31, 36, 43, .88);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
 }
 
 * { box-sizing: border-box; }
