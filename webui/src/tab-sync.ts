@@ -18,6 +18,9 @@ export type TabMsg =
 
 export type TabMsgType = TabMsg['t'];
 
+/** 分配式 Omit：直接写 Omit<TabMsg,'at'> 会塌缩成联合公共键（丢 status/durationMs 等） */
+export type TabMsgInput = TabMsg extends infer U ? (U extends TabMsg ? Omit<U, 'at'> : never) : never;
+
 const CHANNEL_NAME = 'loop-agent';
 const LS_PREFIX = '__la_tab__';
 /** 降级通道同一条消息可能经多次 storage 事件到达：按 `${t}:${id}:${at}` 去重的窗口 */
@@ -65,7 +68,7 @@ function dispatch(raw: unknown, sourceKey: string | null): void {
 }
 
 /** 广播一条派生状态消息到其它标签页（at 自动补齐；失败静默） */
-export function postTab(msg: Omit<TabMsg, 'at'>): void {
+export function postTab(msg: TabMsgInput): void {
   const full = { ...msg, at: Date.now() } as TabMsg;
   if (bc) {
     try {

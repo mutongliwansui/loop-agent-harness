@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · 图表容器（echarts / mermaid）外框重设计 · 20261023-001</title>
+<!--
+  原型：图表容器外框重设计（echarts + mermaid 共用）
+  目标文件：webui/src/chart-box.ts（容器构建）+ webui/src/mermaid.css（样式）
+  线上现状：.mermaid-block / .mmd-bar / .mmd-cap / .mmd-view / .mmd-stage + button[data-act=in|out|fit|fs]
+  本原型类名对齐线上结构，便于逐条替换；新增类见页尾「落地映射」。
+  自包含：无 CDN、无外部字体、无图片，离线可开。
+-->
+<style>
+/* ============================================================
+   0. 主题令牌（与 webui/src/style.css 同名同值，新增项标注 NEW）
+   ============================================================ */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --code-bg: #f1f3f5;
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+
+  /* NEW：图表容器专用令牌 */
+  --line-soft: #eef0f3;          /* 工具栏分隔底边，比 --line 更轻 */
+  --line-strong: #d3d8de;        /* hover 时外框描边 */
+  --hover: rgba(17, 24, 39, .055);/* 按钮/读数 hover 底色 */
+  --active: rgba(17, 24, 39, .10);
+  --text-2: #4b5563;             /* 次级正文（工具栏文字） */
+  --bar-bg: #fbfcfd;             /* 工具栏底色，与外框区分极轻 */
+  --view-bg: #ffffff;
+  --chart-bar: #4f7df3;          /* 主数据色（柱） */
+  --chart-bar-hi: #3b6ce8;
+  --chart-line: #ed9a2b;         /* 次数据色（线） */
+  --chart-grid: #e8ebef;
+  --chart-axis: #9aa1ab;
+  --node-bg: #f7f9fb;
+  --node-line: #c8d0da;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .20);
+  --shadow-card-hover: 0 1px 2px rgba(16, 24, 40, .05), 0 16px 38px -18px rgba(16, 24, 40, .26);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+  --panel-glass: rgba(255, 255, 255, .86);
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --err-line: #dc2626;
+}
+
+html[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --code-bg: #22272f;
+
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --chart-bar: #6a94ff;
+  --chart-bar-hi: #7fa3ff;
+  --chart-line: #f5b455;
+  --chart-grid: #2c333c;
+  --chart-axis: #7d8590;
+  --node-bg: #232932;
+  --node-line: #3b434e;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+  --panel-glass: rgba(31, 36, 43, .88);
+  --err-line: #f87171;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 72px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.65 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   1. 页面骨架（仅原型说明用，非产品样式）
+   ============================================================ */
+.page { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 24px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; }
+.topbar .tag {
+  font: 500 11px/1 var(--mono); color: var(--muted);
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px;
+}
+.topbar nav { display: flex; gap: 2px; margin-left: 8px; }
+.topbar nav a {
+  font-size: 12px; color: var(--muted); text-decoration: none;
+  padding: 5px 9px; border-radius: 6px;
+}
+.topbar nav a:hover { background: var(--hover); color: var(--text); }
+.topbar .spring { flex: 1; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px;
+  font: 500 12px/1 var(--sans);
+  color: var(--text-2); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--line-strong); color: var(--text); }
+.btn-ghost svg { width: 13px; height: 13px; }
+
+section { padding-top: 40px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.sec-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+.sec-head .badge {
+  font: 500 10.5px/1 var(--mono); padding: 3px 6px; border-radius: 5px;
+  color: var(--brand); background: var(--brand-weak);
+}
+.sec-desc { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; max-width: 74ch; }
+.sec-desc code { font: 500 11.5px var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 20px; }
+.card-label {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted);
+  margin-bottom: 8px; letter-spacing: .02em;
+}
+.card-label .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.card-label .dot.bad { background: var(--err-line); }
+.card-label .dot.good { background: var(--brand); }
+
+/* ============================================================
+   2. 【旧版】完全复刻线上现状（mermaid.css 现值）
+   ============================================================ */
+.old-block {
+  margin: 8px 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.old-block .old-bar {
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.old-cap {
+  font-size: 10.5px; color: var(--muted);
+  font-family: var(--mono); margin-left: 4px;
+}
+.old-spring { flex: 1; }
+.old-bar button {
+  border: none; background: none; color: inherit;
+  font-size: 11.5px; padding: 2px 8px; border-radius: 5px;
+  cursor: pointer; font-family: var(--mono);
+}
+.old-bar button:hover { background: var(--code-bg); }
+.old-block .old-view { padding: 10px 12px; overflow: auto; max-height: 60vh; }
+.old-block svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+
+/* ============================================================
+   3. 【新版】方案 A：常驻工具栏（推荐默认）
+      结构对齐 chart-box.ts： .chart-block > .chart-bar + .chart-view > .chart-stage
+   ============================================================ */
+.chart-block {
+  margin: 10px 0;
+  display: flex; flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  transition: box-shadow .18s ease, border-color .18s ease;
+}
+.chart-block:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* 3.1 工具栏 */
+.chart-bar {
+  display: flex; align-items: center; gap: 6px;
+  min-height: 34px;
+  padding: 4px 8px 4px 11px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bar-bg);
+}
+
+/* 左侧：类型标识（替代原先像调试遗留的等宽 "echarts" / "mermaid" 文字） */
+.chart-kind {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 600; color: var(--text-2);
+  letter-spacing: .01em;
+  user-select: none;
+}
+.chart-kind .kind-ico {
+  display: grid; place-items: center;
+  width: 19px; height: 19px; border-radius: 6px;
+  color: var(--brand); background: var(--brand-weak);
+  flex: 0 0 auto;
+}
+.chart-kind .kind-ico svg { width: 12px; height: 12px; }
+.chart-kind .kind-sub {
+  font-weight: 500; font-size: 11.5px; color: var(--muted);
+  padding-left: 7px; margin-left: 1px;
+  border-left: 1px solid var(--line);
+}
+
+/* 右侧：控件组 */
+.chart-tools { margin-left: auto; display: flex; align-items: center; gap: 1px; }
+
+.tbtn {
+  display: grid; place-items: center;
+  width: 26px; height: 26px;
+  padding: 0;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.tbtn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.tbtn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.tbtn:active:not(:disabled) { background: var(--active); }
+.tbtn:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.tbtn:disabled { opacity: .32; cursor: default; }
+
+/* 缩放读数：可点击 → 复位 100%；等宽数字保证不跳动 */
+.zoom-val {
+  min-width: 48px; height: 26px; padding: 0 7px;
+  font: 500 11.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.zoom-val:hover { background: var(--hover); color: var(--text); }
+.zoom-val:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+.tdiv { width: 1px; height: 15px; margin: 0 5px; background: var(--line); flex: 0 0 auto; }
+
+/* 3.2 视口 */
+.chart-view {
+  position: relative;
+  padding: 14px 16px;
+  overflow: auto;
+  max-height: 60vh;
+  background: var(--view-bg);
+  overscroll-behavior: contain;
+}
+.chart-stage { min-width: max-content; margin: 0 auto; user-select: none; }
+.chart-stage > svg { display: block; }
+.chart-view.pan-able { cursor: grab; }
+.chart-view.panning { cursor: grabbing; }
+
+/* 拖拽提示：仅在可平移时、悬停时淡入 */
+.chart-hint {
+  position: absolute; right: 10px; bottom: 8px;
+  padding: 3px 8px;
+  font: 500 10.5px/1.5 var(--sans);
+  color: var(--muted);
+  background: var(--panel-glass);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  opacity: 0; transform: translateY(3px);
+  transition: opacity .16s ease, transform .16s ease;
+  pointer-events: none;
+}
+.chart-block:hover .chart-view.pan-able ~ .chart-hint { opacity: 1; transform: none; }
+
+/* 3.3 滚动条（细、圆、悬停加深） */
+.chart-view::-webkit-scrollbar { width: 10px; height: 10px; }
+.chart-view::-webkit-scrollbar-thumb {
+  background: transparent; border-radius: 6px;
+  border: 3px solid transparent; background-clip: content-box;
+}
+.chart-block:hover .chart-view::-webkit-scrollbar-thumb { background: var(--line-strong); background-clip: content-box; }
+.chart-view::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+.chart-view::-webkit-scrollbar-corner { background: transparent; }
+
+/* 3.4 全屏 */
+.chart-block:fullscreen {
+  margin: 0; border: none; border-radius: 0;
+  box-shadow: none; background: var(--panel);
+  height: 100vh;
+}
+.chart-block:fullscreen .chart-view { max-height: none; flex: 1; }
+.chart-block:fullscreen .chart-bar { border-radius: 0; }
+
+/* ============================================================
+   3.5 预览 ⇄ 源代码（新增能力）
+   ============================================================ */
+/* 开关按钮的「已开启」态：用品牌弱底色锁定，hover 不再回退成灰底 */
+.tbtn.on { color: var(--brand); background: var(--brand-weak); }
+.tbtn.on:hover:not(:disabled) { color: var(--brand); background: var(--brand-weak); }
+
+/* 源码面板与 .chart-view 平级：切换只改 .src-on 一个类，不动 DOM 结构，
+   所以 measure() 测得的 baseW/baseH 与当前 scale 在来回切换后都不会丢 */
+.chart-src { display: none; }
+.chart-block.src-on .chart-view { display: none; }
+.chart-block.src-on .chart-src {
+  display: flex; flex-direction: column;
+  overflow: auto;
+  max-height: 60vh;              /* 与 .chart-view 同限高，切换时容器不跳高 */
+  background: var(--code-bg);
+  overscroll-behavior: contain;
+}
+.chart-block:fullscreen.src-on .chart-src { max-height: none; flex: 1; }
+
+/* 方案 B：源码态让悬浮工具条常驻，否则鼠标一移出就没有能切回去的控件 */
+.chart-block.floating.src-on .chart-bar { opacity: 1; transform: none; }
+
+.src-head {
+  position: sticky; top: 0; z-index: 2;   /* 长代码滚动时语言标签与复制按钮不滚走 */
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px 6px 12px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.src-lang {
+  padding: 3px 6px; border-radius: 5px;
+  font: 700 10px/1 var(--mono); letter-spacing: .07em; text-transform: uppercase;
+  color: var(--brand); background: var(--brand-weak);
+}
+.src-meta { font: 500 10.5px/1 var(--mono); color: var(--muted); }
+.src-copy {
+  margin-left: auto; height: 22px; padding: 0 9px;
+  font: 500 11px/1 var(--sans); color: var(--text-2);
+  background: transparent; border: 1px solid var(--line);
+  border-radius: var(--radius-ctl); cursor: pointer;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.src-copy:hover { background: var(--hover); color: var(--text); border-color: var(--line-strong); }
+.src-copy:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.src-copy.done { color: var(--brand); border-color: var(--brand); }
+.src-code {
+  margin: 0; padding: 12px 14px 16px;
+  font: 500 12px/1.7 var(--mono);
+  color: var(--text-2);
+  white-space: pre; tab-size: 2;   /* 保留原始缩进，超宽时横向滚动而非折行 */
+}
+
+/* ============================================================
+   4. 方案 B：悬停悬浮工具条（内容优先，界面更「干净」）
+   ============================================================ */
+.chart-block.floating .chart-view { padding: 18px 18px 20px; }
+.chart-block.floating .chart-bar {
+  position: absolute; top: 10px; right: 10px; z-index: 3;
+  min-height: 0; padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-glass);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-pop);
+  opacity: 0; transform: translateY(-5px) scale(.98);
+  transition: opacity .16s ease, transform .16s ease;
+}
+.chart-block.floating { position: relative; }
+.chart-block.floating:hover .chart-bar,
+.chart-block.floating:focus-within .chart-bar { opacity: 1; transform: none; }
+.chart-block.floating .chart-kind { display: none; }
+
+/* ============================================================
+   5. 错误态 / 可读性辅助
+   ============================================================ */
+pre.chart-err {
+  margin: 10px 0; padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--err-line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font: 500 11.5px/1.6 var(--mono);
+  overflow: auto;
+}
+pre.chart-err .err-tag {
+  display: inline-block; margin-bottom: 6px; padding: 2px 6px;
+  font: 600 10px/1 var(--sans); letter-spacing: .04em;
+  color: var(--err-line); border: 1px solid var(--err-line);
+  border-radius: 4px;
+}
+
+/* 图表内文字（SVG 类名） */
+.ck-title { font: 650 14px var(--sans); fill: var(--text); }
+.ck-sub { font: 500 10.5px var(--sans); fill: var(--muted); }
+.ck-legend { font: 500 11px var(--sans); fill: var(--text-2); }
+.ck-tick { font: 500 10px var(--mono); fill: var(--chart-axis); }
+.ck-val { font: 600 9.5px var(--sans); fill: var(--muted); }
+.ck-node { fill: var(--node-bg); stroke: var(--node-line); stroke-width: 1.4; }
+.ck-node-text { font: 600 11.5px var(--sans); fill: var(--text); }
+.ck-node-text.sm { font-weight: 500; font-size: 10.5px; fill: var(--muted); }
+.ck-edge { stroke: var(--node-line); stroke-width: 1.4; fill: none; }
+.ck-edge-dash { stroke: var(--chart-axis); stroke-width: 1.3; fill: none; stroke-dasharray: 4 4; }
+.ck-edge-label { font: 500 9.5px var(--sans); fill: var(--muted); }
+
+/* ============================================================
+   6. 落地映射表
+   ============================================================ */
+table.map { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.map th, table.map td {
+  text-align: left; padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.map th { font-weight: 600; color: var(--muted); font-size: 11.5px; letter-spacing: .02em; }
+table.map td code {
+  font: 500 11px var(--mono); background: var(--code-bg);
+  padding: 1.5px 5px; border-radius: 4px; white-space: nowrap;
+}
+table.map tr:last-child td { border-bottom: none; }
+.map-wrap {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-card); overflow: hidden;
+}
+.note {
+  margin: 14px 0 0; padding: 12px 14px;
+  background: var(--brand-weak); border-radius: 10px;
+  font-size: 12.5px; color: var(--text-2);
+}
+.note b { color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>图表容器外框重设计</h1>
+  <span class="tag">20261023-001</span>
+  <nav>
+    <a href="#diagnose">问题</a>
+    <a href="#compare">新旧对比</a>
+    <a href="#planA">方案 A</a>
+    <a href="#planB">方案 B</a>
+    <a href="#states">状态</a>
+    <a href="#map">落地映射</a>
+  </nav>
+  <span class="spring"></span>
+  <button class="btn-ghost" id="themeBtn" type="button" aria-label="切换主题">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1"/>
+      <circle cx="8" cy="8" r="2.6"/>
+    </svg>
+    <span id="themeText">深色</span>
+  </button>
+</div>
+
+<div class="page">
+
+  <!-- 问题诊断 -->
+  <section id="diagnose">
+    <div class="sec-head"><h2>现状问题</h2><span class="badge">诊断</span></div>
+    <p class="sec-desc">
+      当前容器（<code>.mermaid-block</code> + <code>.mmd-bar</code>）功能齐备但「装饰层」缺位：它是把功能按钮直接裸露在标题栏上的结果，视觉上像 PDF 阅读器 / 浏览器缩放条，与 Markdown 正文的排版质感脱节。核心症状 5 条 →
+    </p>
+    <div class="map-wrap">
+      <table class="map">
+        <tr><th style="width:170px">症状</th><th>成因（对应代码）</th><th style="width:38%">本原型对策</th></tr>
+        <tr>
+          <td>调试遗留感</td>
+          <td><code>.mmd-cap</code> 用等宽字体渲染字面量 <code>echarts</code> / <code>mermaid</code>，读起来像日志标签</td>
+          <td>改为「图标 + 中文类型名」的 <code>.chart-kind</code>（图表 / 流程图），语义化且本地化</td>
+        </tr>
+        <tr>
+          <td>控件像阅读器</td>
+          <td><code>＋ － 100% ⛶</code> 四个全角字符裸按钮，无容器、无 hover 层次</td>
+          <td>换 SVG 线性图标 + 26×26 圆角热区 + hover/active/focus-visible 三态，分组间加细分隔线</td>
+        </tr>
+        <tr>
+          <td>外框平面化</td>
+          <td>仅 1px <code>--line</code> 描边、8px 圆角、无阴影，卡片与正文同一平面</td>
+          <td>12px 圆角 + 双层阴影（1px 贴边 + 大范围柔光），hover 时阴影与描边同步加深</td>
+        </tr>
+        <tr>
+          <td>工具栏抢戏</td>
+          <td><code>.mmd-bar</code> 底色 <code>--bg</code> 与外框对比过强，分隔线用 <code>--line</code> 偏重</td>
+          <td>工具栏底色改 <code>--bar-bg</code>（≈面板色 +2%），分隔线换 <code>--line-soft</code>，弱化存在感</td>
+        </tr>
+        <tr>
+          <td>读数歧义</td>
+          <td>「100%」在同一个裸按钮上既表示档位又表示动作（适应宽度），点击行为不明确</td>
+          <td>拆成「读数（可点复位 100%）」+「适应宽度（图标按钮）」两个独立控件</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- 新旧对比 -->
+  <section id="compare">
+    <div class="sec-head"><h2>新旧对比</h2><span class="badge">同内容 · 同主题</span></div>
+    <p class="sec-desc">同一张 ECharts 图表，左为线上现状，右为重设计。差异集中在「工具栏的语义与质感」和「卡片层次」两处。</p>
+    <div class="grid-2">
+
+      <!-- 旧版 -->
+      <div>
+        <div class="card-label"><span class="dot bad"></span>现状（.mermaid-block）</div>
+        <div class="old-block">
+          <div class="old-bar">
+            <span class="old-cap">echarts</span>
+            <span class="old-spring"></span>
+            <button type="button" title="放大">＋</button>
+            <button type="button" title="缩小">－</button>
+            <button type="button" title="适应宽度">100%</button>
+            <button type="button" title="全屏">⛶</button>
+          </div>
+          <div class="old-view">
+            <!-- 旧版：图例与副标题重叠（复刻线上 bug），无留白体系 -->
+            <svg viewBox="0 0 640 300" width="640" height="300" role="img" aria-label="旧版图表">
+              <text x="320" y="26" text-anchor="middle" class="ck-title">2026年新能源汽车月度销量与环比增量</text>
+              <text x="320" y="46" text-anchor="middle" class="ck-sub">单位：万辆 ｜ 数据来源：中国汽车工业协会</text>
+              <!-- 图例压住副标题 -->
+              <rect x="200" y="38" width="11" height="11" rx="2" fill="var(--chart-bar)"/>
+              <text x="216" y="47" class="ck-legend">月销量</text>
+              <line x1="270" y1="44" x2="290" y2="44" stroke="var(--chart-line)" stroke-width="2"/>
+              <circle cx="280" cy="44" r="3" fill="var(--chart-line)"/>
+              <text x="296" y="47" class="ck-legend">环比增量</text>
+              <g>
+                <line x1="60" y1="70" x2="600" y2="70" stroke="var(--chart-grid)"/>
+                <line x1="60" y1="115" x2="600" y2="115" stroke="var(--chart-grid)"/>
+                <line x1="60" y1="160" x2="600" y2="160" stroke="var(--chart-grid)"/>
+                <line x1="60" y1="205" x2="600" y2="205" stroke="var(--chart-grid)"/>
+                <line x1="60" y1="250" x2="600" y2="250" stroke="var(--chart-grid)"/>
+              </g>
+              <rect x="83.6" y="140.65" width="30" height="109.35" rx="2" fill="var(--chart-bar)"/>
+              <rect x="160.7" y="138.7" width="30" height="111.3" rx="2" fill="var(--chart-bar)"/>
+              <rect x="237.9" y="117.55" width="30" height="132.45" rx="2" fill="var(--chart-bar)"/>
+              <rect x="315" y="107.35" width="30" height="142.65" rx="2" fill="var(--chart-bar)"/>
+              <rect x="392.1" y="91.9" width="30" height="158.1" rx="2" fill="var(--chart-bar)"/>
+              <rect x="469.3" y="84.7" width="30" height="165.3" rx="2" fill="var(--chart-bar)"/>
+              <rect x="546.4" y="98.2" width="30" height="151.8" rx="2" fill="var(--chart-bar)"/>
+              <path d="M98.6 173.95 L175.7 154.15 L252.9 96.55 L330 129.4 L407.1 113.65 L484.3 138.4 L561.4 196.9" fill="none" stroke="var(--chart-line)" stroke-width="2"/>
+              <g fill="var(--chart-line)">
+                <circle cx="98.6" cy="173.95" r="3"/><circle cx="175.7" cy="154.15" r="3"/>
+                <circle cx="252.9" cy="96.55" r="3"/><circle cx="330" cy="129.4" r="3"/>
+                <circle cx="407.1" cy="113.65" r="3"/><circle cx="484.3" cy="138.4" r="3"/>
+                <circle cx="561.4" cy="196.9" r="3"/>
+              </g>
+              <!-- 数据标签互相压叠 -->
+              <g text-anchor="middle" class="ck-val" fill="var(--text)" style="font-weight:700">
+                <text x="98.6" y="172">9.2</text>
+                <text x="252.9" y="94">15.2</text>
+                <text x="407.1" y="111">14.7</text>
+                <text x="561.4" y="211">-8.2</text>
+              </g>
+              <g class="ck-tick" text-anchor="end">
+                <text x="52" y="254">0</text><text x="52" y="209">30</text>
+                <text x="52" y="164">60</text><text x="52" y="119">90</text><text x="52" y="74">120</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- 新版 -->
+      <div>
+        <div class="card-label"><span class="dot good"></span>重设计（.chart-block）</div>
+        <div class="chart-block" data-zoomable>
+          <div class="chart-bar">
+            <span class="chart-kind">
+              <span class="kind-ico">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                  <path d="M3 13V8M8 13V3.5M13 13V6"/>
+                </svg>
+              </span>
+              图表
+              <span class="kind-sub">柱状 · 折线</span>
+            </span>
+            <span class="chart-tools">
+              <button class="tbtn" type="button" data-act="out" title="缩小" aria-label="缩小">
+                <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4"/></svg>
+              </button>
+              <button class="zoom-val" type="button" data-act="reset" title="复位为 100%" aria-label="复位缩放">100%</button>
+              <button class="tbtn" type="button" data-act="in" title="放大" aria-label="放大">
+                <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4"/></svg>
+              </button>
+              <span class="tdiv"></span>
+              <button class="tbtn" type="button" data-act="fit" title="适应宽度" aria-label="适应宽度">
+                <svg viewBox="0 0 16 16"><path d="M2.5 4.2v7.6M13.5 4.2v7.6M4.8 8h6.4M6.6 6.2L4.8 8l1.8 1.8M9.4 6.2L11.2 8l-1.8 1.8"/></svg>
+              </button>
+              <button class="tbtn" type="button" data-act="fs" title="全屏" aria-label="全屏">
+                <svg viewBox="0 0 16 16"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+              </button>
+              <span class="tdiv"></span>
+              <button class="tbtn" type="button" data-act="src" title="查看源代码" aria-label="查看源代码" aria-pressed="false">
+                <svg viewBox="0 0 16 16"><path d="M5.6 4.4 2.2 8l3.4 3.6M10.4 4.4 13.8 8l-3.4 3.6"/></svg>
+              </button>
+            </span>
+          </div>
+          <div class="chart-view">
+            <div class="chart-stage">
+              <!-- 新版：标题/副标题/图例三段式留白，图例不再压字；负值轴只留必要区间 -->
+              <svg viewBox="0 0 640 320" width="640" height="320" role="img" aria-label="2026年新能源汽车月度销量与环比增量">
+                <text x="320" y="28" text-anchor="middle" class="ck-title">2026 年新能源汽车月度销量与环比增量</text>
+                <text x="320" y="46" text-anchor="middle" class="ck-sub">单位：万辆 ｜ 数据来源：中国汽车工业协会</text>
+                <!-- 图例：独立一行，居右，与副标题留 8px 呼吸 -->
+                <g>
+                  <rect x="432" y="56" width="10" height="10" rx="2.5" fill="var(--chart-bar)"/>
+                  <text x="447" y="65" class="ck-legend">月销量</text>
+                  <line x1="497" y1="61" x2="515" y2="61" stroke="var(--chart-line)" stroke-width="2" stroke-linecap="round"/>
+                  <circle cx="506" cy="61" r="2.8" fill="var(--chart-line)"/>
+                  <text x="521" y="65" class="ck-legend">环比增量</text>
+                </g>
+                <!-- 网格 -->
+                <g stroke="var(--chart-grid)" stroke-width="1">
+                  <line x1="60" y1="80" x2="600" y2="80"/>
+                  <line x1="60" y1="125" x2="600" y2="125"/>
+                  <line x1="60" y1="170" x2="600" y2="170" stroke-dasharray="3 3"/>
+                  <line x1="60" y1="215" x2="600" y2="215"/>
+                  <line x1="60" y1="260" x2="600" y2="260"/>
+                </g>
+                <!-- 柱：圆角 4，顶部略收窄高光 -->
+                <g>
+                  <rect x="83.6" y="150.65" width="30" height="109.35" rx="4" fill="var(--chart-bar)"/>
+                  <rect x="160.7" y="148.7" width="30" height="111.3" rx="4" fill="var(--chart-bar)"/>
+                  <rect x="237.9" y="127.55" width="30" height="132.45" rx="4" fill="var(--chart-bar)"/>
+                  <rect x="315" y="117.35" width="30" height="142.65" rx="4" fill="var(--chart-bar)"/>
+                  <rect x="392.1" y="101.9" width="30" height="158.1" rx="4" fill="var(--chart-bar)"/>
+                  <rect x="469.3" y="94.7" width="30" height="165.3" rx="4" fill="var(--chart-bar)"/>
+                  <rect x="546.4" y="108.2" width="30" height="151.8" rx="4" fill="var(--chart-bar)"/>
+                </g>
+                <!-- 折线：平滑连接 + 端点描边，避免压在柱顶 -->
+                <path d="M98.6 183.95 L175.7 164.15 L252.9 106.55 L330 139.4 L407.1 123.65 L484.3 148.4 L561.4 206.9"
+                      fill="none" stroke="var(--chart-line)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                <g fill="var(--panel)" stroke="var(--chart-line)" stroke-width="2">
+                  <circle cx="98.6" cy="183.95" r="3.2"/><circle cx="175.7" cy="164.15" r="3.2"/>
+                  <circle cx="252.9" cy="106.55" r="3.2"/><circle cx="330" cy="139.4" r="3.2"/>
+                  <circle cx="407.1" cy="123.65" r="3.2"/><circle cx="484.3" cy="148.4" r="3.2"/>
+                  <circle cx="561.4" cy="206.9" r="3.2"/>
+                </g>
+                <!-- 柱顶数值：小号、低对比，仅在柱上方，不压折线 -->
+                <g text-anchor="middle" class="ck-val">
+                  <text x="98.6" y="143">72.9</text>
+                  <text x="175.7" y="141">74.2</text>
+                  <text x="237.9" y="194" text-anchor="end">88.3</text>
+                  <text x="330" y="110">95.1</text>
+                  <text x="407.1" y="95">105.4</text>
+                  <text x="469.3" y="88">110.2</text>
+                  <text x="561.4" y="101">101.2</text>
+                </g>
+                <!-- 折线数值：全程只标极值（峰值/谷值），杜绝拥挤 -->
+                <g text-anchor="middle" class="ck-val" style="fill:var(--chart-line)">
+                  <text x="252.9" y="98">14.1</text>
+                  <text x="561.4" y="221">−8.2</text>
+                </g>
+                <!-- 轴 -->
+                <g class="ck-tick" text-anchor="end">
+                  <text x="52" y="264">0</text><text x="52" y="219">30</text>
+                  <text x="52" y="174">60</text><text x="52" y="129">90</text><text x="52" y="84">120</text>
+                </g>
+                <g class="ck-tick" text-anchor="start">
+                  <text x="608" y="84">20</text><text x="608" y="129">10</text>
+                  <text x="608" y="174">0</text><text x="608" y="219">−10</text><text x="608" y="264">−20</text>
+                </g>
+                <g class="ck-tick" text-anchor="middle">
+                  <text x="98.6" y="282">1月</text><text x="175.7" y="282">2月</text>
+                  <text x="252.9" y="282">3月</text><text x="330" y="282">4月</text>
+                  <text x="407.1" y="282">5月</text><text x="484.3" y="282">6月</text>
+                  <text x="561.4" y="282">7月</text>
+                </g>
+              </svg>
+            </div>
+            <span class="chart-hint">拖拽平移 · 滚轮缩放</span>
+          </div>
+          <!-- 源代码视图：与 .chart-view 平级，切换只改 .chart-block.src-on -->
+          <div class="chart-src">
+            <div class="src-head">
+              <span class="src-lang">echarts</span>
+              <span class="src-meta">option</span>
+              <button class="src-copy" type="button" data-copy aria-label="复制源代码">复制</button>
+            </div>
+            <pre class="src-code"><code>{
+  "title": {
+    "text": "2026 年新能源汽车月度销量与环比增量",
+    "subtext": "单位：万辆 ｜ 数据来源：中国汽车工业协会"
+  },
+  "legend": { "top": 48, "right": 24, "data": ["月销量", "环比增量"] },
+  "grid": { "left": 60, "right": 60, "top": 78, "bottom": 38 },
+  "xAxis": {
+    "type": "category",
+    "data": ["1月", "2月", "3月", "4月", "5月", "6月", "7月"]
+  },
+  "yAxis": [
+    { "type": "value", "name": "月销量", "max": 120 },
+    { "type": "value", "name": "环比增量", "min": -20, "max": 20 }
+  ],
+  "series": [
+    {
+      "name": "月销量",
+      "type": "bar",
+      "itemStyle": { "borderRadius": [4, 4, 0, 0] },
+      "data": [72.9, 74.2, 88.3, 95.1, 105.4, 110.2, 101.2]
+    },
+    {
+      "name": "环比增量",
+      "type": "line",
+      "yAxisIndex": 1,
+      "smooth": true,
+      "symbolSize": 7,
+      "data": [14.1, 1.3, 14.1, 6.8, 10.3, 4.8, -8.2]
+    }
+  ]
+}</code></pre>
+          </div>
+        </div>
+        <div class="card-label" style="margin-top:10px">
+          <span class="dot good"></span>可直接试：缩放 / 适应宽度 / 全屏 / 滚轮 / 拖拽 / 预览⇄源码
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 方案 A：mermaid -->
+  <section id="planA">
+    <div class="sec-head"><h2>方案 A · 常驻工具栏</h2><span class="badge">推荐默认</span></div>
+    <p class="sec-desc">
+      工具栏常驻、轻量存在：左侧类型标识回答「这是什么图」，右侧图标组回答「能做什么」。适合 mermaid 流程图这类需要频繁缩放阅读的内容。
+      结构保留 <code>button[data-act=in|out|fit|fs]</code> 并新增 <code>data-act="src"</code> 源码开关，JS 改动为「文案 → 图标」「百分比节点独立」「预览/源码切换」。
+    </p>
+
+    <div class="chart-block" data-zoomable>
+      <div class="chart-bar">
+        <span class="chart-kind">
+          <span class="kind-ico">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="1.8" y="6" width="4.4" height="4"/><rect x="9.8" y="2.2" width="4.4" height="4"/>
+              <rect x="9.8" y="9.8" width="4.4" height="4"/><path d="M6.2 8h3.6M8 8V4.2M8 8v3.8"/>
+            </svg>
+          </span>
+          流程图
+          <span class="kind-sub">mermaid</span>
+        </span>
+        <span class="chart-tools">
+          <button class="tbtn" type="button" data-act="out" title="缩小" aria-label="缩小">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4"/></svg>
+          </button>
+          <button class="zoom-val" type="button" data-act="reset" title="复位为 100%" aria-label="复位缩放">100%</button>
+          <button class="tbtn" type="button" data-act="in" title="放大" aria-label="放大">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4"/></svg>
+          </button>
+          <span class="tdiv"></span>
+          <button class="tbtn" type="button" data-act="fit" title="适应宽度" aria-label="适应宽度">
+            <svg viewBox="0 0 16 16"><path d="M2.5 4.2v7.6M13.5 4.2v7.6M4.8 8h6.4M6.6 6.2L4.8 8l1.8 1.8M9.4 6.2L11.2 8l-1.8 1.8"/></svg>
+          </button>
+          <button class="tbtn" type="button" data-act="fs" title="全屏" aria-label="全屏">
+            <svg viewBox="0 0 16 16"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+          </button>
+          <span class="tdiv"></span>
+          <button class="tbtn" type="button" data-act="src" title="查看源代码" aria-label="查看源代码" aria-pressed="false">
+            <svg viewBox="0 0 16 16"><path d="M5.6 4.4 2.2 8l3.4 3.6M10.4 4.4 13.8 8l-3.4 3.6"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="chart-view">
+        <div class="chart-stage">
+          <svg viewBox="0 0 600 210" width="600" height="210" role="img" aria-label="ReAct 循环流程图">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="var(--node-line)"/>
+              </marker>
+            </defs>
+            <!-- 主链 -->
+            <rect x="14" y="84" width="104" height="44" rx="10" class="ck-node"/>
+            <text x="66" y="104" text-anchor="middle" class="ck-node-text">用户提问</text>
+            <text x="66" y="118" text-anchor="middle" class="ck-node-text sm">user input</text>
+
+            <path d="M118 106 H150" class="ck-edge" marker-end="url(#arrow)"/>
+
+            <rect x="150" y="84" width="112" height="44" rx="10" class="ck-node" style="stroke:var(--brand)"/>
+            <text x="206" y="104" text-anchor="middle" class="ck-node-text">ReAct 循环</text>
+            <text x="206" y="118" text-anchor="middle" class="ck-node-text sm">思考 → 行动</text>
+
+            <path d="M262 106 H294" class="ck-edge" marker-end="url(#arrow)"/>
+
+            <rect x="294" y="84" width="112" height="44" rx="10" class="ck-node"/>
+            <text x="350" y="104" text-anchor="middle" class="ck-node-text">工具执行</text>
+            <text x="350" y="118" text-anchor="middle" class="ck-node-text sm">function call</text>
+
+            <path d="M406 106 H438" class="ck-edge" marker-end="url(#arrow)"/>
+
+            <rect x="438" y="84" width="104" height="44" rx="10" class="ck-node"/>
+            <text x="490" y="104" text-anchor="middle" class="ck-node-text">生成回答</text>
+            <text x="490" y="118" text-anchor="middle" class="ck-node-text sm">answer</text>
+
+            <!-- 观察回路 -->
+            <path d="M350 128 V168 Q350 176 342 176 H214 Q206 176 206 168 V128" class="ck-edge-dash" marker-end="url(#arrow)"/>
+            <text x="278" y="192" text-anchor="middle" class="ck-edge-label">Observation 回灌上下文</text>
+          </svg>
+        </div>
+        <span class="chart-hint">拖拽平移 · 滚轮缩放</span>
+      </div>
+      <div class="chart-src">
+        <div class="src-head">
+          <span class="src-lang">mermaid</span>
+          <span class="src-meta">flowchart</span>
+          <button class="src-copy" type="button" data-copy aria-label="复制源代码">复制</button>
+        </div>
+        <pre class="src-code"><code>flowchart LR
+  A[用户提问] --&gt; B[ReAct 循环&lt;br/&gt;思考 → 行动]
+  B --&gt; C[工具执行&lt;br/&gt;function call]
+  C --&gt; B
+  C --&gt; D[生成回答&lt;br/&gt;answer]</code></pre>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>为什么把类型名放在左、控件放右？</b> 阅读路径是「先认图、再操作」，左侧定位标签、右侧聚拢动作，中间留弹性空白；
+      这也让超长标题（echarts 内嵌标题）不会与按钮争夺同一行空间。
+    </div>
+  </section>
+
+  <!-- 方案 B -->
+  <section id="planB">
+    <div class="sec-head"><h2>方案 B · 悬停悬浮工具条</h2><span class="badge">内容优先</span></div>
+    <p class="sec-desc">
+      工具栏脱离文档流，默认隐藏为右上角悬浮胶囊，悬停 / 键盘聚焦时淡入。适合对话流里图表密集、希望「正文不被打断」的场景；
+      代价是控件可发现性略降（因此保留 <code>:focus-within</code> 与 tooltip）。
+    </p>
+    <div class="chart-block floating" data-zoomable>
+      <div class="chart-view">
+        <div class="chart-stage">
+          <svg viewBox="0 0 600 200" width="600" height="200" role="img" aria-label="渲染管线">
+            <defs>
+              <marker id="arrow2" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="var(--node-line)"/>
+              </marker>
+            </defs>
+            <rect x="20" y="76" width="118" height="48" rx="12" class="ck-node"/>
+            <text x="79" y="98" text-anchor="middle" class="ck-node-text">markdown</text>
+            <text x="79" y="112" text-anchor="middle" class="ck-node-text sm">marked 解析</text>
+
+            <path d="M138 100 H172" class="ck-edge" marker-end="url(#arrow2)"/>
+
+            <rect x="172" y="76" width="118" height="48" rx="12" class="ck-node"/>
+            <text x="231" y="98" text-anchor="middle" class="ck-node-text">代码块识别</text>
+            <text x="231" y="112" text-anchor="middle" class="ck-node-text sm">language-echarts</text>
+
+            <path d="M290 100 H324" class="ck-edge" marker-end="url(#arrow2)"/>
+
+            <rect x="324" y="76" width="118" height="48" rx="12" class="ck-node" style="stroke:var(--brand)"/>
+            <text x="383" y="98" text-anchor="middle" class="ck-node-text">chart-box.ts</text>
+            <text x="383" y="112" text-anchor="middle" class="ck-node-text sm">容器 + 交互</text>
+
+            <path d="M442 100 H476" class="ck-edge" marker-end="url(#arrow2)"/>
+
+            <rect x="476" y="76" width="104" height="48" rx="12" class="ck-node"/>
+            <text x="528" y="98" text-anchor="middle" class="ck-node-text">渲染</text>
+            <text x="528" y="112" text-anchor="middle" class="ck-node-text sm">SVG</text>
+          </svg>
+        </div>
+        <span class="chart-hint">拖拽平移 · 滚轮缩放</span>
+      </div>
+      <div class="chart-bar">
+        <span class="chart-kind">
+          <span class="kind-ico">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.8" y="6" width="4.4" height="4"/><rect x="9.8" y="2.2" width="4.4" height="4"/><rect x="9.8" y="9.8" width="4.4" height="4"/><path d="M6.2 8h3.6M8 8V4.2M8 8v3.8"/></svg>
+          </span>
+          流程图
+        </span>
+        <span class="chart-tools">
+          <button class="tbtn" type="button" data-act="out" title="缩小" aria-label="缩小">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4"/></svg>
+          </button>
+          <button class="zoom-val" type="button" data-act="reset" title="复位为 100%" aria-label="复位缩放">100%</button>
+          <button class="tbtn" type="button" data-act="in" title="放大" aria-label="放大">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4"/></svg>
+          </button>
+          <span class="tdiv"></span>
+          <button class="tbtn" type="button" data-act="fit" title="适应宽度" aria-label="适应宽度">
+            <svg viewBox="0 0 16 16"><path d="M2.5 4.2v7.6M13.5 4.2v7.6M4.8 8h6.4M6.6 6.2L4.8 8l1.8 1.8M9.4 6.2L11.2 8l-1.8 1.8"/></svg>
+          </button>
+          <button class="tbtn" type="button" data-act="fs" title="全屏" aria-label="全屏">
+            <svg viewBox="0 0 16 16"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+          </button>
+          <span class="tdiv"></span>
+          <button class="tbtn" type="button" data-act="src" title="查看源代码" aria-label="查看源代码" aria-pressed="false">
+            <svg viewBox="0 0 16 16"><path d="M5.6 4.4 2.2 8l3.4 3.6M10.4 4.4 13.8 8l-3.4 3.6"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="chart-src">
+        <div class="src-head">
+          <span class="src-lang">mermaid</span>
+          <span class="src-meta">flowchart</span>
+          <button class="src-copy" type="button" data-copy aria-label="复制源代码">复制</button>
+        </div>
+        <pre class="src-code"><code>flowchart LR
+  A[markdown&lt;br/&gt;marked 解析] --&gt; B[代码块识别&lt;br/&gt;language-echarts]
+  B --&gt; C[chart-box.ts&lt;br/&gt;容器 + 交互]
+  C --&gt; D[渲染&lt;br/&gt;SVG]</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 状态 -->
+  <section id="states">
+    <div class="sec-head"><h2>状态与边界</h2><span class="badge">深色 / 错误 / 缩放</span></div>
+    <p class="sec-desc">深色主题由令牌自动切换；错误态沿用 <code>pre.echarts-err</code> 语义但改为「左重边框 + 错误标签」，比整圈红框更克制、也不与代码块样式冲突。</p>
+
+    <div class="grid-2">
+      <div>
+        <div class="card-label"><span class="dot"></span>错误态（JSON 非法 / init 失败）</div>
+        <pre class="chart-err"><span class="err-tag">ECHARTS OPTION 解析失败</span>
+```echarts
+{ "series": [ { "type": "bar", "data": [72.9, ] }
+                                  ↑ 第 1 行第 42 列：意外的 '}'
+```
+保留源码可编辑，仅边框转红</pre>
+        <div class="card-label" style="margin-top:14px"><span class="dot"></span>禁用态（内容未测出基准尺寸）</div>
+        <div class="chart-block">
+          <div class="chart-bar">
+            <span class="chart-kind">
+              <span class="kind-ico">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 13V8M8 13V3.5M13 13V6"/></svg>
+              </span>
+              图表
+              <span class="kind-sub">渲染中</span>
+            </span>
+            <span class="chart-tools">
+              <button class="tbtn" type="button" disabled aria-label="缩小">
+                <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4"/></svg>
+              </button>
+              <button class="zoom-val" type="button" disabled>100%</button>
+              <button class="tbtn" type="button" disabled aria-label="放大">
+                <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4"/></svg>
+              </button>
+              <span class="tdiv"></span>
+              <button class="tbtn" type="button" disabled aria-label="适应宽度">
+                <svg viewBox="0 0 16 16"><path d="M2.5 4.2v7.6M13.5 4.2v7.6M4.8 8h6.4M6.6 6.2L4.8 8l1.8 1.8M9.4 6.2L11.2 8l-1.8 1.8"/></svg>
+              </button>
+              <button class="tbtn" type="button" disabled aria-label="全屏">
+                <svg viewBox="0 0 16 16"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+              </button>
+            </span>
+          </div>
+          <div class="chart-view" style="display:grid;place-items:center;min-height:110px;color:var(--muted);font-size:12px">
+            正在测量内容尺寸…
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card-label"><span class="dot"></span>缩放 + 平移态（放大后出现拖拽光标与提示）</div>
+        <div class="chart-block" data-zoomable id="zoomDemo">
+          <div class="chart-bar">
+            <span class="chart-kind">
+              <span class="kind-ico">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 13V8M8 13V3.5M13 13V6"/></svg>
+              </span>
+              图表
+              <span class="kind-sub">放大 175% 演示</span>
+            </span>
+            <span class="chart-tools">
+              <button class="tbtn" type="button" data-act="out" title="缩小" aria-label="缩小">
+                <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4"/></svg>
+              </button>
+              <button class="zoom-val" type="button" data-act="reset" title="复位为 100%">100%</button>
+              <button class="tbtn" type="button" data-act="in" title="放大" aria-label="放大">
+                <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4"/></svg>
+              </button>
+              <span class="tdiv"></span>
+              <button class="tbtn" type="button" data-act="fit" title="适应宽度" aria-label="适应宽度">
+                <svg viewBox="0 0 16 16"><path d="M2.5 4.2v7.6M13.5 4.2v7.6M4.8 8h6.4M6.6 6.2L4.8 8l1.8 1.8M9.4 6.2L11.2 8l-1.8 1.8"/></svg>
+              </button>
+              <button class="tbtn" type="button" data-act="fs" title="全屏" aria-label="全屏">
+                <svg viewBox="0 0 16 16"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+              </button>
+            </span>
+          </div>
+          <div class="chart-view">
+            <div class="chart-stage">
+              <svg viewBox="0 0 520 180" width="520" height="180" role="img" aria-label="放大演示图">
+                <g stroke="var(--chart-grid)"><line x1="40" y1="30" x2="490" y2="30"/><line x1="40" y1="90" x2="490" y2="90"/><line x1="40" y1="150" x2="490" y2="150"/></g>
+                <rect x="60" y="90" width="26" height="60" rx="4" fill="var(--chart-bar)"/>
+                <rect x="130" y="62" width="26" height="88" rx="4" fill="var(--chart-bar)"/>
+                <rect x="200" y="74" width="26" height="76" rx="4" fill="var(--chart-bar)"/>
+                <rect x="270" y="42" width="26" height="108" rx="4" fill="var(--chart-bar)"/>
+                <rect x="340" y="56" width="26" height="94" rx="4" fill="var(--chart-bar)"/>
+                <rect x="410" y="34" width="26" height="116" rx="4" fill="var(--chart-bar)"/>
+                <path d="M73 100 L143 78 L213 86 L283 60 L353 70 L423 48" fill="none" stroke="var(--chart-line)" stroke-width="2.2" stroke-linecap="round"/>
+                <g class="ck-tick" text-anchor="middle">
+                  <text x="73" y="170">A</text><text x="143" y="170">B</text><text x="213" y="170">C</text>
+                  <text x="283" y="170">D</text><text x="353" y="170">E</text><text x="423" y="170">F</text>
+                </g>
+              </svg>
+            </div>
+            <span class="chart-hint">拖拽平移 · 滚轮缩放</span>
+          </div>
+        </div>
+        <div class="card-label" style="margin-top:14px"><span class="dot"></span>窄容器（移动端 / 侧栏，工具栏不换行）</div>
+        <div style="max-width:330px">
+          <div class="chart-block">
+            <div class="chart-bar">
+              <span class="chart-kind">
+                <span class="kind-ico">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 13V8M8 13V3.5M13 13V6"/></svg>
+                </span>
+                图表
+              </span>
+              <span class="chart-tools">
+                <button class="tbtn" type="button" aria-label="缩小"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4"/></svg></button>
+                <button class="zoom-val" type="button">100%</button>
+                <button class="tbtn" type="button" aria-label="放大"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4"/></svg></button>
+                <button class="tbtn" type="button" aria-label="全屏"><svg viewBox="0 0 16 16"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg></button>
+              </span>
+            </div>
+            <div class="chart-view" style="display:grid;place-items:center;min-height:70px;color:var(--muted);font-size:11.5px">
+              宽度不足时自动精简为「缩小 / 读数 / 放大 / 全屏」
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 落地映射 -->
+  <section id="map">
+    <div class="sec-head"><h2>落地映射</h2><span class="badge">改动清单</span></div>
+    <p class="sec-desc">
+      目标文件两个：<code>webui/src/mermaid.css</code>（样式，主体）+ <code>webui/src/chart-box.ts</code>（模板字符串与 caption 语义）。
+      建议保留旧类名做别名一个版本，避免 <code>dist</code> 旧产物与缓存页白屏。
+      末尾新增的「预览 ⇄ 源代码」除了模板与 CSS，还要求 <code>chart-box.ts</code> 把原始源码留存下来。
+    </p>
+    <div class="map-wrap">
+      <table class="map">
+        <tr><th style="width:26%">现状</th><th style="width:30%">重设计</th><th>动作</th></tr>
+        <tr>
+          <td><code>.mermaid-block</code></td>
+          <td><code>.chart-block</code>（别名保留）</td>
+          <td>圆角 8 → 12；加双层阴影 + hover 描边/阴影过渡</td>
+        </tr>
+        <tr>
+          <td><code>.mmd-bar</code></td>
+          <td><code>.chart-bar</code></td>
+          <td>底色 <code>--bg</code> → <code>--bar-bg</code>；分隔线 → <code>--line-soft</code>；<code>min-height:34px</code>；<code>padding:4px 8px 4px 11px</code></td>
+        </tr>
+        <tr>
+          <td><code>.mmd-cap</code>（等宽 "echarts"）</td>
+          <td><code>.chart-kind</code> + <code>.kind-ico</code> + <code>.kind-sub</code></td>
+          <td>caption 参数由字符串改为 <code>'chart' | 'diagram'</code>，渲染「图标 + 中文名」；副标题可选（echarts 可显示系列类型）</td>
+        </tr>
+        <tr>
+          <td><code>.mmd-spring</code></td>
+          <td><code>.chart-tools</code>（<code>margin-left:auto</code>）</td>
+          <td>弹簧 span 由「占位」升级为「控件容器」，少一层节点</td>
+        </tr>
+        <tr>
+          <td><code>button[data-act=in|out|fit|fs]</code> 字符按钮</td>
+          <td><code>.tbtn</code> + 内联 SVG</td>
+          <td>26×26 热区、<code>stroke-width:1.6</code>、hover/active/<code>focus-visible</code> 三态；补 <code>aria-label</code></td>
+        </tr>
+        <tr>
+          <td>图标语义（易踩坑）</td>
+          <td>in/out = 放大镜±；fit = 左右边界竖线 + 水平双向箭头；fs = 四角外扩括号</td>
+          <td><b>fit 与 fs 必须视觉可区分</b>：勿给「适应宽度」用四角括号（那是「全屏/展开」语义，会与 fs 撞脸成两个全屏按钮）</td>
+        </tr>
+        <tr>
+          <td><code>fit</code> 按钮既显示百分比又是动作</td>
+          <td><code>.zoom-val</code>（读数，点击复位 100%）+ 独立 fit 图标</td>
+          <td><code>apply()</code> 里写 <code>zoomVal.textContent</code>；<code>fit</code> 不再改名文本</td>
+        </tr>
+        <tr>
+          <td><code>.mmd-view</code> / <code>.mmd-stage</code></td>
+          <td><code>.chart-view</code> / <code>.chart-stage</code></td>
+          <td>padding 10/12 → 14/16；细滚动条（hover 才显形）；<code>overscroll-behavior:contain</code>；新增 <code>.chart-hint</code> 拖拽提示</td>
+        </tr>
+        <tr>
+          <td>无（源码渲染完即丢弃）</td>
+          <td><code>.chart-src</code> + <code>[data-act="src"]</code> 开关 + <code>.src-on</code></td>
+          <td><b>新增「预览 ⇄ 源代码」</b>：<code>chart-box.ts</code> 需把原始代码块字符串存到实例上（不要只留渲染结果），模板里输出 <code>&lt;pre class="src-code"&gt;</code>；切换只改 <code>.src-on</code> 一个类，缩放/适应按钮随之置灰，全屏保留</td>
+        </tr>
+        <tr>
+          <td><code>pre.echarts-err</code> 整圈红框</td>
+          <td><code>pre.chart-err</code></td>
+          <td>左侧 3px 重边框 + 错误标签 chip，与代码块风格解耦；配合源码视图可直接看到出错的 option</td>
+        </tr>
+        <tr>
+          <td>无</td>
+          <td>方案 B：<code>.chart-block.floating</code></td>
+          <td>工具栏绝对定位 + <code>backdrop-filter</code>，hover/<code>focus-within</code> 淡入；一行 class 即可切换</td>
+        </tr>
+        <tr>
+          <td>主题令牌</td>
+          <td>新增 <code>--line-soft</code> <code>--line-strong</code> <code>--hover</code> <code>--active</code> <code>--bar-bg</code> <code>--view-bg</code> <code>--chart-bar</code> <code>--chart-line</code> <code>--chart-grid</code> <code>--chart-axis</code> <code>--node-bg</code> <code>--node-line</code> <code>--shadow-card</code> <code>--shadow-card-hover</code> <code>--shadow-pop</code> <code>--panel-glass</code> <code>--radius-card</code> <code>--radius-ctl</code></td>
+          <td>亮/暗两套都要补齐（暗色下阴影改纯黑低透明度，描边提亮）</td>
+        </tr>
+      </table>
+    </div>
+    <div class="note">
+      <b>不改的部分：</b>缩放算法（0.2×~5×、按钮 1.25×、滚轮 1.15×、视口中心锚定）、拖拽平移判定、全屏行为、<code>remeasure()</code> 时机、echarts 主题重建逻辑 —— 全部保持 <code>chart-box.ts</code> 现实现，本次只动「模板字符串 + CSS」。
+      <br><br>
+      <b>唯一需要跟着改的数值：</b><code>fit()</code> 里的 <code>(view.clientWidth - 24)</code> —— 24 是旧内边距合计（<code>padding:10px 12px</code>）；新内边距为 <code>14px 16px</code>（合计 32），常数需同步改为 <code>32</code>，否则会多出横向滚动条。
+    </div>
+  </section>
+
+</div>
+
+<script>
+/* ============================================================
+   交互：完全对齐 chart-box.ts 的数值与行为
+   scale 0.2~5 / 按钮 1.25 / 滚轮 1.15 / fit = min(1,(w-32)/baseW)
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ---------- 主题切换 ---------- */
+  var root = document.documentElement;
+  var themeBtn = document.getElementById('themeBtn');
+  var themeText = document.getElementById('themeText');
+  function syncThemeText() {
+    themeText.textContent = root.getAttribute('data-theme') === 'dark' ? '浅色' : '深色';
+  }
+  themeBtn.addEventListener('click', function () {
+    root.setAttribute('data-theme', root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+    syncThemeText();
+  });
+  syncThemeText();
+
+  /* ---------- 容器缩放 / 平移 ---------- */
+  function initBlock(el) {
+    var stage = el.querySelector('.chart-stage');
+    var view = el.querySelector('.chart-view');
+    var zoomVal = el.querySelector('.zoom-val');
+    var srcBtn = el.querySelector('[data-act="src"]');
+    if (!view) return;
+
+    /* 渲染失败时可能没有 .chart-stage：此时不测尺寸，但仍要能切到源码排查 */
+    var target = stage ? stage.firstElementChild : null;
+    var baseW = 0, baseH = 0, scale = 1, canZoom = false;
+
+    function measure() {
+      baseW = 0; baseH = 0;
+      if (target && target.tagName.toLowerCase() === 'svg') {
+        var vb = target.viewBox && target.viewBox.baseVal;
+        baseW = (vb && vb.width) || parseFloat(target.getAttribute('width')) || 0;
+        baseH = (vb && vb.height) || parseFloat(target.getAttribute('height')) || 0;
+      } else if (target) {
+        baseW = target.offsetWidth || 0;
+        baseH = target.offsetHeight || 0;
+      }
+      var zoomable = baseW > 0 && baseH > 0;
+      canZoom = zoomable;
+      /* 排除源码开关：它不依赖内容尺寸，任何状态下都必须可点 */
+      Array.prototype.forEach.call(
+        el.querySelectorAll('.tbtn:not([data-act="src"]), .zoom-val'),
+        function (b) { b.disabled = !zoomable || el.classList.contains('src-on'); }
+      );
+      return zoomable;
+    }
+
+    function apply(s) {
+      scale = Math.min(5, Math.max(0.2, s));
+      if (target) {
+        target.style.maxWidth = 'none';
+        target.style.width = (baseW * scale) + 'px';
+        target.style.height = (baseH * scale) + 'px';
+      }
+      if (zoomVal) zoomVal.textContent = Math.round(scale * 100) + '%';
+      view.classList.toggle('pan-able',
+        view.scrollWidth > view.clientWidth || view.scrollHeight > view.clientHeight);
+    }
+
+    function zoomTo(next) {
+      var prev = scale;
+      var r = view.getBoundingClientRect();
+      var cx = view.scrollLeft + r.width / 2;
+      var cy = view.scrollTop + r.height / 2;
+      apply(next);
+      view.scrollLeft = (cx * scale) / prev - r.width / 2;
+      view.scrollTop = (cy * scale) / prev - r.height / 2;
+    }
+
+    function fit() {
+      // 注意：原实现为 (clientWidth - 24)，对应 .mmd-view 的 padding 10px 12px（合计 24）；
+      // 新 .chart-view 为 padding 14px 16px（合计 32），常数需同步改为 32。
+      apply(Math.min(1, (view.clientWidth - 32) / baseW));
+      view.scrollLeft = 0;
+      view.scrollTop = 0;
+    }
+
+    /* 预览 ⇄ 源代码：只切换 .src-on 一个类，不销毁/重建 DOM，
+       因此已测得的 baseW/baseH 与当前 scale 在来回切换后保持不变 */
+    function setSrc(on) {
+      el.classList.toggle('src-on', on);
+      if (srcBtn) {
+        srcBtn.classList.toggle('on', on);
+        srcBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        var tip = on ? '返回预览' : '查看源代码';
+        srcBtn.title = tip;
+        srcBtn.setAttribute('aria-label', tip);
+      }
+      /* 源码态下缩放 / 适应宽度没有意义 → 置灰；全屏仍然可用 */
+      Array.prototype.forEach.call(
+        el.querySelectorAll('[data-act="in"], [data-act="out"], [data-act="fit"], .zoom-val'),
+        function (b) { b.disabled = on || !canZoom; }
+      );
+      /* 切回预览时重算一次：隐藏期间 clientWidth 为 0，pan-able 判断会失真 */
+      if (!on && canZoom) apply(scale);
+    }
+
+    var measurable = measure();
+
+    el.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-act]') : null;
+      if (!btn || btn.disabled) return;
+      var act = btn.getAttribute('data-act');
+      if (act === 'in') zoomTo(scale * 1.25);
+      else if (act === 'out') zoomTo(scale / 1.25);
+      else if (act === 'fit') fit();
+      else if (act === 'reset') zoomTo(1);
+      else if (act === 'src') setSrc(!el.classList.contains('src-on'));
+      else if (act === 'fs') {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else el.requestFullscreen();
+      }
+    });
+
+    /* 复制源码：优先 Clipboard API，非安全上下文回退 execCommand */
+    el.addEventListener('click', function (e) {
+      var cbtn = e.target.closest ? e.target.closest('[data-copy]') : null;
+      if (!cbtn) return;
+      var code = el.querySelector('.src-code');
+      if (!code) return;
+      var text = code.innerText;
+      var flash = function () {
+        cbtn.textContent = '已复制';
+        cbtn.classList.add('done');
+        setTimeout(function () {
+          cbtn.textContent = '复制';
+          cbtn.classList.remove('done');
+        }, 1400);
+      };
+      var fallback = function () {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); flash(); } catch (err) { /* 忽略 */ }
+        document.body.removeChild(ta);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(flash, fallback);
+      } else fallback();
+    });
+
+    el.addEventListener('fullscreenchange', function () {
+      if (canZoom) fit();
+    });
+
+    view.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      zoomTo(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+    }, { passive: false });
+
+    view.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      if (view.scrollWidth <= view.clientWidth && view.scrollHeight <= view.clientHeight) return;
+      e.preventDefault();
+      var sx = e.clientX, sy = e.clientY, sl = view.scrollLeft, st = view.scrollTop;
+      view.classList.add('panning');
+      view.setPointerCapture(e.pointerId);
+      function onMove(ev) {
+        view.scrollLeft = sl - (ev.clientX - sx);
+        view.scrollTop = st - (ev.clientY - sy);
+      }
+      function onUp() {
+        view.classList.remove('panning');
+        view.removeEventListener('pointermove', onMove);
+        view.removeEventListener('pointerup', onUp);
+        view.removeEventListener('pointercancel', onUp);
+      }
+      view.addEventListener('pointermove', onMove);
+      view.addEventListener('pointerup', onUp);
+      view.addEventListener('pointercancel', onUp);
+    });
+
+    /* 初始：按容器宽度适应（线上是插入 DOM 后调 fit()，此处直接演示）
+       测不出尺寸（如渲染失败）时跳过 fit，但事件已绑定 —— 源码视图仍可打开排查 */
+    if (measurable) fit();
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-zoomable]'), initBlock);
+
+  /* 缩放态演示块：初始放大到 175%，展示拖拽光标与提示 */
+  var zd = document.getElementById('zoomDemo');
+  if (zd) {
+    var svg = zd.querySelector('svg');
+    var view = zd.querySelector('.chart-view');
+    var zoomVal = zd.querySelector('.zoom-val');
+    if (svg && view) {
+      var bw = 520, bh = 180, s = 1.75;
+      svg.style.maxWidth = 'none';
+      svg.style.width = (bw * s) + 'px';
+      svg.style.height = (bh * s) + 'px';
+      if (zoomVal) zoomVal.textContent = '175%';
+      view.classList.add('pan-able');
+      view.scrollLeft = 90;
+    }
+  }
+})();
+</script>
+</body>
+</html>

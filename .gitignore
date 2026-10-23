@@ -44,3 +44,6 @@ wheels/
 
 # IDE 产物（Trae HTML 分享打包缓存）
 .trae-html-share-packages/
+
+# 临时工作文件（图表草稿、实验输出等，不入库）
+/temp/

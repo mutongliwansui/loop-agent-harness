@@ -38,7 +38,7 @@ export type Segment = TextSeg | ToolSeg;
 export type LivePhase =
   | { kind: 'thinking'; iteration?: number; since: number }
   | { kind: 'arg_gen'; tool: string; bytes: number; since: number }
-  | { kind: 'tool_run'; tool: string; elapsedMs: number; since: number };
+  | { kind: 'tool_run'; tool: string; elapsedMs: number; since: number; brief?: string };
 /** GET /sessions/:id 的历史消息（OpenAI 消息序：含带 tool_calls 的 assistant 与带 tool_call_id 的 tool） */
 export interface ApiHistoryMsg {
   role: string;

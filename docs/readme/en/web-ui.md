@@ -71,6 +71,8 @@ Markdown bodies (the chat answers and md/doc file previews share one pipeline, `
 - **Math**: `$E=mc^2$` inline and `$$..$$` block via KaTeX (in-diagram `$$..$$` math is built into mermaid v12, flowchart/sequence only); syntax errors render as an inline red fragment without blocking the rest.
 - **Mermaid charts**: mermaid code blocks render as SVG with a toolbar (zoom in/out / fit / fullscreen) plus wheel zoom and drag panning; parse failures keep the source block outlined in red.
 - **ECharts charts**: echarts code blocks (pure JSON options, declarative — no script execution surface) render as interactive SVG charts with the same container controls as Mermaid; invalid JSON keeps the source block outlined in red.
+- **Incremental streaming render**: message bodies are split into *stable blocks + a mutable tail*, so a chart renders **as soon as its code fence closes** — no need to wait for the whole answer. Charts already on screen survive subsequent output (zoom/fullscreen state preserved). While a fence is open, a "generating chart…" placeholder (with character count) replaces the raw code stream; on stop/failure it falls back to a copyable code block.
+- **Preview ⇄ source**: the `</>` button at the right of the chart toolbar switches to the source view (monospace, copyable); switching back does not rebuild the chart instance, and zoom/fullscreen buttons are disabled in source mode.
 - Both load on demand and adapt to light/dark themes (already-rendered charts re-render on theme switch); KaTeX fonts are bundled locally for offline use.
 
 ### Security Details

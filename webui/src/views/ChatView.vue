@@ -17,9 +17,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api, AuthError, ApiError, uploadRaw } from '../api/client.js';
 import { showToast } from '../toast.js';
-import { renderMarkdown, highlightIn } from '../markdown.js';
+import { highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
 import { renderEChartsIn } from '../echarts.js';
+import { splitStreamBlocks, type Block } from '../stream-blocks.js';
 import FilesView from './FilesView.vue';
 import LiveStatus from '../components/LiveStatus.vue';
 import {
@@ -45,6 +46,8 @@ import {
   setChatViewMounted,
   setActivityHandler,
   onRunFinished,
+  type ChatMsg,
+  type Segment,
 } from '../chat-stream.js';
 import {
   getNotifySettings,
@@ -182,21 +185,85 @@ function fmtBytes(n: number): string {
   return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
-/* ================= 消息后处理：代码高亮 + mermaid ================= */
-// 流式期间 segments 文本段逐 chunk 变化触发 v-html 重渲，不能边流边渲；
-// 只在流式结束（send finally）或历史加载（selectSession）后统一后处理：
-// 先 highlight.js 高亮代码块，再把 marked 输出的 <pre><code class="language-mermaid">
-// 替换为 mermaid SVG。失败保留代码块。
+/* ================= 消息后处理：代码高亮 + 图表 ================= */
+// Task-20261023-002 D1/D4：文本段改为「稳定块 + 可变尾部」渲染（见 ../stream-blocks.ts），
+// 图表围栏闭合即可渲染，无需再等整条消息结束——流式期间由 streamTextLen 的 watch 节流触发，
+// 结束时（send finally / onRunFinished）与历史加载（selectSession）仍各做一次全量兜底。
+// 后处理顺序：先 highlight.js 高亮普通代码块，再渲染 mermaid、echarts（各自跳过对方语言）。
 
 async function postRenderMsgs(): Promise<void> {
   await nextTick();
   if (!msgsEl.value) return;
-  highlightIn(msgsEl.value); // 高亮在 mermaid 前：mermaid 块被跳过
-  await renderMermaidIn(msgsEl.value); // mermaid 图表后处理（../mermaid.ts 共享模块）
-  void renderEChartsIn(msgsEl.value); // echarts 图表后处理（../echarts.ts 共享模块）
+  highlightIn(msgsEl.value); // 高亮在图表前：mermaid/echarts 块在 highlightIn 内部被跳过
+  await renderMermaidIn(msgsEl.value); // 槽位路径为主（D3），legacy 旧代码块形态默认不启用
+  void renderEChartsIn(msgsEl.value);
 }
 
-// mermaid 容器构建（缩放/平移/全屏）与渲染排队逻辑见 ../mermaid.ts，样式见 ../mermaid.css
+/* ---- 流式增量渲染（D1/D4/D5） ---- */
+
+/** 文本段 → 块序列（模板用；splitStreamBlocks 内部有 md HTML 的 LRU 缓存，D8） */
+function segBlocks(m: ChatMsg, seg: Segment, i: number): Block[] {
+  if (seg.type !== 'text') return [];
+  return splitStreamBlocks(seg.text, {
+    streaming: !!m.streaming,
+    isTail: i === m.segments.length - 1,
+  });
+}
+
+/** 当前会话文本总长度：作为「有新 chunk 到达」的响应式信号（D4） */
+const streamTextLen = computed(() => {
+  let n = 0;
+  for (const m of messages.value) {
+    for (const s of m.segments) if (s.type === 'text') n += s.text.length;
+  }
+  return n;
+});
+
+let renderTimer = 0;
+/** 尾段以围栏行结尾的快速预判（```` ``` ```` / 更长围栏，允许尾随空白） */
+const FENCE_TAIL_RE = /\n? {0,3}`{3,}[ \t]*$/;
+function clearRenderTimer(): void {
+  if (!renderTimer) return;
+  clearTimeout(renderTimer);
+  renderTimer = 0;
+}
+
+/** 节流后处理：把多 chunk 合并为一次，避免每个 token 都扫描整棵消息树 */
+function scheduleRender(): void {
+  if (renderTimer) return;
+  renderTimer = window.setTimeout(() => {
+    renderTimer = 0;
+    void postRenderMsgs();
+  }, 300);
+}
+
+/** 尾段最后一块是否为已闭合图表块：是则立即渲染，让图表尽早出现（不等节流窗口） */
+function tailChartReady(): boolean {
+  const list = messages.value;
+  const m = list[list.length - 1];
+  if (!m?.streaming) return false;
+  for (let i = m.segments.length - 1; i >= 0; i--) {
+    const s = m.segments[i];
+    if (s.type !== 'text') continue;
+    // 快速预判：文本不以围栏行结尾则不可能新闭合出图表块，省掉一次完整切分
+    if (!FENCE_TAIL_RE.test(s.text)) return false;
+    const blks = splitStreamBlocks(s.text, { streaming: true, isTail: true });
+    return blks[blks.length - 1]?.kind === 'chart';
+  }
+  return false;
+}
+
+watch(streamTextLen, () => {
+  if (tailChartReady()) {
+    clearRenderTimer();
+    void postRenderMsgs();
+  } else {
+    scheduleRender();
+  }
+});
+
+// mermaid 容器构建（缩放/平移/全屏/源码切换）与渲染排队逻辑见 ../mermaid.ts、
+// ../chart-box.ts，样式见 ../mermaid.css
 
 function scrollBottom(): void {
   nextTick(() => {
@@ -517,6 +584,7 @@ onUnmounted(() => {
   registerChatBridge(null);
   window.removeEventListener('keydown', onGlobalKeydown);
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
+  clearRenderTimer(); // 流式图表渲染的节流定时器
 });
 </script>
 
@@ -593,7 +661,21 @@ onUnmounted(() => {
                     </button>
                   </div>
                 </details>
-                <div v-else-if="m.role === 'assistant'" class="md" v-html="renderMarkdown(seg.text)"></div>
+                <div v-else-if="m.role === 'assistant'" class="md">
+                  <!-- 稳定块 + 可变尾部（D1）：内容未变的块 key 不变 → Vue 复用 DOM，
+                       块内 append 的图表容器得以存活；每个 chunk 只重渲尾部块 -->
+                  <template v-for="blk in segBlocks(m, seg, i)" :key="blk.k">
+                    <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒（../markdown.ts） -->
+                    <div v-if="blk.kind === 'md'" v-html="blk.html"></div>
+                    <div v-else-if="blk.kind === 'chart'" class="chart-slot" :data-lang="blk.lang" :data-src="blk.src"></div>
+                    <!-- 未闭合的图表围栏：显示占位而非逐字刷屏的裸源码（D5） -->
+                    <div v-else class="chart-pending">
+                      <span class="cp-spin"></span>
+                      <span>正在生成 {{ blk.lang }} 图表…</span>
+                      <span class="cp-num">已生成 {{ blk.chars }} 字符</span>
+                    </div>
+                  </template>
+                </div>
                 <div v-else class="plain">{{ seg.text }}</div>
               </template>
               <!-- 压缩 loading 放在消息末尾：长链路时仍可见（滚动由 compaction_start 的 notifyActivity 驱动） -->
@@ -905,8 +987,11 @@ onUnmounted(() => {
 .msg.assistant .m-role { font-size: 12px; font-weight: 600; color: var(--muted); }
 .msg .bubble p, .msg .body p { margin: 0 0 8px; }
 .msg .bubble p:last-child, .msg .body p:last-child { margin-bottom: 0; }
-.md :first-child { margin-top: 0; }
-.md :last-child { margin-bottom: 0; }
+/* 首/尾块清零：分块渲染后（D1）不能再用 `.md :first-child` 这类全局后代选择器，
+   否则每个块的首尾元素 margin 都被清零、块间距塌陷；限定到首/尾 md 块内部。
+   块 div 无 padding/border，子元素 margin 会正常 collapse 穿过块边界。 */
+.md > .md-blk:first-child :deep(:first-child) { margin-top: 0; }
+.md > .md-blk:last-child :deep(:last-child) { margin-bottom: 0; }
 /* v-html 注入内容无 scoped 属性，pre/code 需 :deep 穿透（含 mermaid 失败回退的代码块） */
 .md :deep(pre) {
   background: var(--code-bg);

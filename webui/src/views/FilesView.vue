@@ -27,9 +27,10 @@ import {
 } from '../api/client.js';
 import { showToast } from '../toast.js';
 import DOMPurify from 'dompurify';
-import { highlightIn, renderMarkdown } from '../markdown.js';
+import { highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
 import { renderEChartsIn } from '../echarts.js';
+import { splitStreamBlocks, type Block } from '../stream-blocks.js';
 // pptx Worker 脚本 URL：库默认按 import.meta.url 相对解析 worker 路径，vite 打包后失效，必须显式传入
 import pptxWorkerUrl from '@file-viewer/pptx/worker/pptx.worker.js?url';
 
@@ -338,9 +339,13 @@ function viewKindOf(p: string): ViewKind {
 
 const kind = computed(() => viewKindOf(selected.value));
 const codeLang = computed(() => EXT_LANG[extOf(selected.value)] ?? 'plaintext');
-const mdHtml = computed(() =>
-  fileData.value && (kind.value === 'md' || kind.value === 'doc') ? renderMarkdown(fileData.value.content) : '',
-); // doc：后端 /fs/doc2md 已把提取文本转成 markdown，复用 md 渲染管线
+// md/doc 预览的块序列（Task-20261023-002 D9）：与对话流共用 stream-blocks 切分，
+// 图表围栏成为 .chart-slot 槽位由 mermaid/echarts 后处理填充；非流式（无 pending 分支）。
+const mdBlocks = computed<Block[]>(() =>
+  fileData.value && (kind.value === 'md' || kind.value === 'doc')
+    ? splitStreamBlocks(fileData.value.content, { streaming: false })
+    : [],
+);
 const viewMode = ref<'prev' | 'src'>('prev'); // 预览 / 源码 切换（md/html/表格类）
 const hasModes = computed(() => MODE_KINDS.has(kind.value));
 const prevLabel = computed(() => (GRID_KINDS.has(kind.value) ? '表格' : '预览'));
@@ -1224,8 +1229,14 @@ function fmtBytes(n: number): string {
           </div>
           <div v-if="fileLoading" class="fv-empty">加载中…</div>
           <div v-else-if="fileError" class="fv-err">⚠ {{ fileError }}</div>
-          <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒 -->
-          <div v-else-if="kind === 'md' && viewMode === 'prev'" ref="mdEl" class="fv-md" v-html="mdHtml" @click="onMdClick"></div>
+          <!-- md 预览：块渲染（稳定块 + 图表槽位，与对话流同一路径 D9）；mermaid/echarts 后处理填充槽位 -->
+          <div v-else-if="kind === 'md' && viewMode === 'prev'" ref="mdEl" class="fv-md" @click="onMdClick">
+            <template v-for="blk in mdBlocks" :key="blk.k">
+              <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒（../markdown.ts） -->
+              <div v-if="blk.kind === 'md'" v-html="blk.html"></div>
+              <div v-else-if="blk.kind === 'chart'" class="chart-slot" :data-lang="blk.lang" :data-src="blk.src"></div>
+            </template>
+          </div>
           <!-- html 预览：沙箱 iframe（孤立 origin：脚本可运行，无法触达主页面/存储） -->
           <iframe
             v-else-if="kind === 'html' && viewMode === 'prev'"
@@ -1260,8 +1271,14 @@ function fmtBytes(n: number): string {
           </template>
           <!-- eslint-disable-next-line vue/no-v-html — mammoth 输出经 DOMPurify 消毒 -->
           <div v-else-if="kind === 'docx'" class="fv-md" v-html="docxHtml" @click="onMdClick"></div>
-          <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒 -->
-          <div v-else-if="kind === 'doc'" class="fv-md" v-html="mdHtml"></div>
+          <!-- doc：后端 /fs/doc2md 已转 markdown，复用同一块渲染管线 -->
+          <div v-else-if="kind === 'doc'" class="fv-md">
+            <template v-for="blk in mdBlocks" :key="blk.k">
+              <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒（../markdown.ts） -->
+              <div v-if="blk.kind === 'md'" v-html="blk.html"></div>
+              <div v-else-if="blk.kind === 'chart'" class="chart-slot" :data-lang="blk.lang" :data-src="blk.src"></div>
+            </template>
+          </div>
           <!-- pptx 渲染失败降级占位 -->
           <div v-else-if="kind === 'pptx' && pptxFail" class="fv-empty fv-nosup">
             <div class="big">PPTX 渲染失败</div>
