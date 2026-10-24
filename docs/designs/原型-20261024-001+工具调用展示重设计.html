@@ -1,0 +1,1709 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · 工具调用展示重设计 · 20261024-001</title>
+<!--
+  原型：WebUI 工具调用（tool call）展示重设计
+  目标文件：webui/src/views/ChatView.vue（模板 + 样式段）、webui/src/tool-meta.ts（图标体系）、
+            webui/src/chat-stream.ts（中断态透传，决策 D3）
+  线上现状：<details class="tool-call"> + .tc-badge/.tc-icon/.tc-name/.tc-sum/.tc-took
+            + 展开后 .ptable（全边框表格）+ .jv（原始 JSON）+ .tc-result（clamp 120 / max-height 260）
+  做法：先 1:1 复刻线上现状 → 逐条症状 → 三套方案对比 → D1 定为 B（卡片内聚式）→ 状态语义 → 落地映射与决策结论。
+  状态：D1=B 已选定，D2~D6 按推荐项确认；本文件为落地实施依据（2026-10-24 修订）。
+  自包含：无 CDN、无外部字体、无图片，离线可开；源码全部内联 SVG。
+-->
+<style>
+/* ============================================================
+   0. 主题令牌（与 webui/src/style.css 同名同值；标注 NEW 的为图表容器任务新增，本原型复用）
+   ============================================================ */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --code-bg: #f1f3f5;
+
+  --line-soft: #eef0f3;      /* NEW */
+  --line-strong: #d3d8de;    /* NEW */
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;         /* NEW */
+  --bar-bg: #fbfcfd;         /* NEW */
+  --view-bg: #ffffff;        /* NEW */
+  --radius-card: 12px;       /* NEW */
+  --radius-ctl: 7px;         /* NEW */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-card-hover: 0 1px 2px rgba(16, 24, 40, .05), 0 16px 38px -18px rgba(16, 24, 40, .26);
+
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+html[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --danger: #f87171;
+  --danger-weak: #3b1a1a;
+  --warn: #fbbf24;
+  --warn-weak: #3a2e10;
+  --ok: #34d399;
+  --ok-weak: #143528;
+  --code-bg: #22272f;
+
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0 0 80px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.65 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   1. 页面骨架（仅原型说明用，非产品样式）
+   ============================================================ */
+.page { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; }
+.topbar .tag {
+  font: 500 11px/1 var(--mono); color: var(--muted);
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px;
+}
+.topbar nav { display: flex; gap: 2px; margin-left: 6px; }
+.topbar nav a {
+  font-size: 12px; color: var(--muted); text-decoration: none;
+  padding: 5px 9px; border-radius: 6px;
+}
+.topbar nav a:hover { background: var(--hover); color: var(--text); }
+.topbar .spring { flex: 1; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px;
+  font: 500 12px/1 var(--sans);
+  color: var(--text-2); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--line-strong); color: var(--text); }
+
+section { padding-top: 42px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.sec-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+.sec-head .badge {
+  font: 500 10.5px/1 var(--mono); padding: 3px 6px; border-radius: 5px;
+  color: var(--brand); background: var(--brand-weak);
+}
+.sec-head .badge.warn { color: var(--warn); background: var(--warn-weak); }
+.sec-desc { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; max-width: 76ch; }
+.sec-desc code, .note code {
+  font: 500 11.5px var(--mono); background: var(--code-bg);
+  padding: 1px 5px; border-radius: 4px; color: var(--text-2);
+}
+
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 22px; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+/* 方案 A 演示区：宽屏左大右小，窄屏必须退回单列（否则左列被右列 min 宽度挤塌） */
+.grid-a { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 940px) {
+  .grid-a { grid-template-columns: minmax(0, 1.12fr) minmax(340px, .88fr); }
+}
+
+/* 规格表横向滚动壳：窄屏下表格可横滚，不撑破容器 */
+.tw { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+.card-label {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted);
+  margin-bottom: 8px; letter-spacing: .02em;
+}
+.card-label .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.card-label .dot.bad { background: var(--danger); }
+.card-label .dot.good { background: var(--brand); }
+
+/* 对话上下文壳：模拟真实会话区背景，检验工具行与正文的节奏 */
+.ctx {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 14px 18px 18px;
+}
+.ctx .say { font-size: 13.5px; line-height: 1.72; color: var(--text); margin: 0 0 10px; }
+.ctx .say.muted { color: var(--muted); font-size: 12.5px; }
+
+.note { font-size: 12.5px; color: var(--muted); line-height: 1.75; margin: 14px 0 0; }
+.note b { color: var(--text-2); font-weight: 600; }
+.note ul { margin: 6px 0 0; padding-left: 18px; }
+.note li { margin: 3px 0; }
+
+/* 症状清单 */
+.sym { counter-reset: s; margin: 0; padding: 0; list-style: none; }
+.sym li {
+  counter-increment: s;
+  position: relative;
+  padding: 9px 0 9px 30px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12.5px; line-height: 1.6; color: var(--text-2);
+}
+.sym li:last-child { border-bottom: none; }
+.sym li::before {
+  content: counter(s);
+  position: absolute; left: 0; top: 9px;
+  width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center;
+  font: 700 10.5px/1 var(--mono);
+  color: var(--danger); background: var(--danger-weak);
+}
+.sym li b { color: var(--text); font-weight: 600; }
+.sym li code { font: 500 11px var(--mono); background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+
+/* ============================================================
+   2. 【旧版】1:1 复刻线上现状（ChatView.vue:1095-1202）
+   ============================================================ */
+.tool-call {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin: 8px 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.tool-call > summary {
+  cursor: pointer;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tool-call > summary::-webkit-details-marker { display: none; }
+.tool-call .arrow { transition: transform .15s; color: var(--muted); font-size: 10px; flex: none; }
+.tool-call[open] .arrow { transform: rotate(90deg); }
+.tc-badge {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+.tc-badge.ok { background: var(--ok-weak); color: var(--ok); }
+.tc-badge.run { background: var(--warn-weak); color: var(--warn); }
+.tc-badge.fail { background: var(--danger-weak); color: var(--danger); }
+.tc-icon { flex: none; }
+.tc-name { font-weight: 600; color: var(--text); flex: none; }
+.tc-sum {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 auto; min-width: 0;
+}
+.tc-took { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tc-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.tc-sec-title { font-size: 11.5px; font-weight: 700; color: var(--muted); margin: 8px 0 5px; }
+.ptable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ptable td { border: 1px solid var(--line); padding: 4px 9px; vertical-align: top; }
+.ptable td:first-child { width: 130px; color: var(--muted); white-space: nowrap; background: var(--bg); }
+.ptable td .en { font-family: var(--mono); font-size: 11px; opacity: .75; margin-left: 5px; }
+.ptable td.val { font-family: var(--mono); font-size: 12px; word-break: break-all; white-space: pre-wrap; }
+.jv { margin-top: 8px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg); }
+.jv > summary { cursor: pointer; padding: 5px 10px; font-size: 12px; color: var(--muted); list-style: none; }
+.jv > summary::-webkit-details-marker { display: none; }
+.jv pre {
+  font-family: var(--mono); font-size: 11.5px;
+  padding: 4px 12px 10px; overflow-x: auto; margin: 0; line-height: 1.5;
+}
+.tc-result {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 8px 10px;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 260px; overflow-y: auto;
+  line-height: 1.55;
+  position: relative;
+}
+.tc-result.clamped { max-height: 120px; overflow: hidden; }
+.tc-result.clamped::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 46px;
+  background: linear-gradient(transparent, var(--code-bg));
+}
+.tc-expand { margin-top: 6px; font-size: 12px; }
+
+/* ============================================================
+   3. 方案 A：时间轴式（主推）
+   ------------------------------------------------------------
+   取消卡片外框，左侧 1px 轨道 + 状态色圆点；一行内：图标 / 中文名 /
+   参数 chip / 耗时；展开为无边框键值表 + 单一结果块。
+   连续同类调用自然形成「时间轴」，不再堆同构边框。
+   ============================================================ */
+.tl { margin: 12px 0 14px; }
+.tl-item { position: relative; }
+/* 轨道：贯穿本项全高，圆点覆盖其上，因此首尾项需单独裁剪 */
+.tl-item::before {
+  content: '';
+  position: absolute;
+  left: 11px; top: 0; bottom: 0; width: 1px;
+  background: var(--line);
+}
+.tl-item:first-child::before { top: 16px; }
+.tl-item:last-child::before { bottom: auto; height: 16px; }
+
+.tl-dot {
+  position: absolute;
+  left: 7.5px; top: 12.5px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  z-index: 2;
+  background: var(--ok);
+}
+.tl-item[data-state="ok"] .tl-dot { background: var(--ok); }
+.tl-item[data-state="fail"] .tl-dot { background: var(--danger); }
+.tl-item[data-state="run"] .tl-dot { background: var(--warn); animation: tl-pulse 1.4s ease-out infinite; }
+.tl-item[data-state="stop"] .tl-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
+.tl-item[data-state="unknown"] .tl-dot { background: var(--line-strong); }
+@keyframes tl-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--warn) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 0%, transparent); }
+}
+
+.tl-row {
+  position: relative;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 6px 6px 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.tl-row:hover { background: var(--hover); }
+.tl-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+.tl-ico { flex: none; display: grid; place-items: center; color: var(--text-2); }
+.tl-ico svg { width: 15px; height: 15px; }
+.tl-item[data-state="fail"] .tl-ico { color: var(--danger); }
+.tl-item[data-state="run"] .tl-ico { color: var(--warn); }
+.tl-item[data-state="stop"] .tl-ico,
+.tl-item[data-state="unknown"] .tl-ico { color: var(--muted); }
+
+.tl-name { flex: none; font-size: 12.5px; font-weight: 600; color: var(--text); letter-spacing: .01em; }
+.tl-name.raw { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+
+.tl-chips {
+  display: flex; align-items: center; gap: 5px;
+  min-width: 0; flex: 1 1 auto;
+  overflow: hidden;
+}
+.chip {
+  font: 500 11.5px/1.5 var(--mono);
+  color: var(--text-2);
+  background: var(--code-bg);
+  padding: 1px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%;
+}
+.chip.path { color: var(--text); }
+.chip.dim { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.chip.run { color: var(--warn); background: var(--warn-weak); }
+.chip.fail { color: var(--danger); background: var(--danger-weak); }
+.chip .sp {
+  display: inline-block; width: 8px; height: 8px; margin-right: 4px;
+  border: 1.5px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; animation: tl-spin .8s linear infinite;
+  vertical-align: -1px;
+}
+@keyframes tl-spin { to { transform: rotate(360deg); } }
+
+.tl-meta {
+  flex: none; margin-left: auto;
+  font: 11.5px/1 var(--mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tl-caret {
+  flex: none; display: grid; place-items: center;
+  color: var(--muted); transition: transform .15s;
+}
+.tl-caret svg { width: 12px; height: 12px; }
+.tl-item.is-open .tl-caret { transform: rotate(90deg); }
+
+.tl-body {
+  display: none;
+  padding: 2px 6px 12px 28px;
+  font-size: 12.5px;
+}
+.tl-item.is-open .tl-body { display: block; }
+
+/* 键值表：无边框两列，替代 .ptable 的全边框表格 */
+.tl-kv {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 5px 12px;
+  margin: 4px 0 10px;
+}
+.tl-kv .k { font-size: 11.5px; color: var(--muted); padding-top: 1px; }
+.tl-kv .v {
+  font: 11.5px/1.6 var(--mono);
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.tl-kv .v.ellip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 结果块：统一单一滚动机制（不再 clamp + max-height + 按钮三套并存） */
+.tl-out {
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+.tl-item[data-state="fail"] .tl-out { box-shadow: inset 2.5px 0 0 var(--danger); }
+.out-h {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  font: 11px/1.4 var(--sans);
+  color: var(--muted);
+}
+.out-h .st { font-weight: 600; }
+.tl-item[data-state="fail"] .out-h .st { color: var(--danger); }
+.tl-item[data-state="ok"] .out-h .st { color: var(--ok); }
+.out-h .spring { flex: 1; }
+.out-btn {
+  font: 500 11px/1 var(--sans);
+  color: var(--muted); background: none;
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 3px 6px; cursor: pointer;
+}
+.out-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel); }
+.tl-out pre {
+  margin: 0;
+  padding: 8px 10px;
+  font: 11.5px/1.62 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 190px;
+  overflow: auto;
+}
+.tl-out.more pre { max-height: 420px; }
+.tl-more {
+  display: block; width: 100%;
+  padding: 5px 10px;
+  font: 500 11px/1.4 var(--sans);
+  color: var(--brand); background: none;
+  border: none; border-top: 1px solid var(--line-soft);
+  cursor: pointer; text-align: left;
+}
+.tl-more:hover { background: var(--hover); }
+
+/* 同类合并组（决策 D5：连续 ≥3 次同工具折叠） */
+.tl-group .tl-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.tl-count {
+  font: 600 10.5px/1 var(--mono);
+  color: var(--muted);
+  background: var(--code-bg);
+  border-radius: 999px;
+  padding: 2px 6px;
+  flex: none;
+}
+.tl-sub { display: none; padding: 2px 6px 4px 28px; }
+.tl-group.is-open .tl-sub { display: block; }
+.tl-subrow {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.tl-subrow:hover { background: var(--hover); }
+.tl-subrow .idx {
+  font: 500 10.5px/1 var(--mono); color: var(--muted);
+  width: 14px; flex: none; text-align: right;
+}
+.tl-subrow .chip { flex: 0 1 auto; min-width: 0; }
+
+/* ============================================================
+   4. 方案 B：卡片内聚式（与图表容器 chart-box 统一）
+   ============================================================ */
+.tcard {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  margin: 10px 0;
+  transition: box-shadow .15s, border-color .15s;
+}
+.tcard:hover { box-shadow: var(--shadow-card-hover); border-color: var(--line-strong); }
+.tcard[data-state="fail"] { --strip: var(--danger); }
+.tcard[data-state="run"] { --strip: var(--warn); }
+
+/* 状态条：inset box-shadow 会被 header 的不透明背景盖住（子元素绘制在内阴影之上），
+   改用伪元素画在卡片最左侧，z-index 压在 header 之上 */
+.tcard::before {
+  content: '';
+  display: none;
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 2;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+  background: var(--strip);
+  pointer-events: none;
+}
+.tcard[data-state="fail"]::before,
+.tcard[data-state="run"]::before,
+.tcard[data-state="aborted"]::before { display: block; }
+
+.tcard-h {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+.tcard.is-open .tcard-h { border-bottom-color: var(--line-soft); }
+.tcard-ico {
+  width: 26px; height: 26px; flex: none;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  background: var(--brand-weak);
+  color: var(--brand);
+}
+.tcard[data-state="fail"] .tcard-ico { background: var(--danger-weak); color: var(--danger); }
+.tcard[data-state="run"] .tcard-ico { background: var(--warn-weak); color: var(--warn); }
+.tcard[data-state="unknown"] .tcard-ico { background: var(--code-bg); color: var(--muted); }
+.tcard-ico svg { width: 15px; height: 15px; }
+
+.tcard-txt { min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.tcard-name { font-size: 12.5px; font-weight: 650; letter-spacing: .01em; display: block; }
+.tcard-sub {
+  display: block;
+  font: 11px/1.5 var(--mono); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tcard-side { display: flex; align-items: center; gap: 8px; flex: none; }
+.tpill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 600 10.5px/1 var(--sans);
+  padding: 3px 7px; border-radius: 999px;
+}
+.tpill.ok { color: var(--ok); background: var(--ok-weak); }
+.tpill.fail { color: var(--danger); background: var(--danger-weak); }
+.tpill.run { color: var(--warn); background: var(--warn-weak); }
+.tpill.stop { color: var(--muted); background: var(--code-bg); }
+.tpill .sp {
+  width: 7px; height: 7px; border: 1.5px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; animation: tl-spin .8s linear infinite;
+}
+.tcard-took { font: 11px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.tcard-body { display: none; padding: 10px 12px 12px; }
+.tcard.is-open .tcard-body { display: block; }
+
+/* ============================================================
+   5. 方案 C：极简 pill 式（超长对话 / 高密度场景）
+   ============================================================ */
+.mc { margin: 10px 0 14px; }
+.mc-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mc-row:hover { background: var(--hover); }
+.mc-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--text-2);
+  font-size: 11.5px;
+  flex: none;
+}
+.mc-pill svg { width: 12px; height: 12px; }
+.mc-row[data-state="fail"] .mc-pill { color: var(--danger); background: var(--danger-weak); }
+.mc-row[data-state="run"] .mc-pill { color: var(--warn); background: var(--warn-weak); }
+.mc-arg {
+  font: 11.5px/1.5 var(--mono); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex: 1 1 auto;
+}
+.mc-row[data-state="ok"] .mc-arg { color: var(--text-2); }
+.mc-took { font: 11px/1 var(--mono); color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+.mc-body { display: none; padding: 4px 4px 8px 14px; }
+.mc-row.is-open + .mc-body { display: block; }
+
+/* ============================================================
+   5b. 主方案 B 定稿补充（D1=B 选定后新增）
+       中断态 / { } 原始 JSON 弹层 / 合并组 / 结果区口径 / 窄屏
+   ============================================================ */
+/* 卡片需允许浮层溢出：{ } 弹层是相对卡片的绝对定位块 */
+.tcard { position: relative; overflow: visible; }
+.tcard-h { border-radius: calc(var(--radius-card) - 1px) calc(var(--radius-card) - 1px) 0 0; }
+
+/* 已中断（D3）：中性灰 + 无彩色左条，靠 pill 文案与「跳过」区分 */
+.tcard[data-state="aborted"] { --strip: var(--line-strong); }
+.tcard[data-state="aborted"] .tcard-ico { background: var(--code-bg); color: var(--muted); }
+.tcard[data-state="aborted"] .tcard-name { color: var(--text-2); }
+
+/* 头部动作按钮：常态隐形，hover / 展开 / focus 常显；触屏无 hover 则常显 */
+.tcard-act {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: none;
+  border: 1px solid transparent; border-radius: 6px;
+  background: none; color: var(--muted);
+  cursor: pointer; opacity: 0;
+  transition: opacity .12s, background .12s, border-color .12s;
+}
+.tcard:hover .tcard-act, .tcard.is-open .tcard-act, .tcard-act:focus-visible { opacity: 1; }
+.tcard-act:hover, .tcard.json-open .tcard-act { background: var(--panel); border-color: var(--line); color: var(--text); }
+.tcard-act svg { width: 13px; height: 13px; }
+.tcard-act .act-txt { font: 600 10.5px/1 var(--mono); letter-spacing: .02em; }
+@media (hover: none) { .tcard-act { opacity: 1; } }
+
+/* 原始 JSON 弹层（D4）：默认不占纵向空间 */
+.tjson {
+  display: none;
+  position: absolute; right: 10px; top: 38px; z-index: 40;
+  width: min(460px, calc(100vw - 44px));
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card-hover);
+  overflow: hidden;
+}
+.tcard.json-open .tjson { display: block; }
+.tjson-h {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--line-soft);
+  font: 600 11px/1.4 var(--sans); color: var(--muted);
+}
+.tjson-h .spring { flex: 1; }
+.tjson pre {
+  margin: 0; padding: 8px 10px;
+  font: 11.5px/1.6 var(--mono);
+  max-height: 240px; overflow: auto;
+}
+
+/* 合并组（D5）：一张卡片承载连续 N 次同工具调用 */
+.tgroup-rows { display: none; }
+.tcard.is-open .tgroup-rows { display: block; }
+.tgroup-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+.tgroup-row:hover { background: var(--hover); }
+.tgroup-row .idx { font: 500 10.5px/1 var(--mono); color: var(--muted); width: 16px; flex: none; text-align: right; }
+.tgroup-row .st-i { width: 12px; flex: none; text-align: center; font-size: 10px; }
+.tgroup-row[data-state="ok"] .st-i { color: var(--ok); }
+.tgroup-row[data-state="fail"] .st-i { color: var(--danger); }
+.tgroup-row .sub {
+  flex: 1 1 auto; min-width: 0;
+  font: 11.5px/1.5 var(--mono); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tgroup-row .tcard-took { flex: none; }
+.ttimes {
+  font: 600 10.5px/1 var(--mono); color: var(--muted);
+  background: var(--code-bg); border-radius: 999px;
+  padding: 2px 6px; margin-left: 3px;
+}
+
+/* 结果区（D6 行数口径）：单滚动 + 一次「展开全部」 */
+.tcard[data-state="ok"] .out-h .st { color: var(--ok); }
+.tcard[data-state="fail"] .out-h .st { color: var(--danger); }
+.tcard[data-state="aborted"] .out-h .st { color: var(--muted); }
+.tcard[data-state="fail"] .tl-out { box-shadow: inset 2.5px 0 0 var(--danger); }
+.tcard .tl-kv { grid-template-columns: 68px minmax(0, 1fr); }
+
+/* 定稿规则列表 */
+.rules { margin: 10px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--text-2); }
+.rules li { margin: 6px 0; }
+.rules b { color: var(--text); font-weight: 600; }
+.rules code { font: 500 11px var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+
+/* 窄屏：动作按钮常显、弹层贴边 */
+@media (max-width: 560px) {
+  .tcard-h { padding: 8px 10px; gap: 8px; }
+  .tcard-act { opacity: 1; }
+  .tjson { right: 6px; top: 36px; width: calc(100vw - 32px); }
+}
+
+/* ============================================================
+   6. 状态语义矩阵 + 落地映射表
+   ============================================================ */
+table.spec { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.spec th {
+  text-align: left; font-size: 11.5px; font-weight: 600; color: var(--muted);
+  padding: 7px 10px; border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+table.spec td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+table.spec tr:last-child td { border-bottom: none; }
+table.spec td code { font: 500 11px var(--mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+table.spec td:first-child { white-space: nowrap; }
+.state-cell { display: flex; align-items: center; gap: 7px; }
+.state-cell .mini {
+  position: relative; width: 16px; height: 16px; flex: none;
+}
+.state-cell .mini::before {
+  content: ''; position: absolute; left: 7.5px; top: 0; bottom: 0; width: 1px; background: var(--line);
+}
+.state-cell .mini i {
+  position: absolute; left: 4.5px; top: 4.5px; width: 7px; height: 7px; border-radius: 50%; z-index: 1;
+  background: var(--ok);
+}
+
+.decision { margin: 16px 0 0; padding: 0; list-style: none; }
+.decision li {
+  display: grid; grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12.5px; line-height: 1.65; color: var(--text-2);
+}
+.decision li:last-child { border-bottom: none; }
+.decision .d {
+  font: 700 11px/1 var(--mono);
+  color: var(--brand); background: var(--brand-weak);
+  border-radius: 5px; padding: 4px 0; text-align: center; height: 19px;
+}
+.decision b { color: var(--text); font-weight: 600; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 11.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+</style>
+</head>
+<body>
+
+<!-- SVG 图标 sprite：线性 1.6px 描边，与 chart-box.ts 的 kind-ico 同一体系 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-book" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.2 2.8h6.4a2 2 0 0 1 2 2v8.4H5.2a2 2 0 0 1-2-2z"/><path d="M5.2 2.8v10.4"/>
+  </symbol>
+  <symbol id="i-pencil" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11.1 2.6l2.3 2.3-7.2 7.2-3 .7.7-3z"/><path d="M9.6 4.1l2.3 2.3"/>
+  </symbol>
+  <symbol id="i-wrench" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10.6 2.6a3.1 3.1 0 0 0-3.7 4L2.7 10.8a1.45 1.45 0 0 0 2.05 2.05l4.2-4.2a3.1 3.1 0 0 0 3.9-3.7l-1.9 1.9-1.7-.45-.45-1.7z"/>
+  </symbol>
+  <symbol id="i-search" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="7" cy="7" r="3.7"/><path d="M9.8 9.8L13.4 13.4"/>
+  </symbol>
+  <symbol id="i-terminal" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2"/>
+    <path d="M5 6.6l1.9 1.9L5 10.4"/><path d="M8.9 10.4h2.4"/>
+  </symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="8" r="5.4"/><path d="M8 4.9V8l2.2 1.4"/>
+  </symbol>
+  <symbol id="i-lines" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5.4 4.4h8M5.4 8h8M5.4 11.6h5"/>
+    <circle cx="3" cy="4.4" r=".85" fill="currentColor" stroke="none"/>
+    <circle cx="3" cy="8" r=".85" fill="currentColor" stroke="none"/>
+    <circle cx="3" cy="11.6" r=".85" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4.6" y="4.6" width="6.8" height="6.8" rx="1.4"/>
+  </symbol>
+  <symbol id="i-puzzle" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z"/>
+  </symbol>
+  <symbol id="i-image" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.8"/>
+    <circle cx="5.8" cy="6.2" r="1.1"/><path d="M2.6 10.6l3.2-2.8 2.6 2.2 2-1.7 2.9 2.4"/>
+  </symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="8" cy="8" r="2.1"/>
+    <path d="M8 1.9v1.7M8 12.4v1.7M1.9 8h1.7M12.4 8h1.7M3.7 3.7l1.2 1.2M11.1 11.1l1.2 1.2M12.3 3.7l-1.2 1.2M4.9 11.1l-1.2 1.2"/>
+  </symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3.6L10.4 8 6 12.4"/>
+  </symbol>
+</svg>
+
+<div class="topbar">
+  <h1>工具调用展示重设计</h1>
+  <span class="tag">20261024-001</span>
+  <nav>
+    <a href="#s0">现状</a>
+    <a href="#s1b">主方案 B</a>
+    <a href="#s1">备选 A</a>
+    <a href="#s2">备选 C</a>
+    <a href="#s3">状态语义</a>
+    <a href="#s4">落地映射</a>
+  </nav>
+  <span class="spring"></span>
+  <button class="btn-ghost" id="themeBtn" type="button">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <circle cx="8" cy="8" r="3.2"/><path d="M8 1.6v1.4M8 13v1.4M1.6 8h1.4M13 8h1.4"/>
+    </svg>
+    <span id="themeTxt">深色</span>
+  </button>
+</div>
+
+<div class="page">
+
+<!-- ============================================================
+     0. 现状与症状
+     ============================================================ -->
+<section id="s0">
+  <div class="sec-head">
+    <h2>0 · 现状与症状</h2>
+    <span class="badge warn">需要改的部分</span>
+  </div>
+  <p class="sec-desc">
+    左侧为线上 <code>ChatView.vue</code> 工具块的 1:1 复刻（<code>.tool-call</code> + <code>.tc-badge</code> + <code>.ptable</code> + <code>.tc-result</code>），
+    右侧是对应的 8 条症状——每一条都能在产品代码里指到具体行。
+  </p>
+
+  <div class="grid-2">
+    <div>
+      <div class="card-label"><span class="dot bad"></span>线上现状（折叠 / 展开）</div>
+      <div class="ctx">
+        <p class="say muted">我先看一下工具展示相关的实现。</p>
+
+        <!-- 折叠态 -->
+        <details class="tool-call">
+          <summary>
+            <span class="arrow">▶</span>
+            <span class="tc-badge ok">✓</span>
+            <span class="tc-icon">📖</span>
+            <span class="tc-name">读取文件</span>
+            <span class="tc-sum">react-agent.ts（1-60 行）</span>
+            <span class="tc-took">· 0.2s</span>
+          </summary>
+        </details>
+
+        <!-- 展开态 -->
+        <details class="tool-call" open>
+          <summary>
+            <span class="arrow">▶</span>
+            <span class="tc-badge ok">✓</span>
+            <span class="tc-icon">⚡</span>
+            <span class="tc-name">执行命令</span>
+            <span class="tc-sum">npx vitest run tests/webui-tool-meta.test.ts</span>
+            <span class="tc-took">· 3.4s</span>
+          </summary>
+          <div class="tc-body">
+            <div class="tc-sec-title">输入参数</div>
+            <table class="ptable">
+              <tbody>
+                <tr><td>命令<span class="en">command</span></td><td class="val">npx vitest run tests/webui-tool-meta.test.ts</td></tr>
+                <tr><td>工作目录<span class="en">cwd</span></td><td class="val">D:\trae_workspace\loop-agent-command</td></tr>
+              </tbody>
+            </table>
+            <details class="jv">
+              <summary>原始 JSON</summary>
+              <pre>{
+  "command": "npx vitest run tests/webui-tool-meta.test.ts"
+}</pre>
+            </details>
+            <div class="tc-sec-title">结果</div>
+            <div class="tc-result clamped"> RUN  v1.6.0 D:/trae_workspace/loop-agent-command
+
+ ✓ tests/webui-tool-meta.test.ts (18 tests) 42ms
+   ✓ toolDisplay：工具名 → 图标 + 中文名
+   ✓ toolSummary：摘要短语
+   ✓ toolParamRows：参数表行
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Duration  412ms</div>
+            <button class="tc-expand">▼ 展开全部结果</button>
+          </div>
+        </details>
+
+        <!-- 失败态 -->
+        <details class="tool-call">
+          <summary>
+            <span class="arrow">▶</span>
+            <span class="tc-badge fail">✗</span>
+            <span class="tc-icon">🔧</span>
+            <span class="tc-name">编辑文件</span>
+            <span class="tc-sum">chart-box.ts（替换）</span>
+            <span class="tc-took">· 0.1s</span>
+          </summary>
+        </details>
+      </div>
+    </div>
+
+    <div>
+      <div class="card-label"><span class="dot bad"></span>症状（按影响排序）</div>
+      <ol class="sym">
+        <li><b>一行挤 6 个元素且权重相同</b>：箭头 / 徽章 / emoji / 名称 / 摘要 / 耗时视觉重量接近，扫视时抓不到「用了哪个工具、动了哪个文件」。</li>
+        <li><b>emoji 图标与产品图标体系割裂</b>：<code>📖 ✏️ ⚡ 🧩</code> 跨系统字形差异大、基线不齐，与图表容器刚落地的线性 SVG <code>.kind-ico</code> 完全不同语言。</li>
+        <li><b>状态胶囊最抢眼</b>：<code>.tc-badge</code> 用 11.5px 等宽加粗 + 三色底，比工具名更醒目；<code>⟳ / ✓ / ✗</code> 字形尺寸不一，切换时行高抖动。</li>
+        <li><b>摘要与参数值同为等宽字体</b>：折叠态摘要（等宽）和展开后参数值（等宽）没有主次，层级靠颜色硬撑。</li>
+        <li><b>参数表像 Excel</b>：<code>.ptable</code> 每个单元格都有 1px 边框 + 首列底色，与产品通篇的浅分隔线（<code>--line-soft</code>）风格冲突。</li>
+        <li><b>结果区三套机制并存</b>：<code>.clamped</code> 120px 遮罩 + <code>max-height</code> 260px 内滚 + 「展开全部结果」按钮，展开后大小屏都可能出现内外双滚动条。</li>
+        <li><b>同构边框随调用次数堆叠</b>：连续 5 次 <code>fileRead</code> 就是 5 张一模一样的描边卡片，纵向空间与视觉噪音成倍增长。</li>
+        <li><b>缺「已中断」语义</b>：<code>chat-stream.ts</code> 的 <code>ToolSeg</code> 只有 <code>done</code>/<code>elapsedMs</code>，未透传 <code>message.aborted</code>，停止后未完成的工具会永远显示 <code>⟳ 执行中</code>。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     1. 主方案 B（D1 已选定）：卡片内聚式
+     ============================================================ -->
+<section id="s1b">
+  <div class="sec-head">
+    <h2>1 · 主方案 B（已选定）：卡片内聚式</h2>
+    <span class="badge ok">D1 = B</span>
+  </div>
+  <p class="sec-desc">
+    与图表容器 <code>chart-box</code> 同款外框语言：<b>图标徽标 + 中文工具名 + 等宽副标题</b>为一级信息，右侧只有 状态 pill / 耗时 / caret。
+    pill 是整张卡唯一的彩色元素；失败时左侧加 3px 红条，副标题直接写失败原因（不用展开就能看懂为什么失败）。
+    展开后依次是：无边框键值表 → 右上角 <code>{ }</code> 原始 JSON 弹层（默认不占位）→ 单滚动结果区。
+  </p>
+
+  <div class="grid-2">
+    <div>
+      <div class="card-label"><span class="dot"></span>五种状态 · 同一骨架</div>
+      <div class="ctx">
+        <p class="say muted">我把工具展示相关的实现看了一遍。</p>
+
+        <!-- ① 完成（展开态：键值表 + 结果 + 展开按钮） -->
+        <div class="tcard is-open" data-state="ok">
+          <div class="tcard-h" data-toggle aria-expanded="true">
+            <span class="tcard-ico"><svg><use href="#i-book"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">读取文件</span>
+              <span class="tcard-sub">src/agent/react-agent.ts · 1-60 行</span>
+            </span>
+            <span class="tcard-side">
+              <button class="tcard-act" type="button" data-json aria-label="原始 JSON" title="原始 JSON"><span class="act-txt">{ }</span></button>
+              <span class="tpill ok">完成</span>
+              <span class="tcard-took">0.2s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+          <div class="tjson">
+            <div class="tjson-h"><span>{ } 原始参数</span><span class="spring"></span><button class="out-btn" type="button">复制</button></div>
+            <pre>{
+  "path": "src/agent/react-agent.ts",
+  "startLine": 1,
+  "endLine": 60
+}</pre>
+          </div>
+          <div class="tcard-body">
+            <div class="tl-kv">
+              <div class="k">文件路径</div><div class="v">src/agent/react-agent.ts</div>
+              <div class="k">行范围</div><div class="v">1 - 60</div>
+            </div>
+            <div class="tl-out">
+              <div class="out-h">
+                <span class="st">结果</span><span>60 行 · 1.8 KB · 已显示 11 行</span>
+                <span class="spring"></span><button class="out-btn" type="button">复制</button>
+              </div>
+              <pre>import OpenAI from 'openai';
+import { loadConfig } from '../config/loader.js';
+import { ContextAssembler } from '../memory/context.js';
+import { ToolRegistry } from '../tools/registry.js';
+
+export class ReactAgent {
+  private _chatHistory: ChatMessage[] = [];
+  private _workingMemory?: WorkingMemory;
+  private _registry = new ToolRegistry();
+
+  constructor(private _cfg: AgentConfig) {}
+
+  async run(input: string, options?: AgentOptions): Promise&lt;string&gt; {
+    const ctx = new ContextAssembler(this._cfg);
+    const tools = this._registry.list();
+    let round = 0;
+    while (round++ &lt; this._cfg.maxRounds) {
+      const res = await this._client.chat.completions.create({</pre>
+              <button class="tl-more" type="button">展开全部 60 行</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② 失败（不展开也能看懂失败原因） -->
+        <div class="tcard" data-state="fail">
+          <div class="tcard-h" data-toggle aria-expanded="false">
+            <span class="tcard-ico"><svg><use href="#i-pencil"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">编辑文件</span>
+              <span class="tcard-sub">src/chart-box.ts · 未找到文本（首个差异行 118）</span>
+            </span>
+            <span class="tcard-side">
+              <button class="tcard-act" type="button" data-json aria-label="原始 JSON" title="原始 JSON"><span class="act-txt">{ }</span></button>
+              <span class="tpill fail">失败</span>
+              <span class="tcard-took">0.1s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+          <div class="tjson">
+            <div class="tjson-h"><span>{ } 原始参数</span><span class="spring"></span><button class="out-btn" type="button">复制</button></div>
+            <pre>{
+  "path": "src/chart-box.ts",
+  "oldText": "  syncBtnState() { … }",
+  "newText": "  syncBtnState() { … }"
+}</pre>
+          </div>
+        </div>
+
+        <!-- ③ 执行中 -->
+        <div class="tcard" data-state="run">
+          <div class="tcard-h" data-toggle aria-expanded="false">
+            <span class="tcard-ico"><svg><use href="#i-terminal"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">执行命令</span>
+              <span class="tcard-sub">npx vitest run tests/webui-tool-meta.test.ts</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill run"><span class="sp"></span>执行中</span>
+              <span class="tcard-took">12s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+        </div>
+
+        <!-- ④ 已中断（D3 新增语义） -->
+        <div class="tcard" data-state="aborted">
+          <div class="tcard-h" data-toggle aria-expanded="false">
+            <span class="tcard-ico"><svg><use href="#i-stop"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">搜索内容</span>
+              <span class="tcard-sub">RESULT_EXPAND_THRESHOLD · 用户停止，结果未返回</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill stop">已中断</span>
+              <span class="tcard-took">—</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+        </div>
+
+        <!-- ⑤ 未知工具 / MCP 工具回退 -->
+        <div class="tcard" data-state="ok">
+          <div class="tcard-h" data-toggle aria-expanded="false">
+            <span class="tcard-ico"><svg><use href="#i-puzzle"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">mcp__atlasgraph__cypher</span>
+              <span class="tcard-sub">查询图谱 · 命中 3 个节点</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill ok">完成</span>
+              <span class="tcard-took">1.4s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <p class="note">
+        <b>为什么选 B</b>：卡片骨架与图表容器同源，用户学一次就通用；副标题放参数摘要、失败原因放副标题，
+        一眼能读懂「动了哪个文件、为什么没成」。<b>代价</b>：同构卡片连续堆叠仍占纵向空间——由 D5 合并缓解。
+      </p>
+    </div>
+
+    <div>
+      <div class="card-label"><span class="dot"></span>连续 ≥3 次同工具合并（D5）</div>
+      <div class="ctx">
+        <p class="say muted">我读一下这几个文件。</p>
+
+        <!-- 折叠态：只占一行 -->
+        <div class="tcard tgroup" data-state="ok">
+          <div class="tcard-h" data-toggle aria-expanded="false">
+            <span class="tcard-ico"><svg><use href="#i-book"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">读取文件<span class="ttimes">×4</span></span>
+              <span class="tcard-sub">react-agent.ts、line-endings.ts、file-lock.ts、stream-blocks.ts</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill ok">全部完成</span>
+              <span class="tcard-took">1.2s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+        </div>
+
+        <!-- 展开态：逐次调用带序号 -->
+        <div class="tcard tgroup is-open" data-state="ok">
+          <div class="tcard-h" data-toggle aria-expanded="true">
+            <span class="tcard-ico"><svg><use href="#i-book"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">读取文件<span class="ttimes">×4</span></span>
+              <span class="tcard-sub">展开态 · 逐次调用</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill ok">全部完成</span>
+              <span class="tcard-took">1.2s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+          <div class="tgroup-rows">
+            <div class="tgroup-row" data-state="ok"><span class="idx">1</span><span class="st-i">✓</span><span class="sub">react-agent.ts · 1-60 行</span><span class="tcard-took">0.2s</span></div>
+            <div class="tgroup-row" data-state="ok"><span class="idx">2</span><span class="st-i">✓</span><span class="sub">line-endings.ts · 全文</span><span class="tcard-took">0.1s</span></div>
+            <div class="tgroup-row" data-state="ok"><span class="idx">3</span><span class="st-i">✓</span><span class="sub">file-lock.ts · 全文</span><span class="tcard-took">0.1s</span></div>
+            <div class="tgroup-row" data-state="fail"><span class="idx">4</span><span class="st-i">✗</span><span class="sub">stream-blocks.ts · 文件不存在</span><span class="tcard-took">0.8s</span></div>
+          </div>
+        </div>
+
+        <p class="say muted" style="margin-top:12px">① 三处已改完，跑一下类型检查。</p>
+        <div class="tcard" data-state="ok">
+          <div class="tcard-h" data-toggle aria-expanded="false">
+            <span class="tcard-ico"><svg><use href="#i-terminal"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">执行命令</span>
+              <span class="tcard-sub">npx tsc --noEmit</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill ok">完成</span>
+              <span class="tcard-took">6.1s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-label" style="margin-top:20px"><span class="dot"></span>定稿规则</div>
+      <ul class="rules">
+        <li><b>合并阈值</b>：连续 ≥3 次<b>同一工具</b>才合并（「连续」= 中间没有文本段、也没有其他工具）；单张卡的副标题列出各次参数的首段，超出省略。</li>
+        <li><b>任一失败不合并</b>：组内含失败时整卡左条转红、pill 显示 <span class="tpill fail" style="vertical-align:1px">有失败</span>，并<b>默认展开</b>——失败必须一眼可见。</li>
+        <li><b>pill 语义</b>：完成=绿、失败=红、执行中=琥珀 + 转圈、已中断=灰、跳过/未知=灰底。</li>
+        <li><b>icon 来源</b>：6 个内置工具用线性 SVG（与 <code>chart-box</code> 的 <code>kind-ico</code> 同一套 16×16 描边）；MCP / 未知工具用拼图图标并直接显示原名，不做翻译。</li>
+        <li><b>结果区口径（D6）</b>：默认 190px（≈12 行），展开 420px，只有超出 12 行才出现「展开全部 N 行」；一次点击直达全文，不再有「clamp 字数 + max-height + 按钮」三重折叠。</li>
+        <li><b>原始 JSON（D4）</b>：降级为头部 <code>{ }</code> 图标，点开为浮层，默认不占纵向空间；参数已在键值表里中文呈现，JSON 只服务调试。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     2. 备选 A：时间轴（未采用，保留对比）
+     ============================================================ -->
+<section id="s1">
+  <div class="sec-head">
+    <h2>2 · 备选 A：时间轴式（未采用）</h2>
+    <span class="badge">推荐</span>
+  </div>
+  <p class="sec-desc">
+    去掉卡片外框，改为左侧 1px 轨道 + 状态色圆点，一行内只保留「图标 / 中文名 / 参数 chip / 耗时」。
+    连续调用自然连成一条时间轴，不再堆同构边框；圆点本身就是状态，省掉整颗胶囊徽章。
+    图标体系与 <code>chart-box.ts</code> 的线性 SVG 统一。
+  </p>
+
+  <div class="grid-a">
+    <div>
+      <div class="card-label"><span class="dot good"></span>方案 A · 对话中的真实节奏（可点击展开）</div>
+      <div class="ctx">
+        <p class="say">三处改动我都看过了。先跑一遍相关测试，再确认行尾处理是否覆盖 CRLF 文件。</p>
+
+        <div class="tl">
+          <!-- 组：连续同类调用折叠 -->
+          <div class="tl-item tl-group" data-state="ok">
+            <span class="tl-dot"></span>
+            <div class="tl-row" data-toggle tabindex="0" role="button" aria-expanded="false">
+              <span class="tl-ico"><svg><use href="#i-book"/></svg></span>
+              <span class="tl-name">读取文件</span>
+              <span class="tl-chips">
+                <span class="chip path">react-agent.ts</span>
+                <span class="chip dim">另有 3 个文件</span>
+              </span>
+              <span class="tl-count">×4</span>
+              <span class="tl-meta">0.8s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </div>
+            <div class="tl-sub">
+              <div class="tl-subrow"><span class="idx">1</span><span class="chip path">react-agent.ts</span><span class="chip dim">1-60 行</span><span class="tl-meta">0.2s</span></div>
+              <div class="tl-subrow"><span class="idx">2</span><span class="chip path">line-endings.ts</span><span class="chip dim">全文</span><span class="tl-meta">0.1s</span></div>
+              <div class="tl-subrow"><span class="idx">3</span><span class="chip path">file-lock.ts</span><span class="chip dim">全文</span><span class="tl-meta">0.1s</span></div>
+              <div class="tl-subrow"><span class="idx">4</span><span class="chip path">init.ts</span><span class="chip dim">全文</span><span class="tl-meta">0.4s</span></div>
+            </div>
+          </div>
+
+          <!-- 单条：搜索 -->
+          <div class="tl-item" data-state="ok">
+            <span class="tl-dot"></span>
+            <div class="tl-row" data-toggle tabindex="0" role="button" aria-expanded="false">
+              <span class="tl-ico"><svg><use href="#i-search"/></svg></span>
+              <span class="tl-name">搜索内容</span>
+              <span class="tl-chips">
+                <span class="chip">CRLF</span>
+                <span class="chip dim">src/</span>
+              </span>
+              <span class="tl-meta">0.1s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </div>
+          </div>
+
+          <!-- 单条：执行命令（失败，默认展开） -->
+          <div class="tl-item is-open" data-state="fail">
+            <span class="tl-dot"></span>
+            <div class="tl-row" data-toggle tabindex="0" role="button" aria-expanded="true">
+              <span class="tl-ico"><svg><use href="#i-terminal"/></svg></span>
+              <span class="tl-name">执行命令</span>
+              <span class="tl-chips">
+                <span class="chip path">npx vitest run …/webui-tool-meta.test.ts</span>
+                <span class="chip fail">退出码 1</span>
+              </span>
+              <span class="tl-meta">3.4s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </div>
+            <div class="tl-body">
+              <div class="tl-kv">
+                <div class="k">命令</div><div class="v">npx vitest run tests/webui-tool-meta.test.ts</div>
+                <div class="k">工作目录</div><div class="v">D:\trae_workspace\loop-agent-command</div>
+                <div class="k">超时</div><div class="v">30000 ms</div>
+              </div>
+              <div class="tl-out">
+                <div class="out-h">
+                  <span class="st">失败</span>
+                  <span>退出码 1 · 24 行</span>
+                  <span class="spring"></span>
+                  <button class="out-btn" type="button">复制</button>
+                </div>
+                <pre> RUN  v1.6.0 D:/trae_workspace/loop-agent-command
+
+ ❯ tests/webui-tool-meta.test.ts (18 tests | 1 failed) 46ms
+   ✓ toolDisplay：工具名 → 图标 + 中文名
+   × toolSummary：摘要短语
+     → expected 'react-agent.ts（1-60 行）' to be 'react-agen…'
+
+ ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+  FAIL  tests/webui-tool-meta.test.ts > toolSummary
+  AssertionError: expected 'react-agent.ts（1-60 行）'
+  to be 'react-agent.ts（全文）'
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 17 passed (18)</pre>
+                <button class="tl-more" type="button">▼ 展开全部 24 行</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 单条：编辑（执行中） -->
+          <div class="tl-item" data-state="run">
+            <span class="tl-dot"></span>
+            <div class="tl-row" data-toggle tabindex="0" role="button" aria-expanded="false">
+              <span class="tl-ico"><svg><use href="#i-wrench"/></svg></span>
+              <span class="tl-name">编辑文件</span>
+              <span class="tl-chips">
+                <span class="chip path">ChartView.vue</span>
+                <span class="chip run"><span class="sp"></span>执行中</span>
+              </span>
+              <span class="tl-meta">1.2s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="say">测试断言与预期不符：<code>brief</code> 在只有 <code>startLine</code> 时误判为范围读取。我改一下取值逻辑。</p>
+      </div>
+      <p class="note">
+        <b>与正文的节奏</b>：时间轴上下留 12px，轨道与正文左对齐，读起来像「一段带步骤的叙述」，
+        而不是「正文里嵌了几张表单」。
+      </p>
+    </div>
+
+    <div>
+      <div class="card-label"><span class="dot"></span>方案 A 的三条规则</div>
+      <div class="note" style="margin-top:0">
+        <ul>
+          <li><b>状态只出现一次</b>：圆点承担状态（成功绿 / 失败红 / 执行中琥珀呼吸 / 中断空心 / 未知灰），
+              不再另设胶囊徽章；文案只在异常时补 chip（<code>退出码 1</code>、<code>执行中</code>）。</li>
+          <li><b>摘要 chip 化</b>：路径只显文件名（悬停给全路径），行范围/模式等用弱化的虚线 chip，
+              命令用等宽 chip 截断。<code>toolParamRows()</code> 已有序，取前 2 项即可，无需改 <code>tool-meta.ts</code> 之外的结构。</li>
+          <li><b>连续同类合并</b>：≥3 次同工具折成一行 <code>读取文件 ×4</code>，展开为带序号的子行（决策 D5）。</li>
+        </ul>
+      </div>
+
+      <div class="card-label" style="margin-top:22px"><span class="dot"></span>展开态的两块积木</div>
+      <div class="note" style="margin-top:0">
+        <ul>
+          <li><b>键值表</b>：无边框两列（<code>76px</code> 标签 + 值），靠 5px 行距分组，替代全边框 <code>.ptable</code>；
+              「原始 JSON」折叠块降级为键值表右下角的 <code>{ }</code> 图标按钮（决策 D4）。</li>
+          <li><b>结果块</b>：单一滚动机制——默认 <code>max-height:190px</code> 内滚，超过 12 行才出现「展开全部 N 行」，
+              展开后 <code>420px</code>，不再有渐变遮罩 + clamp + 按钮三层叠加。</li>
+        </ul>
+      </div>
+
+      <div class="card-label" style="margin-top:22px"><span class="dot"></span>取舍</div>
+      <div class="note" style="margin-top:0">
+        <b>优点</b>：最省纵向空间、连续调用可读性最好、与图表容器的线性图标同语言、无需卡片阴影层级。<br>
+        <b>代价</b>：视觉「重量」偏轻，单条工具在长回答里可能不够醒目（失败态用红点 + 红 chip 补偿）；
+        对不确定是否要「强调过程」的产品定位，A 更偏「工作流日志」气质。
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     3. 备选 C（未采用）+ B 初版对照
+     ============================================================ -->
+<section id="s2">
+  <div class="sec-head">
+    <h2>3 · 备选 C：极简 pill（未采用）</h2>
+    <span class="badge warn">对照</span>
+  </div>
+  <p class="sec-desc">
+    左列是 B 的<b>最初最小改动版</b>（只换外观、不加合并/中断/JSON 弹层），用来对比定稿版多做了什么；右列 C 是极简路线，适合把过程压到最轻。
+    定稿版以第 1 节为准。
+  </p>
+
+  <div class="grid-2">
+    <div>
+      <div class="card-label"><span class="dot"></span>B 初版（最小改动：仅换外观）</div>
+      <div class="ctx">
+        <!-- B：成功展开 -->
+        <div class="tcard is-open" data-state="ok">
+          <div class="tcard-h" data-toggle>
+            <span class="tcard-ico"><svg><use href="#i-book"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">读取文件</span>
+              <span class="tcard-sub">src/agent/react-agent.ts · 1-60 行</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill ok">完成</span>
+              <span class="tcard-took">0.2s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+          <div class="tcard-body">
+            <div class="tl-kv">
+              <div class="k">文件路径</div><div class="v">src/agent/react-agent.ts</div>
+              <div class="k">行范围</div><div class="v">1 - 60</div>
+            </div>
+            <div class="tl-out">
+              <div class="out-h">
+                <span class="st">结果</span><span>60 行 · 1.8 KB</span>
+                <span class="spring"></span><button class="out-btn" type="button">复制</button>
+              </div>
+              <pre>import OpenAI from 'openai';
+import { loadConfig } from '../config/loader.js';
+import { ContextAssembler } from '../memory/context.js';
+
+export class ReactAgent {
+  private _chatHistory: ChatMessage[] = [];
+  private _workingMemory?: WorkingMemory;
+
+  async run(input: string, options?: AgentOptions): Promise&lt;string&gt; {
+    /* … */
+  }
+}</pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- B：失败 -->
+        <div class="tcard" data-state="fail">
+          <div class="tcard-h" data-toggle>
+            <span class="tcard-ico"><svg><use href="#i-wrench"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">编辑文件</span>
+              <span class="tcard-sub">src/chart-box.ts · 未找到文本（首个差异行 118）</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill fail">失败</span>
+              <span class="tcard-took">0.1s</span>
+              <span class="tl-caret"><svg><use href="#i-chev"/></svg></span>
+            </span>
+          </div>
+        </div>
+
+        <!-- B：执行中 -->
+        <div class="tcard" data-state="run">
+          <div class="tcard-h" data-toggle>
+            <span class="tcard-ico"><svg><use href="#i-terminal"/></svg></span>
+            <span class="tcard-txt">
+              <span class="tcard-name">执行命令</span>
+              <span class="tcard-sub">npm run build</span>
+            </span>
+            <span class="tcard-side">
+              <span class="tpill run"><span class="sp"></span>执行中</span>
+              <span class="tcard-took">12s</span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <p class="note"><b>适合</b>：想保留卡片层级、强调「每一次工具调用是一个独立事件」；
+        <b>代价</b>：同构卡片堆叠问题（症状 7）未解，纵向更占空间。</p>
+    </div>
+
+    <div>
+      <div class="card-label"><span class="dot"></span>方案 C · 极简 pill 式（高密度）</div>
+      <div class="ctx">
+        <div class="mc">
+          <div class="mc-row" data-state="ok" data-toggle>
+            <span class="mc-pill"><svg><use href="#i-search"/></svg>搜索</span>
+            <span class="mc-arg">CRLF · src/</span>
+            <span class="mc-took">0.1s</span>
+          </div>
+          <div class="mc-body">
+            <div class="tl-out"><pre>src/runtime/init.ts:42: const CRLF = /\r\n/;
+src/utils/line-endings.ts:8: export function detectEol(</pre></div>
+          </div>
+
+          <div class="mc-row" data-state="ok" data-toggle>
+            <span class="mc-pill"><svg><use href="#i-book"/></svg>读取</span>
+            <span class="mc-arg">line-endings.ts · 全文</span>
+            <span class="mc-took">0.1s</span>
+          </div>
+          <div class="mc-body">
+            <div class="tl-out"><pre>export function detectEol(text: string): '\r\n' | '\n'</pre></div>
+          </div>
+
+          <div class="mc-row" data-state="ok" data-toggle>
+            <span class="mc-pill"><svg><use href="#i-book"/></svg>读取</span>
+            <span class="mc-arg">file-lock.ts · 全文</span>
+            <span class="mc-took">0.1s</span>
+          </div>
+
+          <div class="mc-row" data-state="fail" data-toggle>
+            <span class="mc-pill"><svg><use href="#i-terminal"/></svg>命令</span>
+            <span class="mc-arg">npx vitest run …tool-meta.test.ts</span>
+            <span class="mc-took">3.4s</span>
+          </div>
+
+          <div class="mc-row" data-state="run" data-toggle>
+            <span class="mc-pill"><svg><use href="#i-wrench"/></svg>编辑</span>
+            <span class="mc-arg">ChartView.vue · 替换</span>
+            <span class="mc-took">1.2s</span>
+          </div>
+
+          <div class="mc-row" data-state="stop">
+            <span class="mc-pill"><svg><use href="#i-puzzle"/></svg>技能</span>
+            <span class="mc-arg">task-driven-development</span>
+            <span class="mc-took">—</span>
+          </div>
+        </div>
+      </div>
+      <p class="note"><b>适合</b>：一句回答里工具调用极多、用户只想看结果；
+        <b>代价</b>：工具名被压缩成 2 字（读取/编辑/命令），可读性打折，参数细节默认不可见。</p>
+
+      <div class="card-label" style="margin-top:22px"><span class="dot"></span>三方案对比</div>
+      <div class="tw">
+      <table class="spec">
+        <thead><tr><th>维度</th><th>A 时间轴</th><th>B 卡片</th><th>C 极简</th></tr></thead>
+        <tbody>
+          <tr><td>纵向密度</td><td>最高</td><td>最低</td><td>最高</td></tr>
+          <tr><td>连续调用可读性</td><td>好（成轴）</td><td>差（堆叠）</td><td>好</td></tr>
+          <tr><td>单条醒目度</td><td>中</td><td>高</td><td>低</td></tr>
+          <tr><td>与图表容器一致</td><td>图标一致</td><td>完整一致</td><td>弱</td></tr>
+          <tr><td>改动量（ChatView）</td><td>中</td><td>中</td><td>小</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     3. 状态语义
+     ============================================================ -->
+<section id="s3">
+  <div class="sec-head">
+    <h2>4 · 状态语义矩阵</h2>
+    <span class="badge">5 态</span>
+  </div>
+  <p class="sec-desc">
+    现状只有 3 态（<code>run/ok/fail</code>），补上 <b>已中断</b> 与 <b>未知/MCP</b>。
+    「已中断」需要 <code>chat-stream.ts</code> 把 <code>message.aborted</code> 透传到 <code>ToolSeg</code>（决策 D3）。
+  </p>
+
+  <div class="tw">
+  <table class="spec">
+    <thead>
+      <tr><th>状态</th><th>触发条件</th><th>圆点</th><th>文字 / 附加 chip</th><th>结果区</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="state-cell"><span class="mini"><i style="background:var(--ok)"></i></span>完成</span></td>
+        <td><code>done === true</code> 且 <code>toolResultLooksFailed()</code> 为假</td>
+        <td>实心 <code>--ok</code></td>
+        <td>无附加；右侧耗时</td>
+        <td>默认折叠，>12 行出现「展开全部」</td>
+      </tr>
+      <tr>
+        <td><span class="state-cell"><span class="mini"><i style="background:var(--warn);animation:tl-pulse 1.4s infinite"></i></span>执行中</span></td>
+        <td><code>tool_call</code> 已到达、结果未回</td>
+        <td>实心 <code>--warn</code> + 呼吸环</td>
+        <td><code>执行中</code> chip（含旋转环），耗时逐秒递增；>15s 追加「仍在执行」</td>
+        <td>占位一行「等待输出…」</td>
+      </tr>
+      <tr>
+        <td><span class="state-cell"><span class="mini"><i style="background:var(--danger)"></i></span>失败</span></td>
+        <td>启发式命中：<code>[exit≠0]</code> / <code>Error:</code> / <code>缺少必需参数</code> / <code>Traceback</code></td>
+        <td>实心 <code>--danger</code></td>
+        <td><code>退出码 N</code> 或 <code>失败</code> chip</td>
+        <td><b>自动展开一次</b>，结果块左侧 2.5px 红条</td>
+      </tr>
+      <tr>
+        <td><span class="state-cell"><span class="mini"><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--muted)"></i></span>已中断</span></td>
+        <td><code>done === false</code> 且所属消息 <code>aborted === true</code></td>
+        <td>空心环 <code>--muted</code></td>
+        <td><code>已中断</code> chip（灰）</td>
+        <td>显示已产生部分输出 + 一行「已被用户停止」</td>
+      </tr>
+      <tr>
+        <td><span class="state-cell"><span class="mini"><i style="background:var(--line-strong)"></i></span>未知 / MCP</span></td>
+        <td>工具名不在 <code>TOOL_META</code>（如 <code>server__tool</code>）</td>
+        <td>实心 <code>--line-strong</code></td>
+        <td>英文原名（等宽）+ 紧凑 JSON 摘要；参数键名不翻译</td>
+        <td>同完成态</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="legend">
+    <span><span style="width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block"></span>完成</span>
+    <span><span style="width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block"></span>执行中</span>
+    <span><span style="width:8px;height:8px;border-radius:50%;background:var(--danger);display:inline-block"></span>失败</span>
+    <span><span style="width:8px;height:8px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--muted);display:inline-block"></span>已中断</span>
+    <span><span style="width:8px;height:8px;border-radius:50%;background:var(--line-strong);display:inline-block"></span>未知 / MCP</span>
+  </div>
+</section>
+
+<!-- ============================================================
+     4. 交互与边界
+     ============================================================ -->
+<section id="s4">
+  <div class="sec-head">
+    <h2>5 · 交互与边界（方案 B 下必须覆盖）</h2>
+  </div>
+  <div class="grid-3">
+    <div>
+      <div class="card-label"><span class="dot"></span>交互</div>
+      <div class="note" style="margin-top:0">
+        <ul>
+          <li>整行可点展开/收起；<code>Enter</code>/<code>Space</code> 同效，<code>Esc</code> 收起；<code>aria-expanded</code> 同步。</li>
+          <li>展开状态按 <code>msgId:idx</code> 记忆（沿用现有 <code>expandedTools</code> Set），重新渲染不丢。</li>
+          <li>结果块与命令均提供「复制」（<code>navigator.clipboard</code>，失败回退「长按选中」提示）。</li>
+          <li>失败态首次出现自动展开一次，用户手动收起后不再自动展开。</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <div class="card-label"><span class="dot"></span>长内容</div>
+      <div class="note" style="margin-top:0">
+        <ul>
+          <li>值超长：路径单行省略（<code>title</code> 给全文），命令与输出 <code>pre-wrap</code> 换行不横滚。</li>
+          <li>输出默认 <code>190px</code> 内滚，>12 行给「展开全部 N 行」，展开后 <code>420px</code> 内滚——只保留一套机制。</li>
+          <li>结果超 <code>64 KB</code> 时前端再截断并提示「已截断，完整内容见日志」。</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <div class="card-label"><span class="dot"></span>流式与中断</div>
+      <div class="note" style="margin-top:0">
+        <ul>
+          <li>流式中新工具行出现时，若用户已在底部则跟随滚动；否则不动（沿用现有 <code>nearBottom</code> 逻辑）。</li>
+          <li>执行中计时用 <code>elapsedMs</code> 心跳，本地 <code>requestAnimationFrame</code> 兜底，切页回来立即对齐。</li>
+          <li>停止后：未完成工具转「已中断」，不再有 <code>⟳</code>；已展开的失败态保留。</li>
+          <li>暗色主题下状态色用 <code>--ok/--warn/--danger</code> 的暗色值，圆点不加描边即可分辨。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     5. 落地映射 + 决策点
+     ============================================================ -->
+<section id="s5">
+  <div class="sec-head">
+    <h2>6 · 落地映射与决策结论</h2>
+    <span class="badge ok">已定稿</span>
+  </div>
+  <p class="sec-desc">
+    按 <b>方案 B 卡片内聚式</b>给出映射；类名直接对齐 <code>chart-box</code> 的命名风格（<code>.chart-*</code> → <code>.tcard-*</code>），便于逐条替换。
+  </p>
+
+  <div class="tw">
+  <table class="spec">
+    <thead>
+      <tr><th>原型</th><th>产品位置</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>.tcard / .tcard-h / .tcard-body</code></td>
+        <td><code>ChatView.vue</code>（模板 + 样式段）</td>
+        <td>替换 <code>&lt;details class="tool-call"&gt;</code>：改用 <code>div.tcard</code> + <code>div.tcard-h[role=button][aria-expanded]</code>（需要展开动画、头部按钮与浮层）；<code>.tool-call</code> 留一版别名兼容旧缓存页</td>
+      </tr>
+      <tr>
+        <td><code>.tcard-ico</code>（内联 SVG）</td>
+        <td><code>ChatView.vue</code> + <code>webui/src/tool-meta.ts</code></td>
+        <td>10 个内置工具 + fallback 的 emoji → SVG sprite key；<code>icon</code> 字段语义变更为 icon key，需同步改 <code>tests/webui-tool-meta.test.ts</code> 中 6 处断言（D2）</td>
+      </tr>
+      <tr>
+        <td><code>.tcard-name / .tcard-sub</code></td>
+        <td><code>ChatView.vue</code> + <code>tool-meta.ts</code></td>
+        <td>名称取 <code>toolDisplay().name</code>；副标题=参数摘要（成功）／失败原因首行（失败，新增 <code>toolFailReason()</code>）</td>
+      </tr>
+      <tr>
+        <td><code>.tpill</code></td>
+        <td><code>ChatView.vue</code></td>
+        <td>替代 <code>.tc-badge</code>；5 态由 <code>done</code> + <code>toolResultLooksFailed()</code> + <code>aborted</code> 推导（D3），pill 为整卡唯一彩色元素</td>
+      </tr>
+      <tr>
+        <td><code>.tl-kv</code></td>
+        <td><code>ChatView.vue</code></td>
+        <td>替换 <code>.ptable</code>（去掉 <code>1px</code> 全边框与首列底色），复用现成 <code>toolParamRows()</code></td>
+      </tr>
+      <tr>
+        <td><code>.tcard-act / .tjson</code></td>
+        <td><code>ChatView.vue</code></td>
+        <td>原 <code>.jv</code> 虚线折叠块 → 头部 <code>{ }</code> 图标 + 浮层（D4），默认不占纵向空间</td>
+      </tr>
+      <tr>
+        <td><code>.tl-out / .out-h / .tl-more</code></td>
+        <td><code>ChatView.vue</code></td>
+        <td>替换 <code>.tc-result</code> + <code>.tc-expand</code> + <code>.clamped::after</code> 三重折叠；保留 <code>stripAnsi()</code>；阈值改行数口径（D6）</td>
+      </tr>
+      <tr>
+        <td><code>.tgroup / .tgroup-row</code></td>
+        <td><code>ChatView.vue</code> + 新增 <code>groupToolSegs()</code></td>
+        <td>连续 ≥3 次同工具合并（D5）；纯函数放 <code>tool-meta.ts</code> 便于单测</td>
+      </tr>
+      <tr>
+        <td>已中断态</td>
+        <td><code>chat-stream.ts</code> <code>ToolSeg</code></td>
+        <td><code>ToolSeg.aborted?: boolean</code>，由 <code>message.aborted</code> 透传（D3）</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <ol class="decision">
+    <li><span class="d">D1</span><span><b>主方案 = B 卡片内聚式</b>（已确认）。理由：与 <code>chart-box</code> 同款外框，用户学一次通用；失败原因写在副标题，不展开也能读懂。A 时间轴降为「超长会话」演进项，本次不实现。</span></li>
+    <li><span class="d">D2</span><span><b>emoji → 线性 SVG</b>（已确认）。<code>tool-meta.ts</code> 的 <code>icon</code> 改为 icon key，同步改 <code>tests/webui-tool-meta.test.ts</code> 6 处断言；SVG sprite 内联在 ChatView，不引图标库。</span></li>
+    <li><span class="d">D3</span><span><b>补「已中断」态</b>（已确认）。<code>chat-stream.ts</code> 把 <code>message.aborted</code> 透传到未完成 <code>ToolSeg</code>，否则停止后工具会一直显示「执行中」。</span></li>
+    <li><span class="d">D4</span><span><b>原始 JSON = <code>{ }</code> 图标 + 浮层</b>（已确认）。默认不占纵向空间；实现上卡片改 <code>overflow: visible</code>、头部单独设圆角，避免浮层被裁。</span></li>
+    <li><span class="d">D5</span><span><b>做「连续 ≥3 次同工具合并」</b>（已确认）。阈值 3、连续=中间无文本段与其他工具；组内含失败则不合并、默认展开。</span></li>
+    <li><span class="d">D6</span><span><b>结果区改行数口径</b>（已确认）。默认 <code>190px</code>（≈12 行）、展开 <code>420px</code>、仅超出 12 行才出现「展开全部 N 行」；<code>RESULT_EXPAND_THRESHOLD</code> 保留一版兼容旧引用。</span></li>
+  </ol>
+
+  <p class="note">
+    点方案 B 的卡片可展开/收起，<code>{ }</code> 打开原始 JSON 浮层，右上角可切深色主题——两种主题下的状态色与分隔线都走 <code>style.css</code> 现有令牌，未引入新色值。
+  </p>
+</section>
+
+</div>
+
+<script>
+// 主题切换
+(function () {
+  var btn = document.getElementById('themeBtn');
+  var txt = document.getElementById('themeTxt');
+  function apply(dark) {
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    txt.textContent = dark ? '浅色' : '深色';
+  }
+  btn.addEventListener('click', function () {
+    apply(document.documentElement.dataset.theme !== 'dark');
+  });
+  // 直链：#dark 直接进深色，便于单独截图/评审深色态
+  if (location.hash === '#dark') apply(true);
+})();
+
+// 展开 / 收起（方案 A 时间轴、B 卡片、C pill 共用 data-toggle）
+(function () {
+  function host(el) {
+    return el.closest('.tl-item, .tcard, .mc-row') || el.parentElement;
+  }
+  function toggle(el) {
+    var h = host(el);
+    if (!h) return;
+    var open = h.classList.toggle('is-open');
+    var row = el.matches('[data-toggle]') ? el : el.querySelector('[data-toggle]');
+    if (row && row.hasAttribute('aria-expanded')) {
+      row.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  }
+  document.querySelectorAll('[data-toggle]').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      // 「复制」「展开全部」按钮不触发行折叠
+      if (e.target.closest('button')) return;
+      toggle(el);
+    });
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggle(el);
+      } else if (e.key === 'Escape') {
+        var h = host(el);
+        if (h && h.classList.contains('is-open')) {
+          h.classList.remove('is-open');
+          el.setAttribute('aria-expanded', 'false');
+        }
+      }
+    });
+  });
+  // 「展开全部 N 行」
+  document.querySelectorAll('.tl-more').forEach(function (b) {
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var out = b.closest('.tl-out');
+      out.classList.add('more');
+      b.remove();
+    });
+  });
+})();
+
+// 原始 JSON 浮层（头部 { } 按钮，决策 D4）：默认不占纵向空间
+(function () {
+  document.querySelectorAll('[data-json]').forEach(function (b) {
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();            // 不连带触发卡片折叠
+      var card = b.closest('.tcard');
+      if (card) card.classList.toggle('json-open');
+    });
+  });
+  // 点浮层外或按 Esc 关闭
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('.tjson') || e.target.closest('[data-json]')) return;
+    document.querySelectorAll('.tcard.json-open').forEach(function (c) { c.classList.remove('json-open'); });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    document.querySelectorAll('.tcard.json-open').forEach(function (c) { c.classList.remove('json-open'); });
+  });
+})();
+</script>
+</body>
+</html>

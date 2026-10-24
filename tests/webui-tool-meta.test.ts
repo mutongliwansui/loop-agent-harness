@@ -1,34 +1,137 @@
-// tool-meta 单测（Task-20261022-001）：映射层纯函数无 DOM 依赖，可在 Node vitest 下直测
+// tool-meta 单测（Task-20261022-001 建立；Task-20261024-001 重设计后同步）
+// 映射层纯函数无 DOM 依赖，可在 Node vitest 下直测
 import { describe, expect, it } from 'vitest';
 import {
   compactJson,
+  groupToolSegs,
   prettyJson,
-  RESULT_EXPAND_THRESHOLD,
+  RESULT_PREVIEW_CHARS,
+  RESULT_PREVIEW_LINES,
+  resultLines,
+  resultMetaText,
+  resultNeedsExpand,
   stripAnsi,
+  TOOL_GROUP_MIN,
+  TOOL_ICON_PATHS,
   toolDisplay,
+  toolFailReason,
+  toolIconSvg,
   toolParamRows,
   toolResultLooksFailed,
   toolSummary,
+  type RenderItem,
+  type ToolCardVM,
+  type ToolSegLike,
 } from '../webui/src/tool-meta.js';
 
-describe('toolDisplay：工具名 → 图标 + 中文名', () => {
+describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 emoji）', () => {
   it('已知工具返回中文映射', () => {
-    expect(toolDisplay('fileRead')).toEqual({ icon: '📖', name: '读取文件', known: true });
-    expect(toolDisplay('commandRun')).toEqual({ icon: '⚡', name: '执行命令', known: true });
-    expect(toolDisplay('ocr_image')).toEqual({ icon: '🔤', name: '文字识别', known: true });
+    expect(toolDisplay('fileRead')).toEqual({ icon: 'book', name: '读取文件', known: true });
+    expect(toolDisplay('commandRun')).toEqual({ icon: 'terminal', name: '执行命令', known: true });
+    expect(toolDisplay('ocr_image')).toEqual({ icon: 'text', name: '文字识别', known: true });
   });
 
-  it('未知工具 / MCP 工具回退英文名（D2）', () => {
+  it('未知工具 / MCP 工具回退英文名 + 齿轮图标（D2 / D10）', () => {
     expect(toolDisplay('someFutureTool')).toEqual({
-      icon: '⚙️',
+      icon: 'gear',
       name: 'someFutureTool',
       known: false,
     });
     expect(toolDisplay('atlasGraphMcp__cypher_query')).toEqual({
-      icon: '⚙️',
+      icon: 'gear',
       name: 'atlasGraphMcp__cypher_query',
       known: false,
     });
+  });
+});
+
+describe('toolIconSvg / TOOL_ICON_PATHS：16×16 线性 SVG（D2）', () => {
+  it('14 个 icon key 全有路径，无空值', () => {
+    const keys = Object.keys(TOOL_ICON_PATHS);
+    expect(keys).toHaveLength(14);
+    for (const k of keys) {
+      expect(TOOL_ICON_PATHS[k as keyof typeof TOOL_ICON_PATHS].length).toBeGreaterThan(10);
+    }
+  });
+
+  it('输出完整 svg 串：viewBox 16×16 + currentColor 描边', () => {
+    const svg = toolIconSvg('fileRead');
+    expect(svg.startsWith('<svg ')).toBe(true);
+    expect(svg).toContain('viewBox="0 0 16 16"');
+    expect(svg).toContain('stroke="currentColor"');
+    expect(svg).toContain('fill="none"');
+    expect(svg).toContain(TOOL_ICON_PATHS.book);
+    // 未知工具回退齿轮
+    expect(toolIconSvg('mcp__x')).toContain(TOOL_ICON_PATHS.gear);
+  });
+});
+
+describe('toolFailReason：失败原因一句话（卡片副标题直写）', () => {
+  it('commandRun：剥掉 [exit=N] 标记取原因', () => {
+    expect(toolFailReason('some output\n[exit=1] Error: command failed', 'commandRun')).toBe(
+      'Error: command failed',
+    );
+    // 纯标记行 → 继续找下一行
+    expect(toolFailReason('[exit=1]\nError: spawn failed', 'commandRun')).toBe('Error: spawn failed');
+    // 只有标记行 → 无原因可提炼
+    expect(toolFailReason('[exit=1]', 'commandRun')).toBe('');
+  });
+
+  it('其他工具不剥 [exit=N]（正文可能含该字面量）', () => {
+    expect(toolFailReason('[exit=1] 某文档正文', 'fileRead')).toBe('[exit=1] 某文档正文');
+  });
+
+  it('剥掉后端错误前缀，副标题只留真正原因', () => {
+    // ToolRunner 统一前缀
+    expect(toolFailReason('工具执行失败: 未找到文本（首个差异行 118）', 'editFile')).toBe(
+      '未找到文本（首个差异行 118）',
+    );
+    expect(toolFailReason('工具执行失败：  ENOENT: no such file', 'fileRead')).toBe('ENOENT: no such file');
+    // react-agent 前置校验前缀
+    expect(toolFailReason('工具 fileRead 缺少必需参数: path，请补充后重试', 'fileRead')).toBe(
+      '缺少必需参数: path，请补充后重试',
+    );
+    expect(toolFailReason('工具 foo 未注册，无法执行', 'foo')).toBe('未注册，无法执行');
+    // 只有前缀、无正文 → 空串（调用方兜底「执行失败」）
+    expect(toolFailReason('工具执行失败: ', 'editFile')).toBe('');
+  });
+
+  it('取首个非空行、剥 ANSI、截断 60 字；空结果返回空串', () => {
+    expect(toolFailReason('\n\n  Error: ENOENT  \n第二行')).toBe('Error: ENOENT');
+    expect(toolFailReason('\x1b[31mError: 未找到文本\x1b[39m')).toBe('Error: 未找到文本');
+    const long = toolFailReason(`Error: ${'x'.repeat(120)}`);
+    expect(long.length).toBe(61); // 60 字符 + 省略号
+    expect(long.endsWith('…')).toBe(true);
+    expect(toolFailReason('')).toBe('');
+    expect(toolFailReason('   \n  ')).toBe('');
+  });
+});
+
+describe('结果区行数口径（D6：190px≈12 行 / 展开 420px）', () => {
+  it('resultLines 去 ANSI 后计数', () => {
+    expect(resultLines('')).toBe(0);
+    expect(resultLines('one')).toBe(1);
+    expect(resultLines('a\nb\nc')).toBe(3);
+    expect(resultLines('\x1b[32ma\x1b[39m\nb')).toBe(2);
+  });
+
+  it('resultNeedsExpand：>12 行或 >1200 字符才需要展开', () => {
+    expect(RESULT_PREVIEW_LINES).toBe(12);
+    expect(RESULT_PREVIEW_CHARS).toBe(1200);
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n');
+    expect(resultNeedsExpand(lines(12))).toBe(false);
+    expect(resultNeedsExpand(lines(13))).toBe(true);
+    // 单行超长（会被 190px 裁剪）也要给出展开入口
+    expect(resultNeedsExpand('x'.repeat(1201))).toBe(true);
+    expect(resultNeedsExpand('x'.repeat(1200))).toBe(false);
+    expect(resultNeedsExpand('')).toBe(false);
+    expect(resultNeedsExpand('未在目录中找到匹配内容（递归）')).toBe(false);
+  });
+
+  it('resultMetaText：行数 · 体积', () => {
+    expect(resultMetaText('')).toBe('');
+    expect(resultMetaText('a\nb')).toBe('2 行 · 3 B');
+    expect(resultMetaText('x'.repeat(2048))).toBe('1 行 · 2.0 KB');
   });
 });
 
@@ -149,6 +252,20 @@ describe('toolResultLooksFailed：失败启发式（D5）', () => {
     expect(toolResultLooksFailed('工具执行超时（30000ms）')).toBe(true);
   });
 
+  it('后端工具层错误前缀（ToolRunner / react-agent 真实输出形态）', () => {
+    // ToolRunner 把工具异常统一归一化为 `工具执行失败: <msg>`（src/tools/runner.ts:71）
+    expect(toolResultLooksFailed('工具执行失败: 未找到文本（首个差异行 118）', 'editFile')).toBe(true);
+    expect(toolResultLooksFailed('工具执行失败: ENOENT: no such file or directory', 'fileRead')).toBe(true);
+    // react-agent 的三类前置校验文案（src/agent/react-agent.ts:856-861）
+    expect(toolResultLooksFailed('工具 fileRead 缺少必需参数: path，请补充后重试', 'fileRead')).toBe(true);
+    expect(toolResultLooksFailed('工具 foo 未注册，无法执行', 'foo')).toBe(true);
+    expect(toolResultLooksFailed('工具 grep 参数无效：参数为空或解析失败，请重新调用并提供正确的参数', 'grep')).toBe(true);
+    // 非行首出现（正文引用）不判失败
+    expect(
+      toolResultLooksFailed('第 71 行：return `工具执行失败: ${msg}`;', 'fileRead'),
+    ).toBe(false);
+  });
+
   it('正常结果不误判', () => {
     expect(toolResultLooksFailed('未在目录中找到匹配内容（递归）')).toBe(false);
     expect(toolResultLooksFailed('1: AT&T 3 nz\n2: B超 3 n')).toBe(false);
@@ -171,7 +288,7 @@ describe('compactJson / prettyJson', () => {
   });
 });
 
-describe('stripAnsi / RESULT_EXPAND_THRESHOLD（20261022-001 补丁）', () => {
+describe('stripAnsi（20261022-001 补丁；20261024-001 接入渲染路径）', () => {
   it('剥离 CSI/OSC 转义序列（vitest 彩色输出场景）', () => {
     const vitestLine =
       '\x1b[32m✓\x1b[39m tests/memory-kit-cache.test.ts \x1b[2m(\x1b[22m\x1b[2m3 tests\x1b[22m\x1b[2m)\x1b[22m \x1b[32m32\x1b[2mms\x1b[39m';
@@ -180,11 +297,6 @@ describe('stripAnsi / RESULT_EXPAND_THRESHOLD（20261022-001 补丁）', () => {
     expect(stripAnsi('\x1b[1m\x1b[30m\x1b[46m RUN \x1b[49m\x1b[39m\x1b[22m v4.1.10')).toBe(' RUN  v4.1.10');
     expect(stripAnsi('no escape')).toBe('no escape');
     expect(stripAnsi('')).toBe('');
-  });
-
-  it('阈值语义：去 ANSI 后 >400 才截断（584 字节日志可展开，短结果完整显示）', () => {
-    expect('x'.repeat(584).length > RESULT_EXPAND_THRESHOLD).toBe(true);
-    expect('未在目录中找到匹配内容'.length > RESULT_EXPAND_THRESHOLD).toBe(false);
   });
 });
 
@@ -206,10 +318,10 @@ describe('失败启发式回归：正文包含错误词不误判（用户截图�
 });
 
 describe('后台任务三工具映射（Task-20261022-002）', () => {
-  it('commandStatus/commandLogs/commandStop 中文名、图标、参数中文标签', () => {
-    expect(toolDisplay('commandStatus')).toEqual({ icon: '⏱️', name: '查询后台任务', known: true });
-    expect(toolDisplay('commandLogs')).toEqual({ icon: '📜', name: '读取后台日志', known: true });
-    expect(toolDisplay('commandStop')).toEqual({ icon: '⏹️', name: '停止后台任务', known: true });
+  it('commandStatus/commandLogs/commandStop 中文名、图标 key、参数中文标签', () => {
+    expect(toolDisplay('commandStatus')).toEqual({ icon: 'clock', name: '查询后台任务', known: true });
+    expect(toolDisplay('commandLogs')).toEqual({ icon: 'lines', name: '读取后台日志', known: true });
+    expect(toolDisplay('commandStop')).toEqual({ icon: 'stop', name: '停止后台任务', known: true });
 
     const st = toolParamRows('commandStatus', JSON.stringify({ taskId: 'bg_a_1' }));
     expect(st.map((r) => r.key)).toEqual(['taskId']);
@@ -232,5 +344,105 @@ describe('后台任务三工具映射（Task-20261022-002）', () => {
       '续读 bg_a_1（自 1024 字节起）',
     );
     expect(toolSummary('commandStop', JSON.stringify({ taskId: 'bg_a_1' }))).toBe('终止 bg_a_1');
+  });
+});
+
+describe('groupToolSegs：连续 ≥3 次同工具合并（D5）', () => {
+  type Seg =
+    | { type: 'tool'; tool: string; args: string; result: string; done: boolean; elapsedMs?: number; aborted?: boolean }
+    | { type: 'text'; text: string };
+
+  const tseg = (tool: string, extra: Partial<ToolSegLike> = {}): Seg => ({
+    type: 'tool',
+    tool,
+    args: '{}',
+    result: 'ok',
+    done: true,
+    elapsedMs: 100,
+    ...extra,
+  });
+  const txt = (text: string): Seg => ({ type: 'text', text });
+  /** 取所有卡片视图模型 */
+  const cards = (items: RenderItem<Seg>[]) =>
+    items.filter((it): it is { kind: 'tool'; card: ToolCardVM<Seg> } => it.kind === 'tool').map((it) => it.card);
+
+  it('阈值：连续 3 次合并为组，2 次保持单卡', () => {
+    expect(TOOL_GROUP_MIN).toBe(3);
+    const three = groupToolSegs<Seg>([tseg('fileRead'), tseg('fileRead'), tseg('fileRead')]);
+    expect(three).toHaveLength(1);
+    const [g] = cards(three);
+    expect(g.kind).toBe('group');
+    expect(g.tool).toBe('fileRead');
+    expect(g.items.map((i) => i.index)).toEqual([0, 1, 2]);
+    expect(g.totalMs).toBe(300);
+
+    const two = groupToolSegs<Seg>([tseg('fileRead'), tseg('fileRead')]);
+    expect(two).toHaveLength(2);
+    expect(cards(two).map((c) => c.kind)).toEqual(['single', 'single']);
+    expect(cards(two).map((c) => c.totalMs)).toEqual([100, 100]);
+  });
+
+  it('「连续」约束：中间夹文本段或其他工具都不合并', () => {
+    const withText = groupToolSegs<Seg>([tseg('fileRead'), txt('我读一下'), tseg('fileRead'), tseg('fileRead'), tseg('fileRead')]);
+    // [单卡] [文本] [组]
+    expect(withText.map((it) => it.kind)).toEqual(['tool', 'seg', 'tool']);
+    const cs = cards(withText);
+    expect(cs[0].kind).toBe('single');
+    expect(cs[1].kind).toBe('group');
+    expect(withText[1]).toMatchObject({ kind: 'seg', index: 1 });
+
+    const mixed = groupToolSegs<Seg>([tseg('fileRead'), tseg('grep'), tseg('fileRead'), tseg('fileRead')]);
+    expect(mixed).toHaveLength(4);
+    expect(cards(mixed).every((c) => c.kind === 'single')).toBe(true);
+  });
+
+  it('组内含失败 → 不合并，逐个单卡且失败卡可判定', () => {
+    const segs: Seg[] = [
+      tseg('fileRead'),
+      tseg('fileRead'),
+      tseg('fileRead', { result: 'Error: 文件不存在' }),
+    ];
+    const out = groupToolSegs(segs);
+    expect(out).toHaveLength(3);
+    const cs = cards(out);
+    expect(cs.map((c) => c.kind)).toEqual(['single', 'single', 'single']);
+    expect(cs.map((c) => c.failed)).toEqual([false, false, true]);
+  });
+
+  it('状态派生：running / aborted / failed 优先级', () => {
+    const running = cards(groupToolSegs<Seg>([tseg('commandRun', { done: false }), tseg('commandRun', { done: false }), tseg('commandRun', { done: false })]));
+    expect(running[0].running).toBe(true);
+    expect(running[0].kind).toBe('group');
+
+    const aborted = cards(
+      groupToolSegs<Seg>([
+        tseg('grep', { done: false, aborted: true }),
+        tseg('grep', { done: false, aborted: true }),
+        tseg('grep', { done: false, aborted: true }),
+      ]),
+    );
+    expect(aborted[0].aborted).toBe(true);
+    expect(aborted[0].running).toBe(false);
+    expect(aborted[0].failed).toBe(false);
+  });
+
+  it('totalMs：组员耗时不全有值时不给总耗时', () => {
+    const out = cards(
+      groupToolSegs<Seg>([
+        tseg('fileRead', { elapsedMs: 100 }),
+        tseg('fileRead', { elapsedMs: undefined }),
+        tseg('fileRead', { elapsedMs: 200 }),
+      ]),
+    );
+    expect(out[0].totalMs).toBeUndefined();
+  });
+
+  it('空输入与非工具段原样透传（index 保持原下标）', () => {
+    expect(groupToolSegs<Seg>([])).toEqual([]);
+    const out = groupToolSegs<Seg>([txt('a'), txt('b')]);
+    expect(out).toEqual([
+      { kind: 'seg', seg: { type: 'text', text: 'a' }, index: 0 },
+      { kind: 'seg', seg: { type: 'text', text: 'b' }, index: 1 },
+    ]);
   });
 });

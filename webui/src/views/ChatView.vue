@@ -48,6 +48,7 @@ import {
   onRunFinished,
   type ChatMsg,
   type Segment,
+  type ToolSeg,
 } from '../chat-stream.js';
 import {
   getNotifySettings,
@@ -56,47 +57,21 @@ import {
   notifySupported,
   type NotifySettings,
 } from '../notify.js';
-import {
-  toolDisplay,
-  toolSummary,
-  toolParamRows,
-  prettyJson,
-  toolResultLooksFailed,
-} from '../tool-meta.js';
+import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js';
+import ToolCard from '../components/ToolCard.vue';
 
-/* ===== 工具调用卡片辅助（Task-20261022-001）===== */
-/** 「展开全部结果」状态：msgId:segIdx → 已展开（默认截断，D4） */
-const expandedTools = ref(new Set<string>());
-/** 结果文本：空 → （空）/执行中…；超 2 万字符截断兜底 */
-function resultText(seg: { result: string; done: boolean }): string {
-  const r = seg.result ?? '';
-  if (!r) return seg.done ? '（空）' : '执行中…';
-  const MAX_RESULT_CHARS = 20000;
-  if (r.length > MAX_RESULT_CHARS) {
-    return `${r.slice(0, MAX_RESULT_CHARS)}\n…（已截断，原文共 ${r.length} 字符）`;
-  }
-  return r;
+/* ===== 工具调用卡片（Task-20261024-001：方案 B 卡片内聚式，渲染与样式在 ToolCard.vue）===== */
+/** segments → 顺序渲染项：连续 ≥3 次同工具合并成组（D5），文本段原样透传 */
+function renderItems(m: ChatMsg): RenderItem<Segment>[] {
+  return groupToolSegs(m.segments);
 }
-/**
- * 结果是否需要展开按钮：已完成且内容超过可视高度（120px ≈ 8 行 / 约 600 字符）。
- * 与 .tc-result.clamped 的 max-height 配套，短结果不显示展开按钮。
- */
-function needsExpand(seg: { result: string; done: boolean }): boolean {
-  const r = seg.result ?? '';
-  if (!seg.done || !r) return false;
-  const EXPAND_LINE_THRESHOLD = 8;
-  const EXPAND_CHAR_THRESHOLD = 600;
-  return r.length > EXPAND_CHAR_THRESHOLD || r.split('\n').length > EXPAND_LINE_THRESHOLD;
+/** tool 分支的 items 恒为 ToolSeg（groupToolSegs 只在 type==='tool' 的段上产出），此处仅对齐类型 */
+function cardVM(it: RenderItem<Segment>): ToolCardVM<ToolSeg> {
+  return (it as Extract<RenderItem<Segment>, { kind: 'tool' }>).card as unknown as ToolCardVM<ToolSeg>;
 }
-function isExpanded(msgId: number, idx: number): boolean {
-  return expandedTools.value.has(`${msgId}:${idx}`);
-}
-function toggleExpand(msgId: number, idx: number): void {
-  const key = `${msgId}:${idx}`;
-  const next = new Set(expandedTools.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  expandedTools.value = next;
+/** 非 assistant 消息的纯文本段 */
+function textOf(it: RenderItem<Segment>): string {
+  return it.kind === 'seg' && it.seg.type === 'text' ? it.seg.text : '';
 }
 interface UploadChip {
   id: number;
@@ -625,46 +600,15 @@ onUnmounted(() => {
             </div>
             <div :class="m.role === 'user' ? 'bubble' : 'body'">
               <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
-              <template v-for="(seg, i) in m.segments" :key="i">
-                <details v-if="seg.type === 'tool'" class="tool-call">
-                  <summary :title="seg.args">
-                    <span class="arrow">▶</span>
-                    <span class="tc-badge" :class="!seg.done ? 'run' : toolResultLooksFailed(seg.result, seg.tool) ? 'fail' : 'ok'">
-                      <span v-if="!seg.done" class="tc-spin">⟳</span>
-                      <template v-else>{{ toolResultLooksFailed(seg.result, seg.tool) ? '✗' : '✓' }}</template>
-                    </span>
-                    <span class="tc-icon">{{ toolDisplay(seg.tool).icon }}</span>
-                    <span class="tc-name">{{ toolDisplay(seg.tool).name }}</span>
-                    <span class="tc-sum">{{ toolSummary(seg.tool, seg.args) }}</span>
-                    <span v-if="seg.elapsedMs != null" class="tc-took">· {{ fmtSecs(seg.elapsedMs) }}</span>
-                  </summary>
-                  <div class="tc-body">
-                    <template v-if="toolParamRows(seg.tool, seg.args).length">
-                      <div class="tc-sec-title">输入参数</div>
-                      <table class="ptable">
-                        <tbody>
-                          <tr v-for="row in toolParamRows(seg.tool, seg.args)" :key="row.key">
-                            <td>{{ row.zh }}<span class="en">{{ row.key }}</span></td>
-                            <td class="val">{{ row.text }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </template>
-                    <details v-if="toolDisplay(seg.tool).known && seg.args && seg.args !== 'null'" class="jv">
-                      <summary>原始 JSON</summary>
-                      <pre>{{ prettyJson(seg.args) }}</pre>
-                    </details>
-                    <div class="tc-sec-title">{{ seg.done ? '结果' : '结果（执行中…）' }}</div>
-                    <div class="tc-result" :class="{ clamped: needsExpand(seg) && !isExpanded(m.id, i), 'result-fail': seg.done && toolResultLooksFailed(seg.result, seg.tool) }">{{ resultText(seg) }}</div>
-                    <button v-if="seg.done && needsExpand(seg)" class="tc-expand" @click="toggleExpand(m.id, i)">
-                      {{ isExpanded(m.id, i) ? '▲ 收起结果' : '▼ 展开全部结果' }}
-                    </button>
-                  </div>
-                </details>
+              <template
+                v-for="it in renderItems(m)"
+                :key="it.kind === 'tool' ? `t${it.card.index}` : `s${it.index}`"
+              >
+                <ToolCard v-if="it.kind === 'tool'" :card="cardVM(it)" />
                 <div v-else-if="m.role === 'assistant'" class="md">
                   <!-- 稳定块 + 可变尾部（D1）：内容未变的块 key 不变 → Vue 复用 DOM，
                        块内 append 的图表容器得以存活；每个 chunk 只重渲尾部块 -->
-                  <template v-for="blk in segBlocks(m, seg, i)" :key="blk.k">
+                  <template v-for="blk in segBlocks(m, it.seg, it.index)" :key="blk.k">
                     <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒（../markdown.ts） -->
                     <div v-if="blk.kind === 'md'" v-html="blk.html"></div>
                     <div v-else-if="blk.kind === 'chart'" class="chart-slot" :data-lang="blk.lang" :data-src="blk.src"></div>
@@ -676,7 +620,7 @@ onUnmounted(() => {
                     </div>
                   </template>
                 </div>
-                <div v-else class="plain">{{ seg.text }}</div>
+                <div v-else class="plain">{{ textOf(it) }}</div>
               </template>
               <!-- 压缩 loading 放在消息末尾：长链路时仍可见（滚动由 compaction_start 的 notifyActivity 驱动） -->
               <div v-if="m.compacting" class="compact-loading">
@@ -1091,15 +1035,16 @@ onUnmounted(() => {
 }
 @keyframes cl-rotate { to { transform: rotate(360deg); } }
 
-/* ===== 工具调用折叠块（Task-20261022-001：徽章+图标中文名+摘要；展开=参数表+原始JSON+结果截断） ===== */
+/* ===== 工具调用卡片（Task-20261024-001：方案 B 卡片内聚式；主体样式见 components/ToolCard.vue）===== */
+/* 旧类名别名（D9，只保一版）：旧 bundle 的 <details class="tool-call"> 与新样式短暂共存时仍有外框与状态色 */
 .tool-call {
   border: 1px solid var(--line);
-  border-radius: 9px;
+  border-radius: 10px;
   margin: 8px 0;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--panel);
 }
-.tool-call summary {
+.tool-call > summary {
   cursor: pointer;
   padding: 7px 12px;
   font-size: 12.5px;
@@ -1110,10 +1055,7 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
 }
-.tool-call summary::-webkit-details-marker { display: none; }
-.tool-call summary .arrow { transition: transform 0.15s; color: var(--muted); font-size: 10px; flex: none; }
-.tool-call[open] summary .arrow { transform: rotate(90deg); }
-.tool-call summary:hover { background: var(--panel); }
+.tool-call > summary::-webkit-details-marker { display: none; }
 .tc-badge {
   flex: none;
   font-family: ui-monospace, Consolas, monospace;
@@ -1125,81 +1067,6 @@ onUnmounted(() => {
 .tc-badge.ok { background: var(--ok-weak); color: var(--ok); }
 .tc-badge.run { background: var(--warn-weak); color: var(--warn); }
 .tc-badge.fail { background: var(--danger-weak); color: var(--danger); }
-.tc-badge .tc-spin { display: inline-block; animation: tc-rotate 0.8s linear infinite; }
-@keyframes tc-rotate { to { transform: rotate(360deg); } }
-.tc-icon { flex: none; }
-.tc-name { font-weight: 600; color: var(--text); flex: none; }
-.tc-sum {
-  color: var(--muted);
-  font-size: 12px;
-  font-family: ui-monospace, Consolas, monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.tc-took { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.tc-body {
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--line);
-  font-size: 12.5px;
-  color: var(--text);
-}
-.tc-sec-title {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--muted);
-  margin: 8px 0 5px;
-}
-.ptable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.ptable td { border: 1px solid var(--line); padding: 4px 9px; vertical-align: top; }
-.ptable td:first-child { width: 130px; color: var(--muted); white-space: nowrap; background: var(--bg); }
-.ptable td .en { font-family: ui-monospace, Consolas, monospace; font-size: 11px; opacity: 0.75; margin-left: 5px; }
-.ptable td.val { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; white-space: pre-wrap; }
-.tool-call .jv { margin-top: 8px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg); }
-.tool-call .jv summary {
-  cursor: pointer;
-  padding: 5px 10px;
-  font-size: 12px;
-  color: var(--muted);
-  list-style: none;
-  display: block;
-}
-.tool-call .jv summary::-webkit-details-marker { display: none; }
-.tool-call .jv summary:hover { color: var(--brand); }
-.tool-call .jv pre {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 11.5px;
-  padding: 4px 12px 10px;
-  overflow-x: auto;
-  margin: 0;
-  color: var(--text);
-  line-height: 1.5;
-}
-.tc-result {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  background: var(--code-bg);
-  border-radius: 8px;
-  padding: 8px 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 260px;
-  overflow-y: auto;
-  line-height: 1.55;
-}
-.tc-result.clamped { max-height: 120px; overflow: hidden; position: relative; }
-.tc-result.clamped::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 46px;
-  background: linear-gradient(transparent, var(--code-bg));
-}
-.tc-result.result-fail { border-left: 3px solid var(--danger); padding-left: 10px; }
-.tc-expand { margin-top: 6px; font-size: 12px; }
 
 /* ===== 输入区 ===== */
 .composer {

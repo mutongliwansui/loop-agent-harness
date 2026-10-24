@@ -31,6 +31,11 @@ export interface ToolSeg {
   elapsedMs?: number;
   /** 执行开始时间戳（仅流式期间用于算耗时，不渲染） */
   startedAt?: number;
+  /**
+   * 已被用户中断（Task-20261024-001 D3）：aborted 事件到达时把同轮**未完成**的工具段标为中断，
+   * 卡片显示「已中断」而非一直转圈；历史消息在 run.status==='aborted' 时对空结果段补标。
+   */
+  aborted?: boolean;
 }
 /** 时间线分段：思考/最终答案文本段与工具段按事件到达顺序交错 */
 export type Segment = TextSeg | ToolSeg;
@@ -274,6 +279,8 @@ async function fetchDetail(id: string, st: SessionStreamState): Promise<void> {
     if (last.role === 'assistant') {
       last.aborted = true;
       last.meta = last.meta ? `已停止 · ${last.meta}` : '已停止';
+      // 刷新恢复的这轮同样要补「已中断」工具态：磁盘无该标记（D4 不落盘），此处按 run 终态派生
+      markToolSegsAborted(last);
     }
   }
   // 重启后中断/停止注记（task-06）：内存 run 已消失（快照 null）时按磁盘 journal 派生。
@@ -581,6 +588,8 @@ function applyEvent(id: string, ev: SseEvent): void {
       asst.live = null;
       asst.aborted = true;
       asst.meta = `已停止 · ${(Number(d.durationMs ?? 0) / 1000).toFixed(1)}s · ${String(d.iterations ?? '?')} 轮`;
+      // 未完成的工具段不会再有 tool_end：标为已中断，卡片显示「已中断」而非转圈（D3）
+      markToolSegsAborted(asst);
       finishRun(id, st, 'aborted');
       void reconcile(id, true);
       break;
@@ -653,10 +662,21 @@ function keepLocalUserBubbles(disk: ChatMsg[], local: ChatMsg[]): void {
 }
 
 /**
+ * 把消息内**未完成**的工具段标为已中断（Task-20261024-001 D3）。
+ * 用户停止后这些工具不会再收到 tool_end，卡片须显示「已中断」而非一直转圈；
+ * 已完成的段不受影响，保留其真实结果与耗时。
+ */
+function markToolSegsAborted(m: ChatMsg): void {
+  for (const s of m.segments) {
+    if (s.type === 'tool' && !s.done) s.aborted = true;
+  }
+}
+
+/**
  * done 后静默重拉一次历史，以落盘结果为准（P1）。
  * 期间若已开始新一轮或又收到新事件则放弃；内容一致不替换，避免界面闪烁。
  * markAborted：本次为「已停止」收尾——磁盘重建的消息无中断标记（D4 不落盘），
- * 替换时间线后需回填灰条与「已停止 ·」标注，否则刚出现的灰条立即消失。
+ * 替换时间线后需回填灰条、「已停止 ·」标注与工具段的「已中断」态，否则刚出现的灰条立即消失。
  */
 async function reconcile(id: string, markAborted = false): Promise<void> {
   const st = states.get(id);
@@ -675,6 +695,7 @@ async function reconcile(id: string, markAborted = false): Promise<void> {
       if (last && last.role === 'assistant') {
         last.aborted = true;
         last.meta = prevAsst.meta;
+        markToolSegsAborted(last);
       }
     }
     // 内容被磁盘结果替换：通知视图重做高亮/mermaid 与滚动
@@ -795,6 +816,7 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
       asst.streaming = false;
       asst.live = null;
       asst.aborted = true; // 语义上这轮已被停止（灰条）；若服务端稍后仍跑完，reconcile 以磁盘为准
+      markToolSegsAborted(asst);
       st.status = 'idle';
       showToast('已断开连接，本轮已停止显示', 'error');
       return 'aborted';
