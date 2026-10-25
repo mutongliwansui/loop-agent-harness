@@ -2,7 +2,7 @@
 // 建独立 SessionStore（与 CLI 共用同一存储池，但不注入共享 agent）、初始化记忆、起服务、
 // 打印服务信息、注册 SIGINT 关停。共享前置（引导/配置/工具/MCP/Skill）由 src/runtime/init.ts 完成。
 
-import { createRequire } from 'node:module';
+import pkg from '../../package.json';
 import { createApiServer, type ApiServer } from './server.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
@@ -39,14 +39,9 @@ export async function startApiServer(): Promise<ApiServer> {
   // D5：attachMemory 注入共享 kit；容量 1 等价回退旧串行语义（经环境变量可调）。
   // Task-20261021-010-01：池由 runtime 持有（每空间一池），容量读 LOOP_AGENT_POOL_CAPACITY。
 
-  // 读取 package.json 版本（/health 返回）
-  let version = '';
-  try {
-    const require = createRequire(import.meta.url);
-    version = (require('../../package.json') as { version?: string }).version ?? '';
-  } catch {
-    // 版本读取失败不影响服务
-  }
+  // 版本取自 package.json：tsup 打包时内联进产物（build:sea 的 SEA 单文件同样可用），
+  // 不依赖运行时文件读取与 import.meta，避免 CJS 产物中版本恒为空
+  const version = pkg.version;
 
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）

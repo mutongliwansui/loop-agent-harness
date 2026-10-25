@@ -15,8 +15,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, basename, dirname } from 'node:path';
 
 // D16：解析对象是 node:sqlite 内置模块（应用自身资源，与工作空间无关），
-// 以本模块 URL 为基准，避免空间目录无 package.json 时崩溃。
-const nodeRequire = createRequire(import.meta.url);
+// 内置模块只按标识符解析、不依赖基准路径，故以 process.execPath 作基准；
+// 不用 import.meta.url 是为了让 CJS/SEA 打包（build:sea）零警告、不依赖运行时注入。
+const nodeRequire = createRequire(process.execPath);
 let DatabaseSyncCtor: typeof DatabaseSync | undefined;
 try {
   DatabaseSyncCtor = nodeRequire('node:sqlite').DatabaseSync;
