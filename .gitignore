@@ -47,3 +47,6 @@ wheels/
 
 # 临时工作文件（图表草稿、实验输出等，不入库）
 /temp/
+
+# 真实渲染探针的临时产物（截图 / summary.json / Chrome profile）
+.tmp-verify-*/

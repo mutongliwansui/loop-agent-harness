@@ -127,8 +127,7 @@ const spec = await ev(`(() => {
   const tools = document.querySelector('[data-probe="dock-tools"]');
   const send = document.getElementById('live-send');
   const attach = document.getElementById('live-attach');
-  const flow = document.getElementById('live-flow');
-  const bell = document.getElementById('live-bell');
+  const model = document.getElementById('live-model');
   const hint = document.querySelector('[data-probe="hint"]');
   const r = (el) => { const b = el.getBoundingClientRect(); return { w: +b.width.toFixed(1), h: +b.height.toFixed(1) }; };
   return {
@@ -149,10 +148,18 @@ const spec = await ev(`(() => {
     sendDisabled: send.disabled,
     attachRect: r(attach),
     attachHasSvg: !!attach.querySelector('svg'),
-    flowHasSvg: !!flow.querySelector('svg'),
-    bellHasSvg: !!bell.querySelector('svg'),
-    flowOn: flow.classList.contains('on'),
-    flowOnBg: cs(flow, 'backgroundColor'),
+    modelRect: r(model),
+    modelHasSvg: model.querySelectorAll('svg').length,
+    modelName: document.querySelector('[data-probe="model-name"]').textContent.trim(),
+    modelPinned: model.classList.contains('pinned'),
+    modelExpanded: model.getAttribute('aria-expanded'),
+    popHidden: document.getElementById('live-mpop').hidden,
+    popItems: document.querySelectorAll('#live-mlist .mp-item').length,
+    popGlobBadges: document.querySelectorAll('#live-mlist .mp-badge.glob').length,
+    popSelected: document.querySelector('#live-mlist .mp-item[aria-selected="true"]')?.dataset.alias ?? null,
+    popMetaHosts: [...document.querySelectorAll('#live-mlist .mp-meta')].map((x) => x.textContent.split('·')[1].trim()),
+    resetHidden: document.getElementById('live-reset').hidden,
+    legacyControls: !!(document.getElementById('live-flow') || document.getElementById('live-bell')),
     hintVisible: cs(hint, 'display') !== 'none',
     hintFontSize: px(hint, 'fontSize'),
     svgCount: comp.querySelectorAll('svg').length,
@@ -174,8 +181,14 @@ check('结构', 'textarea min-height 44px', spec.taMinH, 44, Math.abs(spec.taMin
 check('结构', '主操作 32×32 图标按钮', JSON.stringify(spec.sendRect), '32×32', Math.abs(spec.sendRect.w - 32) < 0.6 && Math.abs(spec.sendRect.h - 32) < 0.6);
 check('结构', '空态发送按钮灰底且 disabled', `${spec.sendBg} / disabled=${spec.sendDisabled}`, 'rgba(17, 24, 39, 0.055) / true', spec.sendBg === 'rgba(17, 24, 39, 0.055)' && spec.sendDisabled === true);
 check('结构', '附件按钮 28×28 且为 SVG', `${JSON.stringify(spec.attachRect)} svg=${spec.attachHasSvg}`, '28×28 svg=true', Math.abs(spec.attachRect.w - 28) < 0.6 && spec.attachHasSvg);
-check('结构', '流式/通知按钮均为 SVG', `flow=${spec.flowHasSvg} bell=${spec.bellHasSvg}`, 'true/true', spec.flowHasSvg && spec.bellHasSvg);
-check('结构', '流式开态用 --brand-weak 底', spec.flowOnBg, 'rgb(230, 246, 239)', spec.flowOnBg === 'rgb(230, 246, 239)');
+check('结构', '流式/通知控件已移除', spec.legacyControls, false, spec.legacyControls === false);
+check('结构', '模型 pill 高 26px、含 2 个 SVG（chip + chevron）', `${spec.modelRect.h}px svg=${spec.modelHasSvg}`, '26px svg=2', Math.abs(spec.modelRect.h - 26) < 0.8 && spec.modelHasSvg === 2);
+check('结构', '模型 pill 默认显示全局激活 alias 且未固定', `${spec.modelName} pinned=${spec.modelPinned}`, 'deepseek-flash pinned=false', spec.modelName === 'deepseek-flash' && spec.modelPinned === false);
+check('结构', '模型下拉默认收起', `${spec.popHidden} / aria-expanded=${spec.modelExpanded}`, 'true / false', spec.popHidden === true && spec.modelExpanded === 'false');
+check('结构', '下拉列出全部 3 个 profile，仅 1 个「全局」徽标', `items=${spec.popItems} glob=${spec.popGlobBadges}`, 'items=3 glob=1', spec.popItems === 3 && spec.popGlobBadges === 1);
+check('结构', '默认选中项与全局激活一致', spec.popSelected, 'deepseek-flash', spec.popSelected === 'deepseek-flash');
+check('结构', '列表暴露不同 profile 的主机差异（baseUrl 可见）', spec.popMetaHosts.join(' | '), '含 tokenhub.haizhi.com', spec.popMetaHosts.some((h) => h === 'tokenhub.haizhi.com'));
+check('结构', '未固定时不显示「跟随全局」', spec.resetHidden, true, spec.resetHidden === true);
 check('结构', '输入区 emoji 全部清零', `emoji=${spec.emojiCount} svg=${spec.svgCount}`, 'emoji=0 svg≥6', spec.emojiCount === 0 && spec.svgCount >= 6);
 check('结构', '快捷键提示 11.5px 且默认可见', `${spec.hintFontSize}px visible=${spec.hintVisible}`, '11.5px true', Math.abs(spec.hintFontSize - 11.5) < 0.2 && spec.hintVisible);
 check('结构', '占位符缩短', spec.placeholder, '发消息给 Loop Agent…', spec.placeholder === '发消息给 Loop Agent…');
@@ -259,6 +272,89 @@ const stRun = await ev(`(() => {
 check('状态', '生成中主操作变停止（同位置）', `${stRun.cls} icon=${stRun.icon}`, 'stop / #i-stop', stRun.cls.includes('stop') && stRun.icon === '#i-stop');
 check('状态', '停止按钮用 --danger-weak 底', `${stRun.bg} / ${stRun.color}`, 'rgb(253, 236, 236) / rgb(220, 38, 38)', stRun.bg === 'rgb(253, 236, 236)' && stRun.color === 'rgb(220, 38, 38)');
 
+/* ===== 3b. 模型选择（会话级覆盖，D11/D12） ===== */
+await ev(`document.getElementById('live-model').click()`);
+await sleep(260);
+const mpOpen = await ev(`(() => {
+  const cs = (el,p) => getComputedStyle(el)[p];
+  const pop = document.getElementById('live-mpop');
+  const b = pop.getBoundingClientRect();
+  const dock = document.getElementById('live-dock').getBoundingClientRect();
+  return {
+    hidden: pop.hidden,
+    expanded: document.getElementById('live-model').getAttribute('aria-expanded'),
+    popW: +b.width.toFixed(1), dockW: +dock.width.toFixed(1),
+    above: b.bottom <= dock.top + 1,               // 向上展开（不盖输入框）
+    popBg: cs(pop,'backgroundColor'),
+    headText: pop.querySelector('.mp-head b').textContent.trim(),
+    scopeHint: pop.querySelector('.mp-sub').textContent.trim(),
+    footText: pop.querySelector('.mp-foot').textContent.trim(),
+    overflowX: pop.scrollWidth - pop.clientWidth,
+  };
+})()`);
+check('模型', '点击 pill 展开下拉', `${mpOpen.hidden} / aria=${mpOpen.expanded}`, 'false / true', mpOpen.hidden === false && mpOpen.expanded === 'true');
+check('模型', '面板与卡片内边缘齐平且向上展开', `${mpOpen.popW} vs dock ${mpOpen.dockW} / above=${mpOpen.above}`, '差值=2×border(2px) / above=true', Math.abs(mpOpen.dockW - mpOpen.popW - 2) < 0.6 && mpOpen.above === true);
+check('模型', '面板不横向溢出', mpOpen.overflowX, 0, mpOpen.overflowX <= 0);
+check('模型', '标题明确作用域为「本次对话」', mpOpen.headText, '本次对话使用', mpOpen.headText === '本次对话使用');
+check('模型', '副标题声明不改全局激活', mpOpen.scopeHint.includes('不改全局激活'), true, mpOpen.scopeHint.includes('不改全局激活'));
+check('模型', '脚注提示切换只影响后续消息 + 管理入口', `${mpOpen.footText.includes('只影响后续消息')} / ${mpOpen.footText.includes('管理模型')}`, 'true / true', mpOpen.footText.includes('只影响后续消息') && mpOpen.footText.includes('管理模型'));
+
+/* 选中非全局 profile：会话级覆盖生效 */
+await ev(`document.querySelector('#live-mlist .mp-item[data-alias="glm-5.3-flash"]').click()`);
+await sleep(240);
+const mpPick = await ev(`(() => {
+  const pill = document.getElementById('live-model');
+  return {
+    name: document.querySelector('[data-probe="model-name"]').textContent.trim(),
+    pinned: pill.classList.contains('pinned'),
+    pinColor: getComputedStyle(pill.querySelector('.mi')).color,
+    selected: document.querySelector('#live-mlist .mp-item[aria-selected="true"]')?.dataset.alias ?? null,
+    selectedBg: getComputedStyle(document.querySelector('#live-mlist .mp-item[aria-selected="true"]')).backgroundColor,
+    popHidden: document.getElementById('live-mpop').hidden,
+    resetHidden: document.getElementById('live-reset').hidden,
+    globalBadgeOnSelected: !!document.querySelector('#live-mlist .mp-item[data-alias="glm-5.3-flash"] .mp-badge'),
+  };
+})()`);
+check('模型', '选中后 pill 文字切到所选 alias', mpPick.name, 'glm-5.3-flash', mpPick.name === 'glm-5.3-flash');
+check('模型', '选中后 pill 加 pinned 且图标转品牌色', `${mpPick.pinned} / ${mpPick.pinColor}`, 'true / rgb(14, 159, 110)', mpPick.pinned === true && mpPick.pinColor === 'rgb(14, 159, 110)');
+check('模型', '单项选中态用 --brand-weak 底', mpPick.selectedBg, 'rgb(230, 246, 239)', mpPick.selectedBg === 'rgb(230, 246, 239)');
+check('模型', '非全局 profile 不带「全局」徽标（语义未混淆）', mpPick.globalBadgeOnSelected, false, mpPick.globalBadgeOnSelected === false);
+check('模型', '选完自动收起并出现「跟随全局」', `popHidden=${mpPick.popHidden} resetHidden=${mpPick.resetHidden}`, 'true / false', mpPick.popHidden === true && mpPick.resetHidden === false);
+
+/* 跟随全局：复位 */
+await ev(`document.getElementById('live-reset').click()`);
+await sleep(220);
+const mpReset = await ev(`(() => {
+  const pill = document.getElementById('live-model');
+  return {
+    name: document.querySelector('[data-probe="model-name"]').textContent.trim(),
+    pinned: pill.classList.contains('pinned'),
+    selected: document.querySelector('#live-mlist .mp-item[aria-selected="true"]')?.dataset.alias ?? null,
+    resetHidden: document.getElementById('live-reset').hidden,
+  };
+})()`);
+check('模型', '「跟随全局」复位到激活 profile', `${mpReset.name} pinned=${mpReset.pinned} selected=${mpReset.selected} resetHidden=${mpReset.resetHidden}`, 'deepseek-flash / false / deepseek-flash / true', mpReset.name === 'deepseek-flash' && mpReset.pinned === false && mpReset.selected === 'deepseek-flash' && mpReset.resetHidden === true);
+
+/* 与上传浮层互斥 */
+const exclusive = await ev(`(() => {
+  document.getElementById('live-attach').click();
+  const a = document.getElementById('live-pop').hidden;
+  document.getElementById('live-model').click();
+  return { afterAttach: a, afterModel: document.getElementById('live-pop').hidden, model: document.getElementById('live-mpop').hidden };
+})()`);
+check('模型', '与上传浮层互斥（开一个关另一个）', JSON.stringify(exclusive), '{"afterAttach":false,"afterModel":true,"model":false}', exclusive.afterAttach === false && exclusive.afterModel === true && exclusive.model === false);
+
+/* 生成中不可切换 */
+const mpRunning = await ev(`(() => {
+  document.querySelector('#seg-state button[data-v="running"]').click();
+  const pill = document.getElementById('live-model');
+  const cs = getComputedStyle(pill);
+  return { opacity: cs.opacity, pe: cs.pointerEvents, popHidden: document.getElementById('live-mpop').hidden };
+})()`);
+check('模型', '生成中禁用模型切换', `${mpRunning.opacity} / ${mpRunning.pe}`, '0.5 / none', mpRunning.opacity === '0.5' && mpRunning.pe === 'none');
+await ev(`document.querySelector('#seg-state button[data-v="empty"]').click()`);
+await sleep(200);
+
 /* ===== 4. 宽度审计（容器查询） ===== */
 async function atWidth(w) {
   await ev(`(() => {
@@ -275,8 +371,7 @@ async function atWidth(w) {
     const comp = document.querySelector('[data-probe="composer"]');
     const tools = document.querySelector('[data-probe="dock-tools"]');
     const hint = document.querySelector('[data-probe="hint"]');
-    const pill = document.getElementById('live-flow');
-    const pillSpan = pill.querySelector('span');
+    const pill = document.getElementById('live-model');
     const dock = document.getElementById('live-dock');
     const r = (el) => { const b = el.getBoundingClientRect(); return { w:+b.width.toFixed(1), h:+b.height.toFixed(1) }; };
     return {
@@ -284,7 +379,9 @@ async function atWidth(w) {
       toolRowH: r(tools).h,
       toolsOverflow: tools.scrollWidth - tools.clientWidth,
       hintVisible: cs(hint,'display') !== 'none',
-      pillTextVisible: cs(pillSpan,'display') !== 'none',
+      pillW: r(pill).w,
+      pillNameVisible: cs(pill.querySelector('.mn'),'display') !== 'none',
+      pillNameTruncated: pill.querySelector('.mn').scrollWidth > pill.querySelector('.mn').clientWidth,
       compPaddingL: parseFloat(cs(document.querySelector('[data-probe="composer"] .inner'),'paddingLeft')),
       sendVisible: r(document.getElementById('live-send')).w > 0,
       dockW: r(dock).w,
@@ -295,11 +392,12 @@ const w800 = await atWidth(800);
 const w462 = await atWidth(462);
 const w320 = await atWidth(320);
 check('宽度', '800px：提示可见、单行工具行', `hint=${w800.hintVisible} rowH=${w800.toolRowH}`, 'true / 35', w800.hintVisible);
-check('宽度', '462px：提示仍可见（>520 阈值内）', `hint=${w462.hintVisible}`, 'true', w462.hintVisible);
+check('宽度', '462px：提示仍可见（>440 阈值内）', `hint=${w462.hintVisible}`, 'true', w462.hintVisible);
 check('宽度', '320px：隐快捷键提示', `hint=${w320.hintVisible}`, 'false', w320.hintVisible === false);
-check('宽度', '320px：隐流式文字', `pillText=${w320.pillTextVisible}`, 'false', w320.pillTextVisible === false);
-check('宽度', '320px：工具行不溢出', `overflow=${w320.toolsOverflow}`, '0', w320.toolsOverflow <= 0);
+check('宽度', '320px：模型名仍可见（只省略不隐藏）', `visible=${w320.pillNameVisible} w=${w320.pillW}`, 'visible=true w≤112', w320.pillNameVisible === true && w320.pillW <= 112.5);
+check('宽度', '320px：工具行不溢出', `overflow=${w320.toolsOverflow} dock=${w320.dockW}`, '0 / ≤320', w320.toolsOverflow <= 0 && w320.dockW <= 320.5);
 check('宽度', '320px：内边距收窄到 12px', w320.compPaddingL, 12, Math.abs(w320.compPaddingL - 12) < 0.5);
+check('宽度', '462px：模型名不省略（默认宽度够用）', `${w462.pillW}px truncated=${w462.pillNameTruncated}`, '≤190 / false', w462.pillW <= 190.5 && w462.pillNameTruncated === false);
 
 /* ===== 5. 深色主题 ===== */
 await ev(`(() => {
@@ -319,15 +417,54 @@ const dark = await ev(`(() => {
     dockBorder: cs(dock,'borderTopColor'),
     compBg: cs(comp,'backgroundColor'),
     text: cs(document.getElementById('live-ta'),'color'),
-    flowBg: cs(document.getElementById('live-flow'),'backgroundColor'),
+    popBg: cs(document.getElementById('live-mpop'),'backgroundColor'),
   };
 })()`);
 check('深色', 'theme=dark 生效', dark.theme, 'dark', dark.theme === 'dark');
 check('深色', 'dock 卡片底提亮为 --panel-2', dark.dockBg, 'rgb(31, 36, 43)', dark.dockBg === 'rgb(31, 36, 43)');
 check('深色', 'composer 底 --bg 暗色', dark.compBg, 'rgb(20, 23, 28)', dark.compBg === 'rgb(20, 23, 28)');
 check('深色', '描边提亮为 --line（深色 --line-soft 近乎不可见）', dark.dockBorder, 'rgb(43, 49, 58)', dark.dockBorder === 'rgb(43, 49, 58)');
+check('深色', '模型面板不透明（深色下不穿透消息流）', dark.popBg, 'rgb(27, 31, 38)', dark.popBg === 'rgb(27, 31, 38)');
 
 /* ===== 6. 状态矩阵完整性 & 无横向溢出 ===== */
+/* 回归断言：控制条切换「模型」档时面板必须真实可见（曾因外部点击监听同帧关闭而空白） */
+await ev(`document.querySelector('#seg-state button[data-v="model"]').click()`);
+await sleep(320);
+const viaSeg = await ev(`(() => {
+  const pop = document.getElementById('live-mpop');
+  const b = pop.getBoundingClientRect();
+  const mock = document.getElementById('live-mock').getBoundingClientRect();
+  return {
+    hidden: pop.hidden,
+    h: +b.height.toFixed(1),
+    insideMock: b.top >= mock.top - 1 && b.bottom <= mock.bottom + 1,
+    itemsVisible: [...document.querySelectorAll('#live-mlist .mp-item')].filter((x) => x.getBoundingClientRect().height > 20).length,
+  };
+})()`);
+check('模型', '控制条切「模型」档后面板真实渲染（非空白）', `${viaSeg.h}px items=${viaSeg.itemsVisible} inside=${viaSeg.insideMock}`, 'h>150 / items=3 / inside=true', viaSeg.hidden === false && viaSeg.h > 150 && viaSeg.itemsVisible === 3 && viaSeg.insideMock === true);
+await ev(`document.querySelector('#seg-state button[data-v="empty"]').click()`);
+await sleep(180);
+
+/* 矩阵内第 7 态的静态渲染（无 JS 交互，纯 CSS 定位） */
+const matrixModel = await ev(`(() => {
+  const cell = [...document.querySelectorAll('.cell')].find((c) => c.querySelector('.model-pop'));
+  if (!cell) return { found: false };
+  const pop = cell.querySelector('.model-pop');
+  const pb = pop.getBoundingClientRect();
+  const cb = cell.getBoundingClientRect();
+  const db = cell.querySelector('.dock').getBoundingClientRect();
+  return {
+    found: true,
+    hidden: pop.hidden,
+    popH: +pb.height.toFixed(1), popTop: +pb.top.toFixed(1), popBottom: +pb.bottom.toFixed(1),
+    cellH: +cb.height.toFixed(1), cellTop: +cb.top.toFixed(1), cellBottom: +cb.bottom.toFixed(1),
+    dockTop: +db.top.toFixed(1),
+    fullyInside: pb.top >= cb.top - 1 && pb.bottom <= cb.bottom + 1,
+    itemsVisible: [...pop.querySelectorAll('.mp-item')].filter((x) => x.getBoundingClientRect().height > 20).length,
+  };
+})()`);
+check('矩阵', '第 7 态模型面板完整落在卡片内（不被裁切）', JSON.stringify(matrixModel), 'found / fullyInside / items=3 / popH>150', matrixModel.found === true && matrixModel.fullyInside === true && matrixModel.itemsVisible === 3 && matrixModel.popH > 150);
+
 const matrix = await ev(`(() => {
   const cells = [...document.querySelectorAll('.cell')];
   const docks = [...document.querySelectorAll('.cell .dock')];
@@ -339,7 +476,7 @@ const matrix = await ev(`(() => {
     docH: document.documentElement.scrollHeight,
   };
 })()`);
-check('矩阵', '六态齐备', `${matrix.cells} cell / ${matrix.docks} dock → ${matrix.states.join(',')}`, '6 / 6', matrix.cells === 6 && matrix.docks === 6);
+check('矩阵', '七态齐备（含模型下拉）', `${matrix.cells} cell / ${matrix.docks} dock → ${matrix.states.join(',')}`, '7 / 7', matrix.cells === 7 && matrix.docks === 7);
 check('矩阵', '整页无横向溢出', matrix.pageOverflowX, '0', matrix.pageOverflowX <= 0);
 
 /* ===== 7. 截图 ===== */
@@ -357,6 +494,14 @@ await ev(`document.querySelector('#seg-theme button[data-v="dark"]').click(); 1`
 await sleep(320);
 shots.push(await shot('proto-live-dark', liveBox));
 
+// 单块：模型下拉展开（深色，会话级已覆盖）
+await ev(`document.querySelector('#seg-state button[data-v="model"]').click(); 1`);
+await sleep(340);
+const modelBox = await ev(`(() => { const b = document.getElementById('live-mock').getBoundingClientRect(); return { x: Math.max(0,b.x-6), y: b.y-6, width: b.width+12, height: b.height+12 }; })()`);
+shots.push(await shot('proto-model-dark', modelBox));
+await ev(`document.querySelector('#seg-state button[data-v="empty"]').click(); 1`);
+await sleep(200);
+
 // 单块：状态矩阵（clip 用页面绝对坐标，配合 captureBeyondViewport）
 await ev(`(() => {
   document.querySelector('#seg-theme button[data-v="light"]').click();
@@ -367,6 +512,14 @@ await sleep(320);
 const gridBox = await ev(`(() => { const g = document.querySelector('.grid').getBoundingClientRect(); return { x: Math.max(0, g.x + scrollX - 8), y: Math.max(0, g.y + scrollY - 8), width: g.width + 16, height: g.height + 16 }; })()`);
 shots.push(await shot('proto-states', gridBox));
 
+// 单块：矩阵第 7 态（模型下拉），确认静态渲染不被裁切
+const cellBox = await ev(`(() => {
+  const cell = [...document.querySelectorAll('.cell')].find((c) => c.querySelector('.model-pop'));
+  const b = cell.getBoundingClientRect();
+  return { x: Math.max(0, b.x + scrollX - 6), y: Math.max(0, b.y + scrollY - 6), width: b.width + 12, height: b.height + 12 };
+})()`);
+shots.push(await shot('proto-state-model-cell', cellBox));
+
 // 单块：宽度审计
 const auditBox = await ev(`(() => { const g = document.querySelector('.audit').getBoundingClientRect(); return { x: Math.max(0, g.x + scrollX - 8), y: Math.max(0, g.y + scrollY - 8), width: g.width + 16, height: g.height + 16 }; })()`);
 shots.push(await shot('proto-audit', auditBox));
@@ -374,7 +527,7 @@ shots.push(await shot('proto-audit', auditBox));
 /* ===== 输出 ===== */
 const pass = results.filter((r) => r.ok).length;
 const fail = results.length - pass;
-fs.writeFileSync(path.join(OUT, 'summary.json'), JSON.stringify({ results, spec, grow, interact, stFiles, stRun, w800, w462, w320, dark, matrix, shots }, null, 2));
+fs.writeFileSync(path.join(OUT, 'summary.json'), JSON.stringify({ results, spec, grow, interact, stFiles, stRun, mpOpen, mpPick, mpReset, exclusive, mpRunning, w800, w462, w320, dark, matrix, shots }, null, 2));
 
 const byGroup = {};
 for (const r of results) (byGroup[r.group] ||= []).push(r);

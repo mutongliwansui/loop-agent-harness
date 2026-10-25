@@ -155,7 +155,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
    D1 去 .composer 上沿分隔线，底改为 --bg（与消息流同色）
    D2 输入卡：--panel 底 + --line-soft 描边 + --shadow-1，focus-within 转品牌描边 + 3px 光晕
    D3 textarea 无边框、无背景，44→200px 自增高
-   D4 工具行承载低频开关（附件 / 流式 / 通知），主位只留发送
+   D4 工具行承载低频开关（附件 / 模型选择），主位只留发送
    ============================================================ */
 .composer{
   background:var(--bg);
@@ -230,14 +230,66 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
 .tbtn.on{ color:var(--brand) }
 .tbtn.on:hover{ background:var(--brand-weak); color:var(--brand) }
 
-.pill-btn{
-  display:inline-flex; align-items:center; gap:5px; flex:none;
-  height:24px; padding:0 8px; border:0; border-radius:999px; background:transparent;
-  font:inherit; font-size:11.5px; color:var(--text-3); cursor:pointer;
+/* 模型选择 pill：本次对话的上下文属性，放工具行（低频开关区已清空，此位让给它） */
+.model-pill{
+  display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:190px;
+  height:26px; padding:0 7px 0 6px; margin-left:1px;
+  border:0; border-radius:999px; background:transparent;
+  font:inherit; font-size:11.5px; color:var(--text-2); cursor:pointer;
   transition:background .14s, color .14s;
 }
-.pill-btn:hover{ background:var(--hover); color:var(--text) }
-.pill-btn.on{ background:var(--brand-weak); color:var(--brand); font-weight:600 }
+.model-pill:hover{ background:var(--hover); color:var(--text) }
+.model-pill .mi{ display:flex; flex:none; color:var(--text-3) }
+.model-pill .mn{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0 }
+.model-pill .mv{ display:flex; flex:none; color:var(--text-3); transition:transform .16s ease }
+.model-pill[aria-expanded="true"]{ background:var(--hover); color:var(--text) }
+.model-pill[aria-expanded="true"] .mv{ transform:rotate(180deg) }
+/* 已显式指定模型（非跟随全局）时加一个状态点，避免只靠颜色区分 */
+.model-pill.pinned .mi{ color:var(--brand) }
+
+/* 模型下拉面板：挂在 .dock 内，与卡片同宽，向上展开 */
+.model-pop{
+  position:absolute; left:0; right:0; bottom:calc(100% + 8px); z-index:24;
+  background:var(--panel); border:1px solid var(--line-soft); border-radius:var(--r-lg);
+  box-shadow:var(--shadow-2); overflow:hidden;
+}
+.mp-head{
+  display:flex; align-items:center; gap:8px;
+  padding:9px 12px; border-bottom:1px solid var(--line-soft);
+}
+.mp-head b{ font-size:11.5px; font-weight:600; color:var(--text) }
+.mp-head .mp-sub{ font-size:11px; color:var(--text-3); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.mp-reset{
+  margin-left:auto; flex:none; border:0; background:none; border-radius:6px;
+  font:inherit; font-size:11px; color:var(--brand); padding:2px 6px; cursor:pointer;
+}
+.mp-reset:hover{ background:var(--brand-weak) }
+.mp-list{ max-height:186px; overflow-y:auto; padding:4px }
+.mp-item{
+  display:flex; align-items:flex-start; gap:7px; width:100%;
+  padding:6px 8px; border:0; border-radius:var(--r-sm); background:transparent;
+  font:inherit; text-align:left; cursor:pointer; color:var(--text);
+  transition:background .13s;
+}
+.mp-item:hover{ background:var(--hover) }
+.mp-item[aria-selected="true"]{ background:var(--brand-weak) }
+.mp-tick{ flex:none; width:13px; display:flex; margin-top:2px; color:var(--brand); opacity:0 }
+.mp-item[aria-selected="true"] .mp-tick{ opacity:1 }
+.mp-txt{ min-width:0; flex:1 }
+.mp-alias{ display:block; font-size:12px; font-weight:600; line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.mp-meta{ display:block; font-size:10.5px; color:var(--text-3); line-height:1.45; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.mp-badge{
+  flex:none; margin-top:1px; font-size:10px; font-weight:700; letter-spacing:.3px;
+  padding:1px 5px; border-radius:20px; background:var(--code-bg); color:var(--text-3);
+}
+.mp-badge.glob{ background:var(--brand-weak); color:var(--brand) }
+.mp-foot{
+  display:flex; align-items:center; gap:8px;
+  padding:7px 12px; border-top:1px solid var(--line-soft); background:var(--panel-2);
+  font-size:10.5px; color:var(--text-3);
+}
+.mp-foot a{ margin-left:auto; color:var(--text-2); text-decoration:none; flex:none }
+.mp-foot a:hover{ color:var(--brand) }
 
 .kbd-hint{
   margin-left:auto; padding-left:8px; flex:none;
@@ -282,13 +334,13 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
 }
 @container (max-width:380px){
   .inner{ padding-left:12px; padding-right:12px }
-  .pill-btn span{ display:none }
-  .pill-btn{ padding:0 6px }
+  .model-pill{ max-width:112px; padding:0 5px }
   .dock textarea{ padding-left:10px; padding-right:10px }
 }
 
 /* 生成中：输入框仍可编辑（现状未禁用），仅主操作变停止 */
-.dock[data-state="running"] .dock-tools .tbtn{ opacity:.5; pointer-events:none }
+.dock[data-state="running"] .dock-tools .tbtn,
+.dock[data-state="running"] .dock-tools .model-pill{ opacity:.5; pointer-events:none }
 
 /* ============================================================
    状态矩阵
@@ -370,11 +422,14 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
     <symbol id="i-clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.19 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
     </symbol>
-    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2.4"/><path d="M10 3.5v3M14 3.5v3M10 17.5v3M14 17.5v3M3.5 10h3M3.5 14h3M17.5 10h3M17.5 14h3"/>
     </symbol>
-    <symbol id="i-flow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M2 12h4l2.5-6 3.5 12 2.5-8 2 2h6"/>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 9l6 6 6-6"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5 5L20 6.5"/>
     </symbol>
     <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
@@ -392,7 +447,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
 <div class="bar">
   <div class="bar-l">
     <b>原型 20261025-001 · 对话输入区重设计</b>
-    <span class="bar-sub">Input Dock（输入坞）· 一体卡片 + 图标化主操作 + 自增高</span>
+    <span class="bar-sub">Input Dock（输入坞）· 一体卡片 + 图标化主操作 + 自增高 + 会话级模型选择</span>
   </div>
   <div class="bar-r">
     <div class="seg" id="seg-theme">
@@ -403,14 +458,14 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
     </div>
     <div class="seg" id="seg-state">
       <button data-v="empty" class="on">空态</button><button data-v="text">已输入</button>
-      <button data-v="files">带附件</button><button data-v="running">生成中</button>
+      <button data-v="files">带附件</button><button data-v="running">生成中</button><button data-v="model">模型</button>
     </div>
   </div>
 </div>
 
 <div class="lede">
-  <b>问题不是「不好看」，是三层结构错位：</b>主操作（发送）与低频开关（附件 / 流式 / 通知）挤在同一行且权重相同；输入框被钉死 44px，长 prompt 只能框内滚动；描边三层叠加（容器上沿 + 输入框 + chip）在窄区里显脏。
-  改版只动 <code>ChatView.vue</code> 的 <code>.composer</code> 一节 CSS 与模板结构，SSE 协议、消息数据、上传通通不动。
+  <b>问题不是「不好看」，是三层结构错位：</b>主操作（发送）与低频开关（附件 / 流式 / 通知）挤在同一行且权重相同；输入框被钉死 44px，长 prompt 只能框内滚动；描边三层叠加（容器上沿 + 输入框 + chip）在窄区里显脏。模型只能在 <code>#/models</code> 页全局切换，无法为「这一次对话」单独指定。
+  改版只动 <code>ChatView.vue</code> 的 <code>.composer</code> 一节 CSS 与模板结构（外加删除流式/通知、新增模型选择），SSE 协议、消息数据、上传通通不动。
   <div class="facts">
     <span class="fact">实测：FilesView 展开时对话区仅 <b>462px</b>，输入内容宽 <b>422px</b></span>
     <span class="fact">textarea 固定 <b>44px</b>，6 行文本时 scrollHeight <b>146px</b> 内部滚动</span>
@@ -480,16 +535,41 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <button class="tbtn" id="live-attach" title="上传文件" data-probe="attach">
               <svg width="16" height="16"><use href="#i-clip"/></svg>
             </button>
-            <button class="pill-btn on" id="live-flow" title="SSE 流式输出（关闭则等整条返回）" data-probe="flow">
-              <svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span>
-            </button>
-            <button class="tbtn on" id="live-bell" title="完成提醒：提示音开 · 系统通知关" data-probe="bell">
-              <svg width="16" height="16"><use href="#i-bell"/></svg>
+            <button class="model-pill" id="live-model" aria-expanded="false" aria-haspopup="listbox"
+                    title="本次对话使用的模型" data-probe="model">
+              <span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span>
+              <span class="mn" data-probe="model-name">deepseek-flash</span>
+              <span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span>
             </button>
             <span class="kbd-hint" data-probe="hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
             <button class="send-btn" id="live-send" disabled data-probe="send">
               <svg width="16" height="16"><use href="#i-up"/></svg>
             </button>
+          </div>
+
+          <!-- 模型下拉：数据源 GET /models（alias + name + baseUrl + isCurrent） -->
+          <div class="model-pop" id="live-mpop" hidden data-probe="model-pop">
+            <div class="mp-head">
+              <b>本次对话使用</b>
+              <span class="mp-sub" id="live-scope">仅本条会话生效，不改全局激活</span>
+              <button class="mp-reset" id="live-reset" hidden>跟随全局</button>
+            </div>
+            <div class="mp-list" role="listbox" id="live-mlist">
+              <button class="mp-item" role="option" aria-selected="true" data-alias="deepseek-flash">
+                <span class="mp-tick"><svg width="11" height="11"><use href="#i-check"/></svg></span>
+                <span class="mp-txt"><span class="mp-alias">deepseek-flash</span><span class="mp-meta">deepseek-flash · api.deepseek.com</span></span>
+                <span class="mp-badge glob">全局</span>
+              </button>
+              <button class="mp-item" role="option" aria-selected="false" data-alias="default">
+                <span class="mp-tick"><svg width="11" height="11"><use href="#i-check"/></svg></span>
+                <span class="mp-txt"><span class="mp-alias">default</span><span class="mp-meta">deepseek-flash · api.deepseek.com</span></span>
+              </button>
+              <button class="mp-item" role="option" aria-selected="false" data-alias="glm-5.3-flash">
+                <span class="mp-tick"><svg width="11" height="11"><use href="#i-check"/></svg></span>
+                <span class="mp-txt"><span class="mp-alias">glm-5.3-flash</span><span class="mp-meta">glm/glm-5.3-flash · tokenhub.haizhi.com</span></span>
+              </button>
+            </div>
+            <div class="mp-foot">切换只影响后续消息，已产生的上下文保留<a href="#/models">管理模型 →</a></div>
           </div>
 
           <!-- 上传浮层 -->
@@ -510,7 +590,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
 <!-- ===== ③ 状态矩阵 ===== -->
 <section>
   <div class="st">
-    <h2>三、状态矩阵</h2><span class="tag">六个必须成立的状态</span>
+    <h2>三、状态矩阵</h2><span class="tag">七个必须成立的状态</span>
     <span class="st-sub">同一套结构，不新增分支布局</span>
   </div>
   <div class="grid">
@@ -523,8 +603,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <textarea placeholder="发消息给 Loop Agent…" data-s="empty"></textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -542,8 +621,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <textarea data-s="one">帮我把输入区的 emoji 换成内联 SVG</textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn ready"><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -564,8 +642,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
 第四行补充非目标：不做富文本。</textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn ready"><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -590,8 +667,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <textarea placeholder="发消息给 Loop Agent…"></textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn ready"><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -602,15 +678,14 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
 
     <!-- 5 生成中 -->
     <div class="cell">
-      <div class="cell-h"><span class="dot red"></span><b>生成中</b><span>主操作原地变「停止」，开关降透明度</span></div>
+      <div class="cell-h"><span class="dot red"></span><b>生成中</b><span>主操作原地变「停止」，模型选择一并禁用</span></div>
       <div class="cell-b">
         <div class="composer" style="padding:0 10px 10px">
           <div class="dock" data-state="running">
             <textarea placeholder="生成中…可继续输入下一条"></textarea>
             <div class="dock-tools">
               <button class="tbtn" style="opacity:.5;pointer-events:none"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on" style="opacity:.5;pointer-events:none"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on" style="opacity:.5;pointer-events:none"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill" style="opacity:.5;pointer-events:none"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn stop"><svg width="16" height="16"><use href="#i-stop"/></svg></button>
             </div>
@@ -630,14 +705,52 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
                 <button class="pop-btn">选择文件…</button>
                 <span style="font-size:11.5px;color:var(--text-3)">支持多选 · 上限 100MB</span>
               </div>
-              <p class="pop-note">上传后以 contextNote 随下一条消息注入。</p>
+              <p class="pop-note">上传后以 contextNote 随下一条消息注入；chip 上 ✕ 仅移除不注入，服务器文件保留。</p>
               <div class="pop-act"><button class="clean">清空全部</button></div>
             </div>
             <textarea placeholder="发消息给 Loop Agent…"></textarea>
             <div class="dock-tools">
               <button class="tbtn on" style="background:var(--hover);color:var(--text)"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 7 模型下拉 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot"></span><b>模型下拉</b><span>会话级覆盖 · 已选 glm-5.3-flash</span></div>
+      <div class="cell-b" style="padding-top:238px">
+        <div class="composer" style="padding:0 0 10px">
+          <div class="dock" data-state="empty">
+            <div class="model-pop" style="bottom:calc(100% + 6px)">
+              <div class="mp-head">
+                <b>本次对话使用</b><span class="mp-sub">仅本条会话生效，不改全局激活</span>
+                <button class="mp-reset">跟随全局</button>
+              </div>
+              <div class="mp-list" role="listbox">
+                <button class="mp-item" role="option" aria-selected="false" data-alias="deepseek-flash">
+                  <span class="mp-tick"><svg width="11" height="11"><use href="#i-check"/></svg></span>
+                  <span class="mp-txt"><span class="mp-alias">deepseek-flash</span><span class="mp-meta">deepseek-flash · api.deepseek.com</span></span>
+                  <span class="mp-badge glob">全局</span>
+                </button>
+                <button class="mp-item" role="option" aria-selected="false" data-alias="default">
+                  <span class="mp-tick"><svg width="11" height="11"><use href="#i-check"/></svg></span>
+                  <span class="mp-txt"><span class="mp-alias">default</span><span class="mp-meta">deepseek-flash · api.deepseek.com</span></span>
+                </button>
+                <button class="mp-item" role="option" aria-selected="true" data-alias="glm-5.3-flash">
+                  <span class="mp-tick"><svg width="11" height="11"><use href="#i-check"/></svg></span>
+                  <span class="mp-txt"><span class="mp-alias">glm-5.3-flash</span><span class="mp-meta">glm/glm-5.3-flash · tokenhub.haizhi.com</span></span>
+                </button>
+              </div>
+              <div class="mp-foot">切换只影响后续消息，已产生的上下文保留<a href="#/models">管理模型 →</a></div>
+            </div>
+            <textarea placeholder="发消息给 Loop Agent…"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="model-pill pinned" aria-expanded="true"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">glm-5.3-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -647,12 +760,10 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
     </div>
   </div>
 </section>
-
-<!-- ===== ④ 宽度审计 ===== -->
 <section>
   <div class="st">
-    <h2>四、宽度审计</h2><span class="tag">320 / 422 / 560 / 800</span>
-    <span class="st-sub">462 是默认态真实对话区宽度；≤380 隐去开关文字，≤440 隐去快捷键提示</span>
+    <h2>四、宽度审计</h2><span class="tag">800 / 462 / 320</span>
+    <span class="st-sub">462 是默认态真实对话区宽度；≤440 隐去快捷键提示，≤380 收缩模型 pill</span>
   </div>
   <div class="audit">
     <div class="audit-row">
@@ -663,8 +774,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <textarea placeholder="发消息给 Loop Agent…"></textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -681,8 +791,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <textarea placeholder="发消息给 Loop Agent…"></textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -699,8 +808,7 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
             <textarea placeholder="发消息给 Loop Agent…"></textarea>
             <div class="dock-tools">
               <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
-              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
-              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <button class="model-pill"><span class="mi"><svg width="12" height="12"><use href="#i-chip"/></svg></span><span class="mn">deepseek-flash</span><span class="mv"><svg width="10" height="10"><use href="#i-chev"/></svg></span></button>
               <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
               <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
             </div>
@@ -724,8 +832,9 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
         <tr><td><code>textarea{height:44px;resize:none}</code></td><td class="new"><code>min-height:44px;max-height:200px</code></td><td>JS 自增高（<code>scrollHeight</code> 夹取），无边框无底（D3）</td></tr>
         <tr><td><code>button.attach</code> 48px 高 emoji</td><td class="new"><code>.tbtn</code> 28×28 图标按钮</td><td>paperclip SVG，进工具行左端（D4/D6）</td></tr>
         <tr><td><code>button.primary.send</code> 66px 文字</td><td class="new"><code>.send-btn</code> 32×32 图标</td><td>↑ / ■ 同位置切换，空态灰底（D5）</td></tr>
-        <tr><td><code>label.chk</code> 复选框「流式」</td><td class="new"><code>.pill-btn</code>（开关态配色）</td><td>技术开关降级，<code>--brand-weak</code> 表示开启（D7）</td></tr>
-        <tr><td><code>🔔</code> + 「声音开·通知开」文字</td><td class="new"><code>.tbtn.on</code> 铃铛图标 + title</td><td>状态进 tooltip，宽容器才带文字（D7）</td></tr>
+        <tr><td><code>label.chk</code> 复选框「流式」</td><td class="new"><b>删除</b></td><td>流式恒为默认 <code>stream:true</code>，技术开关不再暴露（D7）</td></tr>
+        <tr><td><code>🔔</code> + 「声音开·通知开」文字</td><td class="new"><b>删除</b></td><td>完成提醒不再可配；如仍需要则挪进设置页（D7）</td></tr>
+        <tr><td>无模型选择（仅 <code>#/models</code> 页全局切换）</td><td class="new"><code>.model-pill</code> + <code>.model-pop</code>（新增）</td><td>数据源 <code>GET /models</code>；会话级覆盖，不调 <code>PUT /model</code>（D11/D12）</td></tr>
         <tr><td><code>.hint</code>「发送后自动附带…」</td><td class="new">移入上传浮层</td><td>常驻说明让位给快捷键提示（D8）</td></tr>
         <tr><td>占位符含「Enter 发送…」</td><td class="new">「发消息给 Loop Agent…」</td><td>快捷键说明改右下角常驻 <code>.kbd-hint</code>（D8）</td></tr>
         <tr><td><code>.chip</code> emoji + <code>✕</code> 字符</td><td class="new">pill：SVG + 文件名 + 大小 + 圆形删除</td><td>24px 高，删除 hover 转 <code>--danger</code>（D6）</td></tr>
@@ -755,20 +864,24 @@ section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:
       <div class="r"><span class="k">D1</span><span class="t"><b>去 <code>.composer</code> 上沿分隔线，底改 <code>--bg</code></b>，分界交给卡片阴影。<em>否决：保留 border-top（线中套线、与卡片描边重复）</em></span></div>
       <div class="r"><span class="k">D2</span><span class="t"><b>输入坞做成一体卡片</b>（<code>--panel</code> 底 + <code>--line-soft</code> 描边 + <code>--shadow-card</code>），聚焦转品牌描边 + 3px 光晕；深色下卡底提亮为 <code>--panel-2</code>、描边提亮为 <code>--line</code>（深色 <code>--line-soft</code> 与 <code>--panel</code> 明度差不足，描边近乎消失）。<em>否决：整块铺满的输入条（无层级，与消息流糊在一起）</em></span></div>
       <div class="r"><span class="k">D3</span><span class="t"><b>textarea 无边框、自增高 44→200px</b>，超出后内部滚动；上限 200px ≈ 8 行。<em>否决：<code>field-sizing:content</code>（Chromium 123+ 才有，项目还需覆盖老终端）</em></span></div>
-      <div class="r"><span class="k">D4</span><span class="t"><b>主操作与开关分层</b>：工具行放附件 / 流式 / 通知，主位只留发送按钮。<em>否决：三按钮仍平铺（权重问题未解）</em></span></div>
+      <div class="r"><span class="k">D4</span><span class="t"><b>主操作与上下文设置分层</b>：工具行只放「附件 + 模型选择」，主位只留发送按钮。<em>否决：多按钮平铺（权重问题未解）</em></span></div>
       <div class="r"><span class="k">D5</span><span class="t"><b>发送按钮图标化 32×32</b>（↑），空态灰底不可点，生成中同位置变 ■。<em>否决：保留「发送」文字（窄区吃宽）；否决：停止另起一个按钮（位置跳动）</em></span></div>
-      <div class="r"><span class="k">D6</span><span class="t"><b>全部 emoji / 字符图标换内联 SVG</b>（paperclip / bell / pulse / arrow / square / x），走同一 stroke 1.7 线性风格。<em>否决：引第三方图标库（零新增依赖约束）</em></span></div>
-      <div class="r"><span class="k">D7</span><span class="t"><b>「流式」降为工具行 pill，「通知」降为铃铛图标</b>，开启态用 <code>--brand-weak</code> 底 + <code>--brand</code> 字，状态细节点进 title。<em>否决：保留文字平铺；否决：挪进设置页（高频切换）</em></span></div>
+      <div class="r"><span class="k">D6</span><span class="t"><b>全部 emoji / 字符图标换内联 SVG</b>（paperclip / chip / chevron / check / arrow / square / x），走同一 stroke 1.8 线性风格。<em>否决：引第三方图标库（零新增依赖约束）</em></span></div>
+      <div class="r"><span class="k">D7</span><span class="t"><b>「流式」「通知」两个控件直接删除</b>（按你的决定）。流式恒为默认开启（<code>stream</code> 缺省 true），完成提醒不再可配。<em>代价：<code>stream:false</code> 的降级通道与提示音/系统通知开关在 WebUI 不再可达；若仍需保留，只能放进设置页而非输入区</em></span></div>
       <div class="r"><span class="k">D8</span><span class="t"><b>占位符缩短为「发消息给 Loop Agent…」</b>，快捷键说明改右下角 <code>Enter 发送 · Shift+Enter 换行</code> 常驻小字；原「发送后自动附带…」移入上传浮层。<em>否决：全塞占位符（输入后即消失，等于没有）</em></span></div>
-      <div class="r"><span class="k">D9</span><span class="t"><b>容器查询两档</b>：≤440px 隐快捷键提示、≤380px 隐开关文字并收内边距。<em>否决：靠 <code>flex-wrap</code> 换行（工具行会折成两行，高度跳动）；阈值定 440 而非 520，是为了让默认 462px 宽度下提示仍可见</em></span></div>
+      <div class="r"><span class="k">D9</span><span class="t"><b>容器查询两档</b>：≤440px 隐快捷键提示、≤380px 收内边距并把模型 pill 收到 112px（名字省略而不隐藏，模型名始终可见）。<em>否决：靠 <code>flex-wrap</code> 换行（工具行折两行，高度跳动）；阈值定 440 而非 520，是为让默认 462px 下提示仍可见</em></span></div>
       <div class="r"><span class="k">D10</span><span class="t"><b>浮层挂 <code>.dock</code> 内、与卡片同宽</b>；零新增设计令牌，全部复用既有 <code>--line-soft</code> / <code>--hover</code> / <code>--radius-card</code> / <code>--shadow-card</code>。<em>否决：新增 --dock-* 令牌组（会出现第三套视觉语言）</em></span></div>
+      <div class="r"><span class="k">D11</span><span class="t"><b>模型选择器放工具行、用 pill + 向上展开列表</b>，不占输入区高度（与流式/通知腾出的位置正好抵换）；pill 只显示当前 alias，完整信息留在列表里。<em>否决：<code>&lt;select&gt;</code>（无法渲染 alias / 模型名 / 主机三行信息与「全局」徽标）；否决：放输入框上方独立行（吃掉长 prompt 空间，重犯现状 3 行的错）</em></span></div>
+      <div class="r"><span class="k">D12</span><span class="t"><b>作用域是「本次对话」，不是全局切换</b>——不调 <code>PUT /model</code>（那个会写盘并同步 <code>model.*</code>，影响所有会话）。落地须：<code>POST /sessions/:id/messages</code> 增加 <code>modelAlias</code>；后端按 alias 取 profile 的 <code>name/baseUrl/apiKey</code>；<code>AgentOptions</code> 目前只有 <code>model?: string</code>，<b>没有 baseUrl/apiKey 透传</b>，需扩展（否则换到 <code>tokenhub.haizhi.com</code> 的 glm 会仍打 deepseek 域名）。会话元数据记 <code>modelAlias</code>，重进会话能还原。<em>否决：前端直接改全局激活（会污染其它会话与 CLI）</em></span></div>
+      <div class="r"><span class="k">D13</span><span class="t"><b>状态约束</b>：生成中禁用模型切换（<code>opacity:.5</code> + <code>pointer-events:none</code>，与附件按钮同档）——已发出的请求改不了模型，允许点只会让人误以为本条会换模型；同一时刻只开一个浮层（模型下拉与上传浮层互斥，Esc 或点外部关闭）。<em>否决：生成中仍可切换（语义误导，且下一轮的上下文归属会含混）</em></span></div>
+      <div class="r"><span class="k">D14</span><span class="t"><b>语义防混淆与降级</b>：与全局激活同名的项标「全局」徽标、其余不标，pill 未覆盖时不加 <code>pinned</code>；一旦覆盖则 pill 图标转品牌色并露出「跟随全局」复位项，让「我现在到底跟没跟全局」一眼可判。窄区（≤380px）只省略 alias 文本、不隐藏控件；列表超高时面板内部滚动，不外溢卡片。<em>否决：只在 pill 上换颜色不显式标注（颜色无标签，切过一次后无法判断是覆盖还是默认）</em></span></div>
     </div>
   </div>
 </div>
 
 <div class="foot">
-  待确认后可进入落地：改 <code>webui/src/views/ChatView.vue</code>（模板 <code>.composer</code> 段 + 样式「输入区」一节）、新增 <code>webui/src/composer-icons.ts</code> 不必要（图标可直接内联在模板），并把自增高逻辑抽为 <code>webui/src/autogrow.ts</code> 以便单测。<br>
-  探针脚本：<code>webui/verify-composer.shot.mjs</code>（现状基线）与落地后的回归共用同一套断言口径。
+  待确认后可进入落地：前端改 <code>webui/src/views/ChatView.vue</code>（模板 <code>.composer</code> 段 + 样式「输入区」一节），模型列表复用 <code>GET /models</code>；后端改 <code>src/api/handlers/messages.ts</code>（收 <code>modelAlias</code>）与 <code>src/types.ts</code> 的 <code>AgentOptions</code>（支持 baseUrl/apiKey 覆盖）。自增高逻辑抽 <code>webui/src/autogrow.ts</code> 以便单测。<br>
+  探针脚本：<code>webui/verify-composer.shot.mjs</code>（现状基线）与 <code>webui/verify-composer-proto.shot.mjs</code>（本原型），落地后回归共用同一套断言口径。
 </div>
 
 <script>
@@ -812,12 +925,17 @@ function syncSend() {
 }
 
 function setState(s) {
-  dock.dataset.state = s;
-  files.hidden = s !== 'files';
-  if (s === 'empty') ta.value = '';
+  const isModel = s === 'model';
+  dock.dataset.state = isModel ? 'empty' : s;
+  files.hidden = isModel ? true : s !== 'files';
+  if (s === 'empty' || isModel) ta.value = '';
   if (s === 'text') ta.value = '帮我把输入区的 emoji 换成内联 SVG，并让输入框随内容长高';
   if (s === 'files') ta.value = '';
   if (s === 'running') ta.value = '';
+  // 模型下拉向上展开需要舞台高度（真实 UI 里上方是可覆盖的消息流）
+  document.getElementById('live-mock').style.minHeight = isModel ? '340px' : '';
+  if (isModel) { mpop.hidden = false; modelBtn.setAttribute('aria-expanded', 'true'); pop.hidden = true; }
+  else if (!mpop.hidden) { mpop.hidden = true; modelBtn.setAttribute('aria-expanded', 'false'); }
   syncSend(); fitAll();
 }
 
@@ -828,12 +946,56 @@ segState.addEventListener('click', (e) => {
 });
 
 ta.addEventListener('input', () => { syncSend(); fit(ta); });
-document.getElementById('live-attach').addEventListener('click', () => { pop.hidden = !pop.hidden; });
-document.getElementById('live-flow').addEventListener('click', (e) => e.currentTarget.classList.toggle('on'));
-document.getElementById('live-bell').addEventListener('click', (e) => {
-  const on = e.currentTarget.classList.toggle('on');
-  e.currentTarget.title = on ? '完成提醒：提示音开' : '完成提醒：已关闭';
+
+/* 附件浮层与模型下拉互斥：同时只能开一个 */
+const attachBtn = document.getElementById('live-attach');
+const modelBtn = document.getElementById('live-model');
+const mpop = document.getElementById('live-mpop');
+const mlist = document.getElementById('live-mlist');
+const mname = document.querySelector('[data-probe="model-name"]');
+const mreset = document.getElementById('live-reset');
+
+function closePops(except) {
+  if (except !== pop) pop.hidden = true;
+  if (except !== mpop) { mpop.hidden = true; modelBtn.setAttribute('aria-expanded', 'false'); }
+}
+
+attachBtn.addEventListener('click', () => { closePops(pop); pop.hidden = !pop.hidden; });
+
+modelBtn.addEventListener('click', () => {
+  closePops(mpop);
+  const open = mpop.hidden;
+  mpop.hidden = !open;
+  modelBtn.setAttribute('aria-expanded', String(open));
 });
+
+/* 选中即生效（会话级）：不写全局激活，仅记录本次对话的覆盖 */
+mlist.addEventListener('click', (e) => {
+  const it = e.target.closest('.mp-item'); if (!it) return;
+  const unpin = it.dataset.alias === 'deepseek-flash'; // 与全局激活同名 → 视为跟随全局
+  mlist.querySelectorAll('.mp-item').forEach((x) => x.setAttribute('aria-selected', String(x === it)));
+  mname.textContent = it.dataset.alias;
+  modelBtn.classList.toggle('pinned', !unpin);
+  mreset.hidden = unpin;
+  closePops(null);
+});
+
+mreset.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const g = mlist.querySelector('.mp-item[data-alias="deepseek-flash"]');
+  mlist.querySelectorAll('.mp-item').forEach((x) => x.setAttribute('aria-selected', String(x === g)));
+  mname.textContent = 'deepseek-flash';
+  modelBtn.classList.remove('pinned');
+  mreset.hidden = true;
+  closePops(null);
+});
+
+document.addEventListener('click', (e) => {
+  // 控制条是本原型的调试控件，点它不算「点外部」，否则会开关同帧抵消
+  if (e.target.closest('.bar')) return;
+  if (!e.target.closest('.dock')) closePops(null);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePops(null); });
 sendBtn.addEventListener('click', () => {
   if (dock.dataset.state === 'running') { setState('empty'); return; }
   if (sendBtn.disabled) return;
