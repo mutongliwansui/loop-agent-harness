@@ -43,6 +43,28 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
       known: false,
     });
   });
+
+  // 防回归：映射表键必须是工具的真实 name（曾把 activate_skill 误写成驼峰
+  // activateSkill → 精确查找落空，UI 静默回退英文名，且当时测试也用错键所以没暴露）
+  it('全部内置工具名都命中中文映射（键须与 src/tools 的 name 逐字一致）', () => {
+    const BUILTIN_TOOLS = [
+      'fileRead',
+      'fileWrite',
+      'editFile',
+      'grep',
+      'commandRun',
+      'commandStatus',
+      'commandLogs',
+      'commandStop',
+      'activate_skill',
+      'describe_image',
+      'ask_image',
+      'extract_json',
+      'ocr_image',
+    ];
+    const missed = BUILTIN_TOOLS.filter((t) => !toolDisplay(t).known);
+    expect(missed).toEqual([]);
+  });
 });
 
 describe('toolIconSvg / TOOL_ICON_PATHS：16×16 线性 SVG（D2）', () => {
@@ -157,12 +179,12 @@ describe('toolSummary：摘要短语', () => {
     expect(toolSummary('editFile', JSON.stringify({ path: 'p.json' }))).toBe('p.json（替换）');
   });
 
-  it('grep / commandRun / activateSkill', () => {
+  it('grep / commandRun / activate_skill', () => {
     expect(toolSummary('grep', JSON.stringify({ pattern: 'dict\\.txt', path: 'webui/src' }))).toBe(
       '在 webui/src 中检索 dict\\.txt',
     );
     expect(toolSummary('commandRun', JSON.stringify({ command: 'npm run build' }))).toBe('npm run build');
-    expect(toolSummary('activateSkill', JSON.stringify({ name: 'task-driven-development' }))).toBe(
+    expect(toolSummary('activate_skill', JSON.stringify({ name: 'task-driven-development' }))).toBe(
       'task-driven-development',
     );
   });

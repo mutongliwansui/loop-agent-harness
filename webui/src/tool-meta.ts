@@ -127,7 +127,12 @@ export function toolIconSvg(tool: string): string {
 
 /* ================= 内置工具映射表 ================= */
 
-/** 内置工具映射表（13 个全覆盖，顺序无意义） */
+/**
+ * 内置工具映射表（13 个全覆盖，顺序无意义）。
+ * 键必须是工具的**真实 name**（与 `src/tools/**` 里的 `name` 字段逐字一致）：
+ * 查找是精确匹配，拼错只会静默回退英文名（`activate_skill` 曾误写成驼峰 `activateSkill`）。
+ * 新增内置工具时同步此处，`tests/webui-tool-meta.test.ts` 有全覆盖断言兜底。
+ */
 const TOOL_META: Record<string, ToolMeta> = {
   fileRead: {
     zh: '读取文件',
@@ -251,7 +256,7 @@ const TOOL_META: Record<string, ToolMeta> = {
       return id ? `终止 ${clip(id, BRIEF_TEXT_MAX)}` : '';
     },
   },
-  activateSkill: {
+  activate_skill: {
     zh: '激活技能',
     icon: 'puzzle',
     params: {
