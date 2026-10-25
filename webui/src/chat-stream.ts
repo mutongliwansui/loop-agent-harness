@@ -730,6 +730,11 @@ export interface SendOptions {
   text: string;
   files: string[];
   stream: boolean;
+  /**
+   * 会话级模型覆盖（task-20261025-002 D4）：别名或空串。
+   * 空串/未传 = 不覆盖，服务端按全局激活模型处理。
+   */
+  modelAlias?: string;
 }
 export type SendOutcome = 'done' | 'aborted' | 'failed' | 'detached';
 
@@ -774,7 +779,7 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
     if (opts.stream) {
       await sseFetch(
         `/sessions/${encodeURIComponent(id)}/messages`,
-        { message: opts.message, stream: true },
+        { message: opts.message, stream: true, modelAlias: opts.modelAlias },
         (ev) => onEvent(id, ev),
         ctrl.signal,
       );
@@ -790,7 +795,7 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
       aborted?: boolean; // 用户取消（task-03 D7：非流式 200 + {aborted:true,partial:true}）
     }>(`/sessions/${encodeURIComponent(id)}/messages`, {
       method: 'POST',
-      json: { message: opts.message, stream: false },
+      json: { message: opts.message, stream: false, modelAlias: opts.modelAlias },
     });
     // 非流式被用户取消（task-03 D7：200 + {aborted:true}）：部分输出已落盘但响应无增量可渲染，
     // 回滚乐观气泡避免「空泡」困惑（方案 D6），下次进入会话由历史渲染呈现

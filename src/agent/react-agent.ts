@@ -429,6 +429,19 @@ export class ReActAgent {
     const temperature = cfg.model.temperature;
     const verbose = cfg.agent.verbose;
 
+    // ===== 会话级模型覆盖（task-20261025-002 D4/D5/D6）=====
+    // 凭据成对才生效：只给其中一个视为无效，回落全局（与 CLI 路径零差异）
+    const creds =
+      options.baseUrl && options.apiKey
+        ? { baseUrl: options.baseUrl, apiKey: options.apiKey }
+        : {};
+    // 辅助调用（L1 压缩/摘要/记忆去重）固定用「全局」模型名（D6）。
+    // 关键：会话选了别的供应商时，cfg.model.name 已被 options.model 覆盖成对方的模型名，
+    // 若辅助调用继续用它、却配的是全局 baseUrl/apiKey，就会因模型不存在而 404。
+    const auxModel = options.model !== undefined
+      ? this._configLoader.load().config.model
+      : cfg.model;
+
     // 空间根（D3）：显式注入优先，CLI/单测回落启动目录（行为不变）
     const wsRoot = this.workspaceRoot;
 
@@ -607,7 +620,7 @@ export class ReActAgent {
                   failed: false,
                 });
               } else {
-                const llmAdapter = createLLMAdapter(model, temperature);
+                const llmAdapter = createLLMAdapter(auxModel.name, auxModel.temperature);
                 // C4-b：preCompactionFlush（额外 LLM 调用）前再判一次
                 throwIfAborted(i);
                 // 压缩会物理删除消息：先把当前完整轨迹强制落盘，保证被丢弃的内容不丢
@@ -753,7 +766,7 @@ export class ReActAgent {
         // C2：LLM 调用前——abort 后不再发起空转请求
         throwIfAborted(i);
         const llmStartTs = Date.now();
-        const resp = await this.streamLLM(llmMessages, openaiTools, { model, temperature }, events);
+        const resp = await this.streamLLM(llmMessages, openaiTools, { model, temperature, ...creds }, events);
 
         await safeEvents.onLLMEnd(resp, i);
 
@@ -1008,7 +1021,7 @@ export class ReActAgent {
   private async streamLLM(
     messages: ChatMessage[],
     tools: ReturnType<typeof registry.toOpenAITools>,
-    options: { model: string; temperature: number },
+    options: { model: string; temperature: number; baseUrl?: string; apiKey?: string },
     events: AgentEvents,
   ): Promise<LLMResponse> {
     let response: LLMResponse | null = null;

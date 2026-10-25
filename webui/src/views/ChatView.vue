@@ -50,15 +50,10 @@ import {
   type Segment,
   type ToolSeg,
 } from '../chat-stream.js';
-import {
-  getNotifySettings,
-  setNotifySettings,
-  requestNotifyPermission,
-  notifySupported,
-  type NotifySettings,
-} from '../notify.js';
 import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js';
 import ToolCard from '../components/ToolCard.vue';
+import { nextTextareaHeight } from '../autogrow.js';
+import { buildPickerRows, resolvePill, type ModelProfileRow, type PickerRow } from '../model-picker.js';
 
 /* ===== 工具调用卡片（Task-20261024-001：方案 B 卡片内聚式，渲染与样式在 ToolCard.vue）===== */
 /** segments → 顺序渲染项：连续 ≥3 次同工具合并成组（D5），文本段原样透传 */
@@ -85,40 +80,30 @@ const messages = computed(() => messagesOf(activeId.value));
 const stream = computed(() => (activeId.value ? stateOf(activeId.value) : null));
 const draft = ref('');
 const streaming = computed(() => (activeId.value ? isRunning(activeId.value) : false));
-const streamChk = ref(true);
-// 后台完成提醒（Task-20261021-002-07）：🔔 面板两开关 + 非安全上下文降级说明
-const notifyPopOpen = ref(false);
-const notifyCfg = ref<NotifySettings>(getNotifySettings());
-const notifySecure = notifySupported();
 
-/** 勾选「系统通知」：手势中请求权限（D4）；denied 回退开关并提示 */
-async function toggleNotifySystem(on: boolean): Promise<void> {
-  if (on) {
-    if (!notifySecure) {
-      notifyCfg.value.system = false;
-      showToast('当前环境不支持系统通知（需 https/localhost），提示音仍可用', 'error');
-      return;
-    }
-    const perm = await requestNotifyPermission();
-    if (perm !== 'granted') {
-      notifyCfg.value.system = false;
-      showToast(perm === 'denied' ? '通知权限已被拒绝，可在浏览器设置中恢复' : '通知权限未授权', 'error');
-      setNotifySettings({ asked: true });
-      return;
-    }
-  }
-  notifyCfg.value.system = on;
-  setNotifySettings({ system: on, asked: true });
-}
-
-/** 勾选「提示音」：AudioContext 在手势中创建解锁（自动播放策略） */
-function toggleNotifySound(on: boolean): void {
-  notifyCfg.value.sound = on;
-  setNotifySettings({ sound: on });
-  if (on) playChime(); // 手势中播放同时解锁 AudioContext
-}
+/* ===== 会话级模型选择（task-20261025-002 D4/D8/D9）=====
+ * 只影响本会话后续消息，不改全局激活（不发 PUT /model）。
+ * 数据源复用 GET /models；apiKey 已被服务端遮蔽，前端不持有明文。 */
+const modelProfiles = ref<ModelProfileRow[]>([]);
+const modelActive = ref<string | null>(null);
+/** 当前会话所选别名；空串/undefined = 跟随全局 */
+const modelAlias = ref<string>('');
+const modelOpen = ref(false);
+const modelLoadFailed = ref(false);
+const modelPillEl = ref<HTMLElement | null>(null);
+const rows = computed<PickerRow[]>(() =>
+  buildPickerRows(modelProfiles.value, modelActive.value, modelAlias.value),
+);
+const pill = computed(() => resolvePill(modelAlias.value, modelActive.value));
 const uploads = ref<UploadChip[]>([]);
 const upPopOpen = ref(false);
+/**
+ * 上传面板开关（task-20261025-002 D9）：与模型面板互斥，避免两个浮层叠在一起
+ */
+function toggleUpPop(): void {
+  upPopOpen.value = !upPopOpen.value;
+  if (upPopOpen.value) modelOpen.value = false;
+}
 const upBusy = ref(false);
 const upCleanArmed = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -390,6 +375,16 @@ async function selectSession(id: string): Promise<void> {
     // task-05：跨空间会话不再切换服务端状态，按 id 定位归属空间后直接加载
     await ensureLoaded(id);
     activeId.value = id;
+    // 恢复该会话的模型选择（D7）：列表里的 meta 已带 modelAlias，缺省即跟随全局
+    modelAlias.value = '';
+    for (const w of workspaces.value) {
+      const s = w.sessions.find((x) => x.id === id);
+      if (s) {
+        modelAlias.value = s.modelAlias ?? '';
+        break;
+      }
+    }
+    modelOpen.value = false;
     scrollBottom();
     void postRenderMsgs();
   } catch (e) {
@@ -438,12 +433,15 @@ async function send(): Promise<void> {
     message: full,
     text,
     files: chipsSnapshot.map((u) => u.fileName),
-    stream: streamChk.value,
+    // D2：输入区不再暴露流式开关，恒为流式
+    stream: true,
+    // D4：会话级模型覆盖（空串 = 不覆盖，走全局）
+    modelAlias: modelAlias.value,
   });
   if (outcome === 'failed') {
     // 请求未成功：恢复输入，用户可直接重试
     uploads.value = chipsSnapshot;
-    draft.value = draftSnapshot;
+    setDraft(draftSnapshot);
   }
   scrollBottom();
   void postRenderMsgs(); // 流式/非流式/停止/失败统一在此做代码高亮 + mermaid
@@ -519,12 +517,114 @@ function onCleanUploads(): void {
 // 活跃会话同步给 chat-stream：离开聊天页时 run 完成要记未读并提示
 watch(activeId, (v) => setActiveSession(v));
 
-// Esc 关闭新建会话弹窗（window 级监听：焦点可能落在弹窗内输入框，元素级 @keydown 不可靠）
+// Esc 关闭浮层（window 级监听：焦点可能落在弹窗内输入框，元素级 @keydown 不可靠）
+// 优先级：新建会话弹窗 > 模型面板 > 上传面板（task-20261025-002 D9 要求 Esc 可关模型面板）
 function onGlobalKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape' && newPopOpen.value) closeNewPop();
+  if (e.key !== 'Escape') return;
+  if (newPopOpen.value) {
+    closeNewPop();
+    return;
+  }
+  if (modelOpen.value) {
+    modelOpen.value = false;
+    return;
+  }
+  if (upPopOpen.value) upPopOpen.value = false;
 }
 
 let offRunFinished: (() => void) | null = null;
+
+/* ===== 自增高（task-20261025-002 P0 ②）===== */
+const taEl = ref<HTMLTextAreaElement | null>(null);
+
+/** 按内容重算高度：夹取到 [44, 200]，超出后内部滚动 */
+function autoGrow(): void {
+  const el = taEl.value;
+  if (!el) return;
+  // 先归零再读 scrollHeight，否则缩小时会保留上一次的大高度
+  el.style.height = 'auto';
+  el.style.height = `${nextTextareaHeight(el.scrollHeight)}px`;
+}
+
+/** 写入草稿后同步高度（如点附件补全文本、清空草稿） */
+function setDraft(v: string): void {
+  draft.value = v;
+  void nextTick(autoGrow);
+}
+
+/* ===== 会话级模型选择 ===== */
+
+/** 拉取登记簿（懒加载一次）；失败时 pill 禁用但不阻塞发消息（D8） */
+async function loadModels(): Promise<void> {
+  if (modelProfiles.value.length > 0) return;
+  try {
+    const res = await api<{ profiles: ModelProfileRow[]; active: string | null }>('/models');
+    modelProfiles.value = res.profiles ?? [];
+    modelActive.value = res.active ?? null;
+    modelLoadFailed.value = false;
+  } catch {
+    modelLoadFailed.value = true;
+    showToast('模型列表加载失败，本次将使用全局模型', 'error');
+  }
+}
+
+/** 展开/收起面板：与上传浮层互斥；展开时懒加载列表 */
+function toggleModelPop(): void {
+  if (streaming.value || modelLoadFailed.value) return;
+  modelOpen.value = !modelOpen.value;
+  if (modelOpen.value) {
+    upPopOpen.value = false;
+    void loadModels();
+  }
+}
+
+/** 选择某模型作为本会话所用（选到全局项时等价于「跟随全局」） */
+function selectModel(alias: string): void {
+  modelAlias.value = alias === (modelActive.value ?? '') ? '' : alias;
+  modelOpen.value = false;
+  void persistModelAlias();
+}
+
+/** 复位为跟随全局 */
+function followGlobal(): void {
+  modelAlias.value = '';
+  modelOpen.value = false;
+  void persistModelAlias();
+}
+
+/** 写入会话元数据（D7：单独写，不混进每轮 updateSession） */
+async function persistModelAlias(): Promise<void> {
+  const id = activeId.value;
+  if (!id) return;
+  const alias = modelAlias.value || null;
+  try {
+    await api(`/sessions/${encodeURIComponent(id)}/model`, {
+      method: 'PUT',
+      json: { modelAlias: alias },
+    });
+    // 同步内存列表：否则同页内「切到别的会话再切回」时 selectSession 仍从
+    // workspaces 里的旧 meta 取值，pill 会退回全局（只有刷新才恢复），
+    // 让用户以为选择丢了——服务端其实已存。
+    for (const w of workspaces.value) {
+      const s = w.sessions.find((x) => x.id === id);
+      if (s) {
+        s.modelAlias = alias ?? undefined;
+        break;
+      }
+    }
+  } catch {
+    // 落盘失败不打断对话：本次仍按内存选择生效
+    showToast('模型选择未能保存，仅本次生效', 'error');
+  }
+}
+
+/** 面板外部点击关闭（D9）：忽略控制条自身，避免「点开即关」 */
+function onDocClick(e: MouseEvent): void {
+  if (!modelOpen.value) return;
+  const el = modelPillEl.value;
+  if (el && e.target instanceof Node && el.contains(e.target)) return;
+  modelOpen.value = false;
+}
 
 onMounted(() => {
   setChatViewMounted(true);
@@ -542,7 +642,9 @@ onMounted(() => {
   // 会话切换/新建弹窗依赖本组件的流式与消息状态，注册给 App 侧栏委托调用
   registerChatBridge({ select: (id) => void selectSession(id), openNewPop });
   window.addEventListener('keydown', onGlobalKeydown);
+  document.addEventListener('click', onDocClick);
   void loadSessions();
+  void loadModels();
   // 消费从其他管理页跳转过来的意图；无意图时若仍有活跃会话（从管理页返回）恢复其消息
   if (consumePendingNewPop()) openNewPop();
   const pend = consumePendingSelect();
@@ -558,6 +660,7 @@ onUnmounted(() => {
   offRunFinished = null;
   registerChatBridge(null);
   window.removeEventListener('keydown', onGlobalKeydown);
+  document.removeEventListener('click', onDocClick);
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   clearRenderTimer(); // 流式图表渲染的节流定时器
 });
@@ -573,7 +676,6 @@ onUnmounted(() => {
         <span v-if="activeMeta" class="sid">#{{ activeMeta.id }}</span>
         <span v-if="activeWs" class="ws-badge" :title="activeWs.path">📁 {{ activeWs.name }}</span>
         <span class="spacer"></span>
-        <span class="muted-hint">{{ streamChk ? 'SSE 流式' : '非流式' }}</span>
         <button
           class="icon-toggle"
           :class="{ on: filesOpen }"
@@ -644,89 +746,165 @@ onUnmounted(() => {
 
       <div class="composer">
         <div class="composer-inner">
-          <div class="chips">
-            <span v-for="u in uploads" :key="u.id" class="chip" :title="u.contextNote + '（将随下一条消息注入）'">
-              📎 {{ u.fileName }}（{{ fmtBytes(u.bytes) }}）
-              <button title="移除（不再注入，服务器文件保留）" @click="removeChip(u)">✕</button>
-            </span>
-          </div>
-          <div class="box">
-            <button class="attach" title="上传文件" :disabled="streaming" @click="upPopOpen = !upPopOpen">📎</button>
+          <div class="dock">
+            <!-- 附件 pill（task-20261025-002 ③）：SVG + 文件名 + 大小 + 圆形删除 -->
+            <div v-if="uploads.length" class="chips">
+              <span
+                v-for="u in uploads"
+                :key="u.id"
+                class="file-pill"
+                :title="u.contextNote + '（将随下一条消息注入）'"
+              >
+                <svg class="fp-ic" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                  <path
+                    d="M10.6 4.6 6.2 9a1.6 1.6 0 0 0 2.3 2.3l4.6-4.6a3 3 0 0 0-4.2-4.2L4.2 7.2a4.4 4.4 0 0 0 6.2 6.2l3.3-3.3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.4"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                <span class="fp-name">{{ u.fileName }}</span>
+                <span class="fp-size">{{ fmtBytes(u.bytes) }}</span>
+                <button class="fp-x" title="移除（不再注入，服务器文件保留）" @click="removeChip(u)">
+                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+                    <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                  </svg>
+                </button>
+              </span>
+            </div>
+
             <textarea
+              ref="taEl"
               v-model="draft"
-              :placeholder="'输入消息，Enter 发送，Shift+Enter 换行'"
+              class="gw"
+              rows="1"
+              placeholder="输入消息…"
+              @input="autoGrow"
               @keydown.enter="onEnter"
               @compositionstart="setComposing(true)"
               @compositionend="setComposing(false)"
             ></textarea>
-            <button v-if="streaming" class="stop" title="停止本次运行（服务端将中断）" @click="stopGen">■ 停止</button>
-            <button
-              v-else
-              class="primary send"
-              :disabled="!draft.trim() && uploads.length === 0"
-              @click="send"
-            >
-              发送
-            </button>
-          </div>
-          <div class="meta">
-            <label class="chk">
-              <input v-model="streamChk" type="checkbox" :disabled="streaming"> 流式
-            </label>
-            <span class="hint">发送后自动附带 📎 文件的 contextNote</span>
-            <button
-              class="chk notify-btn"
-              type="button"
-              title="后台完成提醒设置"
-              @click="notifyPopOpen = !notifyPopOpen"
-            >
-              🔔<span class="muted-hint">{{ notifyCfg.sound ? '声音开' : '声音关' }}{{ notifyCfg.system ? ' · 通知开' : '' }}</span>
-            </button>
-          </div>
 
-          <!-- 后台完成提醒面板（Task-20261021-002-07）：系统通知/提示音两开关 -->
-          <div v-if="notifyPopOpen" class="up-pop notify-pop">
-            <div class="up-row notify-row">
-              <label class="chk">
-                <input
-                  type="checkbox"
-                  :checked="notifyCfg.system"
-                  @change="toggleNotifySystem(($event.target as HTMLInputElement).checked)"
-                > 系统通知
-              </label>
-              <label class="chk">
-                <input
-                  type="checkbox"
-                  :checked="notifyCfg.sound"
-                  @change="toggleNotifySound(($event.target as HTMLInputElement).checked)"
-                > 提示音
-              </label>
-            </div>
-            <div v-if="!notifySecure" class="notify-degrade">
-              当前通过局域网 IP + http 访问，浏览器不提供系统通知；提示音与页内提醒不受影响
-            </div>
-            <div v-else-if="!notifyCfg.system && !notifyCfg.asked" class="notify-degrade">
-              开启「系统通知」后，切到其他窗口时完成/停止会弹系统提醒
-            </div>
-          </div>
+            <div class="tool-row">
+              <button
+                class="tbtn"
+                title="上传文件"
+                :disabled="streaming"
+                @click="toggleUpPop"
+              >
+                <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true">
+                  <path
+                    d="M13.2 5.9 7.8 11.3a2 2 0 0 0 2.8 2.8l5.4-5.4a3.6 3.6 0 0 0-5.1-5.1l-5.5 5.5a5.2 5.2 0 0 0 7.4 7.4l4.1-4.1"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                  />
+                </svg>
+              </button>
 
-          <!-- 上传面板（文件选择框 + POST /uploads/raw） -->
-          <div v-if="upPopOpen" class="up-pop">
-            <div class="up-row">
-              <button class="primary" :disabled="upBusy || streaming" @click="fileInput?.click()">
-                {{ upBusy ? '上传中…' : '选择文件…' }}
+              <!-- 会话级模型选择（task-20261025-002 D4/D8/D9） -->
+              <div ref="modelPillEl" class="model-wrap">
+                <button
+                  class="model-pill"
+                  :class="{ pinned: pill.pinned, muted: modelLoadFailed }"
+                  :disabled="streaming || modelLoadFailed"
+                  :title="
+                    modelLoadFailed
+                      ? '模型列表加载失败，本次使用全局模型'
+                      : pill.pinned
+                        ? `本会话使用 ${pill.label}（不改全局激活）`
+                        : '本次对话使用的模型，不改全局激活'
+                  "
+                  @click="toggleModelPop"
+                >
+                  <svg class="mp-ic" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                    <rect x="2.4" y="2.4" width="11.2" height="11.2" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.4" />
+                    <path d="M5.6 8h4.8M8 5.6v4.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                  </svg>
+                  <span class="mp-label">{{ pill.label }}</span>
+                  <svg class="mp-chev" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+                    <path d="M2.5 7.5 6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </button>
+
+                <div v-if="modelOpen" class="model-pop">
+                  <div class="mp-head">
+                    <b>本次对话使用</b>
+                    <span class="mp-cap">不改全局激活模型</span>
+                  </div>
+                  <button v-if="pill.showFollowGlobal" class="mp-item mp-follow" @click="followGlobal">
+                    <span class="mp-alias">跟随全局</span>
+                    <span class="mp-sub">恢复为全局激活模型</span>
+                  </button>
+                  <button
+                    v-for="r in rows"
+                    :key="r.alias"
+                    class="mp-item"
+                    :class="{ sel: r.isSelected }"
+                    @click="selectModel(r.alias)"
+                  >
+                    <span class="mp-alias">
+                      {{ r.alias }}
+                      <span v-if="r.isGlobal" class="mp-badge">全局</span>
+                    </span>
+                    <span class="mp-sub">{{ r.name }}<template v-if="r.host"> · {{ r.host }}</template></span>
+                    <svg v-if="r.isSelected" class="mp-check" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                      <path d="M2.5 6.4 5 8.9l4.5-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                    </svg>
+                  </button>
+                  <div v-if="rows.length === 0" class="mp-empty">暂无已登记模型（前往「模型」页添加）</div>
+                  <p class="mp-foot">只影响本会话后续消息；全局切换仍在「模型」页</p>
+                </div>
+              </div>
+
+              <span class="kbd-hint">Enter 发送 · Shift+Enter 换行</span>
+              <span class="spacer"></span>
+
+              <button v-if="streaming" class="send-btn stop" title="停止本次运行（服务端将中断）" @click="stopGen">
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                  <rect x="3.5" y="3.5" width="9" height="9" rx="1.6" fill="currentColor" />
+                </svg>
               </button>
-              <input ref="fileInput" type="file" multiple hidden @change="onPickFiles">
-              <span class="muted-hint">支持多选 · 单文件上限 100MB</span>
+              <button
+                v-else
+                class="send-btn"
+                :disabled="!draft.trim() && uploads.length === 0"
+                title="发送"
+                @click="send"
+              >
+                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                  <path
+                    d="M10 15.5V5m0 0L5.6 9.4M10 5l4.4 4.4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.9"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
             </div>
-            <p class="up-note">
-              上传成功后以 contextNote（[文件上传] 文件名 / 上传路径 / 大小）随下一条消息注入对话；
-              chip ✕ 仅移除不再注入，「清空全部」删除服务器上传目录。
-            </p>
-            <div class="up-actions">
-              <button class="clean" :class="{ armed: upCleanArmed }" :disabled="upBusy" @click="onCleanUploads">
-                {{ upCleanArmed ? '确认清空？' : '清空全部' }}
-              </button>
+
+            <!-- 上传面板（文件选择框 + POST /uploads/raw） -->
+            <div v-if="upPopOpen" class="up-pop">
+              <div class="up-row">
+                <button class="primary" :disabled="upBusy || streaming" @click="fileInput?.click()">
+                  {{ upBusy ? '上传中…' : '选择文件…' }}
+                </button>
+                <input ref="fileInput" type="file" multiple hidden @change="onPickFiles">
+                <span class="muted-hint">支持多选 · 单文件上限 100MB</span>
+              </div>
+              <p class="up-note">
+                上传成功后以 contextNote（[文件上传] 文件名 / 上传路径 / 大小）随下一条消息注入对话；
+                pill ✕ 仅移除不再注入，「清空全部」删除服务器上传目录。
+              </p>
+              <div class="up-actions">
+                <button class="clean" :class="{ armed: upCleanArmed }" :disabled="upBusy" @click="onCleanUploads">
+                  {{ upCleanArmed ? '确认清空？' : '清空全部' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1068,79 +1246,308 @@ onUnmounted(() => {
 .tc-badge.run { background: var(--warn-weak); color: var(--warn); }
 .tc-badge.fail { background: var(--danger-weak); color: var(--danger); }
 
-/* ===== 输入区 ===== */
+/* ===== 输入区（task-20261025-002：一体卡片输入坞）===== */
 .composer {
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-  padding: 12px 20px 14px;
+  /* 去掉上沿分隔线（症状⑤）：由 dock 卡片自身描边表达边界 */
+  background: var(--bg);
+  /* 左右内边距下移到 .composer-inner：container-type 定义在本元素上，
+     @container 只能改「后代」——写在本元素上的 padding 永远命中不了（隐含坑） */
+  padding: 10px 0 14px;
   /* 容器查询基准：按对话区实际宽度做窄容器兼容 */
   container-type: inline-size;
 }
-.composer-inner { max-width: 800px; margin: 0 auto; position: relative; }
-.composer .box { display: flex; gap: 10px; align-items: flex-end; }
-.composer textarea {
-  flex: 1;
-  min-width: 0;
-  resize: none;
-  height: 44px;
-  line-height: 1.5;
-  padding: 10px 12px;
+/* 840 = 800 内容宽 + 左右各 20 内边距，与原「composer 20px + inner 800」等效 */
+.composer-inner { max-width: 840px; margin: 0 auto; position: relative; padding: 0 20px; }
+
+/* 一体卡片：底 + 描边 + 阴影；focus-within 转品牌色描边 + 3px 光晕 */
+.dock {
+  /* 浅色：面板白 + 极浅描边；深色由下方覆盖为 --bar-bg + --line */
+  --dock-bg: var(--panel);
+  --dock-line: var(--line-soft);
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 8px 8px 6px;
+  position: relative;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.composer .attach { flex: none; height: 44px; padding: 0 12px; font-size: 16px; }
-.composer .send { flex: none; height: 44px; padding: 0 18px; }
-.composer .stop { flex: none; height: 44px; padding: 0 14px; color: var(--danger); border-color: var(--danger); }
-.composer .meta {
+.dock:focus-within {
+  border-color: var(--brand);
+  box-shadow: var(--shadow-card), 0 0 0 3px var(--brand-weak);
+}
+/* 深色：卡底比对话区略亮，描边用常规 line（与原型一致） */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .dock {
+    --dock-bg: var(--bar-bg);
+    --dock-line: var(--line);
+  }
+}
+:root[data-theme='dark'] .dock {
+  --dock-bg: var(--bar-bg);
+  --dock-line: var(--line);
+}
+
+/* 无边框自增高输入域（②）：44px 起，200px 封顶后内部滚动 */
+.composer .gw {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.5;
+  height: 44px;
+  min-height: 44px;
+  max-height: 200px;
+  padding: 8px 8px 4px;
+  overflow-y: auto;
+}
+.composer .gw::placeholder { color: var(--muted); }
+
+/* 工具行：附件 · 模型 pill · 快捷键提示 · 发送 */
+.tool-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-top: 7px;
-  font-size: 12px;
-  color: var(--muted);
-  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px;
   min-width: 0;
 }
-.composer label.chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; flex: none; }
-/* 后台完成提醒（Task-20261021-002-07）：🔔 按钮 + 面板 */
-.composer .notify-btn { background: none; border: none; padding: 0; font-size: 12.5px; }
-.composer .notify-btn .muted-hint { color: var(--muted, #888); font-size: 11.5px; margin-left: 3px; }
-.notify-pop { min-width: 300px; }
-.notify-pop .notify-row { display: flex; gap: 18px; margin-bottom: 6px; }
-.notify-pop .notify-degrade { font-size: 11.5px; color: var(--muted, #888); line-height: 1.5; }.composer .hint { font-size: 11.5px; }
+.tool-row .spacer { flex: 1 1 auto; min-width: 0; }
 
-/* 窄容器兼容（对话区收窄时）：隐藏次要提示、收窄按钮 */
-@container (max-width: 520px) {
-  .composer .hint { display: none; }
-}
-@container (max-width: 380px) {
-  .composer .send { padding: 0 12px; }
-  .composer .attach { padding: 0 9px; }
-}
-
-/* ===== 上传 chip 与面板 ===== */
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chips:not(:empty) { margin-bottom: 8px; }
-.chip {
+/* 图标按钮（附件）：28×28，悬停浅底 */
+.tbtn {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.tbtn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.tbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ===== 会话级模型 pill 与面板（D8/D9）===== */
+.model-wrap { position: relative; flex: none; min-width: 0; }
+.model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 190px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text-2);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.model-pill:hover:not(:disabled) { background: var(--hover); }
+.model-pill:disabled { opacity: 0.5; cursor: not-allowed; }
+.model-pill.muted { color: var(--muted); }
+/* 覆盖全局：转品牌色（不需额外图标也一眼可辨） */
+.model-pill.pinned {
+  background: var(--brand-weak);
+  border-color: var(--brand);
+  color: var(--brand);
+  font-weight: 600;
+}
+.model-pill .mp-ic, .model-pill .mp-chev { flex: none; opacity: 0.85; }
+.model-pill .mp-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 向上展开面板 */
+.model-pop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 292px;
+  max-width: min(292px, 78vw);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+  padding: 8px;
+  z-index: 30;
+}
+.mp-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 6px;
+}
+.mp-head b { font-size: 12.5px; }
+.mp-head .mp-cap { font-size: 11px; color: var(--muted); }
+.mp-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-ctl);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+.mp-item:hover { background: var(--hover); }
+.mp-item.sel { background: var(--brand-weak); }
+.mp-item .mp-alias {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  flex: none;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--muted);
+}
+.mp-item .mp-sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-check { flex: none; color: var(--brand); }
+.mp-follow {
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-ctl) var(--radius-ctl) 0 0;
+  margin-bottom: 4px;
+}
+.mp-follow .mp-alias { color: var(--brand); }
+.mp-empty { padding: 10px 8px; font-size: 11.5px; color: var(--muted); }
+.mp-foot {
+  margin: 6px 2px 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* 快捷键常驻提示 */
+.kbd-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 发送 / 停止同位置切换（③）：32×32 图标按钮 */
+.send-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--brand);
+  color: var(--brand-on);
+  cursor: pointer;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+.send-btn:hover:not(:disabled) { opacity: 0.88; }
+.send-btn:disabled { background: var(--line-strong); color: var(--panel); cursor: not-allowed; }
+.send-btn.stop { background: var(--danger); color: #fff; }
+
+/* 窄容器两档（D10）：≤440 隐提示、≤380 收内边距且只省略 alias */
+@container (max-width: 440px) {
+  .kbd-hint { display: none; }
+}
+@container (max-width: 380px) {
+  .composer-inner { padding-left: 12px; padding-right: 12px; }
+  .dock { padding: 6px 6px 4px; }
+  .model-pill { max-width: 108px; }
+  .model-pill .mp-ic { display: none; }
+}
+
+/* ===== 上传 pill 与面板 ===== */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 4px; }
+.file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 3px 6px 3px 10px;
-  font-size: 12px;
-  max-width: 100%;
+  font-size: 11.5px;
+  color: var(--text-2);
 }
-.chip button { border: none; background: none; padding: 0 3px; color: var(--muted); font-size: 12px; }
-.chip button:hover { color: var(--danger); }
+.file-pill .fp-ic { flex: none; color: var(--muted); }
+.file-pill .fp-name {
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-pill .fp-size { flex: none; color: var(--muted); font-size: 10.5px; }
+.file-pill .fp-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.file-pill .fp-x:hover { background: var(--danger-weak); color: var(--danger); }
+
 .up-pop {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 8px;
+  right: 8px;
   bottom: calc(100% + 8px);
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
   padding: 14px 16px;
   z-index: 20;
 }

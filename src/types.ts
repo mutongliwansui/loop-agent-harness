@@ -262,6 +262,13 @@ export interface AgentOptions {
   temperature?: number;
   /** 模型名，默认读取 config.modelName */
   model?: string;
+  /**
+   * 会话级模型覆盖的服务地址（task-20261025-002 D4/D5）：
+   * 与 apiKey 成对使用，缺一则回落全局 config；不传时行为与改动前完全一致。
+   */
+  baseUrl?: string;
+  /** 会话级模型覆盖的 API Key（与 baseUrl 成对；缺一则回落全局 config） */
+  apiKey?: string;
   /** 是否打印 Thought/Action/Observation 日志，默认 true */
   verbose?: boolean;
   /** 事件监听器数组（参考 langchain callbacks 设计），每个钩子按顺序调用 */

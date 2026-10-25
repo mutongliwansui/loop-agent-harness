@@ -14,6 +14,12 @@ export interface SessionMeta {
   messageCount: number;
   /** 加密文件名 */
   file: string;
+  /**
+   * 会话级模型选择（task-20261025-002 D7）：登记簿别名。
+   * 缺省/undefined = 跟随全局激活模型；**不是**全局激活状态的副本，
+   * 只影响本会话后续消息的请求凭据与模型名。
+   */
+  modelAlias?: string;
 }
 
 /**

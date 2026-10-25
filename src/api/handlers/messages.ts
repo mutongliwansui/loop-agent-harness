@@ -73,6 +73,45 @@ export async function handleMessage(
       : { messages: [...historyBefore] }),
   };
 
+  // ===== 会话级模型覆盖（task-20261025-002 D4/D11）=====
+  // 只作用于本次 run，绝不写盘改全局激活（不用 PUT /model）；
+  // 有值但不存在/无 key 时明确报错，不静默回落——静默回落会让人「以为换了其实没换」。
+  const modelAliasRaw = typeof body.modelAlias === 'string' ? body.modelAlias.trim() : '';
+  if (modelAliasRaw) {
+    const { config: cfg } = ctx.configLoader.load();
+    const profile = cfg.models.profiles[modelAliasRaw];
+    if (!profile) {
+      const known = Object.keys(cfg.models.profiles).sort().join('、') || '（空）';
+      throw new ApiHttpError(
+        'bad_request',
+        `未找到模型「${modelAliasRaw}」。已登记: ${known}`,
+      );
+    }
+    if (!profile.apiKey) {
+      throw new ApiHttpError(
+        'bad_request',
+        `profile「${modelAliasRaw}」未配置 apiKey，无法用于本次对话（可用 PUT /config/models.profiles.${modelAliasRaw}.apiKey 补充）`,
+      );
+    }
+    runOptions.model = profile.name;
+    runOptions.baseUrl = profile.baseUrl;
+    runOptions.apiKey = profile.apiKey;
+    if (profile.temperature !== undefined) runOptions.temperature = profile.temperature;
+
+    // 兜底落盘（D7）：前端在「新建会话还没 id」时选了模型 → selectModel 的 PUT 无处可写，
+    // 此处补写一次，保证重进会话能还原。best-effort，失败不影响本轮对话。
+    void (async () => {
+      try {
+        const meta = (await store.listSessions()).find((s) => s.id === id);
+        if (meta && meta.modelAlias !== modelAliasRaw) {
+          await store.setSessionModelAlias(id, modelAliasRaw);
+        }
+      } catch (e) {
+        log(`[api] 会话 ${id} 模型选择落盘失败（不影响回答）: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }
+
   // 取消链路（Task-20261021-002-03 D8）：signal 取自 RunHub（start 之后取），
   // 生命周期与 run 注册同源——/stop 触发 abort 时 agent 主循环感知并抛 AgentAbortedError
   runOptions.signal = ctx.runs.signal(id) ?? undefined;

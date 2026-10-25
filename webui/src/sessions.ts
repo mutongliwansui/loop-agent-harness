@@ -20,6 +20,8 @@ export interface SessionMeta {
   running?: boolean;
   /** run journal 概要（GET /workspaces 注入，Task-20261021-002-06）：interrupted 时侧栏标 ⚠ */
   lastRun?: { status: string; finishedAt?: number } | null;
+  /** 会话级模型选择（task-20261025-002 D7）：缺省=跟随全局激活 */
+  modelAlias?: string;
 }
 export interface WorkspaceGroup {
   id: string;

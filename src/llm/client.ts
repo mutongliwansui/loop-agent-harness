@@ -26,6 +26,15 @@ export interface ChatOptions {
   /** 最大 token 数 */
   maxTokens?: number;
   /**
+   * 覆盖本次调用的服务地址（task-20261025-002 D5）。
+   * 与 apiKey 成对使用；缺任一则回落全局 config（旧行为）。
+   * 说明：SDK 没有公开的按次 apiKey 覆盖（RequestOptions 内仅 internal 的
+   * defaultBaseURL），故按凭据维护客户端缓存，见 getClient()。
+   */
+  baseUrl?: string;
+  /** 覆盖本次调用的 API Key（与 baseUrl 成对；缺一则回落全局 config） */
+  apiKey?: string;
+  /**
    * 取消信号（Task-20261021-002-01）：
    * 透传给 SDK（create(params, { signal })）；aborted 后抛 AgentAbortedError，
    * 且在 retry() 前短路（取消不作为网络错误重试）。
@@ -65,6 +74,14 @@ export class LLMClient {
   private client: OpenAI | null = null;
   private _lastApiKey = '';
   private _lastBaseUrl = '';
+
+  /**
+   * 按凭据键控的客户端缓存（task-20261025-002 D5）：
+   * key = `${apiKey}\0${baseURL}`，仅用于「会话级模型覆盖」，上限见 MAX_CACHED_CLIENTS
+   */
+  private readonly clients = new Map<string, OpenAI>();
+  /** 缓存上限：WebUI 同时活跃的会话数远小于此值，够用且不会无界增长 */
+  private static readonly MAX_CACHED_CLIENTS = 8;
 
   // 视觉客户端独立缓存（与主 client 并列，各自的 apiKey/baseUrl 变化时重建）
   private visionClient: OpenAI | null = null;
@@ -129,6 +146,38 @@ export class LLMClient {
   }
 
   /**
+   * 解析本次调用应使用的客户端（task-20261025-002 D5）
+   *
+   * - 未传凭据（或只传了一个）→ 走 getClient() 的全局单槽逻辑，**行为与改动前完全一致**；
+   * - 传齐 apiKey + baseUrl → 按 `${apiKey}\0${baseURL}` 键控缓存复用。
+   *
+   * 为什么必须是 Map 而不是再加一个单槽：WebUI 多会话可各自选不同模型并行 run，
+   * 单槽会被互相踢掉，导致每次调用都重建 client（连接池无法复用）。
+   * 上限 MAX_CACHED_CLIENTS，超限按插入顺序淘汰最旧（Map 保证迭代顺序）。
+   */
+  private getClientFor(apiKey?: string, baseURL?: string): OpenAI {
+    if (!apiKey || !baseURL) return this.getClient();
+
+    const key = `${apiKey}\u0000${baseURL}`;
+    const cached = this.clients.get(key);
+    if (cached) {
+      // 命中后重新插入，使其成为「最新」，避免被优先淘汰
+      this.clients.delete(key);
+      this.clients.set(key, cached);
+      return cached;
+    }
+
+    const client = new OpenAI({ apiKey, baseURL, fetch: globalThis.fetch });
+    this.clients.set(key, client);
+    while (this.clients.size > LLMClient.MAX_CACHED_CLIENTS) {
+      const oldest = this.clients.keys().next();
+      if (oldest.done) break;
+      this.clients.delete(oldest.value);
+    }
+    return client;
+  }
+
+  /**
    * 非流式对话调用
    * @param messages 消息历史
    * @param tools 可选，OpenAI function calling 工具定义
@@ -159,7 +208,7 @@ export class LLMClient {
     const startMs = Date.now();
     try {
       return await this.retry(async () => {
-        const client = this.getClient();
+        const client = this.getClientFor(options.apiKey, options.baseUrl);
         // normalizeMessages 确保 assistant.tool_calls 不为空数组、会话标记字段不透传
         const cleanMessages = LLMClient.normalizeMessages(messages);
         const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
@@ -379,7 +428,7 @@ export class LLMClient {
       params.max_tokens = options.maxTokens;
     }
 
-    const client = this.getClient();
+    const client = this.getClientFor(options.apiKey, options.baseUrl);
 
     // 累积器（在 try 块外声明，catch 后仍可访问用于组装响应 / 抛错）
     const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();

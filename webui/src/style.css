@@ -419,6 +419,14 @@ table.tbl tr:hover td { background: var(--code-bg); }
 .form-row .grow { flex: 1; min-width: 200px; }
 label.chk { display: inline-flex; gap: 5px; align-items: center; font-size: 12.5px; color: var(--muted); cursor: pointer; }
 
+/* 界面偏好行（task-20261025-002 D3-B：配置页承载通知两开关） */
+.pref-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 5px 0; }
+.pref-label { display: inline-flex; gap: 7px; align-items: center; cursor: pointer; font-size: 13px; min-width: 108px; }
+.pref-label input { cursor: pointer; }
+.pref-label input:disabled { cursor: not-allowed; }
+.pref-hint { font-size: 11.5px; color: var(--muted); }
+.pref-warn { margin: 8px 0 0; font-size: 11.5px; color: var(--warn); line-height: 1.6; }
+
 /* 开关（Tools 视图启用/禁用） */
 .tgl { position: relative; width: 34px; height: 19px; flex: none; display: inline-block; vertical-align: middle; }
 .tgl input { opacity: 0; width: 100%; height: 100%; position: absolute; cursor: pointer; z-index: 2; margin: 0; }

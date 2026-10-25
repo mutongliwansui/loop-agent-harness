@@ -620,6 +620,30 @@ export class SessionStore {
   }
 
   /**
+   * 写入会话级模型选择（task-20261025-002 D7）
+   *
+   * 刻意**不**复用 updateSession：那条路径含压缩归档重建、按引用定位消息等复杂逻辑，
+   * 且已知存在并发写盘竞态；模型选择只是索引里的一个标量，单独最小写入风险最低。
+   *
+   * @param alias 登记簿别名；传 undefined / 空串表示「跟随全局」（从索引中清除该字段）
+   */
+  async setSessionModelAlias(id: string, alias: string | undefined): Promise<void> {
+    const clean = (alias ?? '').trim();
+    if (clean) {
+      await this.updateIndex(id, { modelAlias: clean });
+      return;
+    }
+    // 复位为跟随全局：显式删字段，避免 sessions.json 里留下空串
+    const indexFile = join(this.workspaceDir, 'sessions.json');
+    if (!(await fileExists(indexFile))) return;
+    const sessions = JSON.parse(await readFile(indexFile, 'utf-8')) as SessionMeta[];
+    const idx = sessions.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    delete sessions[idx].modelAlias;
+    await writeFile(indexFile, JSON.stringify(sessions, null, 2), 'utf-8');
+  }
+
+  /**
    * 聚合所有工作空间：扫描 <userDir>/sessions/* 下的 meta.json 与 sessions.json
    * （两者均为明文索引，无需解密）；按空间首次使用时间（createdAt）升序——顺序稳定，
    * 空间之间完全并列，不存在"当前空间"标记。
@@ -832,7 +856,7 @@ export class SessionStore {
 
   private async updateIndex(
     id: string,
-    updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>>,
+    updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt' | 'modelAlias'>>,
     dir: string = this.workspaceDir,
   ): Promise<void> {
     const indexFile = join(dir, 'sessions.json');

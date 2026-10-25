@@ -8,6 +8,14 @@ import { showToast } from '../toast';
 import { displayValue, errText, parseLoose } from '../utils';
 import ConfirmButton from '../components/ConfirmButton.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import {
+  getNotifySettings,
+  setNotifySettings,
+  requestNotifyPermission,
+  notifySupported,
+  playChime,
+  type NotifySettings,
+} from '../notify';
 
 interface Row { key: string; value: unknown; display: string; masked: boolean }
 interface Section { name: string; rows: Row[] }
@@ -25,6 +33,41 @@ const keyResult = ref<{ key: string; value: unknown; scope: string } | null>(nul
 
 /** model/models 与 tools 两节由「模型」（#/models）、「工具」（#/tools）模块独立管理，配置页不展示 */
 const EXCLUDED_SECTIONS = new Set(['model', 'models', 'tools']);
+
+/* ===== 界面偏好：后台完成提醒（task-20261025-002 D3-B）=====
+ * 输入坞删掉了 🔔 入口，两开关迁到这里，保证「删了 UI 就再也改不了」的代价不出现。
+ * 存储仍是 notify.ts 的 localStorage，chat-stream 的完成提醒逻辑零改动。 */
+const notifyCfg = ref<NotifySettings>(getNotifySettings());
+const notifySecure = notifySupported();
+
+/** 系统通知：必须在用户手势中请求权限；拒绝则回退开关并说明 */
+async function onToggleNotifySystem(on: boolean): Promise<void> {
+  if (on) {
+    if (!notifySecure) {
+      notifyCfg.value.system = false;
+      showToast('当前环境不支持系统通知（需 https/localhost），提示音仍可用', 'error');
+      return;
+    }
+    const perm = await requestNotifyPermission();
+    if (perm !== 'granted') {
+      notifyCfg.value.system = false;
+      showToast(perm === 'denied' ? '通知权限已被拒绝，可在浏览器设置中恢复' : '通知权限未授权', 'error');
+      setNotifySettings({ asked: true });
+      return;
+    }
+  }
+  notifyCfg.value.system = on;
+  setNotifySettings({ system: on, asked: true });
+}
+
+/** 提示音：手势中播放一次，同时解锁 AudioContext（自动播放策略） */
+function onToggleNotifySound(on: boolean): void {
+  notifyCfg.value.sound = on;
+  setNotifySettings({ sound: on });
+  // playChime 此前在 ChatView 中被调用却未 import（运行时 ReferenceError，解锁静默失效），
+  // 迁入本页后已正确导入，顺带修掉该 bug
+  if (on) playChime();
+}
 
 const sections = computed<Section[]>(() => {
   if (!tree.value) return [];
@@ -145,6 +188,42 @@ onMounted(refresh);
         <option value="global">global（全局）</option>
       </select>
       <button :disabled="busy" @click="refresh">⟳ 刷新</button>
+    </div>
+
+    <!-- 界面偏好（task-20261025-002 D3-B）：输入坞已删除 🔔 入口，两开关迁到这里 -->
+    <div class="card">
+      <div class="card-h">
+        界面偏好
+        <StatusBadge kind="dim">存于本机浏览器</StatusBadge>
+      </div>
+      <div class="card-b">
+        <div class="pref-row">
+          <label class="pref-label">
+            <input
+              type="checkbox"
+              :checked="notifyCfg.system"
+              :disabled="!notifySecure"
+              @change="onToggleNotifySystem(($event.target as HTMLInputElement).checked)"
+            >
+            <span>系统通知</span>
+          </label>
+          <span class="pref-hint">切到其他窗口时，回答完成/停止会弹系统提醒</span>
+        </div>
+        <div class="pref-row">
+          <label class="pref-label">
+            <input
+              type="checkbox"
+              :checked="notifyCfg.sound"
+              @change="onToggleNotifySound(($event.target as HTMLInputElement).checked)"
+            >
+            <span>提示音</span>
+          </label>
+          <span class="pref-hint">回答完成时播放一声轻提示（首次开启会解锁音频）</span>
+        </div>
+        <p v-if="!notifySecure" class="pref-warn">
+          当前通过局域网 IP + http 访问，浏览器不提供系统通知；提示音与页内提醒不受影响
+        </p>
+      </div>
     </div>
 
     <div v-for="sec in sections" :key="sec.name" class="card">
