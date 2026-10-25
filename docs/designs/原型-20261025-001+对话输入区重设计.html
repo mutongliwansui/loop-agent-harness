@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>原型 20261025-001 · 对话输入区重设计</title>
+<style>
+/* ============================================================
+   设计令牌 —— 取值 1:1 对齐现有 WebUI（webui/src/style.css）
+   浅色 : root           深色 : [data-theme="dark"]
+   本原型不新增任何令牌：--line-soft / --hover / --r-lg / --shadow-1
+   均为仓库既有令牌，避免出现第三套视觉语言
+   ============================================================ */
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd;
+  --line:#e3e6ea; --line-soft:#eef0f3; --guide:#d3d8de;
+  --text:#22252a; --text-2:#4b5563; --text-3:#6b7280;
+  --brand:#0e9f6e; --brand-weak:#e6f6ef; --brand-on:#ffffff;
+  --hover:rgba(17,24,39,.055); --active:rgba(17,24,39,.1);
+  --code-bg:#f1f3f5;
+  --ok:#059669; --ok-weak:#d1fae5;
+  --warn:#b45309; --warn-weak:#fef3c7;
+  --danger:#dc2626; --danger-weak:#fdecec;
+  --shadow-1:0 1px 2px rgba(16,24,40,.04), 0 10px 28px -18px rgba(16,24,40,.2);
+  --shadow-2:0 2px 4px rgba(16,24,40,.06), 0 12px 28px -12px rgba(16,24,40,.28);
+  --r-lg:12px; --r-md:10px; --r-sm:7px;
+  --mono:ui-monospace,'Cascadia Code',Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  --bg:#14171c; --panel:#1b1f26; --panel-2:#1f242b;
+  --line:#2b313a; --line-soft:#242a32; --guide:#3a424d;
+  --text:#e6e8eb; --text-2:#b6bdc6; --text-3:#9aa1ab;
+  --brand:#34d399; --brand-weak:#143528; --brand-on:#0b221a;
+  --hover:rgba(255,255,255,.07); --active:rgba(255,255,255,.12);
+  --code-bg:#22272f;
+  --ok:#34d399; --ok-weak:#143528;
+  --warn:#fbbf24; --warn-weak:#3a2e10;
+  --danger:#f87171; --danger-weak:#3b1a1a;
+  --shadow-1:0 1px 2px rgba(0,0,0,.3), 0 12px 30px -18px rgba(0,0,0,.55);
+  --shadow-2:0 2px 6px rgba(0,0,0,.4), 0 14px 32px -12px rgba(0,0,0,.6);
+}
+
+*{ box-sizing:border-box }
+[hidden]{ display:none !important }
+html,body{ margin:0 }
+body{
+  min-height:100%;
+  background:var(--bg); color:var(--text);
+  font:400 13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; align-items:center;
+  gap:16px; padding:18px 24px 30px;
+}
+code,.mono{ font-family:var(--mono) }
+
+/* ============================================================
+   控制条
+   ============================================================ */
+.bar{
+  width:100%; max-width:1000px;
+  display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;
+}
+.bar-l{ display:flex; align-items:baseline; gap:10px; min-width:0; flex-wrap:wrap }
+.bar-l b{ font-size:15px; letter-spacing:.2px }
+.bar-sub{ font-size:11.5px; color:var(--text-3) }
+.bar-r{ display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+.seg{
+  display:flex; padding:2px; gap:1px;
+  border:1px solid var(--line); border-radius:9px; background:var(--panel); box-shadow:var(--shadow-1);
+}
+.seg button{
+  border:0; background:transparent; color:var(--text-2); cursor:pointer;
+  font:inherit; font-size:12px; line-height:1; padding:6px 9px; border-radius:6px;
+  transition:background .14s, color .14s;
+}
+.seg button:hover{ color:var(--text); background:var(--hover) }
+.seg button.on{ background:var(--brand-weak); color:var(--brand); font-weight:600 }
+
+/* ============================================================
+   段落与说明
+   ============================================================ */
+section{ width:100%; max-width:1000px; display:flex; flex-direction:column; gap:9px }
+.st{ display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-top:4px }
+.st h2{ font-size:13.5px; margin:0; letter-spacing:.2px }
+.st .tag{
+  font-size:10.5px; font-weight:700; letter-spacing:.4px; padding:2px 7px; border-radius:20px;
+  background:var(--code-bg); color:var(--text-3);
+}
+.st .tag.hit{ background:var(--brand-weak); color:var(--brand) }
+.st .st-sub{ font-size:11.5px; color:var(--text-3) }
+.lede{
+  width:100%; max-width:1000px; font-size:12.5px; color:var(--text-2); line-height:1.7;
+  background:var(--panel); border:1px solid var(--line-soft); border-radius:var(--r-lg);
+  padding:12px 14px; box-shadow:var(--shadow-1);
+}
+.lede b{ color:var(--text) }
+.facts{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px }
+.fact{
+  font-size:11px; padding:3px 8px; border-radius:20px;
+  background:var(--bg); border:1px solid var(--line-soft); color:var(--text-3);
+}
+.fact b{ color:var(--danger); font-variant-numeric:tabular-nums }
+
+/* ============================================================
+   模拟舞台：把输入坞放进「对话区」上下文（上留白 = 消息流）
+   ============================================================ */
+.mock{
+  background:var(--bg); border:1px solid var(--line); border-radius:var(--r-lg);
+  display:flex; flex-direction:column; overflow:hidden; box-shadow:var(--shadow-1);
+}
+.mock-msgs{
+  flex:1 1 auto; min-height:56px; padding:12px 16px; display:flex; flex-direction:column;
+  gap:8px; justify-content:flex-end; overflow:hidden;
+}
+.bub{ font-size:12.5px; color:var(--text-2); background:var(--panel); border:1px solid var(--line-soft);
+  border-radius:10px; padding:6px 10px; max-width:78%; align-self:flex-end; color:var(--text) }
+.mline{ height:8px; border-radius:5px; background:var(--line-soft) }
+.mline.w1{ width:52% } .mline.w2{ width:74% } .mline.w3{ width:38% }
+
+/* ============================================================
+   ① 现状（Before）—— 按 ChatView.vue 现有规则逐条复刻
+   ============================================================ */
+.before{ background:var(--panel); border-top:1px solid var(--line); padding:12px 20px 14px }
+.before .box{ display:flex; gap:10px; align-items:flex-end }
+.before .attach{
+  flex:none; height:44px; padding:0 12px; font-size:16px; line-height:1;
+  border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); cursor:pointer;
+}
+.before textarea{
+  flex:1; min-width:0; resize:none; height:44px; line-height:1.5; padding:10px 12px;
+  border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text);
+  font:inherit;
+}
+.before textarea::placeholder{ color:var(--text-3) }
+.before .send{
+  flex:none; height:44px; padding:0 18px; border:1px solid var(--brand);
+  border-radius:8px; background:var(--brand); color:var(--brand-on); font-weight:600; cursor:pointer;
+}
+.before .meta{
+  display:flex; align-items:center; gap:14px; margin-top:7px;
+  font-size:12px; color:var(--text-3); flex-wrap:wrap; min-width:0;
+}
+.before .meta label{ display:inline-flex; align-items:center; gap:5px; cursor:pointer; flex:none }
+.before .meta .notify{ border:1px solid var(--text-3); background:none; padding:0; font-size:12.5px; color:var(--text-3) }
+.before .chips{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px }
+.before .chip{
+  display:inline-flex; align-items:center; gap:6px; background:var(--bg);
+  border:1px solid var(--line); border-radius:999px; padding:3px 6px 3px 10px; font-size:12px;
+}
+.before .chip button{ border:0; background:none; padding:0 3px; color:var(--text-3); font-size:12px; cursor:pointer }
+
+/* ============================================================
+   ② 新方案：输入坞（Input Dock）
+   ------------------------------------------------------------
+   D1 去 .composer 上沿分隔线，底改为 --bg（与消息流同色）
+   D2 输入卡：--panel 底 + --line-soft 描边 + --shadow-1，focus-within 转品牌描边 + 3px 光晕
+   D3 textarea 无边框、无背景，44→200px 自增高
+   D4 工具行承载低频开关（附件 / 流式 / 通知），主位只留发送
+   ============================================================ */
+.composer{
+  background:var(--bg);
+  padding:0 0 14px;
+  container-type:inline-size;
+}
+/* 水平内边距放在 .inner 上：容器查询不能样式化容器自身（.composer），
+   只能作用于其后代，窄容器收边距必须落在 .inner（D9） */
+.inner{ max-width:800px; margin:0 auto; padding:0 20px; position:relative }
+
+.dock{
+  position:relative;
+  display:flex; flex-direction:column;
+  background:var(--panel);
+  border:1px solid var(--line-soft);
+  border-radius:var(--r-lg);
+  box-shadow:var(--shadow-1);
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+/* 深色下 --line-soft 与 --panel 明度差过小（描边近乎消失），
+   改用项目既有 --panel-2 提亮卡片底 + --line 提亮描边，不新增令牌 */
+:root[data-theme="dark"] .dock{
+  background:var(--panel-2);
+  border-color:var(--line);
+}
+.dock:focus-within{
+  border-color:var(--brand);
+  box-shadow:var(--shadow-2), 0 0 0 3px var(--brand-weak);
+}
+
+/* 附件区：仅在有附件时占位，贴卡片顶部内缘 */
+.dock-files{ display:flex; flex-wrap:wrap; gap:6px; padding:9px 9px 0 }
+.chip{
+  display:inline-flex; align-items:center; gap:6px;
+  height:24px; padding:0 4px 0 8px; max-width:100%;
+  border:1px solid var(--line-soft); border-radius:999px; background:var(--bg);
+  font-size:12px; color:var(--text);
+}
+.chip .ci{ display:flex; color:var(--text-3); flex:none }
+.chip .nm{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:190px }
+.chip .sz{ font-size:11px; color:var(--text-3); font-variant-numeric:tabular-nums; flex:none }
+.chip .cx{
+  width:16px; height:16px; flex:none; padding:0; border:0; border-radius:50%;
+  display:inline-flex; align-items:center; justify-content:center;
+  background:transparent; color:var(--text-3); cursor:pointer;
+  transition:background .14s, color .14s;
+}
+.chip .cx:hover{ background:var(--danger-weak); color:var(--danger) }
+
+/* 输入区：无描边，与卡片同底 */
+.dock textarea{
+  display:block; width:100%; margin:0;
+  border:0; background:transparent; box-shadow:none; outline:none;
+  padding:11px 12px 6px;
+  font:inherit; font-size:13.5px; line-height:1.55; color:var(--text);
+  resize:none; min-height:44px; max-height:200px; overflow-y:hidden;
+}
+.dock textarea::placeholder{ color:var(--text-3) }
+
+/* 工具行：左低频开关 / 右快捷键提示 + 主操作 */
+.dock-tools{
+  display:flex; align-items:center; gap:2px;
+  padding:0 8px 7px 8px; min-width:0;
+}
+.tbtn{
+  width:28px; height:28px; flex:none; padding:0;
+  display:inline-flex; align-items:center; justify-content:center;
+  border:0; border-radius:var(--r-sm); background:transparent; color:var(--text-3);
+  cursor:pointer; transition:background .14s, color .14s;
+}
+.tbtn:hover{ background:var(--hover); color:var(--text) }
+.tbtn.on{ color:var(--brand) }
+.tbtn.on:hover{ background:var(--brand-weak); color:var(--brand) }
+
+.pill-btn{
+  display:inline-flex; align-items:center; gap:5px; flex:none;
+  height:24px; padding:0 8px; border:0; border-radius:999px; background:transparent;
+  font:inherit; font-size:11.5px; color:var(--text-3); cursor:pointer;
+  transition:background .14s, color .14s;
+}
+.pill-btn:hover{ background:var(--hover); color:var(--text) }
+.pill-btn.on{ background:var(--brand-weak); color:var(--brand); font-weight:600 }
+
+.kbd-hint{
+  margin-left:auto; padding-left:8px; flex:none;
+  font-size:11.5px; color:var(--text-3); white-space:nowrap;
+}
+.kbd-hint kbd{
+  font-family:var(--mono); font-size:10.5px; padding:0 4px; border-radius:4px;
+  border:1px solid var(--line); background:var(--bg); color:var(--text-2);
+}
+
+/* 主操作：发送 / 停止同位置切换（D5） */
+.send-btn{
+  width:32px; height:32px; flex:none; margin-left:6px; padding:0;
+  display:inline-flex; align-items:center; justify-content:center;
+  border:0; border-radius:9px; cursor:not-allowed;
+  background:var(--hover); color:var(--text-3);
+  transition:background .15s ease, color .15s ease;
+}
+.send-btn.ready{ background:var(--brand); color:var(--brand-on); cursor:pointer }
+.send-btn.ready:hover{ filter:brightness(1.06) }
+.send-btn.stop{ background:var(--danger-weak); color:var(--danger); cursor:pointer }
+.send-btn.stop:hover{ filter:brightness(.97) }
+
+/* 浮层（上传 / 通知）：相对卡片定位，宽度随卡片 */
+.pop{
+  position:absolute; left:0; right:0; bottom:calc(100% + 8px); z-index:20;
+  background:var(--panel); border:1px solid var(--line-soft); border-radius:var(--r-lg);
+  box-shadow:var(--shadow-2); padding:12px 14px;
+}
+.pop-row{ display:flex; align-items:center; gap:10px }
+.pop-btn{
+  height:30px; padding:0 12px; border:1px solid var(--brand); border-radius:var(--r-sm);
+  background:var(--brand); color:var(--brand-on); font:inherit; font-size:12.5px; font-weight:600; cursor:pointer;
+}
+.pop-note{ font-size:11.5px; color:var(--text-3); margin:8px 0 0; line-height:1.6 }
+.pop-act{ display:flex; justify-content:flex-end; margin-top:8px }
+.pop-act .clean{ border:0; background:none; color:var(--danger); font:inherit; font-size:12px; padding:3px 6px; cursor:pointer }
+
+/* 窄容器自适应（D9）：阈值按真实默认宽度 462px 校准，保证默认态提示可见 */
+@container (max-width:440px){
+  .kbd-hint{ display:none }
+}
+@container (max-width:380px){
+  .inner{ padding-left:12px; padding-right:12px }
+  .pill-btn span{ display:none }
+  .pill-btn{ padding:0 6px }
+  .dock textarea{ padding-left:10px; padding-right:10px }
+}
+
+/* 生成中：输入框仍可编辑（现状未禁用），仅主操作变停止 */
+.dock[data-state="running"] .dock-tools .tbtn{ opacity:.5; pointer-events:none }
+
+/* ============================================================
+   状态矩阵
+   ============================================================ */
+.grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px }
+@media (max-width:840px){ .grid{ grid-template-columns:minmax(0,1fr) } }
+.cell{
+  border:1px solid var(--line); border-radius:var(--r-lg); overflow:hidden; background:var(--bg);
+  display:flex; flex-direction:column;
+}
+.cell-h{
+  display:flex; align-items:center; gap:7px; padding:6px 10px;
+  background:var(--panel); border-bottom:1px solid var(--line-soft);
+  font-size:11.5px; color:var(--text-3);
+}
+.cell-h b{ color:var(--text); font-size:11.5px }
+.cell-h .dot{ width:6px; height:6px; border-radius:50%; background:var(--brand); flex:none }
+.cell-h .dot.dim{ background:var(--text-3) }
+.cell-h .dot.red{ background:var(--danger) }
+.cell-b{ padding:0 }
+.cell-b .inner{ padding:0 10px }
+.cell-b .mock-msgs{ min-height:34px }
+
+/* ============================================================
+   宽度审计
+   ============================================================ */
+.audit{ display:flex; flex-direction:column; gap:10px }
+.audit-row{ display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap }
+.audit-l{ width:104px; flex:none; font-size:11.5px; color:var(--text-3); padding-bottom:8px }
+.audit-l b{ color:var(--text); display:block; font-size:12px }
+.audit-w{
+  font-family:var(--mono); font-size:10.5px; color:var(--text-3);
+  border:1px dashed var(--guide); border-radius:6px; padding:1px 6px; align-self:center;
+}
+
+/* ============================================================
+   诊断与决策
+   ============================================================ */
+.notes{ width:100%; max-width:1000px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px }
+@media (max-width:840px){ .notes{ grid-template-columns:minmax(0,1fr) } }
+.card{
+  background:var(--panel); border:1px solid var(--line-soft); border-radius:var(--r-lg);
+  padding:13px 15px; box-shadow:var(--shadow-1);
+}
+.card h3{ margin:0 0 9px; font-size:12.5px; letter-spacing:.2px }
+.card h3 .n{ color:var(--brand); margin-right:5px }
+.diag{ display:flex; flex-direction:column; gap:8px }
+.diag .d{ display:flex; gap:8px; font-size:12px; line-height:1.6; color:var(--text-2) }
+.diag .d i{
+  flex:none; width:16px; height:16px; border-radius:50%; margin-top:2px;
+  background:var(--danger-weak); color:var(--danger);
+  font-style:normal; font-size:10px; font-weight:700;
+  display:inline-flex; align-items:center; justify-content:center;
+}
+.diag .d b{ color:var(--text) }
+.dec{ display:flex; flex-direction:column; gap:7px }
+.dec .r{ display:flex; gap:8px; font-size:12px; line-height:1.55 }
+.dec .k{
+  flex:none; font-family:var(--mono); font-size:10.5px; font-weight:700;
+  color:var(--brand); background:var(--brand-weak); border-radius:5px;
+  padding:1px 5px; height:17px; margin-top:1px;
+}
+.dec .t{ color:var(--text-2) }
+.dec .t b{ color:var(--text) }
+.dec .t em{ font-style:normal; color:var(--text-3) }
+.map{ width:100%; border-collapse:collapse; font-size:11.5px }
+.map th,.map td{ text-align:left; padding:5px 8px; border-bottom:1px solid var(--line-soft); vertical-align:top }
+.map th{ color:var(--text-3); font-weight:600; font-size:11px }
+.map td code{ font-size:11px; color:var(--text-2); background:var(--code-bg); padding:1px 5px; border-radius:4px }
+.map td.new code{ color:var(--brand) }
+.foot{ width:100%; max-width:1000px; font-size:11.5px; color:var(--text-3); line-height:1.7 }
+</style>
+</head>
+<body>
+
+<!-- ===== 图标 sprite（内联，替代 emoji；D6） ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.19 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+    </symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+    </symbol>
+    <symbol id="i-flow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 12h4l2.5-6 3.5 12 2.5-8 2 2h6"/>
+    </symbol>
+    <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
+    </symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24">
+      <rect x="7" y="7" width="10" height="10" rx="1.8" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+      <path d="M6 6l12 12M18 6L6 18"/>
+    </symbol>
+  </defs>
+</svg>
+
+<!-- ===== 控制条 ===== -->
+<div class="bar">
+  <div class="bar-l">
+    <b>原型 20261025-001 · 对话输入区重设计</b>
+    <span class="bar-sub">Input Dock（输入坞）· 一体卡片 + 图标化主操作 + 自增高</span>
+  </div>
+  <div class="bar-r">
+    <div class="seg" id="seg-theme">
+      <button data-v="light" class="on">浅色</button><button data-v="dark">深色</button>
+    </div>
+    <div class="seg" id="seg-w">
+      <button data-v="462" class="on">462</button><button data-v="560">560</button><button data-v="800">800</button>
+    </div>
+    <div class="seg" id="seg-state">
+      <button data-v="empty" class="on">空态</button><button data-v="text">已输入</button>
+      <button data-v="files">带附件</button><button data-v="running">生成中</button>
+    </div>
+  </div>
+</div>
+
+<div class="lede">
+  <b>问题不是「不好看」，是三层结构错位：</b>主操作（发送）与低频开关（附件 / 流式 / 通知）挤在同一行且权重相同；输入框被钉死 44px，长 prompt 只能框内滚动；描边三层叠加（容器上沿 + 输入框 + chip）在窄区里显脏。
+  改版只动 <code>ChatView.vue</code> 的 <code>.composer</code> 一节 CSS 与模板结构，SSE 协议、消息数据、上传通通不动。
+  <div class="facts">
+    <span class="fact">实测：FilesView 展开时对话区仅 <b>462px</b>，输入内容宽 <b>422px</b></span>
+    <span class="fact">textarea 固定 <b>44px</b>，6 行文本时 scrollHeight <b>146px</b> 内部滚动</span>
+    <span class="fact">输入区内 svg 数 <b>0</b>，emoji 命中 <b>U+1F4CE / U+1F514</b></span>
+    <span class="fact">发送文字按钮占宽 <b>66px</b>（窄区 15%）</span>
+  </div>
+</div>
+
+<!-- ===== ① Before ===== -->
+<section>
+  <div class="st">
+    <h2>一、现状（Before）</h2><span class="tag">按 ChatView.vue 现有规则逐条复刻</span>
+    <span class="st-sub">宽度 422px = FilesView 展开时的真实内容宽</span>
+  </div>
+  <div class="mock" style="width:462px;max-width:100%">
+    <div class="mock-msgs">
+      <div class="mline w2"></div><div class="mline w1"></div><div class="mline w3"></div>
+    </div>
+    <div class="before" data-probe="before">
+      <div class="chips">
+        <span class="chip">📎 需求-20261025.md（148.8KB）<button>✕</button></span>
+      </div>
+      <div class="box">
+        <button class="attach" data-probe="before-attach">📎</button>
+        <textarea rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" data-probe="before-ta"></textarea>
+        <button class="send" data-probe="before-send">发送</button>
+      </div>
+      <div class="meta" data-probe="before-meta">
+        <label><input type="checkbox" checked> 流式</label>
+        <span>发送后自动附带 📎 文件的 contextNote</span>
+        <button class="notify">🔔声音开</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== ② After（可交互主实例） ===== -->
+<section>
+  <div class="st">
+    <h2>二、新方案（After · 可交互）</h2><span class="tag hit">建议采纳</span>
+    <span class="st-sub">试试打字、聚焦、切主题 / 宽度 / 状态</span>
+  </div>
+  <div class="mock" id="live-mock" style="width:462px;max-width:100%">
+    <div class="mock-msgs">
+      <div class="mline w2"></div><div class="mline w1"></div><div class="mline w3"></div>
+    </div>
+    <div class="composer" data-probe="composer">
+      <div class="inner">
+        <div class="dock" id="live-dock" data-state="empty" data-probe="dock">
+          <!-- 附件区：有附件才出现 -->
+          <div class="dock-files" id="live-files" hidden data-probe="dock-files">
+            <span class="chip" data-probe="chip">
+              <span class="ci"><svg width="12" height="12"><use href="#i-clip"/></svg></span>
+              <span class="nm">需求-20261025.md</span><span class="sz">148.8KB</span>
+              <button class="cx" title="移除（不再注入，服务器文件保留）"><svg width="10" height="10"><use href="#i-x"/></svg></button>
+            </span>
+            <span class="chip">
+              <span class="ci"><svg width="12" height="12"><use href="#i-clip"/></svg></span>
+              <span class="nm">20261025-132145-chat.png</span><span class="sz">148.8KB</span>
+              <button class="cx" title="移除"><svg width="10" height="10"><use href="#i-x"/></svg></button>
+            </span>
+          </div>
+
+          <textarea id="live-ta" data-autogrow placeholder="发消息给 Loop Agent…" data-probe="ta"></textarea>
+
+          <div class="dock-tools" data-probe="dock-tools">
+            <button class="tbtn" id="live-attach" title="上传文件" data-probe="attach">
+              <svg width="16" height="16"><use href="#i-clip"/></svg>
+            </button>
+            <button class="pill-btn on" id="live-flow" title="SSE 流式输出（关闭则等整条返回）" data-probe="flow">
+              <svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span>
+            </button>
+            <button class="tbtn on" id="live-bell" title="完成提醒：提示音开 · 系统通知关" data-probe="bell">
+              <svg width="16" height="16"><use href="#i-bell"/></svg>
+            </button>
+            <span class="kbd-hint" data-probe="hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+            <button class="send-btn" id="live-send" disabled data-probe="send">
+              <svg width="16" height="16"><use href="#i-up"/></svg>
+            </button>
+          </div>
+
+          <!-- 上传浮层 -->
+          <div class="pop" id="live-pop" hidden data-probe="pop">
+            <div class="pop-row">
+              <button class="pop-btn">选择文件…</button>
+              <span style="font-size:11.5px;color:var(--text-3)">支持多选 · 单文件上限 100MB</span>
+            </div>
+            <p class="pop-note">上传后以 contextNote（文件名 / 路径 / 大小）随下一条消息注入；chip 上 ✕ 仅移除不再注入。</p>
+            <div class="pop-act"><button class="clean">清空全部</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== ③ 状态矩阵 ===== -->
+<section>
+  <div class="st">
+    <h2>三、状态矩阵</h2><span class="tag">六个必须成立的状态</span>
+    <span class="st-sub">同一套结构，不新增分支布局</span>
+  </div>
+  <div class="grid">
+    <!-- 1 空态 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot dim"></span><b>空态</b><span>发送置灰待命，不可点</span></div>
+      <div class="cell-b">
+        <div class="composer" style="padding:0 10px 10px">
+          <div class="dock" data-state="empty">
+            <textarea placeholder="发消息给 Loop Agent…" data-s="empty"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 聚焦 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot"></span><b>聚焦</b><span>品牌描边 + 3px 光晕（focus-within）</span></div>
+      <div class="cell-b">
+        <div class="composer" style="padding:0 10px 10px">
+          <div class="dock" data-state="text" style="border-color:var(--brand);box-shadow:var(--shadow-2),0 0 0 3px var(--brand-weak)">
+            <textarea data-s="one">帮我把输入区的 emoji 换成内联 SVG</textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn ready"><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 多行自增高 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot"></span><b>多行自增高</b><span>44 → 200px 上限后内部滚动</span></div>
+      <div class="cell-b">
+        <div class="composer" style="padding:0 10px 10px">
+          <div class="dock" data-state="text">
+            <textarea data-s="multi" data-fixed-h="104">第一行需求描述，说明背景与现状。
+第二行补充约束：不改 SSE 协议。
+第三行补充验收：真实渲染截图。
+第四行补充非目标：不做富文本。</textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn ready"><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4 带附件 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot"></span><b>带附件</b><span>chip 贴卡片顶部，删除按钮圆形 hover 转红</span></div>
+      <div class="cell-b">
+        <div class="composer" style="padding:0 10px 10px">
+          <div class="dock" data-state="files">
+            <div class="dock-files">
+              <span class="chip">
+                <span class="ci"><svg width="12" height="12"><use href="#i-clip"/></svg></span>
+                <span class="nm">需求-20261025.md</span><span class="sz">148.8KB</span>
+                <button class="cx"><svg width="10" height="10"><use href="#i-x"/></svg></button>
+              </span>
+            </div>
+            <textarea placeholder="发消息给 Loop Agent…"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn ready"><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5 生成中 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot red"></span><b>生成中</b><span>主操作原地变「停止」，开关降透明度</span></div>
+      <div class="cell-b">
+        <div class="composer" style="padding:0 10px 10px">
+          <div class="dock" data-state="running">
+            <textarea placeholder="生成中…可继续输入下一条"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn" style="opacity:.5;pointer-events:none"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on" style="opacity:.5;pointer-events:none"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on" style="opacity:.5;pointer-events:none"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn stop"><svg width="16" height="16"><use href="#i-stop"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 6 上传浮层 -->
+    <div class="cell">
+      <div class="cell-h"><span class="dot"></span><b>上传浮层</b><span>相对卡片定宽，不再溢出到窗口边</span></div>
+      <div class="cell-b" style="padding-top:96px">
+        <div class="composer" style="padding:0 10px 10px">
+          <div class="dock" data-state="empty">
+            <div class="pop" style="bottom:calc(100% + 6px)">
+              <div class="pop-row">
+                <button class="pop-btn">选择文件…</button>
+                <span style="font-size:11.5px;color:var(--text-3)">支持多选 · 上限 100MB</span>
+              </div>
+              <p class="pop-note">上传后以 contextNote 随下一条消息注入。</p>
+              <div class="pop-act"><button class="clean">清空全部</button></div>
+            </div>
+            <textarea placeholder="发消息给 Loop Agent…"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn on" style="background:var(--hover);color:var(--text)"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== ④ 宽度审计 ===== -->
+<section>
+  <div class="st">
+    <h2>四、宽度审计</h2><span class="tag">320 / 422 / 560 / 800</span>
+    <span class="st-sub">462 是默认态真实对话区宽度；≤380 隐去开关文字，≤440 隐去快捷键提示</span>
+  </div>
+  <div class="audit">
+    <div class="audit-row">
+      <div class="audit-l"><b>800px</b>面板收起</div>
+      <div class="mock" style="width:800px;max-width:100%">
+        <div class="composer" style="padding-top:10px;padding-bottom:12px">
+          <div class="dock">
+            <textarea placeholder="发消息给 Loop Agent…"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <span class="audit-w">inner 800 封顶</span>
+    </div>
+    <div class="audit-row">
+      <div class="audit-l"><b>462px</b>默认</div>
+      <div class="mock" style="width:462px;max-width:100%">
+        <div class="composer" style="padding-top:10px;padding-bottom:12px">
+          <div class="dock">
+            <textarea placeholder="发消息给 Loop Agent…"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <span class="audit-w">与现状同宽对照</span>
+    </div>
+    <div class="audit-row">
+      <div class="audit-l"><b>320px</b>极限</div>
+      <div class="mock" style="width:320px;max-width:100%">
+        <div class="composer" style="padding-top:10px;padding-bottom:12px">
+          <div class="dock">
+            <textarea placeholder="发消息给 Loop Agent…"></textarea>
+            <div class="dock-tools">
+              <button class="tbtn"><svg width="16" height="16"><use href="#i-clip"/></svg></button>
+              <button class="pill-btn on"><svg width="13" height="13"><use href="#i-flow"/></svg><span>流式</span></button>
+              <button class="tbtn on"><svg width="16" height="16"><use href="#i-bell"/></svg></button>
+              <span class="kbd-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <button class="send-btn" disabled><svg width="16" height="16"><use href="#i-up"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <span class="audit-w">不裁切、不换行</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===== ⑤ 结构与映射 ===== -->
+<section>
+  <div class="st"><h2>五、结构变化与落地映射</h2><span class="tag">只动 ChatView.vue 一节</span></div>
+  <div class="card" style="width:100%">
+    <table class="map">
+      <thead><tr><th style="width:30%">现有</th><th style="width:32%">改后</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>.composer</code> 上沿 <code>border-top</code></td><td class="new"><code>background: var(--bg)</code>，去描边</td><td>让出分界给卡片阴影，消除线中套线（D1）</td></tr>
+        <tr><td>无容器</td><td class="new"><code>.dock</code> 卡片（新增）</td><td><code>--panel</code> 底 + <code>--line-soft</code> 描边 + <code>--shadow-card</code>；<code>focus-within</code> 转品牌（D2）</td></tr>
+        <tr><td><code>textarea{height:44px;resize:none}</code></td><td class="new"><code>min-height:44px;max-height:200px</code></td><td>JS 自增高（<code>scrollHeight</code> 夹取），无边框无底（D3）</td></tr>
+        <tr><td><code>button.attach</code> 48px 高 emoji</td><td class="new"><code>.tbtn</code> 28×28 图标按钮</td><td>paperclip SVG，进工具行左端（D4/D6）</td></tr>
+        <tr><td><code>button.primary.send</code> 66px 文字</td><td class="new"><code>.send-btn</code> 32×32 图标</td><td>↑ / ■ 同位置切换，空态灰底（D5）</td></tr>
+        <tr><td><code>label.chk</code> 复选框「流式」</td><td class="new"><code>.pill-btn</code>（开关态配色）</td><td>技术开关降级，<code>--brand-weak</code> 表示开启（D7）</td></tr>
+        <tr><td><code>🔔</code> + 「声音开·通知开」文字</td><td class="new"><code>.tbtn.on</code> 铃铛图标 + title</td><td>状态进 tooltip，宽容器才带文字（D7）</td></tr>
+        <tr><td><code>.hint</code>「发送后自动附带…」</td><td class="new">移入上传浮层</td><td>常驻说明让位给快捷键提示（D8）</td></tr>
+        <tr><td>占位符含「Enter 发送…」</td><td class="new">「发消息给 Loop Agent…」</td><td>快捷键说明改右下角常驻 <code>.kbd-hint</code>（D8）</td></tr>
+        <tr><td><code>.chip</code> emoji + <code>✕</code> 字符</td><td class="new">pill：SVG + 文件名 + 大小 + 圆形删除</td><td>24px 高，删除 hover 转 <code>--danger</code>（D6）</td></tr>
+        <tr><td><code>.up-pop</code> 绝对定位铺满 inner</td><td class="new">挂在 <code>.dock</code> 内同宽</td><td>卡片变窄时浮层跟着窄，不溢出（D10）</td></tr>
+        <tr><td>全局 <code>textarea{border:1px solid var(--line)}</code><br><span style="color:var(--text-3)">style.css 第 147 行</span></td><td class="new">落地须用优先级覆盖</td><td>写成 <code>.composer .dock textarea{border:0;background:transparent}</code>；原型内无全局规则，已按同一写法预防，落地时不可退化成裸 <code>.dock textarea</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===== ⑥ 诊断与决策 ===== -->
+<div class="notes">
+  <div class="card">
+    <h3><span class="n">一</span>诊断（实测取证，不是观感）</h3>
+    <div class="diag">
+      <div class="d"><i>1</i><span><b>图标体系割裂</b>：输入区内 svg 数为 0，靠 <code>📎</code> / <code>🔔</code> emoji 与 <code>■</code> / <code>✕</code> 字符撑场，与 FilesView、ToolCard 已落地的内联 SVG 体系正面冲突；深色主题下 emoji 固定彩色，与品牌绿抢色。</span></div>
+      <div class="d"><i>2</i><span><b>一行三按钮三套权重</b>：附件（灰边白底 48px）、发送（绿底白字 66px）、停止（红边描边）并列，主操作不突出；窄区 422px 里文字按钮吃掉 15% 宽度，textarea 只剩 288px。</span></div>
+      <div class="d"><i>3</i><span><b>高度钉死</b>：<code>height:44px</code> + <code>resize:none</code>，写入 6 行后仍是 44px、scrollHeight 146px 内部滚动——写长需求（本产品主场景）时只能看见两行。</span></div>
+      <div class="d"><i>4</i><span><b>底栏信息同权重</b>：「流式」是技术开关、「发送后自动附带…」是开发期说明、「🔔声音开」是设置入口，三者并列占住主视线；12px <code>--muted</code> 对比偏低。</span></div>
+      <div class="d"><i>5</i><span><b>描边三层叠加</b>：容器上沿 1px + textarea 1px 边框，chip 自身再 1px，并且 chip 浮在输入框之外，附件与「我要发的内容」在视觉上没有归属关系。</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span class="n">二</span>决策点（待确认）</h3>
+    <div class="dec">
+      <div class="r"><span class="k">D1</span><span class="t"><b>去 <code>.composer</code> 上沿分隔线，底改 <code>--bg</code></b>，分界交给卡片阴影。<em>否决：保留 border-top（线中套线、与卡片描边重复）</em></span></div>
+      <div class="r"><span class="k">D2</span><span class="t"><b>输入坞做成一体卡片</b>（<code>--panel</code> 底 + <code>--line-soft</code> 描边 + <code>--shadow-card</code>），聚焦转品牌描边 + 3px 光晕；深色下卡底提亮为 <code>--panel-2</code>、描边提亮为 <code>--line</code>（深色 <code>--line-soft</code> 与 <code>--panel</code> 明度差不足，描边近乎消失）。<em>否决：整块铺满的输入条（无层级，与消息流糊在一起）</em></span></div>
+      <div class="r"><span class="k">D3</span><span class="t"><b>textarea 无边框、自增高 44→200px</b>，超出后内部滚动；上限 200px ≈ 8 行。<em>否决：<code>field-sizing:content</code>（Chromium 123+ 才有，项目还需覆盖老终端）</em></span></div>
+      <div class="r"><span class="k">D4</span><span class="t"><b>主操作与开关分层</b>：工具行放附件 / 流式 / 通知，主位只留发送按钮。<em>否决：三按钮仍平铺（权重问题未解）</em></span></div>
+      <div class="r"><span class="k">D5</span><span class="t"><b>发送按钮图标化 32×32</b>（↑），空态灰底不可点，生成中同位置变 ■。<em>否决：保留「发送」文字（窄区吃宽）；否决：停止另起一个按钮（位置跳动）</em></span></div>
+      <div class="r"><span class="k">D6</span><span class="t"><b>全部 emoji / 字符图标换内联 SVG</b>（paperclip / bell / pulse / arrow / square / x），走同一 stroke 1.7 线性风格。<em>否决：引第三方图标库（零新增依赖约束）</em></span></div>
+      <div class="r"><span class="k">D7</span><span class="t"><b>「流式」降为工具行 pill，「通知」降为铃铛图标</b>，开启态用 <code>--brand-weak</code> 底 + <code>--brand</code> 字，状态细节点进 title。<em>否决：保留文字平铺；否决：挪进设置页（高频切换）</em></span></div>
+      <div class="r"><span class="k">D8</span><span class="t"><b>占位符缩短为「发消息给 Loop Agent…」</b>，快捷键说明改右下角 <code>Enter 发送 · Shift+Enter 换行</code> 常驻小字；原「发送后自动附带…」移入上传浮层。<em>否决：全塞占位符（输入后即消失，等于没有）</em></span></div>
+      <div class="r"><span class="k">D9</span><span class="t"><b>容器查询两档</b>：≤440px 隐快捷键提示、≤380px 隐开关文字并收内边距。<em>否决：靠 <code>flex-wrap</code> 换行（工具行会折成两行，高度跳动）；阈值定 440 而非 520，是为了让默认 462px 宽度下提示仍可见</em></span></div>
+      <div class="r"><span class="k">D10</span><span class="t"><b>浮层挂 <code>.dock</code> 内、与卡片同宽</b>；零新增设计令牌，全部复用既有 <code>--line-soft</code> / <code>--hover</code> / <code>--radius-card</code> / <code>--shadow-card</code>。<em>否决：新增 --dock-* 令牌组（会出现第三套视觉语言）</em></span></div>
+    </div>
+  </div>
+</div>
+
+<div class="foot">
+  待确认后可进入落地：改 <code>webui/src/views/ChatView.vue</code>（模板 <code>.composer</code> 段 + 样式「输入区」一节）、新增 <code>webui/src/composer-icons.ts</code> 不必要（图标可直接内联在模板），并把自增高逻辑抽为 <code>webui/src/autogrow.ts</code> 以便单测。<br>
+  探针脚本：<code>webui/verify-composer.shot.mjs</code>（现状基线）与落地后的回归共用同一套断言口径。
+</div>
+
+<script>
+/* ---------- 控制条 ---------- */
+const segTheme = document.getElementById('seg-theme');
+const segW = document.getElementById('seg-w');
+const segState = document.getElementById('seg-state');
+
+segTheme.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...segTheme.children].forEach((x) => x.classList.toggle('on', x === b));
+  document.documentElement.dataset.theme = b.dataset.v;
+});
+
+segW.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...segW.children].forEach((x) => x.classList.toggle('on', x === b));
+  // 档位 = 对话区（.composer 容器）宽度；内容宽 = 档位 - 左右内边距 40
+  document.getElementById('live-mock').style.width = Number(b.dataset.v) + 'px';
+  fitAll();
+});
+
+/* ---------- 主实例状态 ---------- */
+const ta = document.getElementById('live-ta');
+const dock = document.getElementById('live-dock');
+const files = document.getElementById('live-files');
+const sendBtn = document.getElementById('live-send');
+const pop = document.getElementById('live-pop');
+
+function syncSend() {
+  const has = ta.value.trim().length > 0 || !files.hidden;
+  if (dock.dataset.state === 'running') {
+    sendBtn.className = 'send-btn stop';
+    sendBtn.disabled = false;
+    sendBtn.innerHTML = '<svg width="16" height="16"><use href="#i-stop"/></svg>';
+    return;
+  }
+  sendBtn.disabled = !has;
+  sendBtn.className = 'send-btn' + (has ? ' ready' : '');
+  sendBtn.innerHTML = '<svg width="16" height="16"><use href="#i-up"/></svg>';
+}
+
+function setState(s) {
+  dock.dataset.state = s;
+  files.hidden = s !== 'files';
+  if (s === 'empty') ta.value = '';
+  if (s === 'text') ta.value = '帮我把输入区的 emoji 换成内联 SVG，并让输入框随内容长高';
+  if (s === 'files') ta.value = '';
+  if (s === 'running') ta.value = '';
+  syncSend(); fitAll();
+}
+
+segState.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...segState.children].forEach((x) => x.classList.toggle('on', x === b));
+  setState(b.dataset.v);
+});
+
+ta.addEventListener('input', () => { syncSend(); fit(ta); });
+document.getElementById('live-attach').addEventListener('click', () => { pop.hidden = !pop.hidden; });
+document.getElementById('live-flow').addEventListener('click', (e) => e.currentTarget.classList.toggle('on'));
+document.getElementById('live-bell').addEventListener('click', (e) => {
+  const on = e.currentTarget.classList.toggle('on');
+  e.currentTarget.title = on ? '完成提醒：提示音开' : '完成提醒：已关闭';
+});
+sendBtn.addEventListener('click', () => {
+  if (dock.dataset.state === 'running') { setState('empty'); return; }
+  if (sendBtn.disabled) return;
+  ta.value = ''; files.hidden = true; syncSend(); fitAll();
+});
+
+/* ---------- 自增高（D3）：先归零量内容高，再夹取到 [44,200] ---------- */
+const MAX_H = 200;
+function fit(el) {
+  if (!el) return;
+  if (el.dataset.fixedH) { el.style.height = el.dataset.fixedH + 'px'; return; }
+  el.style.height = '0px';                 // 归零，避免 rows=2 默认行数干扰 scrollHeight
+  const content = el.scrollHeight;         // 含 padding 的真实内容高
+  el.style.height = Math.min(Math.max(content, 44), MAX_H) + 'px';
+  el.style.overflowY = content > MAX_H ? 'auto' : 'hidden';
+}
+function fitAll() { document.querySelectorAll('textarea').forEach(fit); }
+
+document.querySelectorAll('textarea').forEach((el) => el.addEventListener('input', () => fit(el)));
+fitAll();
+setState('empty');
+</script>
+</body>
+</html>
