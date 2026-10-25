@@ -2,12 +2,12 @@
 
 > [⬅ Back to README](../../../README.en.md)
 
-In `--serve` mode, the service hosts a browser interface on the same port as the REST API (built with Vue 3 + Vite; the build output is committed at `webui/dist/` and served directly by the `node:http` static layer): **open the URL and get chat plus a full ops console**. Everything reuses the existing REST endpoints with zero API behavior changes.
+In `--serve` mode, the service hosts a browser interface on the same port as the REST API (built with Vue 3 + Vite; the build output goes to `webui/dist/` and is served directly by the `node:http` static layer): **open the URL and get chat plus a full ops console**. Everything reuses the existing REST endpoints with zero API behavior changes.
 
 ### Start
 
 ```bash
-npm run build:webui   # Build after first clone or frontend changes (output: webui/dist/, committed to the repo — usable right after cloning)
+npm run build:webui   # Build after first clone or frontend changes (output: webui/dist/, not committed — build once after cloning)
 npm run serve
 # or
 npx tsx src/index.ts --serve
@@ -23,7 +23,7 @@ HTTP API 服务已启动
   提示:    Ctrl+C 退出；配置变更需重启生效
 ```
 
-> If `webui/dist` is missing (e.g. cleaned manually), the static layer is skipped and the pure API service is unaffected; run `npm run build:webui` again to restore it.
+> If `webui/dist` has not been built yet (the artifact is not committed, so it is absent after a fresh clone), the static layer is skipped and the pure API service is unaffected; run `npm run build:webui` to build it.
 
 ### Auth (token gate)
 

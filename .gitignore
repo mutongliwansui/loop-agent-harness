@@ -9,7 +9,7 @@ sea-config.json
 *.tsbuildinfo
 .vscode/
 
-# WebUI 前端工程（构建产物 webui/dist 按 D2 入库；依赖不入库）
+# WebUI 前端工程（依赖与构建产物 webui/dist 均不入库，克隆后需 npm run build:webui 本地构建）
 /webui/node_modules/
 /webui/dist/
 
@@ -50,3 +50,6 @@ wheels/
 
 # 真实渲染探针的临时产物（截图 / summary.json / Chrome profile）
 .tmp-verify-*/
+
+# 会话内临时工作文件（commit message 草稿、对比快照等）
+.tmp-*

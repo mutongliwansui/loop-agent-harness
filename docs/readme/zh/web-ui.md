@@ -2,12 +2,12 @@
 
 > [⬅ 返回 README](../../../README.md)
 
-`--serve` 模式在 REST API 之外同端口托管浏览器界面（Vue 3 + Vite 构建链，产物提交在 `webui/dist/`，由 `node:http` 静态层直接服务）：**打开网址即得聊天 + 全量运维管理台**，全部复用既有 REST 端点，API 行为零变化。
+`--serve` 模式在 REST API 之外同端口托管浏览器界面（Vue 3 + Vite 构建链，产物输出到 `webui/dist/`，由 `node:http` 静态层直接服务）：**打开网址即得聊天 + 全量运维管理台**，全部复用既有 REST 端点，API 行为零变化。
 
 ### 启动
 
 ```bash
-npm run build:webui   # 首次或改动前端后构建（产物输出 webui/dist/，已随仓库提交，克隆即可用）
+npm run build:webui   # 首次或改动前端后构建（产物输出 webui/dist/，不入库，克隆后需构建一次）
 npm run serve
 # 或
 npx tsx src/index.ts --serve
@@ -23,7 +23,7 @@ HTTP API 服务已启动
   提示:    Ctrl+C 退出；配置变更需重启生效
 ```
 
-> 若 `webui/dist` 不存在（如自行清理过），静态层自动跳过，纯 API 服务不受影响；重新执行 `npm run build:webui` 即可恢复。
+> 若 `webui/dist` 尚未构建（该产物不入库，克隆后默认不存在），静态层自动跳过，纯 API 服务不受影响；执行 `npm run build:webui` 构建即可。
 
 ### 鉴权（token 门）
 

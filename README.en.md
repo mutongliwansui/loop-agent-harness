@@ -134,7 +134,7 @@ npm run build
 # 🚀 Build a SEA single executable (output to dist-sea/, see the section below)
 npm run build:sea
 
-# 🖥️ Build the Web UI frontend (output webui/dist/, committed to the repo — usable right after cloning)
+# 🖥️ Build the Web UI frontend (output webui/dist/; not committed — build once after cloning)
 npm run build:webui
 ```
 

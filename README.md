@@ -134,7 +134,7 @@ npm run build
 # 🚀 构建 SEA 单可执行文件（输出到 dist-sea/，详见下方章节）
 npm run build:sea
 
-# 🖥️ 构建 Web UI 前端（输出 webui/dist/，产物已随仓库提交，克隆即可用）
+# 🖥️ 构建 Web UI 前端（输出 webui/dist/；该产物不入库，克隆后需先构建一次）
 npm run build:webui
 ```
 
