@@ -82,4 +82,13 @@ describe('ptyUnavailableHint：文案要能指导两种部署形态', () => {
     expect(hint).toContain('build:sea'); // 指向自动拷贝方案
     expect(hint).toContain('node_modules'); // 真实查找路径
   });
+
+  // Task-20261027-002 D8：内嵌方案落地后，文案必须先讲「单文件 exe 自带模块」，
+  // 再讲旧形态兼容，否则用户仍会对着 exe 目录执行 npm i。
+  it('区分「单文件 exe 自带」与「exe + 同级 node_modules」两条路径', () => {
+    process.argv = ['D:\\sea-standalone\\loop-agent.exe', '--serve'];
+    const hint = ptyUnavailableHint();
+    expect(hint).toContain('单文件 exe');
+    expect(hint).toContain('同级 node_modules');
+  });
 });

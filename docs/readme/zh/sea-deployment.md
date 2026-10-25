@@ -18,14 +18,20 @@ npm run build:sea
 | Windows | `dist-sea/loop-agent.exe` | 已实测验证（Node v24） |
 | Linux | `dist-sea/loop-agent` | 需在 Linux 上构建 |
 | macOS | `dist-sea/loop-agent` | 需在 macOS 上构建 |
-| 全平台 | `dist-sea/node_modules/@lydell/` | 原生 PTY 模块，**必须与 exe 同目录分发**（见下） |
+| 全平台 | `dist-sea/node_modules/@lydell/` | **可选**：兼容旧分发形态。不拷也能用——exe 已内嵌原生模块（见下） |
 
 > **不可交叉编译**：Node SEA 要求在**目标操作系统上构建**（Windows 产物只能在 Windows 运行）。现场是哪种系统，就在哪种系统上执行一次 `npm run build:sea`。
 
-> **分发时要连 `node_modules/` 一起拷走**：exe 本身是单文件（含 Node 运行时与 WebUI 资源），
-> 但**原生模块无法内嵌**进 SEA blob。交互式终端依赖 `@lydell/node-pty`，构建脚本已自动把
-> `node_modules/@lydell` 拷到 exe 同目录，所以分发单位是「exe + 同级 `node_modules/`」。
-> 只拷 exe 时服务仍能正常启动，只是终端降级为「交互式终端不可用」并提示缺失路径。
+> **只拷 exe 就够了**：构建脚本把交互式终端需要的 `@lydell/node-pty` 原生模块**整树内嵌**进 exe，
+> 首次用到终端时自动释放到 `%TEMP%/loop-agent-pty-<指纹>/`（Windows 约 1.59 MB / 24 个文件），
+> 之后按内容指纹复用，升级 exe 会换新目录、不干扰正在运行的旧实例。
+>
+> 解析顺序是**磁盘优先、内嵌兜底**：
+> 1. `exe 同级 node_modules/`（向上查找，兼容旧分发形态 → 命中则不释放，零开销）
+> 2. 内嵌释放目录（单文件部署 → 首次释放后复用）
+>
+> 所以「exe + 同级 `node_modules/`」的老分发方式**仍然可用**；而只拷 exe 时终端同样开箱可用，
+> 不再降级为「交互式终端不可用」。
 
 ### 运行
 
@@ -44,12 +50,24 @@ npm run build:sea
 1. **打包**：`tsup` 将 TypeScript 编译为单文件 CJS，第三方依赖全部内联（`noExternal`）
 2. **生成 blob**：`node --experimental-sea-config` 根据 `sea-config.json` 生成准备 blob
 3. **注入**：复制 Node 运行时作为产物骨架，用 `postject` 注入 `NODE_SEA_BLOB`
-4. **拷贝原生依赖**：把 `node_modules/@lydell/node-pty`（JS 包装）与其平台子包
-   `@lydell/node-pty-<platform>-<arch>`（真正的 `.node`）复制到产物同目录的 `node_modules/` 下
+4. **内嵌原生依赖**：把 `node_modules/@lydell/node-pty`（JS 包装）与其平台子包
+   `@lydell/node-pty-<platform>-<arch>`（真正的 `.node`、`conpty.dll`、`OpenConsole.exe`）
+   **整树作为 SEA assets 内嵌**进 exe，同时仍拷贝一份到产物同目录 `node_modules/` 作为兼容形态
 
-第 4 步不能省：SEA blob 只能内嵌 JS 与静态 assets，**原生模块必须在运行时从磁盘加载**。
-终端启动时的解析基准是 exe 所在目录（SEA 下 `process.argv[1]` 是 CLI 参数，已排除），
-所以 `node_modules/@lydell` 只有落在 exe 同级目录才生效。
+第 4 步为什么必须「整树」而不是只嵌 `.node`：`lib/*.js` 用相对路径 require
+`prebuilds/<platform-arch>/conpty.node`，`windowsPtyAgent.js` 用 `__dirname` fork 子进程，
+`conpty.dll` / `OpenConsole.exe` 躺在子目录里——只嵌单个 `.node` 必炸。
+
+`.node` 无法直接从内存 dlopen（`process.dlopen()` 要求真实文件系统路径），
+所以运行时走「内嵌 asset → 写入临时文件 → 再加载」（见 `src/terminal/pty-embed.ts`）。
+释放目录用内容指纹命名，配合 `.ready` 标记与**逐文件尺寸校验**，可幂等复用与损坏自愈；
+多实例并发首次启动时先写 `.tmp-<pid>-<rand>` 再原子 rename，读到半个文件的窗口为零。
+
+Windows 上还有个坑：若另一个实例正在运行、已把 `conpty.node` 映射进地址空间，
+那么整个释放目录既删不掉（`rmSync` EPERM）也覆盖不了那个文件。
+此时不是放弃，而是**原地补缺**——只写缺失或被截断的文件，最后才补 `.ready`；
+实在补不齐（缺的正好是被锁的文件）才退到备用目录 `loop-agent-pty-<指纹>-b1`。
+所以「另一个实例开着」不会让新实例的终端永久不可用。
 
 对应编排脚本：[scripts/build-sea.mjs](../../../scripts/build-sea.mjs)（`package.json` 的 `build:sea`）。
 
@@ -61,4 +79,4 @@ npm run build:sea
 | **全局配置与密钥迁移** | 首次运行会在 `~/.loop-agent/` 生成全局配置、`.keyfile`（会话加密主密钥）等；迁机时建议一并迁移，否则历史加密会话无法解密（可用 `keychain.exportKey()` 备份） |
 | **工作目录语义** | 程序以**当前工作目录**为工作空间根：L2 记忆写入 `<cwd>/memory/`，工作空间配置读取 `<cwd>/.loop-agent/`。在不同目录启动会看到不同的"项目上下文" |
 | **无需 Node 运行时** | 单文件产物自带 Node 运行时，目标机只需操作系统本身 |
-| **原生模块需随 exe 分发** | `@lydell/node-pty` 是原生 `.node`，SEA blob 装不进去。分发单位是「exe + 同级 `node_modules/`」；漏拷时终端报「交互式终端不可用」并在提示里给出实际查找路径 |
+| **原生模块已内嵌** | `@lydell/node-pty` 整树内嵌在 exe 内，首次使用终端时释放到 `%TEMP%/loop-agent-pty-<指纹>/`。**只需分发 exe**；旧「exe + 同级 `node_modules/`」形态仍受支持（磁盘优先，命中则不释放）。若 `%TEMP%` 不可写或空间不足，终端会降级并给出实际查找路径与失败原因。目录被其他实例占用而无法删除时能原地补缺自愈；万一仍失败，按提示删除 `%TEMP%` 下对应的 `loop-agent-pty-*` 目录后重启即可 |

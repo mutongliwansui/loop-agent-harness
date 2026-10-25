@@ -13,6 +13,7 @@ import { stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { readSeaAsset } from '../sea-assets.js';
 
 /** MIME 映射（覆盖 Vite 构建产物与常见静态资源） */
 const MIME: Record<string, string> = {
@@ -129,19 +130,10 @@ async function serveFile(res: ServerResponse, filePath: string, method: string, 
 
 /**
  * 读 SEA 内嵌资源（build-sea.mjs 以 assets 注入 exe）；非 SEA 运行时或资源缺失返回 null。
- * 用 process.getBuiltinModule 而非静态 import：esbuild 打 CJS 会剥掉 node: 前缀
- * （require("sea") 不存在），SEA 运行时 embedder require 会抛 ERR_UNKNOWN_BUILTIN_MODULE。
+ * 实现已抽到 `src/sea-assets.ts`，与终端 PTY 原生模块内嵌共用同一套读取口径。
  */
 function readEmbedded(key: string): Buffer | null {
-  const sea = process.getBuiltinModule('node:sea') as
-    | typeof import('node:sea')
-    | undefined;
-  if (!sea?.isSea()) return null;
-  try {
-    return Buffer.from(sea.getAsset(key));
-  } catch {
-    return null;
-  }
+  return readSeaAsset(key);
 }
 
 /**

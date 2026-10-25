@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import type { ShellInfo } from './shells.js';
+import { ensureEmbeddedPty, lastEmbeddedPtyError, embeddedPtyRoot } from './pty-embed.js';
 
 // 解析基准 2：exe 所在目录（SEA 打包后 exe 与 node_modules 同目录部署）。
 // 注意这里刻意**不用 process.cwd()**：项目有 process.cwd() 白名单红线（tests/no-chdir.test.ts），
@@ -76,6 +77,15 @@ export function describePtySearchPaths(): string {
 }
 
 /**
+ * 内嵌 release 目录（仅当 exe 内嵌了原生模块时非空）。
+ * 单独暴露给文案层：单文件分发场景下真正可用的路径是它，而不是磁盘 node_modules。
+ */
+export function describeEmbeddedPtyPath(): string | null {
+  const info = ensureEmbeddedPty();
+  return info ? info.root : null;
+}
+
+/**
  * 加载 PTY 原生模块（失败缓存为 null，避免每次 spawn 都重试昂贵的 require）。
  * 导出供单测替换/复位。
  *
@@ -105,6 +115,14 @@ export function loadPtyModule(): PtyModule | null {
     () => {
       const req = createRequire(process.execPath);
       return req(req.resolve(PTY_PKG, { paths: [dirname(process.execPath)] }));
+    },
+    // 4) SEA 内嵌释放目录（单文件分发：exe 自带原生模块，Task-20261027-002）
+    //    放在最后是刻意的（D6）：本地开发与「exe + node_modules」老形态继续走
+    //    零开销的磁盘路径，只有真正单文件分发时才付出释放 1.59MB 的成本。
+    () => {
+      const info = ensureEmbeddedPty();
+      if (!info) return undefined;
+      return createRequire(info.anchor)(PTY_PKG);
     },
   ];
 
@@ -321,13 +339,27 @@ export function nextSessionId(): string {
 
 /**
  * 缺 PTY 时的可操作指引。错误信息与 `/terminal/info` 的 `ptyHint` 共用同一份文案，
- * 避免「前端自己写一句 npm i」与服务端真实原因漂移（SEA 部署照做无效）。
+ * 避免「前端自己写一句 npm i」与服务端真实原因漂移（SEA 部署照做无效，已踩过）。
+ *
+ * 文案三段式（Task-20261027-002 D8）：已查找路径 → 单文件 exe 补救 → 开发环境补救。
+ * 只有把「单文件 exe」摆在前面，用户才不会对着 exe 目录去执行 npm i。
  */
 export function ptyUnavailableHint(): string {
+  const embedded = describeEmbeddedPtyPath();
+  const embedReason = lastEmbeddedPtyError();
+
+  // 单文件 exe：exe 内嵌了原生模块但释放失败 → 说明失败原因，给出可执行动作
+  const exePart = embedded
+    ? `内嵌模块已释放到 ${embedded} 但仍加载失败，可删除该目录后重启（下次启动会重新释放）`
+    : embedReason
+      ? `单文件 exe 内嵌模块释放失败（${embedReason}），可删除 %TEMP% 下的 loop-agent-pty-* 目录后重启`
+      : '单文件 exe 部署应自带原生模块；若这是自行裁剪的产物，请重新执行 npm run build:sea 打包';
+
   return (
     `未找到 ${PTY_PKG}（已查找：${describePtySearchPaths()}）。` +
+    `${exePart}；` +
     '开发环境执行 npm i @lydell/node-pty 后重启服务；' +
-    '单文件 exe 部署需把 node_modules/@lydell 放在 exe 同目录随 exe 一起分发（npm run build:sea 已自动拷贝）'
+    '旧的「exe + 同级 node_modules」形态仍受支持，把 node_modules/@lydell 放在 exe 同目录即可'
   );
 }
 
