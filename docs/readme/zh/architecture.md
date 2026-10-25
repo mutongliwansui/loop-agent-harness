@@ -45,7 +45,7 @@
 │  └──────────────┘  └──────────────┘  └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────┤
 │                   Built-in Tools                             │
-│ commandRun │ fileRead │ fileWrite │ grep │ activateSkill    │
+│ commandRun │ fileRead │ fileWrite │ grep │ activate_skill   │
 └──────────────────────────────────────────────────────────────┘
 ```
 

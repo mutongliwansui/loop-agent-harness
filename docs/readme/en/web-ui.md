@@ -50,6 +50,20 @@ Eight items in the left navigation (Chinese UI, light/dark follows the system, n
 
 <!-- Screenshot placeholder: to be added -->
 
+### Workspace File Panel (right side of chat)
+
+A persistent "workspace files" panel sits on the right of the chat view and **lazy-loads** per active-session workspace (children are fetched only when a directory is expanded), so it never competes with the conversation:
+
+- **Single-row header (≤64px)**: search box (`Ctrl K` to focus, `Esc` to clear) plus three 26px icon buttons — new folder / upload (opens a sub-menu: upload file or upload folder) / refresh. Below 246px of panel width a container query kicks in: the magnifier hides, buttons shrink to 24px, and the placeholder shortens to "搜索文件…" so nothing is clipped.
+- **Tree rows**: inline SVG icons (brand green for directories, muted grey for files, both following `currentColor`), a chevron that rotates 90° when expanded, 14px indentation per level with guide lines, and a 26px row height. The selected row gets a 3px brand bar on the left plus a bold, brand-coloured name — legible even four levels deep.
+- **Inline actions**: directories expose `＋` (new subfolder) / `↑` (upload here) / `⋯`; files expose `⤓` (download) / `✎` (rename) / `⋯`. The `⋯` menu shares one implementation with the context menu and carries a path header, separators and "copy relative path".
+- **Search**: results are grouped per file with a "N hits · M files" summary and a one-click clear; each group header shows the file icon, dimmed directory, file name and a hit-count badge, while hit rows right-align the line number and highlight the keyword with `<mark>` (case-insensitive, regex metacharacters safe).
+- **All four states**: first-paint skeleton, empty-state card (clear search), error card (retry), and a drag-and-drop overlay that names the destination directory.
+- **30px status bar**: item count on the left (switches to `上传 x/y` while uploading, with a 3px progress line under the header), the "hidden items" switch in the middle, and an auto-refresh pulse on the right — the indicator is still clickable to pause polling temporarily, and the choice persists in `localStorage`.
+- **Sizing and a11y**: default 264px, minimum 204px, maximum `min(420, total width − 320)`, double-click to reset; the tree uses `role="tree"` / `role="treeitem"` / `aria-expanded` / `tabindex` so rows can be focused one by one.
+
+Endpoints are unchanged: `/fs/tree`, `/fs/search`, `/fs/fingerprint`, `/fs/file`, `/fs/raw`, `/fs/upload`, etc. — this rework touches only the front-end visuals and interactions.
+
 ### In-chat Upload
 
 The 📎 button in the composer opens the upload panel: file picker (multi-select) → each file is uploaded as raw bytes via `POST /uploads/raw` (browsers cannot obtain full local paths, hence this new endpoint; the CLI's `/upload` path mode is unaffected) → on success a context chip (file name + size) appears above the composer and is injected into the Agent context with the next message. The chip ✕ only removes it on the client (no longer injected); the management list can inspect/clear uploaded files (verb-as-confirmation).

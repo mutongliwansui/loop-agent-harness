@@ -1,0 +1,701 @@
+{
+  "shots": "D:\\trae_workspace\\loop-agent-command\\docs\\designs",
+  "checks": [
+    {
+      "name": "面板默认宽度 264px",
+      "ok": true,
+      "detail": 264
+    },
+    {
+      "name": "头部高度 ≤64px",
+      "ok": true,
+      "detail": 45
+    },
+    {
+      "name": "头部三个按钮可用（有工作空间时不禁用）",
+      "ok": true,
+      "detail": "[false,false,false]"
+    },
+    {
+      "name": "状态条高度 30px",
+      "ok": true,
+      "detail": 30
+    },
+    {
+      "name": "树行高度 26px",
+      "ok": true,
+      "detail": [
+        26
+      ]
+    },
+    {
+      "name": "目录图标为 --brand",
+      "ok": true,
+      "detail": "rgb(14, 159, 110) vs #0e9f6e"
+    },
+    {
+      "name": "文件图标为 --muted（与目录不同色）",
+      "ok": true,
+      "detail": "rgb(107, 114, 128)"
+    },
+    {
+      "name": "DOM 无 emoji / 字符三角",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "底部状态条显示项数",
+      "ok": true,
+      "detail": "7 项 隐藏项 自动刷新"
+    },
+    {
+      "name": "状态条含隐藏项开关与自动刷新灯",
+      "ok": true,
+      "detail": "7 项 隐藏项 自动刷新"
+    },
+    {
+      "name": "缩进步长 14px",
+      "ok": true,
+      "detail": {
+        "0": 5,
+        "1": 19,
+        "2": 33,
+        "3": 47
+      }
+    },
+    {
+      "name": "层级引导线已渲染（≥2 条，四层展开）",
+      "ok": true,
+      "detail": 11
+    },
+    {
+      "name": "引导线取 --line-strong",
+      "ok": true,
+      "detail": "rgb(211, 216, 222) vs #d3d8de"
+    },
+    {
+      "name": "选中行左侧色条 3px",
+      "ok": true,
+      "detail": "3px / rgb(14, 159, 110) / 0px"
+    },
+    {
+      "name": "选中行名称 600 且为 --brand",
+      "ok": true,
+      "detail": "600/rgb(14, 159, 110)"
+    },
+    {
+      "name": "面包屑显示根 › 目录链",
+      "ok": true,
+      "detail": "loop-agent-command › docs › designs › sub"
+    },
+    {
+      "name": "行内操作每行 3 个（2 高频 + ⋯）",
+      "ok": true,
+      "detail": "42/14"
+    },
+    {
+      "name": "搜索按文件分组",
+      "ok": true,
+      "detail": 2
+    },
+    {
+      "name": "顶部显示命中数与文件数",
+      "ok": true,
+      "detail": "3 处命中 · 2 个文件 清除"
+    },
+    {
+      "name": "关键词命中高亮 mark 取 --warn-weak",
+      "ok": true,
+      "detail": "rgb(254, 243, 199) vs #fef3c7"
+    },
+    {
+      "name": "命中行行号右对齐渲染",
+      "ok": true,
+      "detail": 3
+    },
+    {
+      "name": "行内 ⋯ / 右键弹出菜单",
+      "ok": true,
+      "detail": true
+    },
+    {
+      "name": "菜单含路径头",
+      "ok": true,
+      "detail": "docs/designs/sub/deep.md"
+    },
+    {
+      "name": "菜单项含复制相对路径",
+      "ok": true,
+      "detail": [
+        "下载文件",
+        "重命名 / 移动 F2",
+        "复制相对路径",
+        "删除 Del"
+      ]
+    },
+    {
+      "name": "深色主题：选中底色与高亮底均落到暗色令牌",
+      "ok": true,
+      "detail": "rgb(20, 53, 40) / rgb(58, 46, 16)"
+    },
+    {
+      "name": "窄面板 204px 生效",
+      "ok": true,
+      "detail": 204
+    },
+    {
+      "name": "窄面板搜索放大镜收起",
+      "ok": true,
+      "detail": "none"
+    },
+    {
+      "name": "窄面板图标按钮 24px",
+      "ok": true,
+      "detail": [
+        24,
+        24
+      ]
+    },
+    {
+      "name": "占位文案为「搜索文件…」",
+      "ok": true,
+      "detail": "搜索文件…"
+    },
+    {
+      "name": "窄面板无横向溢出",
+      "ok": true,
+      "detail": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "宽面板 320px 图标按钮回 26px",
+      "ok": true,
+      "detail": [
+        26,
+        26
+      ]
+    }
+  ],
+  "pass": 31,
+  "total": 31,
+  "results": {
+    "light": {
+      "sideWidth": 264,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": 26,
+      "rowHeights": [
+        26
+      ],
+      "padByDepth": {
+        "0": 5
+      },
+      "step": -5,
+      "rowCount": 7,
+      "selBg": null,
+      "selBarWidth": null,
+      "selBarLeft": null,
+      "selBarHeight": null,
+      "selBarBg": null,
+      "selBarContent": null,
+      "selRect": null,
+      "selNameWeight": null,
+      "selNameColor": null,
+      "dirIcoColor": "rgb(14, 159, 110)",
+      "fileIcoColor": "rgb(107, 114, 128)",
+      "guideCount": 0,
+      "guideColor": null,
+      "markBg": null,
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command",
+      "resHeadText": null,
+      "resGroupCount": 0,
+      "resHitCount": 0,
+      "resMarkCount": 0,
+      "footText": "7 项 隐藏项 自动刷新",
+      "actBtnCount": 21,
+      "emoji": [],
+      "tokenBrand": "#0e9f6e",
+      "tokenWarnWeak": "#fef3c7",
+      "tokenLineStrong": "#d3d8de",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": false,
+      "menuItems": [],
+      "menuHeader": null,
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "tree": {
+      "sideWidth": 264,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": 26,
+      "rowHeights": [
+        26
+      ],
+      "padByDepth": {
+        "0": 5,
+        "1": 19,
+        "2": 33,
+        "3": 47
+      },
+      "step": 14,
+      "rowCount": 14,
+      "selBg": "rgb(230, 246, 239)",
+      "selBarWidth": "3px",
+      "selBarLeft": "0px",
+      "selBarHeight": "20px",
+      "selBarBg": "rgb(14, 159, 110)",
+      "selBarContent": "\"\"",
+      "selRect": {
+        "left": 804.328125,
+        "top": 156.59375,
+        "height": 26
+      },
+      "selNameWeight": "600",
+      "selNameColor": "rgb(14, 159, 110)",
+      "dirIcoColor": "rgb(14, 159, 110)",
+      "fileIcoColor": "rgb(107, 114, 128)",
+      "guideCount": 11,
+      "guideColor": "rgb(211, 216, 222)",
+      "markBg": null,
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": null,
+      "resGroupCount": 0,
+      "resHitCount": 0,
+      "resMarkCount": 0,
+      "footText": "14 项 隐藏项 自动刷新",
+      "actBtnCount": 42,
+      "emoji": [],
+      "tokenBrand": "#0e9f6e",
+      "tokenWarnWeak": "#fef3c7",
+      "tokenLineStrong": "#d3d8de",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": false,
+      "menuItems": [],
+      "menuHeader": null,
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "search": {
+      "sideWidth": 264,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": null,
+      "rowHeights": [],
+      "padByDepth": {},
+      "step": 0,
+      "rowCount": 0,
+      "selBg": null,
+      "selBarWidth": null,
+      "selBarLeft": null,
+      "selBarHeight": null,
+      "selBarBg": null,
+      "selBarContent": null,
+      "selRect": null,
+      "selNameWeight": null,
+      "selNameColor": null,
+      "dirIcoColor": null,
+      "fileIcoColor": null,
+      "guideCount": 0,
+      "guideColor": null,
+      "markBg": "rgb(254, 243, 199)",
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": "3 处命中 · 2 个文件 清除",
+      "resGroupCount": 2,
+      "resHitCount": 3,
+      "resMarkCount": 3,
+      "footText": "3 处命中 · 2 个文件 隐藏项 自动刷新",
+      "actBtnCount": 0,
+      "emoji": [],
+      "tokenBrand": "#0e9f6e",
+      "tokenWarnWeak": "#fef3c7",
+      "tokenLineStrong": "#d3d8de",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": false,
+      "menuItems": [],
+      "menuHeader": null,
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "menu": {
+      "sideWidth": 264,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": 26,
+      "rowHeights": [
+        26
+      ],
+      "padByDepth": {
+        "0": 5,
+        "1": 19,
+        "2": 33,
+        "3": 47
+      },
+      "step": 14,
+      "rowCount": 14,
+      "selBg": "rgb(230, 246, 239)",
+      "selBarWidth": "3px",
+      "selBarLeft": "0px",
+      "selBarHeight": "20px",
+      "selBarBg": "rgb(14, 159, 110)",
+      "selBarContent": "\"\"",
+      "selRect": {
+        "left": 804.328125,
+        "top": 156.59375,
+        "height": 26
+      },
+      "selNameWeight": "600",
+      "selNameColor": "rgb(14, 159, 110)",
+      "dirIcoColor": "rgb(14, 159, 110)",
+      "fileIcoColor": "rgb(107, 114, 128)",
+      "guideCount": 11,
+      "guideColor": "rgb(211, 216, 222)",
+      "markBg": null,
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": null,
+      "resGroupCount": 0,
+      "resHitCount": 0,
+      "resMarkCount": 0,
+      "footText": "14 项 隐藏项 自动刷新",
+      "actBtnCount": 42,
+      "emoji": [],
+      "tokenBrand": "#0e9f6e",
+      "tokenWarnWeak": "#fef3c7",
+      "tokenLineStrong": "#d3d8de",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": true,
+      "menuItems": [
+        "下载文件",
+        "重命名 / 移动 F2",
+        "复制相对路径",
+        "删除 Del"
+      ],
+      "menuHeader": "docs/designs/sub/deep.md",
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "dark": {
+      "sideWidth": 264,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": 26,
+      "rowHeights": [
+        26
+      ],
+      "padByDepth": {
+        "0": 5,
+        "1": 19,
+        "2": 33,
+        "3": 47
+      },
+      "step": 14,
+      "rowCount": 14,
+      "selBg": "rgb(20, 53, 40)",
+      "selBarWidth": "3px",
+      "selBarLeft": "0px",
+      "selBarHeight": "20px",
+      "selBarBg": "rgb(52, 211, 153)",
+      "selBarContent": "\"\"",
+      "selRect": {
+        "left": 804.328125,
+        "top": 156.59375,
+        "height": 26
+      },
+      "selNameWeight": "600",
+      "selNameColor": "rgb(52, 211, 153)",
+      "dirIcoColor": "rgb(52, 211, 153)",
+      "fileIcoColor": "rgb(154, 161, 171)",
+      "guideCount": 11,
+      "guideColor": "rgb(58, 66, 77)",
+      "markBg": null,
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": null,
+      "resGroupCount": 0,
+      "resHitCount": 0,
+      "resMarkCount": 0,
+      "footText": "14 项 隐藏项 自动刷新",
+      "actBtnCount": 42,
+      "emoji": [],
+      "tokenBrand": "#34d399",
+      "tokenWarnWeak": "#3a2e10",
+      "tokenLineStrong": "#3a424d",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": true,
+      "menuItems": [
+        "下载文件",
+        "重命名 / 移动 F2",
+        "复制相对路径",
+        "删除 Del"
+      ],
+      "menuHeader": "docs/designs/sub/deep.md",
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "darkSearch": {
+      "sideWidth": 264,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": null,
+      "rowHeights": [],
+      "padByDepth": {},
+      "step": 0,
+      "rowCount": 0,
+      "selBg": null,
+      "selBarWidth": null,
+      "selBarLeft": null,
+      "selBarHeight": null,
+      "selBarBg": null,
+      "selBarContent": null,
+      "selRect": null,
+      "selNameWeight": null,
+      "selNameColor": null,
+      "dirIcoColor": null,
+      "fileIcoColor": null,
+      "guideCount": 0,
+      "guideColor": null,
+      "markBg": "rgb(58, 46, 16)",
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": "3 处命中 · 2 个文件 清除",
+      "resGroupCount": 2,
+      "resHitCount": 3,
+      "resMarkCount": 3,
+      "footText": "3 处命中 · 2 个文件 隐藏项 自动刷新",
+      "actBtnCount": 0,
+      "emoji": [],
+      "tokenBrand": "#34d399",
+      "tokenWarnWeak": "#3a2e10",
+      "tokenLineStrong": "#3a424d",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": true,
+      "menuItems": [
+        "下载文件",
+        "重命名 / 移动 F2",
+        "复制相对路径",
+        "删除 Del"
+      ],
+      "menuHeader": "docs/designs/sub/deep.md",
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "narrow": {
+      "sideWidth": 204,
+      "headHeight": 43,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": 26,
+      "rowHeights": [
+        26
+      ],
+      "padByDepth": {
+        "0": 5,
+        "1": 19,
+        "2": 33,
+        "3": 47
+      },
+      "step": 14,
+      "rowCount": 14,
+      "selBg": "rgb(230, 246, 239)",
+      "selBarWidth": "3px",
+      "selBarLeft": "0px",
+      "selBarHeight": "20px",
+      "selBarBg": "rgb(14, 159, 110)",
+      "selBarContent": "\"\"",
+      "selRect": {
+        "left": 864.328125,
+        "top": 154.59375,
+        "height": 26
+      },
+      "selNameWeight": "600",
+      "selNameColor": "rgb(14, 159, 110)",
+      "dirIcoColor": "rgb(14, 159, 110)",
+      "fileIcoColor": "rgb(107, 114, 128)",
+      "guideCount": 11,
+      "guideColor": "rgb(211, 216, 222)",
+      "markBg": null,
+      "ibSize": [
+        24,
+        24
+      ],
+      "searchIconDisplay": "none",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": null,
+      "resGroupCount": 0,
+      "resHitCount": 0,
+      "resMarkCount": 0,
+      "footText": "14 项",
+      "actBtnCount": 42,
+      "emoji": [],
+      "tokenBrand": "#0e9f6e",
+      "tokenWarnWeak": "#fef3c7",
+      "tokenLineStrong": "#d3d8de",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": true,
+      "menuItems": [
+        "下载文件",
+        "重命名 / 移动 F2",
+        "复制相对路径",
+        "删除 Del"
+      ],
+      "menuHeader": "docs/designs/sub/deep.md",
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    },
+    "wide": {
+      "sideWidth": 320,
+      "headHeight": 45,
+      "headBtnDisabled": [
+        false,
+        false,
+        false
+      ],
+      "footHeight": 30,
+      "rowHeight": 26,
+      "rowHeights": [
+        26
+      ],
+      "padByDepth": {
+        "0": 5,
+        "1": 19,
+        "2": 33,
+        "3": 47
+      },
+      "step": 14,
+      "rowCount": 14,
+      "selBg": "rgb(230, 246, 239)",
+      "selBarWidth": "3px",
+      "selBarLeft": "0px",
+      "selBarHeight": "20px",
+      "selBarBg": "rgb(14, 159, 110)",
+      "selBarContent": "\"\"",
+      "selRect": {
+        "left": 748.328125,
+        "top": 156.59375,
+        "height": 26
+      },
+      "selNameWeight": "600",
+      "selNameColor": "rgb(14, 159, 110)",
+      "dirIcoColor": "rgb(14, 159, 110)",
+      "fileIcoColor": "rgb(107, 114, 128)",
+      "guideCount": 11,
+      "guideColor": "rgb(211, 216, 222)",
+      "markBg": null,
+      "ibSize": [
+        26,
+        26
+      ],
+      "searchIconDisplay": "flex",
+      "placeholder": "搜索文件…",
+      "crumbText": "loop-agent-command › docs › designs › sub",
+      "resHeadText": null,
+      "resGroupCount": 0,
+      "resHitCount": 0,
+      "resMarkCount": 0,
+      "footText": "14 项 隐藏项 自动刷新",
+      "actBtnCount": 42,
+      "emoji": [],
+      "tokenBrand": "#0e9f6e",
+      "tokenWarnWeak": "#fef3c7",
+      "tokenLineStrong": "#d3d8de",
+      "bodyOverflowX": 0,
+      "sideOverflowX": 0,
+      "menuVisible": true,
+      "menuItems": [
+        "下载文件",
+        "重命名 / 移动 F2",
+        "复制相对路径",
+        "删除 Del"
+      ],
+      "menuHeader": "docs/designs/sub/deep.md",
+      "skeletonRows": 0,
+      "emptyCard": false,
+      "dropOverlay": false
+    }
+  }
+}

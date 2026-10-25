@@ -379,7 +379,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph SRC["工具来源"]
-        B["6 个内置工具<br/>commandRun · fileRead · fileWrite<br/>editFile · grep · activateSkill"]
+        B["9 个内置工具<br/>commandRun · commandStatus · commandLogs<br/>commandStop · fileRead · fileWrite<br/>editFile · grep · activate_skill"]
         V["4 个视觉工具<br/>describe_image · ask_image<br/>extract_json · ocr_image"]
         M["MCP 远端工具<br/>adaptMCPTool + buildToolName"]
     end
