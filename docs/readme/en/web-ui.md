@@ -64,6 +64,33 @@ A persistent "workspace files" panel sits on the right of the chat view and **la
 
 Endpoints are unchanged: `/fs/tree`, `/fs/search`, `/fs/fingerprint`, `/fs/file`, `/fs/raw`, `/fs/upload`, etc. — this rework touches only the front-end visuals and interactions.
 
+### Terminal in the File Preview Area
+
+The top of the file preview area is a tab strip: `📄 filename` sits side by side with terminal tabs (`● PowerShell`, `● Command Prompt`), and `＋` on the right opens a new terminal — the terminal is a **first-class citizen** of the preview area, not an overlay, and needs no split pane. The dot to the left of a terminal tab is the session state: green running, grey exited, red failure, replaced by a spinner while a command runs.
+
+- **Shells come from runtime detection**: on start it probes `pwsh.exe` (PowerShell 7) → `powershell.exe` (Windows PowerShell 5.1) → `cmd.exe` (`$SHELL` / `bash` / `zsh` on POSIX) and lists only what actually exists; when `pwsh.exe` is not installed it never appears in the dropdown (no fake option that errors on click). The working directory is always the current session's workspace, and the path in the toolbar is click-to-copy.
+- **Channel**: `browser (xterm.js) ⇄ WebSocket ⇄ server ⇄ pseudo-terminal PTY (ConPTY)`, so scrollback, cursor, `Ctrl+C`, `↑` history and full-screen TUI programs (e.g. the `npm run build` progress bar) behave like a real terminal; resizing the window or dragging the splitter recomputes columns/rows (the `resize` message is debounced 120ms).
+- **All six states covered**: not started (centered CTA + shell cards) / running (bottom status bar: `● connected · 96×27 · UTF-8 · PID · cwd`) / busy (tab spinner + bottom-right strip "running xx · Ctrl+C") / exited (overlay with exit code and uptime, **output preserved and scrollable**, one-click restart) / disconnected (yellow top banner "reconnecting… (2/5)", exponential backoff 1s→2s→4s→8s) / PTY missing (prints the install command `npm i @lydell/node-pty`). In non-live states the status bar never falsely claims "connected", and clear/copy are greyed out as appropriate.
+- **No garbled CJK**: it does not inject `chcp 65001` — ConPTY works in UTF-16 internally and the server already receives UTF-8, so `echo 中文测试✓` echoes correctly; injecting it would pollute existing output and break tools that rely on the OEM code page. The font stack includes a CJK fallback (`Microsoft YaHei UI`).
+- **Reconnect without losing the screen**: each session keeps a 256KB ring buffer of recent output and replays it before resuming the stream; after a WS disconnect the PTY is kept for a 60s grace period for reconnection, then reclaimed (Windows uses `taskkill /T /F /PID` to clear the process tree including `conhost.exe`).
+- **Closing a tab frees the slot**: clicking the tab `✕` immediately tells the server to kill the PTY and release the concurrency slot — this is distinct from "keep 60s for reconnect after a network blip". Page reload/close also releases via `pagehide`, with a 60s reclaim as backstop. Repeatedly opening and closing terminals therefore never produces "no terminal on screen yet the limit is reported".
+
+**Off by default, must be enabled explicitly**: a terminal means arbitrary command execution with the current user's privileges, so `webui.terminal` defaults to `false`; while disabled the WS handshake returns 403 (the front end shows a configuration hint instead of failing silently).
+
+```bash
+# Enable the terminal (takes effect after restart)
+npm run cli -- /config set webui.terminal true
+
+# Optional: deny list (enforced server-side, denied and audited), concurrency cap, idle reclaim
+npm run cli -- /config set webui.terminalDeny '["shutdown","format"]'
+npm run cli -- /config set webui.terminalMax 4
+npm run cli -- /config set webui.terminalIdleMs 1800000
+```
+
+Security constraints: (1) off by default; (2) without `api.token` only loopback works — non-loopback binding without a token is always rejected; (3) the WS handshake carries the token in `Sec-WebSocket-Protocol` (browsers cannot set custom headers on WebSocket, and a token in the query string would land in access logs); (4) `Origin` allow-list check to prevent CSRF-style cross-site connections; (5) every submitted command is written to the session log for auditing; (6) the front-end confirmation for dangerous commands (`del /s`, `rmdir /s`, `format`, `shutdown`) only guards against slips — **the real boundary is the server-side deny list plus auth**.
+
+Dependencies: `@xterm/xterm` + `@xterm/addon-fit` on the front end; `ws` + `@lydell/node-pty` on the server (a **prebuilt, no-compile** package that avoids node-gyp / Python / VS Build Tools unlike the official node-pty). Without `@lydell/node-pty` the service still starts normally and the terminal degrades to "interactive terminal unavailable" with the install command shown.
+
 ### In-chat Upload
 
 The 📎 button in the composer opens the upload panel: file picker (multi-select) → each file is uploaded as raw bytes via `POST /uploads/raw` (browsers cannot obtain full local paths, hence this new endpoint; the CLI's `/upload` path mode is unaffected) → on success a context chip (file name + size) appears above the composer and is injected into the Agent context with the next message. The chip ✕ only removes it on the client (no longer injected); the management list can inspect/clear uploaded files (verb-as-confirmation).

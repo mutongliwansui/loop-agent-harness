@@ -31,6 +31,8 @@ import { highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
 import { renderEChartsIn } from '../echarts.js';
 import { splitStreamBlocks, type Block } from '../stream-blocks.js';
+// 终端组件独立文件（Task-20261027-001 D6）：本组件已 2500+ 行，禁止继续内联
+import TerminalPanel from '../components/TerminalPanel.vue';
 // 纯逻辑下沉：摊平树/搜索分组/高亮/面包屑/字节格式化均在本模块，可被 vitest 直接覆盖（20261026-001 D3/D6/D9）
 import {
   crumbOf,
@@ -84,6 +86,55 @@ const ICONS = {
 
 const props = defineProps<{ wsPath: string }>();
 const open = defineModel<boolean>('open', { default: true });
+
+/* ================= 预览区标签：文件预览 与 终端 共存 =================
+   Task-20261027-001 D6：终端不另开浮层，而是预览区顶部标签行的一等公民。
+   activeTab 为 'file' 或终端 id；终端列表只存轻量元数据，
+   xterm 实例与 WS 连接由 TerminalPanel 自持（避免 FilesView 继续膨胀）。 */
+type TermTab = { id: number; title: string; state: string; shellId?: string };
+const terminals = ref<TermTab[]>([]);
+const activeTab = ref<'file' | number>('file');
+let termSeq = 0;
+
+/** 页签只显示文件名（长路径在 title 里给全） */
+function shortName(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+/** 终端子组件实例（页签 ✕ 需要主动关闭服务端 PTY，不能只删数组） */
+const termPanels = new Map<number, { shutdown(): void }>();
+
+/** 函数式 ref 收集：卸载时 Vue 以 null 调用，正好顺带清理 */
+function bindTermPanel(id: number, inst: unknown): void {
+  if (inst) termPanels.set(id, inst as { shutdown(): void });
+  else termPanels.delete(id);
+}
+
+/** 新建终端并激活 */
+function newTerminal(): void {
+  termSeq += 1;
+  terminals.value.push({ id: termSeq, title: '', state: 'connecting' });
+  activeTab.value = termSeq;
+}
+
+/**
+ * 关闭终端页签；若关的是当前页，回落到最后一个终端或文件页。
+ *
+ * 必须先调用子组件的 shutdown() 真正关掉服务端 PTY：
+ * 只从 terminals 数组移除会让 TerminalPanel 走 onBeforeUnmount → dispose()，
+ * 那份逻辑只断 WS、不发 close，服务端会话转入 60s 宽限期但**仍占并发名额**，
+ * 于是反复开关几次就会「并发终端数已达上限」而界面上一个终端都没有。
+ */
+function closeTerminal(id: number): void {
+  termPanels.get(id)?.shutdown();
+  termPanels.delete(id);
+  terminals.value = terminals.value.filter((t) => t.id !== id);
+  if (activeTab.value === id) {
+    const last = terminals.value[terminals.value.length - 1];
+    activeTab.value = last ? last.id : 'file';
+  }
+}
 
 const panelEl = ref<HTMLElement | null>(null);
 const viewerEl = ref<HTMLElement | null>(null);
@@ -560,6 +611,8 @@ async function mountPptx(seq: number): Promise<void> {
 async function openFile(path: string, anchor = ''): Promise<void> {
   const k = viewKindOf(path);
   selected.value = path;
+  // 打开文件即切回文件页签（终端在后台保活，不打断正在跑的命令）
+  activeTab.value = 'file';
   viewMode.value = 'prev';
   const seq = ++openSeq;
   fileLoading.value = true;
@@ -1334,9 +1387,36 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
     <div class="splitter" title="拖拽调整宽度；双击恢复默认" @pointerdown="onSplitDown" @dblclick="onSplitDbl"></div>
 
     <div ref="bodyEl" class="files-body" :class="{ 'side-dragging': sideDragging }">
-      <!-- 左：文件预览 -->
+      <!-- 左：文件预览 / 终端 -->
       <div ref="viewerEl" class="files-viewer">
-        <div v-if="!selected" class="fv-empty">点击右侧文件预览内容</div>
+        <!-- 预览区顶部标签行：文件预览与终端共存为同级页签（Task-20261027-001 D6） -->
+        <div class="viewer-tabs">
+          <button
+            class="vtab"
+            :class="{ on: activeTab === 'file' }"
+            :title="selected || '文件预览'"
+            @click="activeTab = 'file'"
+          >
+            <span class="vtab-label">{{ selected ? shortName(selected) : '文件预览' }}</span>
+          </button>
+          <button
+            v-for="t in terminals"
+            :key="t.id"
+            class="vtab term"
+            :class="{ on: activeTab === t.id }"
+            :title="t.title || '终端'"
+            @click="activeTab = t.id"
+          >
+            <span class="vtab-dot" :class="t.state"></span>
+            <span class="vtab-label">{{ t.title || '终端' }}</span>
+            <span class="vtab-x" title="关闭该终端" @click.stop="closeTerminal(t.id)">✕</span>
+          </button>
+          <button class="vtab-add" title="新建终端（可运行 cmd / PowerShell 命令）" @click="newTerminal">＋</button>
+        </div>
+
+        <!-- 文件预览：原 .files-viewer 的滚动与内边距迁到本层（外层已改 flex column） -->
+        <div v-show="activeTab === 'file'" class="fv-scroll">
+          <div v-if="!selected" class="fv-empty">点击右侧文件预览内容</div>
         <template v-else>
           <div class="fv-head">
             <button v-if="viewerHistory.length" class="fv-back" title="返回上一个文件" @click="goBackFile">←</button>
@@ -1426,6 +1506,21 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
           <!-- 源码兜底：md/html/表格类源码与非文档文本（codeLang 已把 md/html 映射高亮） -->
           <pre v-else class="fv-code"><code :class="'language-' + codeLang">{{ fileData?.content }}</code></pre>
         </template>
+        </div>
+
+        <!-- 终端标签页：v-show 保活，避免切换标签销毁 xterm 实例与已输出的内容 -->
+        <TerminalPanel
+          v-for="t in terminals"
+          v-show="activeTab === t.id"
+          :key="t.id"
+          :ref="(el) => bindTermPanel(t.id, el)"
+          :ws-path="wsPath"
+          :visible="activeTab === t.id"
+          :initial-shell="t.shellId"
+          @close="closeTerminal(t.id)"
+          @title="(v: string) => (t.title = v)"
+          @state="(v: string) => (t.state = v)"
+        />
       </div>
 
       <!-- 预览 / 目录 分割条：拖拽调整占比，双击恢复默认 -->
@@ -1780,8 +1875,114 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
 /* 拖拽中禁止选中文本，避免拖出蓝色选区 */
 .files-body.side-dragging { user-select: none; cursor: col-resize; }
 
-/* ===== 左：预览 ===== */
-.files-viewer { flex: 1; min-width: 0; overflow: auto; padding: 14px 18px; }
+/* ===== 左：预览（Task-20261027-001 起改为 flex column：标签行 + 滚动区 / 终端） ===== */
+.files-viewer {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 滚动下沉到 .fv-scroll 与终端内部，本层不再滚动 */
+}
+.fv-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 18px 14px;
+}
+
+/* ---------- 预览区标签行（文件预览 / 终端 共用一行） ---------- */
+.viewer-tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 34px;
+  padding: 0 8px;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none; /* 页签多时横向滚动，但不显示滚动条 */
+}
+.viewer-tabs::-webkit-scrollbar { height: 0; }
+.vtab {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.13s, border-color 0.13s, background 0.13s;
+}
+.vtab:hover { color: var(--text-2); background: var(--hover); }
+/* 选中态：2px brand 下划线（与既有 .fv-head / .md-mode 的克制风格一致） */
+.vtab.on {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--brand);
+  background: transparent;
+}
+.vtab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 终端页签状态圆点：绿=运行、灰=已退出、黄=连接中/重连、红=不可用 */
+.vtab-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.vtab-dot.running { background: var(--ok); }
+.vtab-dot.busy { background: var(--brand); animation: vtab-pulse 1.1s ease-in-out infinite; }
+.vtab-dot.connecting,
+.vtab-dot.offline { background: var(--warn); animation: vtab-pulse 1.1s ease-in-out infinite; }
+.vtab-dot.exited { background: var(--muted); }
+.vtab-dot.unsupported,
+.vtab-dot.denied { background: var(--danger); }
+@keyframes vtab-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.vtab-x {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
+  font-size: 10px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.13s, background 0.13s;
+}
+.vtab:hover .vtab-x { opacity: 0.55; }
+.vtab-x:hover { opacity: 1; background: var(--active); color: var(--danger); }
+.vtab-add {
+  flex: none;
+  width: 26px;
+  height: 34px;
+  font-size: 14px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.13s, background 0.13s;
+}
+.vtab-add:hover { color: var(--brand); background: var(--hover); }
+
 .fv-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 48px 0; }
 .fv-err { color: var(--danger); font-size: 13px; padding: 12px 0; }
 .fv-head {

@@ -1,0 +1,1286 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 20261027-001 · 文件预览区终端</title>
+<style>
+/* ============================================================
+   原型-20261027-001 · WebUI 文件预览区终端
+   设计令牌完全复用 webui/src/style.css（--brand / --line-soft /
+   --radius-card / --shadow-card ...），仅追加 --term-* 终端配色对。
+   单文件、零外部依赖，双击即可打开。
+   ============================================================ */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --line-soft: #eef0f3;
+  --line-strong: #d3d8de;
+  --text: #22252a;
+  --text-2: #4b5563;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --code-bg: #f1f3f5;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --bar-bg: #fbfcfd;
+  --view-bg: #ffffff;
+  --panel-glass: rgba(255, 255, 255, .86);
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-card-hover: 0 1px 2px rgba(16, 24, 40, .05), 0 16px 38px -18px rgba(16, 24, 40, .26);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+  --mono: ui-monospace, 'Cascadia Code', 'Cascadia Mono', Consolas, 'Microsoft YaHei UI', monospace;
+
+  /* 终端配色（浅色：One-Half-Light 取向，与面板同族但更"纸"） */
+  --term-bg: #fbfcfd;
+  --term-fg: #24292f;
+  --term-dim: #8a919b;
+  --term-line: #eef0f3;
+  --term-sel: rgba(14, 159, 110, .16);
+  --term-cyan: #0b7285;
+  --term-green: #0e9f6e;
+  --term-yellow: #8a6100;
+  --term-red: #cf222e;
+  --term-blue: #0550ae;
+  --term-magenta: #8250df;
+  --term-cursor: #0e9f6e;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --text: #e6e8eb;
+  --text-2: #b6bdc6;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --brand-on: #0b221a;
+  --danger: #f87171;
+  --danger-weak: #3b1a1a;
+  --warn: #fbbf24;
+  --warn-weak: #3a2e10;
+  --ok: #34d399;
+  --ok-weak: #143528;
+  --code-bg: #22272f;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --panel-glass: rgba(31, 36, 43, .88);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+
+  --term-bg: #14171c;
+  --term-fg: #d7dbe0;
+  --term-dim: #7c848f;
+  --term-line: #242a32;
+  --term-sel: rgba(52, 211, 153, .2);
+  --term-cyan: #56d4dd;
+  --term-green: #34d399;
+  --term-yellow: #fbbf24;
+  --term-red: #f87171;
+  --term-blue: #79c0ff;
+  --term-magenta: #d2a8ff;
+  --term-cursor: #34d399;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============ 原型控制条（非产品 UI，仅供评审切换形态） ============ */
+.demo-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 16px;
+  background: var(--panel-glass);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  flex-wrap: wrap;
+}
+.demo-title { font-size: 13px; font-weight: 600; letter-spacing: .2px; }
+.demo-title small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+.demo-group { display: flex; align-items: center; gap: 6px; }
+.demo-group > span { font-size: 11.5px; color: var(--muted); }
+.seg { display: inline-flex; background: var(--code-bg); border-radius: 8px; padding: 2px; gap: 2px; }
+.seg button {
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.seg button:hover { background: var(--hover); }
+.seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16,24,40,.08); }
+.seg button.on.danger { color: var(--danger); }
+.demo-hint { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+
+/* ============ 舞台 ============ */
+.stage {
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px 20px;
+  height: calc(100% - 48px);
+  align-items: stretch;
+}
+
+/* 会话侧栏（示意，弱化） */
+.sessions {
+  width: 190px;
+  flex: 0 0 190px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+}
+.sessions .s-head { font-size: 11px; letter-spacing: .6px; color: var(--muted); padding: 2px 6px 8px; text-transform: uppercase; }
+.s-item { font-size: 12.5px; padding: 7px 8px; border-radius: 7px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
+.s-item.on { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.s-item .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
+
+/* ============ 文件面板（复用 FilesView 结构） ============ */
+.files-panel {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  overflow: hidden;
+}
+.files-body { display: flex; flex: 1; min-width: 0; }
+
+/* 左：预览区（本次改造核心） */
+.files-viewer {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--view-bg);
+  overflow: hidden;
+}
+
+/* 预览区顶部标签行（新增） */
+.viewer-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 37px;
+  padding: 0 6px;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.viewer-tabs::-webkit-scrollbar { display: none; }
+
+.vtab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 210px;
+  transition: color .14s, border-color .14s;
+}
+.vtab:hover { color: var(--text-2); }
+.vtab.on { color: var(--text); font-weight: 600; border-bottom-color: var(--brand); }
+.vtab .ico { display: inline-flex; width: 14px; height: 14px; color: currentColor; opacity: .85; flex: 0 0 14px; }
+.vtab .ico svg { width: 14px; height: 14px; }
+.vtab .lbl { overflow: hidden; text-overflow: ellipsis; }
+.vtab .x {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 15px; height: 15px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 15px;
+}
+.vtab:hover .x { display: inline-flex; }
+.vtab .x:hover { background: var(--active); color: var(--text); }
+
+/* tab 上的运行状态点 */
+.tstate { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--muted); }
+.tstate.run { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-weak); }
+.tstate.dead { background: var(--muted); }
+.tstate.err { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-weak); }
+.spin {
+  width: 9px; height: 9px; flex: 0 0 9px;
+  border: 1.6px solid var(--brand);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.vtab-add {
+  margin-left: 2px;
+  align-self: center;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 7px; background: transparent;
+  color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.vtab-add:hover { background: var(--hover); color: var(--text); }
+
+/* ============ 终端视图 ============ */
+.term-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--term-bg);
+  position: relative;
+}
+
+/* 终端头部工具条 */
+.term-bar {
+  flex: 0 0 auto;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.shell-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 200px;
+}
+.shell-pick:hover { border-color: var(--line-strong); }
+.shell-pick .caret { color: var(--muted); font-size: 9px; }
+.shell-pick b { font-weight: 600; }
+.shell-pick .badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--brand);
+  background: var(--brand-weak);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.cwd {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  min-width: 0;
+  padding: 0 8px;
+  border-radius: var(--radius-ctl);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.cwd:hover { background: var(--hover); color: var(--text-2); }
+.cwd .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+
+.term-spacer { flex: 1; }
+
+.tbtn {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 26px;
+  transition: background .14s, color .14s;
+}
+.tbtn:hover { background: var(--hover); color: var(--text); }
+.tbtn.on { background: var(--brand-weak); color: var(--brand); }
+.tbtn svg { width: 15px; height: 15px; }
+.tbtn.danger:hover { background: var(--danger-weak); color: var(--danger); }
+.tbtn.off { opacity: .32; pointer-events: none; }
+
+/* 终端画面 */
+.term-screen {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 9px 12px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: var(--term-fg);
+  cursor: text;
+  outline: none;
+  tab-size: 4;
+}
+.term-screen ::selection { background: var(--term-sel); }
+.term-lines { white-space: pre-wrap; word-break: break-word; }
+.term-lines > div { min-height: 1.62em; }
+
+.t-dim { color: var(--term-dim); }
+.t-cy { color: var(--term-cyan); }
+.t-gr { color: var(--term-green); }
+.t-ye { color: var(--term-yellow); }
+.t-rd { color: var(--term-red); }
+.t-bl { color: var(--term-blue); }
+.t-mg { color: var(--term-magenta); }
+.t-b { font-weight: 700; }
+.t-ps { color: var(--term-cyan); font-weight: 700; }
+
+.term-line { display: flex; flex-wrap: wrap; }
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.15em;
+  vertical-align: -2px;
+  background: var(--term-cursor);
+  animation: blink 1.05s steps(1) infinite;
+  margin-left: 1px;
+}
+@keyframes blink { 50% { opacity: 0; } }
+.term-view.no-input .caret { display: none; }
+
+/* 终端底部状态条 */
+.term-status {
+  flex: 0 0 auto;
+  height: 25px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 11px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--bar-bg);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.term-status .on { color: var(--brand); }
+.term-status .sep { width: 1px; height: 11px; background: var(--line); }
+.term-status .grow { flex: 1; }
+
+/* ============ 覆盖态层 ============ */
+.term-layer {
+  position: absolute;
+  inset: 38px 0 25px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 22px;
+  background: var(--term-bg);
+  z-index: 5;
+}
+.term-view[data-state="empty"] .layer-empty,
+.term-view[data-state="exited"] .layer-exited,
+.term-view[data-state="denied"] .layer-denied,
+.term-view[data-state="unsupported"] .layer-unsupported { display: flex; }
+.term-view[data-state="empty"] .term-screen,
+.term-view[data-state="denied"] .term-screen,
+.term-view[data-state="unsupported"] .term-screen { visibility: hidden; }
+
+.card {
+  width: 100%;
+  max-width: 460px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.card .big-ico {
+  width: 42px; height: 42px;
+  border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--brand-weak);
+  color: var(--brand);
+}
+.card .big-ico svg { width: 21px; height: 21px; }
+.card .big-ico.warn { background: var(--warn-weak); color: var(--warn); }
+.card .big-ico.err { background: var(--danger-weak); color: var(--danger); }
+.card h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.card p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.65; }
+.card .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 2px; }
+
+.btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background .14s, border-color .14s;
+}
+.btn:hover { background: var(--hover); border-color: var(--line-strong); }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; }
+.btn code { font-family: var(--mono); font-size: 11.5px; }
+
+/* 断连横幅（不遮画面，压在上方） */
+.term-view[data-state="offline"] .banner-offline { display: flex; }
+.banner-offline {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 11px;
+  background: var(--warn-weak);
+  color: var(--warn);
+  font-size: 12px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+.banner-offline .b { font-weight: 600; }
+.banner-offline .grow { flex: 1; }
+.banner-offline button {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.banner-offline button:hover { background: rgba(180, 83, 9, .1); }
+
+/* 执行中提示（底部浮条） */
+.busy-pill {
+  display: none;
+  position: absolute;
+  right: 12px;
+  bottom: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+  font-size: 11.5px;
+  color: var(--text-2);
+  z-index: 6;
+}
+.term-view[data-state="busy"] .busy-pill { display: inline-flex; }
+.busy-pill .kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 危险命令确认浮层 */
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(12, 16, 22, .38);
+  backdrop-filter: blur(2px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+}
+.mask.on { display: flex; }
+.dialog {
+  width: 400px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+  padding: 18px 18px 14px;
+}
+.dialog h4 { margin: 0 0 6px; font-size: 13.5px; display: flex; align-items: center; gap: 7px; color: var(--danger); }
+.dialog p { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.dialog .cmd {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--text);
+  word-break: break-all;
+  margin-bottom: 14px;
+}
+.dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger:hover { filter: brightness(1.06); background: var(--danger); }
+
+/* ============ 右：文件目录（示意，弱化但保持结构感） ============ */
+.side-split { width: 6px; flex: 0 0 6px; cursor: col-resize; display: flex; align-items: center; justify-content: center; }
+.side-split::after { content: ''; width: 1px; height: 100%; background: var(--line-soft); }
+.files-side {
+  width: 246px;
+  flex: 0 0 246px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--line-soft);
+}
+.fs-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); }
+.fs-head .q {
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--code-bg);
+  color: var(--muted);
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+.fs-body { flex: 1; padding: 6px 4px; overflow: auto; font-size: 12px; }
+.fs-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px; color: var(--text-2); }
+.fs-row:hover { background: var(--hover); }
+.fs-row.on { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.fs-row .ei { width: 13px; text-align: center; opacity: .8; flex: 0 0 13px; }
+.fs-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-row .ind { width: 13px; flex: 0 0 13px; }
+
+/* 文件预览页（tab 一的示意内容） */
+.doc-view { flex: 1; overflow: auto; padding: 18px 22px; }
+.doc-view h2 { margin: 0 0 4px; font-size: 18px; }
+.doc-view .meta { font-size: 11.5px; color: var(--muted); margin-bottom: 14px; font-family: var(--mono); }
+.doc-view p { font-size: 13px; color: var(--text-2); margin: 0 0 10px; }
+.doc-view code { font-family: var(--mono); font-size: 12px; background: var(--code-bg); border-radius: 4px; padding: 1px 5px; }
+.doc-view pre {
+  font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  background: var(--code-bg); border: 1px solid var(--line-soft);
+  border-radius: 8px; padding: 10px 12px; overflow: auto; color: var(--text-2);
+}
+.hide { display: none !important; }
+
+/* 窄屏 */
+@media (max-width: 1120px) {
+  .sessions { display: none; }
+}
+@media (max-width: 900px) {
+  .files-side, .side-split { display: none; }
+  .stage { padding: 10px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============ 原型控制条 ============ -->
+<div class="demo-bar">
+  <div class="demo-title">原型 20261027-001 · 文件预览区终端<small>点控制条切换形态与主题</small></div>
+
+  <div class="demo-group">
+    <span>主题</span>
+    <div class="seg" id="segTheme">
+      <button data-v="light" class="on">浅色</button>
+      <button data-v="dark">深色</button>
+    </div>
+  </div>
+
+  <div class="demo-group">
+    <span>视图</span>
+    <div class="seg" id="segView">
+      <button data-v="term" class="on">终端</button>
+      <button data-v="file">文件预览</button>
+    </div>
+  </div>
+
+  <div class="demo-group">
+    <span>状态</span>
+    <div class="seg" id="segState">
+      <button data-v="running" class="on">运行中</button>
+      <button data-v="busy">执行中</button>
+      <button data-v="exited">已退出</button>
+      <button data-v="offline">断连</button>
+      <button data-v="empty">未启动</button>
+      <button data-v="unsupported">缺 PTY</button>
+    </div>
+  </div>
+
+  <div class="demo-group">
+    <span>宽度</span>
+    <div class="seg" id="segWidth">
+      <button data-v="wide" class="on">宽</button>
+      <button data-v="narrow">窄</button>
+    </div>
+  </div>
+
+  <div class="demo-hint">终端可敲字：dir / cls / del /f</div>
+</div>
+
+<!-- ============ 舞台 ============ -->
+<div class="stage">
+  <!-- 会话侧栏（示意） -->
+  <aside class="sessions">
+    <div class="s-head">会话</div>
+    <div class="s-item on"><span class="dot"></span>终端与预览改造</div>
+    <div class="s-item"><span class="dot"></span>修复构建脚本</div>
+    <div class="s-item"><span class="dot"></span>文档双语文档同步</div>
+    <div class="s-item"><span class="dot"></span>模型配置排查</div>
+  </aside>
+
+  <!-- 文件面板 -->
+  <section class="files-panel" id="panel">
+    <div class="files-body">
+
+      <!-- ===== 左：预览区（本次改造核心） ===== -->
+      <div class="files-viewer">
+
+        <!-- 预览区顶部标签行：文件预览 / 终端会话（可多开） -->
+        <div class="viewer-tabs" id="tabs">
+          <button class="vtab" data-tab="file" id="tabFile">
+            <span class="ico">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <path d="M4 1.75h5L12.5 5v9.25H4z" stroke-linejoin="round"/>
+                <path d="M8.75 1.75V5h3.75" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="lbl">README.md</span>
+          </button>
+
+          <button class="vtab on" data-tab="term1">
+            <span class="tstate run" id="st1"></span>
+            <span class="ico">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/>
+                <path d="M4.5 6.5 6.5 8l-2 1.5M8.25 10h3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="lbl" id="lbl1">PowerShell</span>
+            <span class="x" title="关闭终端">✕</span>
+          </button>
+
+          <button class="vtab" data-tab="term2">
+            <span class="tstate dead"></span>
+            <span class="ico">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/>
+                <path d="M4.5 6.5 6.5 8l-2 1.5M8.25 10h3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="lbl">cmd</span>
+            <span class="x" title="关闭终端">✕</span>
+          </button>
+
+          <button class="vtab-add" id="tabAdd" title="新建终端（Ctrl+`）">＋</button>
+        </div>
+
+        <!-- 文件预览页 -->
+        <div class="doc-view hide" id="docView">
+          <h2>loop-agent-command</h2>
+          <div class="meta">README.md · 8.4 KB · UTF-8</div>
+          <p>基于 OpenAI 协议 Function Calling 的 TypeScript ReAct Agent CLI，附带 HTTP API 与独立 Vue3 WebUI。</p>
+          <pre>npm install
+npm run build
+loop-agent --serve      # 启动 WebUI</pre>
+          <p>在终端标签中可以直接运行构建、测试与 git 命令，工作目录默认落在当前会话的工作空间。</p>
+        </div>
+
+        <!-- 终端视图 -->
+        <div class="term-view" id="termView" data-state="running" tabindex="0">
+          <!-- 头部工具条 -->
+          <div class="term-bar">
+            <button class="shell-pick" id="shellPick" title="切换 shell（新建会话生效）">
+              <span id="shellName"><b>PowerShell</b></span>
+              <span class="badge" id="shellVer">7.4</span>
+              <span class="caret">▼</span>
+            </button>
+
+            <button class="cwd" title="点击复制工作目录；右键切换">
+              <span>📁</span>
+              <span class="p">D:\trae_workspace\loop-agent-command</span>
+            </button>
+
+            <span class="term-spacer"></span>
+
+            <button class="tbtn" data-needs-live title="清屏（Ctrl+L）" data-act="clear">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.2h6.6L12 4" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="tbtn" data-needs-live title="复制全部输出" data-act="copy">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/>
+                <path d="M10.5 3.5V3a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3v5.5A1.5 1.5 0 0 0 3.5 10H4" stroke-linecap="round"/>
+              </svg>
+            </button>
+            <button class="tbtn" title="最大化预览区" data-act="max">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="tbtn" title="重启会话" data-act="restart">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+                <path d="M13 8a5 5 0 1 1-1.6-3.7" stroke-linecap="round"/>
+                <path d="M13.2 2.4v2.9h-2.9" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <button class="tbtn danger" title="关闭终端会话" data-act="close">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M4 4l8 8M12 4l-8 8" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- 断连横幅 -->
+          <div class="banner-offline">
+            <span>⚠</span>
+            <span class="b"><span id="retryText">连接已断开，正在重连…（2/5）</span></span>
+            <span class="t-dim">终端进程仍在后台运行</span>
+            <span class="grow"></span>
+            <button data-act="reconnect">立即重连</button>
+          </div>
+
+          <!-- 终端画面 -->
+          <div class="term-screen" id="screen">
+            <div class="term-lines" id="lines">
+              <div><span class="t-dim">Windows PowerShell 7.4.6</span></div>
+              <div><span class="t-dim">版权所有 (C) Microsoft Corporation。保留所有权利。</span></div>
+              <div><span class="t-dim">尝试新的跨平台 PowerShell https://aka.ms/pscore6</span></div>
+              <div>&nbsp;</div>
+              <div class="term-line"><span class="t-ps">PS D:\trae_workspace\loop-agent-command&gt;</span><span> npm run build</span></div>
+              <div>&nbsp;</div>
+              <div><span class="t-dim">&gt; loop-agent@1.4.0 build</span></div>
+              <div><span class="t-dim">&gt; tsc -p tsconfig.json &amp;&amp; vite build</span></div>
+              <div>&nbsp;</div>
+              <div><span class="t-gr">✔</span> <span class="t-dim">tsc 编译通过</span> <span class="t-dim">(2.41s)</span></div>
+              <div><span class="t-gr">✔</span> <span class="t-dim">vite 产物写入 dist/</span> <span class="t-dim">(1.18s)</span></div>
+              <div>&nbsp;</div>
+              <div><span class="t-ye">⚠</span> <span>src/agent/loop.ts:88</span> <span class="t-dim">'timeout' 已声明但从未读取</span></div>
+              <div>&nbsp;</div>
+              <div><span class="t-dim">Build 完成，用时 3.61s</span></div>
+              <div>&nbsp;</div>
+              <div class="term-line" id="activeLine"><span class="t-ps">PS D:\trae_workspace\loop-agent-command&gt;</span><span id="typed"> </span><span class="caret" id="caret"></span></div>
+            </div>
+          </div>
+
+          <!-- 执行中浮条 -->
+          <div class="busy-pill">
+            <span class="spin"></span>
+            <span>正在执行 <b id="busyCmd">npm test</b></span>
+            <span class="kbd">Ctrl+C</span>
+            <span class="t-dim">12.4s</span>
+          </div>
+
+          <!-- 底部状态条 -->
+          <div class="term-status">
+            <span class="on" id="statConn">● 已连接</span>
+            <span class="sep"></span>
+            <span id="statDims">96×27</span>
+            <span class="sep"></span>
+            <span>UTF-8</span>
+            <span class="sep"></span>
+            <span id="statPid">PID 18364</span>
+            <span class="sep"></span>
+            <span>xterm-256color</span>
+            <span class="grow"></span>
+            <span id="statCwd">D:\trae_workspace\loop-agent-command</span>
+          </div>
+
+          <!-- ===== 覆盖态：未启动（空态） ===== -->
+          <div class="term-layer layer-empty">
+            <div class="card">
+              <div class="big-ico">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <rect x="2.5" y="4" width="19" height="16" rx="3"/>
+                  <path d="M6.5 9.5 10 12l-3.5 2.5M12.5 14.5h5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <h3>在工作空间中打开终端</h3>
+              <p>命令会在当前会话的工作空间下执行，可直接运行构建、测试与 git 操作。</p>
+              <div class="row">
+                <button class="btn primary" data-act="start">PowerShell 7</button>
+                <button class="btn" data-act="start">Windows PowerShell</button>
+                <button class="btn" data-act="start">cmd</button>
+              </div>
+              <p class="t-dim" style="font-size:11.5px">终端具备当前用户的完整权限，请仅在本机使用</p>
+            </div>
+          </div>
+
+          <!-- ===== 覆盖态：进程已退出 ===== -->
+          <div class="term-layer layer-exited">
+            <div class="card">
+              <div class="big-ico warn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <circle cx="12" cy="12" r="9"/>
+                  <path d="M12 8v4.5M12 16h.01" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <h3>会话已结束</h3>
+              <p>进程退出码 <b id="exitCode">0</b> · 运行时长 4 分 12 秒<br>输出已保留，可滚动查看</p>
+              <div class="row">
+                <button class="btn primary" data-act="restart">重新启动</button>
+                <button class="btn" data-act="close">关闭标签</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== 覆盖态：缺少 PTY 依赖（降级） ===== -->
+          <div class="term-layer layer-unsupported">
+            <div class="card">
+              <div class="big-ico err">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <path d="M12 3 21 19H3z" stroke-linejoin="round"/>
+                  <path d="M12 9.5v4M12 16.5h.01" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <h3>交互式终端不可用</h3>
+              <p>未检测到 <b>node-pty</b> 原生模块，无法创建伪终端。<br>安装后重启服务即可启用，或先使用下方降级模式。</p>
+              <div class="row">
+                <button class="btn primary" data-act="copyinstall">复制安装命令</button>
+                <button class="btn" data-act="fallback">使用命令执行模式</button>
+              </div>
+              <p class="t-dim" style="font-size:11.5px;font-family:var(--mono)">npm i @lydell/node-pty</p>
+            </div>
+          </div>
+
+          <!-- ===== 覆盖态：拒绝（首次授权） ===== -->
+          <div class="term-layer layer-denied">
+            <div class="card">
+              <div class="big-ico err">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <rect x="4" y="10" width="16" height="10" rx="2.5"/>
+                  <path d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <h3>终端已被禁用</h3>
+              <p>当前配置 <code>webui.terminal = false</code>。<br>终端可在服务器上执行任意命令，默认关闭。</p>
+              <div class="row">
+                <button class="btn" data-act="open-config">了解如何开启</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="side-split"></div>
+
+      <!-- ===== 右：文件目录（示意） ===== -->
+      <div class="files-side">
+        <div class="fs-head">
+          <div class="q">搜索文件名…</div>
+          <button class="tbtn" title="隐藏目录开关">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2 13.5 13.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="fs-body">
+          <div class="fs-row"><span class="ei">▾</span><span class="ei">📁</span><span class="nm">src</span></div>
+          <div class="fs-row"><span class="ind"></span><span class="ei">▸</span><span class="ei">📁</span><span class="nm">agent</span></div>
+          <div class="fs-row"><span class="ind"></span><span class="ei">▸</span><span class="ei">📁</span><span class="nm">api</span></div>
+          <div class="fs-row"><span class="ind"></span><span class="ei">▸</span><span class="ei">📁</span><span class="nm">tools</span></div>
+          <div class="fs-row"><span class="ei">▸</span><span class="ei">📁</span><span class="nm">webui</span></div>
+          <div class="fs-row"><span class="ei">▸</span><span class="ei">📁</span><span class="nm">docs</span></div>
+          <div class="fs-row"><span class="ei">▸</span><span class="ei">📁</span><span class="nm">tests</span></div>
+          <div class="fs-row on"><span class="ei">·</span><span class="ei">📄</span><span class="nm">README.md</span></div>
+          <div class="fs-row"><span class="ei">·</span><span class="ei">📄</span><span class="nm">package.json</span></div>
+          <div class="fs-row"><span class="ei">·</span><span class="ei">📄</span><span class="nm">tsconfig.json</span></div>
+          <div class="fs-row"><span class="ei">·</span><span class="ei">📄</span><span class="nm">vite.config.ts</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- 危险命令确认 -->
+<div class="mask" id="mask">
+  <div class="dialog">
+    <h4>⚠ 确认执行危险命令</h4>
+    <p>该命令可能删除文件或影响系统状态，且不可撤销。</p>
+    <div class="cmd" id="dangerCmd"></div>
+    <div class="acts">
+      <button class="btn ghost" data-act="cancel">取消（Esc）</button>
+      <button class="btn danger" data-act="confirm">仍然执行</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var root = document.documentElement;
+  var termView = document.getElementById('termView');
+  var screenEl = document.getElementById('screen');
+  var linesEl = document.getElementById('lines');
+  var typedEl = document.getElementById('typed');
+  var activeLine = document.getElementById('activeLine');
+  var mask = document.getElementById('mask');
+  var dangerCmd = document.getElementById('dangerCmd');
+  var panel = document.getElementById('panel');
+  var docView = document.getElementById('docView');
+  var tabsEl = document.getElementById('tabs');
+  var statDims = document.getElementById('statDims');
+  var shellName = document.getElementById('shellName');
+  var shellVer = document.getElementById('shellVer');
+
+  var state = 'running';      // running | busy | exited | offline | empty | unsupported | denied
+  var buffer = '';            // 当前输入行内容
+  var pendingDanger = '';
+  var cwd = 'D:\\trae_workspace\\loop-agent-command';
+  var shellTitles = { ps: 'PowerShell', winps: 'Windows PowerShell', cmd: 'cmd' };
+  var shellVers = { ps: '7.4', winps: '5.1', cmd: '10' };
+  var currentShell = 'ps';
+
+  /* ---------------- 原型控制条 ---------------- */
+  function bindSeg(id, fn) {
+    var box = document.getElementById(id);
+    box.addEventListener('click', function (e) {
+      var b = e.target.closest('button');
+      if (!b) return;
+      Array.prototype.forEach.call(box.querySelectorAll('button'), function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      fn(b.dataset.v);
+    });
+  }
+
+  bindSeg('segTheme', function (v) { root.setAttribute('data-theme', v); });
+  bindSeg('segView', function (v) { switchView(v); });
+  bindSeg('segState', function (v) { setState(v); });
+  bindSeg('segWidth', function (v) {
+    panel.style.maxWidth = v === 'narrow' ? '620px' : '';
+    panel.style.flex = v === 'narrow' ? '0 0 620px' : '1';
+    fitDims();
+  });
+
+  function switchView(v) {
+    var isTerm = v === 'term';
+    docView.classList.toggle('hide', isTerm);
+    termView.classList.toggle('hide', !isTerm);
+    document.getElementById('tabFile').classList.toggle('on', !isTerm);
+    document.querySelector('.vtab[data-tab="term1"]').classList.toggle('on', isTerm);
+    fitDims();
+  }
+
+  function setState(v) {
+    state = v;
+    termView.dataset.state = v;
+    termView.classList.toggle('no-input', v !== 'running' && v !== 'busy' && v !== 'offline');
+
+    // 底部状态条联动：连接态与 PID 只在会话存活时有意义
+    var live = v === 'running' || v === 'busy' || v === 'offline';
+    var conn = document.getElementById('statConn');
+    var pid = document.getElementById('statPid');
+    if (v === 'empty') { conn.textContent = '○ 未连接'; conn.classList.remove('on'); pid.textContent = 'PID —'; }
+    else if (v === 'unsupported') { conn.textContent = '○ 不可用'; conn.classList.remove('on'); pid.textContent = 'PID —'; }
+    else if (v === 'denied') { conn.textContent = '○ 已禁用'; conn.classList.remove('on'); pid.textContent = 'PID —'; }
+    else if (v === 'exited') { conn.textContent = '○ 已退出'; conn.classList.remove('on'); pid.textContent = 'PID —'; }
+    else if (v === 'offline') { conn.textContent = '○ 重连中'; conn.classList.remove('on'); pid.textContent = 'PID 18364'; }
+    else { conn.textContent = '● 已连接'; conn.classList.add('on'); pid.textContent = 'PID 18364'; }
+
+    // 清屏 / 复制只对存活的会话可用（空态与降级态置灰，避免点空按钮）
+    Array.prototype.forEach.call(document.querySelectorAll('[data-needs-live]'), function (b) {
+      b.classList.toggle('off', !live);
+    });
+
+    // 标签状态点联动
+    var st = document.getElementById('st1');
+    var lbl = document.getElementById('lbl1');
+    st.className = 'tstate ' + (v === 'busy' ? 'run' : v === 'exited' ? 'dead' : v === 'offline' ? 'run' : 'run');
+    if (v === 'busy') {
+      st.outerHTML = '<span class="spin" id="st1"></span>';
+    } else {
+      var old = document.getElementById('st1');
+      var span = document.createElement('span');
+      span.id = 'st1';
+      span.className = 'tstate ' + (v === 'exited' ? 'dead' : v === 'offline' ? 'dead' : 'run');
+      if (old) old.replaceWith(span);
+    }
+    lbl.textContent = shellTitles[currentShell];
+    if (v === 'offline') document.getElementById('retryText').textContent = '连接已断开，正在重连…（2/5）';
+    fitDims();
+  }
+
+  /* ---------------- 尺寸换算（模拟 xterm fit） ---------------- */
+  function fitDims() {
+    if (termView.classList.contains('hide')) return;
+    var w = screenEl.clientWidth - 24;
+    var h = screenEl.clientHeight - 21;
+    var cols = Math.max(20, Math.floor(w / 7.22));
+    var rows = Math.max(6, Math.floor(h / 20.4));
+    statDims.textContent = cols + '×' + rows;
+  }
+  window.addEventListener('resize', fitDims);
+
+  /* ---------------- 终端输入模拟 ---------------- */
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function promptHtml() {
+    if (currentShell === 'cmd') return '<span class="t-dim">' + esc(cwd) + '&gt;</span>';
+    return '<span class="t-ps">PS ' + esc(cwd) + '&gt;</span>';
+  }
+  function refreshActive() {
+    activeLine.innerHTML = promptHtml() + '<span id="typed">' + esc(buffer) + '</span><span class="caret" id="caret"></span>';
+    typedEl = document.getElementById('typed');
+    screenEl.scrollTop = screenEl.scrollHeight;
+  }
+
+  /** 把当前输入行固化为历史行，并新开一行 */
+  function commitLine() {
+    var html = promptHtml() + '<span>' + esc(buffer) + '</span>';
+    activeLine.innerHTML = html;
+    activeLine.removeAttribute('id');
+    var nl = document.createElement('div');
+    nl.className = 'term-line';
+    nl.id = 'activeLine';
+    nl.innerHTML = promptHtml() + '<span id="typed"></span><span class="caret" id="caret"></span>';
+    linesEl.appendChild(nl);
+    activeLine = nl;
+    typedEl = document.getElementById('typed');
+    buffer = '';
+  }
+
+  function out(html) {
+    var d = document.createElement('div');
+    d.innerHTML = html;
+    linesEl.appendChild(d);
+  }
+  function blank() { out('&nbsp;'); }
+
+  function runCommand(cmd) {
+    var c = cmd.trim();
+    commitLine();
+    if (!c) { blank(); refreshActive(); return; }
+    var low = c.toLowerCase();
+
+    if (low === 'cls' || low === 'clear') {
+      linesEl.innerHTML = '';
+      blank();
+      refreshActive();
+      return;
+    }
+    if (low === 'node -v' || low === 'node --version') { out('<span class="t-dim">v20.19.5</span>'); }
+    else if (low === 'npm -v') { out('<span class="t-dim">10.8.2</span>'); }
+    else if (low === 'npm run build') {
+      blank();
+      out('<span class="t-dim">&gt; loop-agent@1.4.0 build</span>');
+      out('<span class="t-dim">&gt; tsc -p tsconfig.json &amp;&amp; vite build</span>');
+      blank();
+      out('<span class="t-gr">✔</span> <span class="t-dim">tsc 编译通过</span> <span class="t-dim">(2.41s)</span>');
+      out('<span class="t-gr">✔</span> <span class="t-dim">vite 产物写入 dist/</span> <span class="t-dim">(1.18s)</span>');
+      blank();
+      out('<span class="t-dim">Build 完成，用时 3.61s</span>');
+    }
+    else if (low === 'dir' || low === 'ls' || low === 'dir /b') {
+      blank();
+      out('<span class="t-dim">    目录: ' + esc(cwd) + '</span>');
+      blank();
+      out('<span class="t-dim">Mode          LastWriteTime        Length Name</span>');
+      out('<span class="t-dim">----          -------------        ------ ----</span>');
+      out('<span class="t-bl">d----</span>  2026/10/27  09:14              <span class="t-bl">src</span>');
+      out('<span class="t-bl">d----</span>  2026/10/26  21:02              <span class="t-bl">webui</span>');
+      out('<span class="t-bl">d----</span>  2026/10/26  20:55              <span class="t-bl">docs</span>');
+      out('<span class="t-bl">d----</span>  2026/10/27  08:31              <span class="t-bl">tests</span>');
+      out('<span class="t-dim">-a---</span>  2026/10/24  11:20       8421 <span class="t-gr">README.md</span>');
+      out('<span class="t-dim">-a---</span>  2026/10/25  16:44       2210 package.json');
+    }
+    else if (low === 'git status') {
+      out('<span class="t-dim">On branch main</span>');
+      out('<span class="t-dim">Your branch is up to date with \'origin/main\'.</span>');
+      blank();
+      out('Changes not staged for commit:');
+      out('<span class="t-rd">        modified:   webui/src/views/FilesView.vue</span>');
+      out('<span class="t-dim">Untracked files:</span>');
+      out('<span class="t-rd">        docs/designs/原型-20261027-001+文件预览区终端.html</span>');
+    }
+    else if (low === 'npm test') {
+      out('<span class="t-dim"> RUN  v2.1.9</span>');
+      blank();
+      out('<span class="t-gr"> ✓</span> tests/unit/fs-tree.test.ts <span class="t-dim">(12)</span>');
+      out('<span class="t-gr"> ✓</span> tests/unit/spinner.test.ts <span class="t-dim">(8)</span>');
+      out('<span class="t-gr"> ✓</span> tests/integration/api.test.ts <span class="t-dim">(7)</span>');
+      blank();
+      out('<span class="t-dim"> Test Files  3 passed (3)</span>');
+      out('<span class="t-dim">      Tests  27 passed (27)</span>');
+    }
+    else if (low.indexOf('echo ') === 0) { out('<span>' + esc(c.slice(5)) + '</span>'); }
+    else {
+      out('<span class="t-rd">' + esc(currentShell === 'cmd' ? "'" + c.split(' ')[0] + "' 不是内部或外部命令，也不是可运行的程序" : '无法将“' + c.split(' ')[0] + '”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。') + '</span>');
+    }
+    blank();
+    refreshActive();
+  }
+
+  var DANGER = /(^|\s)(del\s+\/f|del\s+\/s|rmdir\s+\/s|rm\s+-rf|format\b|shutdown|mkfs)/i;
+
+  function submit() {
+    var c = buffer;
+    if (DANGER.test(c)) { openDanger(c); return; }
+    runCommand(c);
+  }
+
+  function openDanger(cmd) {
+    pendingDanger = cmd;
+    dangerCmd.textContent = cmd;
+    mask.classList.add('on');
+  }
+  function closeDanger() { mask.classList.remove('on'); pendingDanger = ''; }
+
+  document.addEventListener('keydown', function (e) {
+    if (mask.classList.contains('on')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeDanger(); }
+      if (e.key === 'Enter') { e.preventDefault(); document.querySelector('.btn.danger').click(); }
+      return;
+    }
+    if (termView.classList.contains('hide')) return;
+    if (state !== 'running' && state !== 'offline') return;
+    if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    else if (e.key === 'Backspace') { e.preventDefault(); buffer = buffer.slice(0, -1); refreshActive(); }
+    else if (e.key === 'Escape') { buffer = ''; refreshActive(); }
+    else if (e.key === 'l' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); linesEl.innerHTML = ''; blank(); refreshActive(); }
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) { e.preventDefault(); buffer += e.key; refreshActive(); }
+  });
+
+  screenEl.addEventListener('click', function () { termView.focus(); });
+
+  /* ---------------- 按钮动作 ---------------- */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.dataset.act;
+
+    if (act === 'clear') { linesEl.innerHTML = ''; blank(); refreshActive(); }
+    else if (act === 'copy') { btn.classList.add('on'); setTimeout(function () { btn.classList.remove('on'); }, 700); }
+    else if (act === 'max') {
+      var on = panel.dataset.max === '1';
+      panel.dataset.max = on ? '0' : '1';
+      var side = document.querySelector('.files-side');
+      var split = document.querySelector('.side-split');
+      var sess = document.querySelector('.sessions');
+      side.classList.toggle('hide', !on);
+      split.classList.toggle('hide', !on);
+      sess.classList.toggle('hide', !on);
+      btn.classList.toggle('on', !on);
+      fitDims();
+    }
+    else if (act === 'restart' || act === 'start') { setState('running'); syncSeg('segState', 'running'); }
+    else if (act === 'close') { setState('empty'); syncSeg('segState', 'empty'); }
+    else if (act === 'reconnect') { setState('running'); syncSeg('segState', 'running'); }
+    else if (act === 'confirm') { var c = pendingDanger; closeDanger(); runCommand(c); }
+    else if (act === 'cancel') { closeDanger(); }
+    else if (act === 'copyinstall') {
+      btn.textContent = '已复制 ✓';
+      setTimeout(function () { btn.textContent = '复制安装命令'; }, 1200);
+    }
+    else if (act === 'fallback') { setState('running'); syncSeg('segState', 'running'); }
+  });
+
+  function syncSeg(id, v) {
+    var box = document.getElementById(id);
+    Array.prototype.forEach.call(box.querySelectorAll('button'), function (x) {
+      x.classList.toggle('on', x.dataset.v === v);
+    });
+  }
+
+  /* shell 切换 */
+  document.getElementById('shellPick').addEventListener('click', function () {
+    var order = ['ps', 'winps', 'cmd'];
+    currentShell = order[(order.indexOf(currentShell) + 1) % order.length];
+    shellName.innerHTML = '<b>' + shellTitles[currentShell] + '</b>';
+    shellVer.textContent = shellVers[currentShell];
+    document.getElementById('lbl1').textContent = shellTitles[currentShell];
+    linesEl.innerHTML = '';
+    if (currentShell === 'cmd') {
+      out('<span class="t-dim">Microsoft Windows [版本 10.0.22631.4317]</span>');
+      out('<span class="t-dim">(c) Microsoft Corporation。保留所有权利。</span>');
+    } else if (currentShell === 'winps') {
+      out('<span class="t-dim">Windows PowerShell 5.1.22621.4249</span>');
+      out('<span class="t-dim">版权所有 (C) Microsoft Corporation。保留所有权利。</span>');
+    } else {
+      out('<span class="t-dim">Windows PowerShell 7.4.6</span>');
+      out('<span class="t-dim">尝试新的跨平台 PowerShell https://aka.ms/pscore6</span>');
+    }
+    blank();
+    refreshActive();
+  });
+
+  /* tab 切换 */
+  tabsEl.addEventListener('click', function (e) {
+    var x = e.target.closest('.vtab .x');
+    if (x) { e.stopPropagation(); setState('empty'); syncSeg('segState', 'empty'); return; }
+    var t = e.target.closest('.vtab');
+    if (!t) return;
+    var isFile = t.dataset.tab === 'file';
+    Array.prototype.forEach.call(tabsEl.querySelectorAll('.vtab'), function (b) { b.classList.remove('on'); });
+    t.classList.add('on');
+    docView.classList.toggle('hide', !isFile);
+    termView.classList.toggle('hide', isFile);
+    syncSeg('segView', isFile ? 'file' : 'term');
+    fitDims();
+  });
+
+  document.getElementById('tabAdd').addEventListener('click', function () { switchView('term'); setState('running'); syncSeg('segState', 'running'); });
+
+  /* ---------------- 初始化 ---------------- */
+  refreshActive();
+  setTimeout(fitDims, 30);
+})();
+</script>
+</body>
+</html>

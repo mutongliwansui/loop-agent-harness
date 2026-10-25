@@ -32,6 +32,30 @@
   --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
   --shadow-card-hover: 0 1px 2px rgba(16, 24, 40, .05), 0 16px 38px -18px rgba(16, 24, 40, .26);
   --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+
+  /* 终端配色令牌（Task-20261027-001）：浅色取向 One-Half-Light，与 --panel 同族。
+     xterm 是 canvas 绘制，不认 CSS 变量，切换主题时须由 TS 读取这些令牌重设 term.options.theme */
+  --term-bg: #fbfcfd;
+  --term-fg: #24292f;
+  --term-dim: #8a919b;
+  --term-cursor: #0e9f6e;
+  --term-sel: rgba(14, 159, 110, .18);
+  --term-black: #24292f;
+  --term-red: #c0392b;
+  --term-green: #0e9f6e;
+  --term-yellow: #b45309;
+  --term-blue: #1f6feb;
+  --term-magenta: #8b5cf6;
+  --term-cyan: #0d9488;
+  --term-white: #6b7280;
+  --term-bright-black: #8a919b;
+  --term-bright-red: #db4437;
+  --term-bright-green: #12b981;
+  --term-bright-yellow: #d97706;
+  --term-bright-blue: #3b82f6;
+  --term-bright-magenta: #a78bfa;
+  --term-bright-cyan: #14b8a6;
+  --term-bright-white: #4b5563;
 }
 
 /* 深色：跟随系统（data-theme="light" 可强制浅色） */
@@ -65,6 +89,29 @@
     --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
     --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
     --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+
+    /* 终端配色令牌（暗色：低饱和，避免纯色刺眼） */
+    --term-bg: #14171c;
+    --term-fg: #d7dbe0;
+    --term-dim: #7c848f;
+    --term-cursor: #34d399;
+    --term-sel: rgba(52, 211, 153, .22);
+    --term-black: #24292f;
+    --term-red: #f87171;
+    --term-green: #34d399;
+    --term-yellow: #fbbf24;
+    --term-blue: #60a5fa;
+    --term-magenta: #c084fc;
+    --term-cyan: #2dd4bf;
+    --term-white: #d7dbe0;
+    --term-bright-black: #7c848f;
+    --term-bright-red: #fca5a5;
+    --term-bright-green: #6ee7b7;
+    --term-bright-yellow: #fcd34d;
+    --term-bright-blue: #93c5fd;
+    --term-bright-magenta: #d8b4fe;
+    --term-bright-cyan: #5eead4;
+    --term-bright-white: #f3f4f6;
   }
 }
 
@@ -98,6 +145,29 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
   --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
   --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+
+  /* 终端配色令牌（暗色：低饱和，避免纯色刺眼） */
+  --term-bg: #14171c;
+  --term-fg: #d7dbe0;
+  --term-dim: #7c848f;
+  --term-cursor: #34d399;
+  --term-sel: rgba(52, 211, 153, .22);
+  --term-black: #24292f;
+  --term-red: #f87171;
+  --term-green: #34d399;
+  --term-yellow: #fbbf24;
+  --term-blue: #60a5fa;
+  --term-magenta: #c084fc;
+  --term-cyan: #2dd4bf;
+  --term-white: #d7dbe0;
+  --term-bright-black: #7c848f;
+  --term-bright-red: #fca5a5;
+  --term-bright-green: #6ee7b7;
+  --term-bright-yellow: #fcd34d;
+  --term-bright-blue: #93c5fd;
+  --term-bright-magenta: #d8b4fe;
+  --term-bright-cyan: #5eead4;
+  --term-bright-white: #f3f4f6;
 }
 
 * { box-sizing: border-box; }

@@ -129,6 +129,10 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill toggles and scan directories | all enabled |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | Three-tier memory system config (incl. retrieval enhancement) | all enabled |
 | `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | Vision model config (Task-20261010-001); an empty `baseUrl` / `apiKey` / `model` falls back to the main model's `model.*` triplet | `enabled: false`; other defaults in the config structure above |
+| `webui` | `terminal` | Enable the terminal in the Web UI file preview area (a terminal means arbitrary command execution, so it must be enabled explicitly; while off the WS handshake returns 403) | `false` |
+| `webui` | `terminalDeny` | Command keywords the terminal refuses to run (**enforced server-side**, denied and audited; the front-end confirmation is not a security boundary) | `[]` |
+| `webui` | `terminalMax` | Max concurrent terminals per user (exceeding it returns `too_many`; closing a tab frees the slot **immediately**, while a page reload takes up to 60s) | `4` |
+| `webui` | `terminalIdleMs` | Terminal idle reclaim in milliseconds (the PTY is kept 60s after a WS disconnect for replay on reconnect) | `1800000` (30 min) |
 
 ### Environment Variables (Backward Compatible)
 

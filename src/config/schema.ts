@@ -18,6 +18,7 @@ export interface AgentConfig {
   memory: MemoryConfig;
   vision: VisionConfig;
   api: ApiConfig;
+  webui: WebuiConfig;
 }
 
 export interface ModelConfig {
@@ -129,9 +130,27 @@ export interface ApiConfig {
   webRoot: string;
 }
 
+/**
+ * WebUI 专属配置（Task-20261027-001 文件预览区终端）
+ *
+ * 设计要点：
+ * - 仅在 `--serve`（WebUI）模式下生效，REPL 模式完全忽略
+ * - `terminal` **默认关闭**：终端 = 当前用户权限下的任意命令执行，必须显式开启（D7）
+ * - `terminalDeny` 在**服务端**生效（前端确认框可被绕过，不算安全边界，D10）
+ */
+export interface WebuiConfig {
+  /** 是否启用文件预览区终端（默认 false） */
+  terminal: boolean;
+  /** 终端拒绝执行的命令关键字（大小写不敏感子串匹配，命中即拒） */
+  terminalDeny: string[];
+  /** 单用户并发终端上限（默认 4） */
+  terminalMax: number;
+  /** 空闲回收毫秒（默认 30 分钟） */
+  terminalIdleMs: number;
+}
+
 /** 配置来源标记 */
 export type ConfigSource = 'cli' | 'workspace' | 'global' | 'env' | 'default';
-
 /** 合并后的配置结果 */
 export interface ResolvedConfig {
   config: AgentConfig;
@@ -149,6 +168,7 @@ export type PartialAgentConfig = {
   memory?: Partial<MemoryConfig>;
   vision?: Partial<VisionConfig>;
   api?: Partial<ApiConfig>;
+  webui?: Partial<WebuiConfig>;
 };
 
 /**
@@ -225,5 +245,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
     host: '127.0.0.1',
     token: '',
     webRoot: '',
+  },
+  webui: {
+    terminal: false,
+    terminalDeny: [],
+    terminalMax: 4,
+    terminalIdleMs: 30 * 60 * 1000,
   },
 };

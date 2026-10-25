@@ -129,6 +129,10 @@
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill 技能包开关与扫描目录 | 全部启用 |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | 三层记忆系统配置（含检索增强） | 全部启用 |
 | `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | 视觉模型配置（Task-20261010-001）；`baseUrl` / `apiKey` / `model` 为空时回退主模型 `model.*` 三元组 | `enabled: false`，其余见上方配置结构 |
+| `webui` | `terminal` | 是否启用 Web UI 文件预览区终端（终端 = 任意命令执行，须显式开启；未开启时 WS 握手 403） | `false` |
+| `webui` | `terminalDeny` | 终端拒绝执行的命令关键字（**服务端**生效，命中即拒绝并审计；前端确认框不承担安全职责） | `[]` |
+| `webui` | `terminalMax` | 单用户并发终端上限（超出返回 `too_many`；关闭页签会**立即**释放名额，页面刷新后最多 60s 释放） | `4` |
+| `webui` | `terminalIdleMs` | 终端空闲回收毫秒数（WS 断开后保留 60s 供重连回放） | `1800000`（30 分钟） |
 
 ### 环境变量（向后兼容）
 

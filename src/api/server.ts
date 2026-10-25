@@ -29,6 +29,9 @@ import { mcpManager } from '../config/mcp-manager.js';
 import { skillLoader } from '../skill/loader.js';
 import { defaultUploadsRoot } from '../upload/manager.js';
 import { defaultMemoryKitFactory, type MemoryKit } from './memory-kit.js';
+import { attachTerminalWs } from '../terminal/ws.js';
+import { TerminalManager } from '../terminal/manager.js';
+import { canonicalWorkspacePath, isSameWorkspace } from '../session/path-utils.js';
 import type { ConfigLoader } from '../config/loader.js';
 import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
@@ -95,6 +98,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
   let httpServer: http.Server | null = null;
   /** WebUI 静态资源处理器（start 时按 webRoot 构建；index.html 缺失时整体降级为回落 API） */
   let staticHandler: StaticHandler | null = null;
+  /** 终端 WS 清理函数（start 时挂载，close 时卸载并杀 PTY） */
+  let detachTerminal: (() => void) | null = null;
+  /** 终端会话表（懒建：仅在启用终端时创建，避免默认关闭时也起回收定时器） */
+  let terminalManager: TerminalManager | null = null;
 
   const log = (msg: string): void => deps.log?.(msg);
   // D8：runtime 缺省字段回落全局单例（bootstrap 传真实单例；单测注入临时目录实例）
@@ -115,6 +122,21 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅透传，后续任务消费
     registry: deps.registry,
   };
+
+  /**
+   * 终端工作目录解析（Task-20261027-001）：与 /fs/* 同口径——
+   * ?ws=<绝对路径> 必须是已注册工作空间，缺省回落启动空间。
+   */
+  async function resolveTerminalCwd(wsParam: string | null): Promise<string> {
+    const raw = wsParam?.trim();
+    if (!raw) return deps.sessionStore.path;
+    const target = await canonicalWorkspacePath(raw);
+    const known = await deps.sessionStore.listAllWorkspaces();
+    for (const w of known) {
+      if (isSameWorkspace(await canonicalWorkspacePath(w.path), target)) return target;
+    }
+    throw new Error(`未知工作空间: ${raw}`);
+  }
 
   /** 统一入口：路由 → 鉴权 → 处理器 → 错误转 JSON（D6：静态页免鉴权，已注册端点鉴权语义不变） */
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -184,6 +206,28 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       server.requestTimeout = 0; // 长流式响应不被 Node 默认 300s 掐断
 
       httpServer = server;
+
+      // ---- 终端（Task-20261027-001）：仅在 webui.terminal 显式开启时挂载 ----
+      // 默认关闭：终端 = 当前用户权限下的任意命令执行（D7）。
+      // 会话表懒建，避免默认关闭时白起一个 30s 回收定时器。
+      if (cfg.webui?.terminal) {
+        const tcfg = cfg.webui;
+        terminalManager = new TerminalManager({
+          maxSessions: tcfg.terminalMax > 0 ? tcfg.terminalMax : 4,
+          idleMs: tcfg.terminalIdleMs > 0 ? tcfg.terminalIdleMs : 30 * 60 * 1000,
+          deny: tcfg.terminalDeny ?? [],
+          audit: (e) => log(`[terminal][audit] ${e.denied ? '拒绝' : '执行'} ${e.command}`),
+          log,
+        });
+        detachTerminal = attachTerminalWs(server, {
+          getConfig: deps.getConfig,
+          manager: terminalManager,
+          resolveCwd: resolveTerminalCwd,
+          log,
+        });
+        log(`[terminal] 已启用（并发上限 ${tcfg.terminalMax}，空闲回收 ${Math.round(tcfg.terminalIdleMs / 60000)} 分钟）`);
+      }
+
       const actualPort = await new Promise<number>((resolve, reject) => {
         let settled = false;
         server.on('error', (err) => {
@@ -207,6 +251,15 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       if (!httpServer) return;
       const server = httpServer;
       httpServer = null;
+      // 终端：先断开 WS 并杀全部 PTY（Windows 下额外清 conhost 进程树）
+      if (detachTerminal) {
+        detachTerminal();
+        detachTerminal = null;
+      }
+      if (terminalManager) {
+        terminalManager.disposeAll();
+        terminalManager = null;
+      }
       await new Promise<void>((resolve) => server.close(() => resolve()));
       runs.dispose(); // 清理结束态保留定时器
     },

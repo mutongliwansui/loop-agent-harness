@@ -22,6 +22,7 @@ import { skillRoutes } from './handlers/skills.js';
 import { memoryRoutes } from './handlers/memory.js';
 import { visionRoutes } from './handlers/vision.js';
 import { doctorRoutes } from './handlers/doctor.js';
+import { terminalRoutes } from './handlers/terminal.js';
 import type { ApiServerDeps } from './server.js';
 import type { SessionManager } from './session-manager.js';
 import type { RunHub } from './run-hub.js';
@@ -116,6 +117,7 @@ export function createRoutes(): Route[] {
     ...memoryRoutes(),
     ...visionRoutes(),
     ...doctorRoutes(),
+    ...terminalRoutes(),
   ];
 }
 
