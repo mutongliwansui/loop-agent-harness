@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FilesView 右栏 · 真实渲染验证（20261026-001）</title>
+    <style>
+      /* 仅铺满视口，不参与组件样式（组件样式全部来自 src/style.css 与 FilesView scoped） */
+      html, body { margin: 0; padding: 0; height: 100%; }
+      #app { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./verify-fs-panel.ts"></script>
+  </body>
+</html>
