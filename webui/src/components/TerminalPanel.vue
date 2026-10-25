@@ -172,6 +172,7 @@ async function loadInfo(): Promise<void> {
     const r = await api<{
       enabled: boolean;
       ptyAvailable: boolean;
+      ptyHint?: string | null;
       shells: { id: string; label: string }[];
       maxSessions: number;
       cwd: string;
@@ -199,8 +200,10 @@ function maybeAutoConnect(): void {
     return;
   }
   if (!i.ptyAvailable) {
+    // 文案以服务端 ptyHint 为准（含真实查找路径与 SEA 部署说明）：
+    // 前端写死「npm i」在单文件 exe 部署下会把人带偏，因为那类目录根本没有 npm 工程
     applyState('unsupported', {
-      message: '未安装 @lydell/node-pty（免编译预编译版），执行下行命令后重启服务',
+      message: i.ptyHint ?? '未安装 @lydell/node-pty（免编译预编译版），执行下行命令后重启服务',
     });
     return;
   }

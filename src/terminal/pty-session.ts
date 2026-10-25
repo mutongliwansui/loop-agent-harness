@@ -51,13 +51,40 @@ interface PtyModule {
 let ptyModule: PtyModule | null | undefined;
 
 /**
+ * 判断 `process.argv[1]` 是否是真实脚本路径。
+ *
+ * 必须判：SEA 产物里 `argv[1]` 是**用户命令行参数**（如 `--serve`），不是脚本路径。
+ * 若直接拿它做 `createRequire` 基准，Node 会按 cwd 解析，导致「PTY 是否可用」随启动目录
+ * 漂移（工作空间里恰好有 node_modules 就能用，否则不能），属于隐形的路径依赖。
+ */
+export function looksLikeScriptPath(p: string | undefined): boolean {
+  if (!p) return false;
+  if (p.startsWith('-')) return false; // CLI 标志
+  return /\.(c|m)?[jt]s$/.test(p); // 源码或 CJS/ESM 产物
+}
+
+/**
+ * 实际会查找 `node_modules` 的目录（排查「为什么找不到 PTY」用）。
+ * 仅用于提示文案，不影响解析逻辑。
+ */
+export function describePtySearchPaths(): string {
+  const dirs: string[] = [];
+  const entry = process.argv[1];
+  if (looksLikeScriptPath(entry)) dirs.push(join(dirname(entry as string), 'node_modules'));
+  dirs.push(join(dirname(process.execPath), 'node_modules'));
+  return [...new Set(dirs)].join('、');
+}
+
+/**
  * 加载 PTY 原生模块（失败缓存为 null，避免每次 spawn 都重试昂贵的 require）。
  * 导出供单测替换/复位。
  *
  * 解析基准需要多级回退（这是踩过的真实坑）：
- * - `createRequire(import.meta.url)`：ESM 源码 / 正常构建，最准确。
- *   但 CJS/SEA 产物中 import.meta 被 esbuild 替换为空对象（同 src/api/static.ts 注释），
- *   `createRequire(undefined)` 会抛 TypeError。
+ * - `createRequire(process.argv[1])`：以入口脚本为基准（源码/tsx：`src/index.ts`，
+ *   CJS 产物：`dist-sea/index.cjs`），正常构建最准确。
+ *   刻意**不用** `import.meta.url`：esbuild 打 CJS 时会告警且替换为空对象，
+ *   `createRequire(undefined)` 直接抛 TypeError。
+ *   注意 SEA 下必须先用 `looksLikeScriptPath` 过滤掉 CLI 参数，见该函数注释。
  * - `createRequire(<exeDir>/x.js)`：SEA 产物（exe 与 node_modules 同目录部署）。
  * - `createRequire(process.execPath)` + 显式 paths：全局安装等边缘场景。
  *   注意**其基准是 node.exe 所在目录**，只适用于 Node **内置**模块
@@ -67,8 +94,11 @@ export function loadPtyModule(): PtyModule | null {
   if (ptyModule !== undefined) return ptyModule;
 
   const attempts: Array<() => unknown> = [
-    // 1) 模块自身位置（ESM / 正常 CJS 构建）
-    () => createRequire(import.meta.url)(PTY_PKG),
+    // 1) 入口脚本位置（源码/tsx：src/index.ts；CJS 产物：dist-sea/index.cjs）
+    () =>
+      looksLikeScriptPath(process.argv[1])
+        ? createRequire(process.argv[1] as string)(PTY_PKG)
+        : undefined, // SEA 下 argv[1] 为用户参数，交由下一基准
     // 2) exe 所在目录（SEA 打包产物）
     () => requireFromExecDir(PTY_PKG),
     // 3) execPath 基准 + 显式 paths（全局安装等边缘场景）
@@ -290,6 +320,18 @@ export function nextSessionId(): string {
 }
 
 /**
+ * 缺 PTY 时的可操作指引。错误信息与 `/terminal/info` 的 `ptyHint` 共用同一份文案，
+ * 避免「前端自己写一句 npm i」与服务端真实原因漂移（SEA 部署照做无效）。
+ */
+export function ptyUnavailableHint(): string {
+  return (
+    `未找到 ${PTY_PKG}（已查找：${describePtySearchPaths()}）。` +
+    '开发环境执行 npm i @lydell/node-pty 后重启服务；' +
+    '单文件 exe 部署需把 node_modules/@lydell 放在 exe 同目录随 exe 一起分发（npm run build:sea 已自动拷贝）'
+  );
+}
+
+/**
  * 创建 PTY 会话。
  * @throws PtyUnavailableError 原生模块不可用
  * @throws Error spawn 失败（shell 路径无效等）
@@ -297,9 +339,7 @@ export function nextSessionId(): string {
 export function createPtySession(opts: PtySessionOptions): PtySession {
   const mod = loadPtyModule();
   if (!mod) {
-    throw new PtyUnavailableError(
-      '未安装 @lydell/node-pty（免编译版本），请执行 npm i @lydell/node-pty',
-    );
+    throw new PtyUnavailableError(ptyUnavailableHint());
   }
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(opts.env ?? (process.env as Record<string, string>))) {

@@ -70,7 +70,7 @@ HTTP API 服务已启动
 
 - **shell 由运行时探测决定**：启动时检查 `pwsh.exe`（PowerShell 7）→ `powershell.exe`（Windows PowerShell 5.1）→ `cmd.exe`（POSIX 为 `$SHELL` / `bash` / `zsh`），只列出真实存在的；`pwsh.exe` 未安装时不会出现在下拉里（不会出现「点了报错」的假选项）。工作目录固定为当前会话的工作空间，工具条可点击复制路径。
 - **通道**：`浏览器 (xterm.js) ⇄ WebSocket ⇄ 服务端 ⇄ 伪终端 PTY (ConPTY)`，滚动缓冲、光标、`Ctrl+C`、`↑` 历史、全屏 TUI 程序（如 `npm run build` 进度条）都按真实终端行为工作；窗口缩放与分割条拖拽后自动重算行列（`resize` 消息有 120ms 防抖）。
-- **六态齐备**：未启动（居中 CTA + shell 卡片）/ 运行中（底部状态条：`● 已连接 · 96×27 · UTF-8 · PID · cwd`）/ 执行中（页签转圈 + 右下浮条「正在执行 xx · Ctrl+C」）/ 已退出（覆盖层显示退出码与运行时长，**输出保留可滚动**，可一键重启）/ 断连（顶部黄色横幅「正在重连…(2/5)」，指数退避 1s→2s→4s→8s）/ 缺 PTY（直写安装命令 `npm i @lydell/node-pty`）。非存活态的状态条不会谎报「已连接」，清屏/复制按需置灰。
+- **六态齐备**：未启动（居中 CTA + shell 卡片）/ 运行中（底部状态条：`● 已连接 · 96×27 · UTF-8 · PID · cwd`）/ 执行中（页签转圈 + 右下浮条「正在执行 xx · Ctrl+C」）/ 已退出（覆盖层显示退出码与运行时长，**输出保留可滚动**，可一键重启）/ 断连（顶部黄色横幅「正在重连…(2/5)」，指数退避 1s→2s→4s→8s）/ 缺 PTY（给出实际查找目录，并按部署形态给对应补救：开发环境 `npm i`，SEA 则把 `node_modules/@lydell` 放到 exe 同目录）。非存活态的状态条不会谎报「已连接」，清屏/复制按需置灰。
 - **中文不乱码**：不注入 `chcp 65001`——ConPTY 内部走 UTF-16，服务端拿到的已是 UTF-8，`echo 中文测试✓` 回显正确；注入反而会污染既有输出并破坏依赖 OEM 代码页的工具。字体带中文回退（`Microsoft YaHei UI`）。
 - **断连不丢画面**：每会话保留最近 256KB 输出环形缓冲，重连后先回放再续流；WS 断开后 PTY 保留 60s 宽限期供重连，超时才回收（Windows 用 `taskkill /T /F /PID` 清进程树，连 `conhost.exe` 一起收）。
 - **关页签即释放**：点页签 `✕` 会立即通知服务端 kill PTY 并释放并发名额（与「网络闪断保留 60s 供重连」是两回事）；页面刷新/关闭走 `pagehide` 同样主动释放，最多 60s 兜底回收。因此反复开关终端不会出现「界面上没有终端却提示已达上限」。
@@ -89,7 +89,7 @@ npm run cli -- /config set webui.terminalIdleMs 1800000
 
 安全约束：① 默认关闭；② 未配 `api.token` 时仅回环地址可用，非回环绑定且无 token 一律拒绝；③ WS 握手的 token 走 `Sec-WebSocket-Protocol` 子协议（浏览器 WebSocket 无法自定义头，query 传 token 会进访问日志）；④ `Origin` 白名单校验，防 CSRF 式跨站连接；⑤ 每次回车提交的命令写入会话日志可回溯；⑥ 前端危险命令（`del /s`、`rmdir /s`、`format`、`shutdown`）确认框只防手滑，**真正的边界在服务端拒绝名单与鉴权**。
 
-依赖说明：前端 `@xterm/xterm` + `@xterm/addon-fit`；服务端 `ws` + `@lydell/node-pty`（**免编译**预编译版，避免 node-pty 官方包的 node-gyp / Python / VS Build Tools 链路）。未安装 `@lydell/node-pty` 时服务照常启动，终端降级为「交互式终端不可用」并给出安装命令。
+依赖说明：前端 `@xterm/xterm` + `@xterm/addon-fit`；服务端 `ws` + `@lydell/node-pty`（**免编译**预编译版，避免 node-pty 官方包的 node-gyp / Python / VS Build Tools 链路）。未安装 `@lydell/node-pty` 时服务照常启动，终端降级为「交互式终端不可用」，提示文案由服务端 `GET /terminal/info` 的 `ptyHint` 给出——包含**实际查找过的目录**，并区分「开发环境 `npm i`」与「SEA 单文件部署需把 `node_modules/@lydell` 放在 exe 同目录随 exe 分发（`npm run build:sea` 已自动拷贝）」，避免用户对着 `npm i` 无从下手。
 
 ### 对话内上传
 

@@ -9,7 +9,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from '../http-utils.js';
 import { detectShells } from '../../terminal/shells.js';
-import { loadPtyModule } from '../../terminal/pty-session.js';
+import { loadPtyModule, ptyUnavailableHint } from '../../terminal/pty-session.js';
 import type { HandlerContext, Route } from '../router.js';
 
 async function handleTerminalInfo(
@@ -25,6 +25,11 @@ async function handleTerminalInfo(
   sendJson(res, 200, {
     enabled,
     ptyAvailable,
+    /**
+     * PTY 不可用时的可操作指引（含真实查找路径）。
+     * 直接复用服务端文案，前端不再自己写死「npm i」——SEA 单文件部署照做无效。
+     */
+    ptyHint: ptyAvailable ? null : ptyUnavailableHint(),
     shells: shells.map((s) => ({ id: s.id, label: s.label })),
     maxSessions: cfg.webui?.terminalMax ?? 4,
     idleMs: cfg.webui?.terminalIdleMs ?? 30 * 60 * 1000,
