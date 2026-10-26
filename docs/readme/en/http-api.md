@@ -141,13 +141,38 @@ Three auth modes:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/memory/status` | Layered status `{enabled, layers, counts}` (always 200 `{enabled:false,...}` when disabled) |
+| GET | `/memory/status` | Layered status `{enabled, layers, counts, dreaming?}` (always 200 `{enabled:false,...}` when disabled; `dreaming` is the auto-promotion state, see below) |
 | GET | `/memory/curated` | Full text of curated-layer files `{entries}` |
 | GET | `/memory/episodic?limit=` | Episodic-layer log `{entries}` |
 | GET | `/memory/search?q=&limit=` | Cross-layer search `{results: [{content, score, layer}]}` (q required) |
 | GET | `/memory/gate` | Promotion gate thresholds + recent decisions |
-| POST | `/memory/dream` | Trigger async curation → 202 `{accepted}` |
+| POST | `/memory/dream` | Trigger async curation → 202 `{accepted, reason?, skippedBecause?}` (`accepted:false` when a run is already in progress) |
 | POST | `/memory/init` | Initialize layered directories (idempotent) |
+
+**`dreaming` field of `/memory/status` (auto-promotion observability)**
+
+```json
+{
+  "enabled": true,
+  "layers": { "episodic": { "dir": "…" }, "curated": { "workspace": "…", "files": {} } },
+  "counts": { "episodicDays": 7, "gatePending": 0, "gateApproved": 12 },
+  "dreaming": {
+    "enabled": true,
+    "scheduleEnabled": true,
+    "intervalHours": 24,
+    "startupDelayMin": 5,
+    "running": false,
+    "lastRunAt": "2026-10-26T00:12:33.000Z",
+    "lastSummary": { "reason": "schedule", "promoted": 3, "skipped": 1, "errors": 0, "ok": true },
+    "lastProcessedDay": "2026-10-25",
+    "nextRunAt": "2026-10-27T00:12:33.000Z"
+  }
+}
+```
+
+> `dreaming` is only present when the scheduler is wired (`--serve` boot) and the workspace is loaded.
+> With `memory.enabled=false` the whole response stays `{enabled:false, layers:{}, counts:{}}` (200, never an error).
+
 
 **vision (`/vision` command, diagnostic semantics: failure does not fail the endpoint)**
 

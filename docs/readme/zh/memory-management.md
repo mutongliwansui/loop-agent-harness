@@ -100,3 +100,23 @@ const merged = rrfMerge(ftsHits, vectorHits);
 - **晋升有闸门**：不同来源（用户直述 / 工具输出 / 网页搜索）需不同确认次数才能晋升 L3（Promotion Gate 已实现，`/memory gate` 可查看）
 - **混合检索**：BM25 全文检索 + 向量检索（可选）通过 RRF 融合排序，配置 `episodic.vectorSearch` 后自动启用，embedding 失败自动降级
 - **失败降级**：记忆子系统异常不影响主回复路径
+
+### 自动晋升（`--serve` / WebUI）
+
+CLI 在退出时会跑一次 Dreaming；但 `--serve` 是常驻进程，「退出时晋升」对它不成立，因此服务侧补齐三条触发路径：
+
+| 触发 | 时机 | 说明 |
+| --- | --- | --- |
+| **定时（主力）** | 启动 `schedule.startupDelayMin`（默认 5）分钟后首轮，此后每 `schedule.intervalHours`（默认 24h）一轮 | 只处理「今天之前」的天；当天内容留到次日。**没有新增内容时不调用 LLM**（增量判定直接 return） |
+| **关停兜底** | 收到 `Ctrl+C`（`SIGINT`）/ `SIGTERM` / `SIGBREAK` | 遍历全部已装载工作空间串行晋升，受 `shutdownBudgetMs`（默认 30s）约束；**再按一次 Ctrl+C 立即退出** |
+| **手动** | `POST /memory/dream` 或 WebUI「✦ 梳理（dream）」 | 与自动触发共用同一把进程内锁 |
+
+规则与限制：
+
+- **互斥**：同一工作空间同一时刻只跑一次晋升；撞车时后来者直接跳过（手动端点回 `accepted:false`），不排队、不重复晋升。
+- **不与对话抢资源**：定时轮遇到该空间有对话正在跑（in-flight）时本轮让位；关停兜底不受此限（此时已无新对话）。
+- **补漏**：读取窗口按「距上次处理的天数 + 1」放大（上限 `maxDaysBack`，默认 30），避免停机多日后中间的天永久晋升不到。
+- **可观测**：`GET /memory/status` 的 `dreaming` 字段给出 `running` / `lastRunAt` / `lastSummary` / `lastProcessedDay` / `nextRunAt`，WebUI 记忆页「分层状态」卡片同步展示。
+- **增量状态**：`{L2 目录}/.dreaming-state.json` 保存 `lastProcessedDay`（已整理到哪一天）与 `lastRunAt` / `lastSummary`（上次执行记录）。
+- **关闭方式**：`memory.dreaming.schedule.enabled=false` 只停定时轮（关停兜底仍生效）；`memory.dreaming.onExit=false` 只停关停兜底；`memory.dreaming.enabled=false` 全停。
+- **已知边界**：CLI 与 `--serve` 同时跑同一工作空间时无跨进程文件锁，靠 `lastProcessedDay` 幂等 + 去重归并兜底；Windows 下关闭控制台窗口可能拿不到清理时机（无优雅关停信号）。

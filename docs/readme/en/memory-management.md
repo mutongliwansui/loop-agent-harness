@@ -100,3 +100,23 @@ const merged = rrfMerge(ftsHits, vectorHits);
 - **Gated promotion**: Different sources (user-stated / tool output / web search) need different confirmation counts to be promoted to L3 (Promotion Gate implemented; view via `/memory gate`)
 - **Hybrid retrieval**: BM25 full-text + vector retrieval (optional) merged and ranked via RRF. Enabled automatically once `episodic.vectorSearch` is configured; embedding failures degrade gracefully
 - **Failure degradation**: Memory subsystem anomalies do not affect the main reply path
+
+### Auto-Promotion (`--serve` / WebUI)
+
+The CLI runs Dreaming once on exit, but `--serve` is a long-lived process where "promote on exit" simply never happens. The server side therefore gets three trigger paths:
+
+| Trigger | Timing | Notes |
+| --- | --- | --- |
+| **Scheduled (primary)** | First round `schedule.startupDelayMin` (default 5) minutes after boot, then every `schedule.intervalHours` (default 24h) | Only processes days *before* today; today's content waits for tomorrow. **No new content means no LLM call** (the incremental check returns early) |
+| **Shutdown fallback** | On `Ctrl+C` (`SIGINT`) / `SIGTERM` / `SIGBREAK` | Promotes every loaded workspace serially within `shutdownBudgetMs` (default 30s); **a second Ctrl+C exits immediately** |
+| **Manual** | `POST /memory/dream` or the WebUI "✦ Dream" button | Shares the same in-process lock as the automatic triggers |
+
+Rules and limits:
+
+- **Mutual exclusion**: at most one promotion per workspace at a time; a latecomer is skipped (the manual endpoint returns `accepted:false`) — no queueing, no duplicate promotions.
+- **Never competes with chat**: the scheduled round yields when a conversation is in flight in that workspace; the shutdown fallback is exempt (no new conversations then).
+- **Gap repair**: the read window widens to "days since last processed day + 1", capped by `maxDaysBack` (default 30), so days missed during downtime are not lost forever.
+- **Observability**: the `dreaming` field of `GET /memory/status` exposes `running` / `lastRunAt` / `lastSummary` / `lastProcessedDay` / `nextRunAt`, mirrored in the WebUI memory page's "Layered status" card.
+- **Incremental state**: `{L2 dir}/.dreaming-state.json` stores `lastProcessedDay` plus `lastRunAt` / `lastSummary`.
+- **Turning it off**: `memory.dreaming.schedule.enabled=false` stops only the scheduler (the shutdown fallback still runs); `memory.dreaming.onExit=false` stops only the shutdown fallback; `memory.dreaming.enabled=false` stops everything.
+- **Known limits**: running the CLI and `--serve` against the same workspace has no cross-process file lock — `lastProcessedDay` idempotency plus dedupe/merge covers it; on Windows, closing the console window may not give any cleanup chance (no graceful signal).

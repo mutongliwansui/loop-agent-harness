@@ -93,7 +93,14 @@
     "dreaming": {
       "enabled": true,
       "daysBack": 3,
-      "onExit": true
+      "onExit": true,
+      "schedule": {
+        "enabled": true,
+        "intervalHours": 24,
+        "startupDelayMin": 5
+      },
+      "shutdownBudgetMs": 30000,
+      "maxDaysBack": 30
     }
   },
   "vision": {
@@ -128,6 +135,12 @@
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill 技能包开关与扫描目录 | 全部启用 |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | 三层记忆系统配置（含检索增强） | 全部启用 |
+| `memory.dreaming` | `onExit` | 进程关停时是否自动晋升（语义已由「CLI 退出」扩为「任何宿主进程关停」：CLI 的 `quit`/`exit`/`Ctrl+C` 与 `--serve` 的 `Ctrl+C`/`SIGTERM`/`SIGBREAK` 共用） | `true` |
+| `memory.dreaming` | `schedule.enabled` | `--serve`/WebUI 是否启用定时自动晋升（与 `onExit` 独立；CLI 不参与定时） | `true` |
+| `memory.dreaming` | `schedule.intervalHours` | 定时轮间隔小时数；当天内容本就留到次日整理，更短间隔只会空跑 | `24` |
+| `memory.dreaming` | `schedule.startupDelayMin` | 启动后延迟多少分钟开始首轮（避开启动期初始化与首个对话） | `5` |
+| `memory.dreaming` | `shutdownBudgetMs` | 关停兜底的总时间预算（毫秒）；超时打印警告后继续关停，不再等待 | `30000` |
+| `memory.dreaming` | `maxDaysBack` | 读取窗口放大上限（天）：触发时按「距上次处理天数 + 1」放大 `daysBack`，修补停机多日的漏晋升 | `30` |
 | `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | 视觉模型配置（Task-20261010-001）；`baseUrl` / `apiKey` / `model` 为空时回退主模型 `model.*` 三元组 | `enabled: false`，其余见上方配置结构 |
 | `webui` | `terminal` | 是否启用 Web UI 文件预览区终端（终端 = 任意命令执行，须显式开启；未开启时 WS 握手 403） | `false` |
 | `webui` | `terminalDeny` | 终端拒绝执行的命令关键字（**服务端**生效，命中即拒绝并审计；前端确认框不承担安全职责） | `[]` |

@@ -4,6 +4,7 @@
 
 import pkg from '../../package.json';
 import { createApiServer, type ApiServer } from './server.js';
+import { DreamScheduler } from './dream-scheduler.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
 
@@ -39,6 +40,14 @@ export async function startApiServer(): Promise<ApiServer> {
   // D5：attachMemory 注入共享 kit；容量 1 等价回退旧串行语义（经环境变量可调）。
   // Task-20261021-010-01：池由 runtime 持有（每空间一池），容量读 LOOP_AGENT_POOL_CAPACITY。
 
+  // 记忆晋升调度器（Task-20261026-002）：定时轮为主力，关停兜底补最后一轮。
+  // getConfig 读进程级配置（节奏/预算/onExit）；每空间的记忆配置另由各自 runtime 的 configLoader 读。
+  const dreamScheduler = new DreamScheduler({
+    registry,
+    getConfig: () => configLoader.load().config,
+    log: (msg) => console.log(msg),
+  });
+
   // 版本取自 package.json：tsup 打包时内联进产物（build:sea 的 SEA 单文件同样可用），
   // 不依赖运行时文件读取与 import.meta，避免 CJS 产物中版本恒为空
   const version = pkg.version;
@@ -66,6 +75,8 @@ export async function startApiServer(): Promise<ApiServer> {
     },
     // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅装载启动目录，后续任务据此多空间并存
     registry,
+    // 记忆晋升调度器（Task-20261026-002 D11）：手动端点与定时/关停共用同一把进程内锁
+    dreamScheduler,
   });
 
   const { port } = await server.start();
@@ -78,12 +89,31 @@ export async function startApiServer(): Promise<ApiServer> {
   console.log(`  提示:    Ctrl+C 退出；配置变更需重启生效`);
   console.log('');
 
-  // serve 常驻：Ctrl+C 关停服务并断开 MCP，随后退出
-  process.on('SIGINT', async () => {
+  // serve 常驻：收到关停信号时先补一轮 Dreaming，再关服务、断开 MCP 后退出（Task-20261026-002 D5/D6）
+  // - 顺序：停调度器 → 跑晋升（受 shutdownBudgetMs 约束）→ server.close() → 断 MCP → exit
+  //   （不能先 server.close()：等待存量连接关闭可能被 SSE 长连接挂住，晋升就永远排不上）
+  // - 信号面：SIGINT（Ctrl+C，全平台）+ SIGTERM（Linux/macOS 主路径）+ SIGBREAK（Windows）
+  // - 二次信号：立即强退，给用户「别等了」的出口
+  dreamScheduler.start();
+  let shuttingDown = false;
+  const onSignal = async (sig: string): Promise<void> => {
+    if (shuttingDown) {
+      console.log(`\n[api] 再次收到 ${sig}，立即退出（未完成的晋升会被丢弃）`);
+      process.exit(0);
+    }
+    shuttingDown = true;
+    dreamScheduler.stop();
+    const budget = configLoader.load().config.memory.dreaming.shutdownBudgetMs;
+    console.log('');
+    console.log(`[api] 收到 ${sig}，正在整理记忆（Dreaming），最多等待 ${Math.round(budget / 1000)}s；再按一次 Ctrl+C 立即退出`);
+    await dreamScheduler.runAllForShutdown(budget).catch(() => []);
     await server.close().catch(() => {});
     await mcpManager.disconnectAll().catch(() => {});
     process.exit(0);
-  });
+  };
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
+    process.on(sig, () => void onSignal(sig));
+  }
 
   return server;
 }

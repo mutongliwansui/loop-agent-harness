@@ -37,6 +37,8 @@ async function handleMemoryStatus(ctx: HandlerContext, _req: IncomingMessage, re
     return;
   }
   const kit = await ctx.createMemoryKit();
+  // Task-20261026-002 D9：附带自动晋升状态（调度器未注入或该空间未装载时不返回该字段）
+  const dreaming = await ctx.dreamScheduler?.statusFor(ctx.deps.sessionStore.path).catch(() => null);
   sendJson(res, 200, {
     enabled: true,
     layers: {
@@ -48,6 +50,7 @@ async function handleMemoryStatus(ctx: HandlerContext, _req: IncomingMessage, re
       gatePending: kit.gate.listPending().length,
       gateApproved: kit.gate.listApproved().length,
     },
+    ...(dreaming ? { dreaming } : {}),
   });
 }
 
@@ -97,8 +100,29 @@ async function handleGate(ctx: HandlerContext, _req: IncomingMessage, res: Serve
   });
 }
 
-/** POST /memory/dream：异步整理（202 即走即忘，任务内部检查 dreaming.enabled） */
+/**
+ * POST /memory/dream：异步整理（202 即走即忘，任务内部检查 dreaming.enabled）
+ *
+ * Task-20261026-002 D11：调度器在时改走调度器，与定时轮/关停兜底共用同一把进程内单飞锁；
+ * 已在跑则立即回 `accepted:false`（仍 202：语义是「已受理 / 无需受理」，不引入新错误码）。
+ * 调度器未注入（既有单测、嵌入用法）时回落原「即走即忘」行为。
+ */
 async function handleDream(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const scheduler = ctx.dreamScheduler;
+  if (scheduler) {
+    const root = ctx.deps.sessionStore.path;
+    if (scheduler.isRunning(root)) {
+      sendJson(res, 202, { accepted: false, reason: 'manual', skippedBecause: 'already-running' });
+      return;
+    }
+    sendJson(res, 202, { accepted: true, reason: 'manual' });
+    // 即走即忘：并发竞态由调度器自身单飞锁兜底（后到者直接跳过，不会重复晋升）
+    void scheduler.runFor(root, 'manual').catch((e: unknown) => {
+      ctx.log(`[api] memory dream 失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+    return;
+  }
+
   sendJson(res, 202, { accepted: true });
   void (async () => {
     try {

@@ -140,13 +140,38 @@ HTTP API 服务已启动
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/memory/status` | 分层状态 `{enabled, layers, counts}`（未启用恒 200 `{enabled:false,...}`） |
+| GET | `/memory/status` | 分层状态 `{enabled, layers, counts, dreaming?}`（未启用恒 200 `{enabled:false,...}`；`dreaming` 为自动晋升状态，见下） |
 | GET | `/memory/curated` | 整理层三层文件全文 `{entries}` |
 | GET | `/memory/episodic?limit=` | 情景层日志 `{entries}` |
 | GET | `/memory/search?q=&limit=` | 跨层检索 `{results: [{content, score, layer}]}`（q 必填） |
 | GET | `/memory/gate` | 提升门阈值 + 近期判定 |
-| POST | `/memory/dream` | 触发异步整理 → 202 `{accepted}` |
+| POST | `/memory/dream` | 触发异步整理 → 202 `{accepted, reason?, skippedBecause?}`（已有晋升在跑回 `accepted:false`） |
 | POST | `/memory/init` | 初始化分层目录（幂等） |
+
+**`/memory/status` 的 `dreaming` 字段（自动晋升可观测）**
+
+```json
+{
+  "enabled": true,
+  "layers": { "episodic": { "dir": "…" }, "curated": { "workspace": "…", "files": {} } },
+  "counts": { "episodicDays": 7, "gatePending": 0, "gateApproved": 12 },
+  "dreaming": {
+    "enabled": true,
+    "scheduleEnabled": true,
+    "intervalHours": 24,
+    "startupDelayMin": 5,
+    "running": false,
+    "lastRunAt": "2026-10-26T00:12:33.000Z",
+    "lastSummary": { "reason": "schedule", "promoted": 3, "skipped": 1, "errors": 0, "ok": true },
+    "lastProcessedDay": "2026-10-25",
+    "nextRunAt": "2026-10-27T00:12:33.000Z"
+  }
+}
+```
+
+> `dreaming` 仅在调度器已装配（`--serve` 启动）且该工作空间已装载时出现；`memory.enabled=false` 时整个响应仍为
+> `{enabled:false, layers:{}, counts:{}}`（200，不报错）。
+
 
 **vision（/vision 命令，诊断语义：失败不失败端点）**
 

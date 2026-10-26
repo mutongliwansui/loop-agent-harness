@@ -37,6 +37,7 @@ import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
 import type { WorkspaceRegistry } from './workspace-runtime.js';
+import type { DreamScheduler } from './dream-scheduler.js';
 import { runBench, type BenchRunner } from '../llm/bench.js';
 import { defaultBenchRoot } from '../llm/bench-store.js';
 import { BenchRunHub } from './bench-hub.js';
@@ -82,6 +83,12 @@ export interface ApiServerDeps {
   runtime?: Partial<ApiRuntimeDeps>;
   /** 工作空间运行时注册表（Task-20261021-010-01）；透传给 handler 做按会话/空间路由 */
   registry?: WorkspaceRegistry;
+  /**
+   * 记忆晋升调度器（Task-20261026-002 D11）：透传给 handler，
+   * 使 POST /memory/dream 与定时轮/关停兜底共用同一把进程内单飞锁。
+   * 缺省时不注入 — handler 回落原有「即走即忘」行为（既有单测零改动）。
+   */
+  dreamScheduler?: DreamScheduler;
 }
 
 export interface ApiServer {
@@ -128,6 +135,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     createMemoryKit: rt.createMemoryKit ?? (() => defaultMemoryKitFactory(deps.sessionStore.path)),
     // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅透传，后续任务消费
     registry: deps.registry,
+    // 记忆晋升调度器（Task-20261026-002）：POST /memory/dream 据此抢锁
+    dreamScheduler: deps.dreamScheduler,
     // 模型性能测试（需求 20261027-003）：历史根目录与引擎均可注入，单测不触网不写用户目录
     benchRoot: rt.benchRoot ?? defaultBenchRoot(),
     runBench: rt.runBench ?? runBench,
@@ -274,6 +283,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       runs.dispose(); // 清理结束态保留定时器
       ctx.benchRuns.dispose(); // 中断在跑的模型测速并清保留定时器（需求 20261027-003）
+      ctx.dreamScheduler?.dispose(); // 清记忆晋升定时器（Task-20261026-002 D12）
     },
   };
 }

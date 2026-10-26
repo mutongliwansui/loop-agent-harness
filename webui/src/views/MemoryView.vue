@@ -10,10 +10,24 @@ import { errText } from '../utils';
 import JsonViewer from '../components/JsonViewer.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 
+/** 自动晋升状态（Task-20261026-002 D9：GET /memory/status 的 dreaming 字段） */
+interface DreamStatus {
+  enabled: boolean;
+  scheduleEnabled: boolean;
+  intervalHours: number;
+  startupDelayMin: number;
+  running: boolean;
+  lastRunAt?: string;
+  lastSummary?: { reason: string; promoted: number; skipped: number; errors: number; ok: boolean };
+  lastProcessedDay?: string;
+  nextRunAt?: string;
+}
+
 interface MemoryStatus {
   enabled: boolean;
   layers: { episodic?: { dir: string }; curated?: { workspace: string; files: Record<string, string> } };
   counts: { episodicDays?: number; gatePending?: number; gateApproved?: number };
+  dreaming?: DreamStatus;
 }
 
 const status = ref<MemoryStatus | null>(null);
@@ -48,6 +62,34 @@ function titleOf(r: Record<string, unknown>, i: number): string {
     if (typeof v === 'string' && v.trim()) return v;
   }
   return `结果 ${i + 1}`;
+}
+
+/** ISO 时间 → 本地 `YYYY-MM-DD HH:mm`（无法解析时原样返回） */
+function fmtTime(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** 自动晋升明细文案：上次结果 + 已整理至 + 下次计划 */
+function dreamingDetail(d: DreamStatus): string {
+  const parts: string[] = [];
+  if (d.lastRunAt) {
+    parts.push(`上次 ${fmtTime(d.lastRunAt)}`);
+    const s = d.lastSummary;
+    if (s) {
+      let r = `晋升 ${s.promoted} 条 / 跳过 ${s.skipped} 条`;
+      if (s.errors > 0) r += ` / 错误 ${s.errors}`;
+      parts.push(r);
+    }
+  } else {
+    parts.push('尚未执行');
+  }
+  if (d.lastProcessedDay) parts.push(`已整理至 ${d.lastProcessedDay}`);
+  if (d.nextRunAt && !d.running) parts.push(`下次 ${fmtTime(d.nextRunAt)}`);
+  return parts.join(' · ');
 }
 
 async function refresh(): Promise<void> {
@@ -100,8 +142,19 @@ async function search(): Promise<void> {
 async function dream(): Promise<void> {
   busy.value = true;
   try {
-    await api('/memory/dream', { method: 'POST' });
-    showToast('已受理：记忆整理（dream）在后台异步执行，完成后见服务端日志', 'success');
+    const res = await api<{ accepted?: boolean; skippedBecause?: string }>('/memory/dream', { method: 'POST' });
+    // Task-20261026-002 D11：已有晋升在跑时服务端回 accepted:false（仍 202）
+    if (res && res.accepted === false) {
+      showToast(`已有晋升在进行中（${res.skippedBecause ?? 'already-running'}），本次请求已忽略`, 'error');
+    } else {
+      showToast('已受理：记忆整理（dream）在后台异步执行，完成后见服务端日志', 'success');
+    }
+    // 轻量刷新状态，让「运行中」指示尽快可见
+    try {
+      status.value = await api<MemoryStatus>('/memory/status');
+    } catch {
+      // 状态刷新失败不影响主流程（下次「刷新」时再取）
+    }
   } catch (e) {
     guard(e, 'dream 失败');
   } finally {
@@ -150,6 +203,15 @@ onMounted(refresh);
           </div>
           <div v-if="status.layers.curated" class="form-row" style="margin-top:6px">
             <span class="muted" style="width:70px">curated</span><span class="mono">{{ status.layers.curated.workspace }}</span>
+          </div>
+          <!-- Task-20261026-002 D9：自动晋升可观测（上次结果 / 已整理至 / 下次计划 / 运行中） -->
+          <div v-if="status.dreaming" class="form-row" style="margin-top:6px">
+            <span class="muted" style="width:70px">自动晋升</span>
+            <StatusBadge :kind="status.dreaming.scheduleEnabled ? 'ok' : 'dim'">
+              {{ status.dreaming.scheduleEnabled ? `每 ${status.dreaming.intervalHours}h` : '定时关闭' }}
+            </StatusBadge>
+            <span v-if="status.dreaming.running" class="spin" title="正在晋升（Dreaming）"></span>
+            <span class="mono muted">{{ dreamingDetail(status.dreaming) }}</span>
           </div>
         </template>
         <template v-else-if="status">

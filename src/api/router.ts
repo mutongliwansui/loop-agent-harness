@@ -33,6 +33,7 @@ import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
 import type { MemoryKit } from './memory-kit.js';
 import type { WorkspaceRegistry } from './workspace-runtime.js';
+import type { DreamScheduler } from './dream-scheduler.js';
 import type { BenchRunner } from '../llm/bench.js';
 import type { BenchRunHub } from './bench-hub.js';
 
@@ -66,6 +67,11 @@ export interface HandlerContext {
    * deps.sessionStore/runAgent/getConfig 整体指向该 runtime 的不可变实例。
    */
   registry?: WorkspaceRegistry;
+  /**
+   * 记忆晋升调度器（Task-20261026-002）：/memory/status 展示状态、
+   * POST /memory/dream 抢同一把单飞锁。缺省时（既有单测/嵌入用法）行为不变。
+   */
+  dreamScheduler?: DreamScheduler;
   /** 模型性能测试历史根目录（默认 ~/.loop-agent/model-bench；单测注入临时目录，需求 20261027-003） */
   benchRoot: string;
   /** 性能测试引擎（默认 runBench；单测注入 fake 避免触网） */

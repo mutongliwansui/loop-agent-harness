@@ -42,9 +42,34 @@ export interface DreamingRunOptions {
   incremental?: boolean;
 }
 
-/** 增量状态：已处理到哪一天（ISO 日期，含当天） */
-interface DreamingState {
+/**
+ * 增量状态（{L2 目录}/.dreaming-state.json）
+ *
+ * Task-20261026-002 D9：除 lastProcessedDay 外新增 lastRunAt / lastSummary 用于可观测
+ * （WebUI 展示「上次何时晋升了多少」）。新增字段均可选，旧状态文件读取不报错。
+ */
+export interface DreamingState {
+  /** 已处理到哪一天（ISO 日期，含当天） */
   lastProcessedDay: string;
+  /** 上次实际执行完成时间（ISO 时间戳；提前结束的跳过不算） */
+  lastRunAt?: string;
+  /** 上次执行结果摘要（供 /memory/status 与 WebUI 展示） */
+  lastSummary?: {
+    reason: 'schedule' | 'shutdown' | 'manual';
+    promoted: number;
+    skipped: number;
+    errors: number;
+    ok: boolean;
+  };
+}
+
+/** 调度器回写的执行记录（recordRun 入参） */
+export interface DreamingRunRecord {
+  reason: 'schedule' | 'shutdown' | 'manual';
+  promoted: number;
+  skipped: number;
+  errors: number;
+  ok: boolean;
 }
 
 export class DreamingPipeline {
@@ -193,25 +218,64 @@ export class DreamingPipeline {
     return all;
   }
 
-  /** 读取增量状态 */
+  /**
+   * 读取增量状态（容错：缺字段/损坏文件一律回落默认值，不抛错）
+   * Task-20261026-002：新增 lastRunAt / lastSummary 的容错解析，旧格式文件照常可用。
+   */
   private async loadState(): Promise<DreamingState> {
     const path = this.statePath();
     if (!existsSync(path)) return { lastProcessedDay: '' };
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf-8'));
-      return { lastProcessedDay: typeof parsed?.lastProcessedDay === 'string' ? parsed.lastProcessedDay : '' };
+      const state: DreamingState = {
+        lastProcessedDay: typeof parsed?.lastProcessedDay === 'string' ? parsed.lastProcessedDay : '',
+      };
+      if (typeof parsed?.lastRunAt === 'string') state.lastRunAt = parsed.lastRunAt;
+      const s = parsed?.lastSummary;
+      if (s && typeof s === 'object') {
+        state.lastSummary = {
+          reason: (['schedule', 'shutdown', 'manual'] as const).includes(s.reason) ? s.reason : 'manual',
+          promoted: Number.isFinite(s.promoted) ? s.promoted : 0,
+          skipped: Number.isFinite(s.skipped) ? s.skipped : 0,
+          errors: Number.isFinite(s.errors) ? s.errors : 0,
+          ok: s.ok !== false,
+        };
+      }
+      return state;
     } catch {
       return { lastProcessedDay: '' };
     }
   }
 
-  /** 保存增量状态（记忆目录下，天然被 git 忽略） */
-  private async saveState(state: DreamingState): Promise<void> {
+  /**
+   * 保存增量状态（记忆目录下，天然被 git 忽略）
+   *
+   * Task-20261026-002：入参改为「补丁」并与磁盘现有状态合并写入——
+   * run() 推进 lastProcessedDay 时不会抹掉调度器写入的 lastRunAt / lastSummary。
+   */
+  private async saveState(patch: Partial<DreamingState>): Promise<void> {
     try {
-      writeFileSync(this.statePath(), JSON.stringify(state, null, 2), 'utf-8');
+      const merged = { ...(await this.loadState()), ...patch };
+      writeFileSync(this.statePath(), JSON.stringify(merged, null, 2), 'utf-8');
     } catch {
       // 状态写入失败不影响主流程
     }
+  }
+
+  /** 公开只读访问器（Task-20261026-002）：调度器算读取窗口、/memory/status 展示均需读取状态 */
+  async getState(): Promise<DreamingState> {
+    return this.loadState();
+  }
+
+  /**
+   * 记录一次执行结果（Task-20261026-002 D9）。
+   * 只写 lastRunAt / lastSummary，不触碰 lastProcessedDay（后者由 run() 在全部天成功后推进）。
+   */
+  async recordRun(record: DreamingRunRecord): Promise<void> {
+    await this.saveState({
+      lastRunAt: new Date().toISOString(),
+      lastSummary: { ...record },
+    });
   }
 
   /** 状态文件路径：{L2 记忆目录}/.dreaming-state.json */

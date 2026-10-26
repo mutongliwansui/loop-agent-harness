@@ -93,7 +93,14 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "dreaming": {
       "enabled": true,
       "daysBack": 3,
-      "onExit": true
+      "onExit": true,
+      "schedule": {
+        "enabled": true,
+        "intervalHours": 24,
+        "startupDelayMin": 5
+      },
+      "shutdownBudgetMs": 30000,
+      "maxDaysBack": 30
     }
   },
   "vision": {
@@ -128,6 +135,12 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `session` | `encryptionEnabled` | Whether session files are stored encrypted (AES-256-GCM) | `true` |
 | `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill toggles and scan directories | all enabled |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | Three-tier memory system config (incl. retrieval enhancement) | all enabled |
+| `memory.dreaming` | `onExit` | Auto-promote on process shutdown (semantics widened from "CLI exit" to "any host process shutdown": CLI `quit`/`exit`/`Ctrl+C` and `--serve` `Ctrl+C`/`SIGTERM`/`SIGBREAK` share it) | `true` |
+| `memory.dreaming` | `schedule.enabled` | Enable periodic auto-promotion in `--serve`/WebUI (independent of `onExit`; the CLI never schedules) | `true` |
+| `memory.dreaming` | `schedule.intervalHours` | Interval in hours. Today's content is left for tomorrow anyway, so shorter intervals only burn empty runs | `24` |
+| `memory.dreaming` | `schedule.startupDelayMin` | Delay in minutes before the first round (avoids startup init and the first conversation) | `5` |
+| `memory.dreaming` | `shutdownBudgetMs` | Total time budget for the shutdown fallback in ms; after it expires a warning is printed and shutdown continues without waiting | `30000` |
+| `memory.dreaming` | `maxDaysBack` | Upper bound (days) for window widening: on each trigger the window grows to "days since last processed day + 1" `daysBack`, so downtime no longer drops days | `30` |
 | `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | Vision model config (Task-20261010-001); an empty `baseUrl` / `apiKey` / `model` falls back to the main model's `model.*` triplet | `enabled: false`; other defaults in the config structure above |
 | `webui` | `terminal` | Enable the terminal in the Web UI file preview area (a terminal means arbitrary command execution, so it must be enabled explicitly; while off the WS handshake returns 403) | `false` |
 | `webui` | `terminalDeny` | Command keywords the terminal refuses to run (**enforced server-side**, denied and audited; the front-end confirmation is not a security boundary) | `[]` |
