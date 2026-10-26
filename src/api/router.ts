@@ -75,6 +75,8 @@ export interface HandlerContext {
   dreamScheduler?: DreamScheduler;
   /** 模型性能测试历史根目录（默认 ~/.loop-agent/model-bench；单测注入临时目录，需求 20261027-003） */
   benchRoot: string;
+  /** 记忆/会话索引用户根覆盖（需求 20261026-004 跨空间端点；默认 ~/.loop-agent，单测注入临时目录） */
+  userDir?: string;
   /** 性能测试引擎（默认 runBench；单测注入 fake 避免触网） */
   runBench: BenchRunner;
   /** 性能测试 run 注册表（SSE 进度 / 中断） */

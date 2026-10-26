@@ -132,3 +132,21 @@ CLI 在退出时会跑一次 Dreaming；但 `--serve` 是常驻进程，「退�
 - **增量状态**：`{L2 目录}/.dreaming-state.json` 保存 `lastProcessedDay`（已整理到哪一天）与 `lastRunAt` / `lastSummary`（上次执行记录）。
 - **关闭方式**：`memory.dreaming.schedule.enabled=false` 只停定时轮（关停兜底仍生效）；`memory.dreaming.onExit=false` 只停关停兜底；`memory.dreaming.enabled=false` 全停。
 - **已知边界**：CLI 与 `--serve` 同时跑同一工作空间时无跨进程文件锁，靠 `lastProcessedDay` 幂等 + 去重归并兜底；Windows 下关闭控制台窗口可能拿不到清理时机（无优雅关停信号）。
+
+### WebUI 记忆页（四标签页）
+
+WebUI「记忆」页按数据维度重组为四个标签页（`#/memory?tab=<key>`，状态写入 hash，刷新/分享可还原）：
+
+| 标签页 | 内容 | 数据源 |
+| --- | --- | --- |
+| **定时任务** | 自动晋升 cron 配置 + 触发记录（支持「全部空间 / 当前空间」范围切换）+ 分层状态概要 + Gate 晋升决策 | `GET /memory/status`、`GET /memory/dream/preview`、`GET /memory/dream/history?scope=all\|ws`、`DELETE /memory/dream/history` |
+| **L2 情景** | 空间 → 会话 → 范围/标签三级筛选 + 天数窗口，按天分组折叠展示；条目头（会话 id / scope / tag）由前端解析 | `GET /memory/episodic?limit=<1-90>[&ws=<id>]` + `GET /memory/workspaces` |
+| **L3 长期** | 全局共享（SOUL/USER，不随空间切换）与工作空间级（MEMORY）两栏；右上角可切换空间直读 | `GET /memory/curated[?ws=<id>]` |
+| **检索** | L2 语义检索（当前空间） | `GET /memory/search?q=` |
+
+配套端点：
+
+- **`GET /memory/workspaces`**：聚合「有会话 ∪ 有记忆」的空间清单，返回 `{id, name, path, hasMemory, hasSession}[]`——会话侧来自 sessions 索引扫描，记忆侧来自 `{memoryDir}/*/` 目录扫描，仅有记忆的「孤儿空间」也会列出（供 L2/L3 空间下拉使用）。
+- **`GET /memory/episodic` / `GET /memory/curated` 支持 `?ws=<id 或绝对路径>`**：按空间直读记忆（走 WorkspaceRuntime 路由，canonical 校验，未知空间 404）；缺省回落启动空间（原行为不变）。
+- **`GET /memory/dream/history?scope=all|ws`**：`all` 时文件扫描聚合全部空间的 `.dreaming-runs.json`（不要求空间已装载），每条附 `workspaceId/workspaceName/workspacePath`；`ws`（缺省）= 启动空间单文件读取。
+- **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**：清空跟随筛选范围；`all` 时遍历清空各空间记录（文件保留、内容清空，保持幂等）。

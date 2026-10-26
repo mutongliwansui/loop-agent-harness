@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型-20261026-004 · 记忆配置页标签页重设计（定时 / L2 / L3 / 检索）</title>
+<!--
+  原型-20261026-004 · 记忆配置页标签页重设计
+  ---------------------------------------------------------------------------
+  自包含单文件原型：零外部依赖、亮暗双主题、URL 参数状态化（?tab=&theme=&l2Ws=&l2Session=&histScope=&histWs=）。
+
+  用途：评审「记忆页」新的信息架构：
+    · Tab1 定时任务   —— 进程级 cron 配置（单份配置、多空间共享）+ 最近触发记录
+                        （本任务顺带修复读取恒为启动空间的问题：支持 全部空间聚合 / 按空间筛选）
+    · Tab2 L2 情景    —— 工作空间（一级）+ 会话（二级）+ scope/tag 三级筛选，按天分组展示
+    · Tab3 L3 长期    —— 全局共享（SOUL/USER）与工作空间级（MEMORY/PROJECT/SKILLS）分组呈现
+    · Tab4 检索       —— L2 语义检索（可限定空间）
+
+  调研依据（2026-10-26 实测与代码核实）：
+    · 定时轮 registry.list() 遍历全部已装载空间 → 每 tick 每空间各写一条 .dreaming-runs.json
+    · GET /memory/dream/history 读 ctx.deps.sessionStore.path（恒为启动空间）→ 本任务补 ?scope=all|ws 聚合读取
+    · L2 路径 {~/.loop-agent/memory}/{workspaceId}/YYYY-MM-DD.md；本机 25 个空间目录；
+      条目头「## [ts] [sessionId: xxx] [scope: session|global] [tag: tool|compaction|...]」
+    · L3：全局目录 ~/.loop-agent/curated（SOUL/USER 全局共享）+ 项目目录 MEMORY/PROJECT/SKILLS
+    · 本机 sessions 索引 172 个空间（155 个是测试临时目录），memory 与 sessions 哈希交集 18 个
+      → 空间选择器数据源：sessions 索引 ∪ memory 目录扫描，带「有记忆 / 有会话」徽标区分
+
+  令牌：全部复用 webui/src/style.css 既有令牌，零新增色值。
+-->
+<style>
+/* ===== 设计令牌：与 webui/src/style.css 完全对齐 ===== */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --text: #22252a; --muted: #6b7280;
+  --brand: #0e9f6e; --brand-weak: #e6f6ef; --brand-on: #ffffff;
+  --danger: #dc2626; --danger-weak: #fdecec; --warn: #b45309; --warn-weak: #fef3c7;
+  --ok: #059669; --ok-weak: #d1fae5; --code-bg: #f1f3f5;
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --line-soft: #eef0f3; --line-strong: #d3d8de; --hover: rgba(17,24,39,.055); --active: rgba(17,24,39,.1);
+  --text-2: #4b5563; --bar-bg: #fbfcfd; --view-bg: #ffffff;
+  --radius-card: 12px; --radius-ctl: 7px;
+  --shadow-card: 0 1px 2px rgba(16,24,40,.04), 0 10px 28px -18px rgba(16,24,40,.2);
+  --shadow-pop: 0 2px 4px rgba(16,24,40,.06), 0 12px 28px -12px rgba(16,24,40,.28);
+}
+:root[data-theme="dark"] {
+  --bg: #14171c; --panel: #1b1f26; --line: #2b313a; --text: #e6e8eb; --muted: #9aa1ab;
+  --brand: #34d399; --brand-weak: #143528; --brand-on: #0b221a;
+  --danger: #f87171; --danger-embedded: #3b1a1a;
+  --danger-weak: #3b1a1a; --warn: #fbbf24; --warn-weak: #3a2e10;
+  --ok: #34d399; --ok-weak: #143528; --code-bg: #22272f;
+  --line-soft: #242a32; --line-strong: #3a424d; --hover: rgba(255,255,255,.07); --active: rgba(255,255,255,.12);
+  --text-2: #b6bdc6; --bar-bg: #1f242b; --view-bg: #1b1f26;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.3), 0 12px 30px -18px rgba(0,0,0,.55);
+  --shadow-pop: 0 2px 6px rgba(0,0,0,.4), 0 14px 32px -12px rgba(0,0,0,.6);
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+}
+button, input, select {
+  font: inherit; color: inherit; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius-ctl); padding: 5px 9px;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.06); color: var(--brand-on); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input:focus, select:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.spacer { flex: 1; }
+.hide { display: none !important; }
+
+/* ===== 应用骨架（简化：仅记忆页） ===== */
+.app { display: flex; height: 100vh; overflow: hidden; }
+.nav {
+  width: 212px; flex: none; display: flex; flex-direction: column;
+  padding: 14px 10px; background: var(--panel); border-right: 1px solid var(--line);
+}
+.nav .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; padding: 2px 10px 14px; }
+.nav .logo .dot { width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
+.nav a { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px; }
+.nav a:hover { background: var(--bg); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico { width: 17px; display: inline-flex; justify-content: center; opacity: .85; }
+.nav .tip { margin-top: auto; font-size: 11.5px; color: var(--muted); line-height: 1.5; border-top: 1px solid #eef0f3; border-top-color: var(--line-soft); padding-top: 10px; }
+.main { flex: 1; overflow: auto; padding: 20px 24px 96px; }
+
+/* ===== 页面头 ===== */
+.page-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.page-head h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
+.page-head .sub { color: var(--muted); font-size: 12.5px; }
+
+/* ===== 徽标 ===== */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: .2px;
+  border: 1px solid transparent; white-space: nowrap; vertical-align: middle;
+}
+.badge.ok { background: var(--ok-weak); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+.badge.warn { background: var(--warn-weak); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 26%, transparent); }
+.badge.danger { background: var(--danger-weak); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 26%, transparent); }
+.badge.dim { background: var(--code-bg); color: var(--muted); border-color: var(--line); }
+.badge.brand { background: var(--brand-weak); color: var(--brand); border-color: color-mix(in srgb, var(--brand) 26%, transparent); }
+.badge .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+/* ===== 卡片 ===== */
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card); margin-bottom: 14px;
+}
+.card-h {
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+  border-bottom: 1px solid var(--line-soft); font-weight: 600; font-size: 13.5px;
+}
+.card-h .hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+.card-b { padding: 14px 16px; }
+.empty-box { text-align: center; padding: 34px 0 26px; color: var(--muted); }
+.empty-box .ico { font-size: 30px; margin-bottom: 6px; }
+.empty-box .t { font-weight: 600; color: var(--text-2); }
+.empty-box .d { font-size: 12.5px; margin-top: 4px; }
+
+/* ===== 标签页（本原型的核心新增） ===== */
+.tabs {
+  display: flex; gap: 2px; padding: 4px; margin-bottom: 14px;
+  background: var(--bar-bg); border: 1px solid var(--line); border-radius: 10px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 1 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 7px 14px; border: none; background: transparent; border-radius: 7px;
+  font-weight: 500; color: var(--muted); white-space: nowrap; min-width: 96px;
+}
+.tab:hover { background: var(--hover); color: var(--text); border: none; }
+.tab.on { background: var(--panel); color: var(--brand); font-weight: 600; box-shadow: var(--shadow-card); border: 1px solid var(--line-soft); }
+.tab .n { font-size: 11px; color: var(--muted); background: var(--code-bg); border-radius: 999px; padding: 0 6px; line-height: 16px; }
+.tab.on .n { background: var(--brand-weak); color: var(--brand); }
+.tab svg { width: 15px; height: 15px; flex: none; }
+
+/* ===== 定时任务页 ===== */
+.sched-grid { display: grid; grid-template-columns: 1fr 320px; gap: 14px; align-items: start; }
+@media (max-width: 900px) { .sched-grid { grid-template-columns: 1fr; } }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-ctl); overflow: hidden; }
+.seg button { border: none; border-radius: 0; background: var(--panel); padding: 5px 12px; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.preview-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.preview-chip { background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 6px; padding: 3px 9px; font-size: 12px; color: var(--text-2); }
+.form-grid { display: grid; grid-template-columns: 96px 1fr; gap: 10px 12px; align-items: center; }
+.form-grid label { color: var(--muted); font-size: 12.5px; }
+.switch { position: relative; width: 36px; height: 20px; flex: none; cursor: pointer; }
+.switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; position: absolute; left: 0; top: 0; z-index: 2; }
+.switch .tr { position: absolute; inset: 0; background: var(--line-strong); border-radius: 999px; transition: background .15s; }
+.switch .tr::after { content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #fff; top: 3px; left: 3px; transition: left .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.switch input:checked + .tr { background: var(--brand); }
+.switch input:checked + .tr::after { left: 19px; }
+.kv { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 3px 0; }
+.kv .k { color: var(--muted); width: 92px; flex: none; }
+
+/* ===== 表格 ===== */
+.dtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dtable th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+.dtable td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.dtable tr:last-child td { border-bottom: none; }
+.dtable td.t { white-space: nowrap; }
+.dtable td .em { display: block; color: var(--danger); font-size: 11.5px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dtable td.num, .dtable th.num { text-align: right; font-family: var(--mono); }
+.ws-cell { max-width: 260px; }
+.ws-cell .p { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+
+/* ===== L2 筛选链 ===== */
+.filter-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.filter-row select, .filter-row input { min-width: 0; }
+.filter-row .fl { font-size: 12px; color: var(--muted); flex: none; }
+#fWs { max-width: 340px; }
+#fSession { min-width: 240px; flex: 1; max-width: 380px; }
+.sel-wrap { position: relative; display: inline-flex; align-items: center; }
+.sel-wrap::after { content: '▾'; position: absolute; right: 8px; color: var(--muted); pointer-events: none; font-size: 11px; }
+.sel-wrap select { appearance: none; padding-right: 22px; }
+.day-group { border: 1px solid var(--line-soft); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.day-h {
+  display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  background: var(--bar-bg); cursor: pointer; user-select: none; font-size: 13px; font-weight: 600;
+}
+.day-h:hover { background: var(--hover); }
+.day-h .cnt { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+.day-h .caret { margin-left: auto; transition: transform .15s; color: var(--muted); font-size: 11px; }
+.day-collapsed .day-h .caret { transform: rotate(-90deg); }
+.day-collapsed .day-body { display: none; }
+.day-body { padding: 6px 12px 10px; }
+.mem-item { border-top: 1px dashed var(--line-soft); padding: 8px 2px 8px 0; }
+.mem-item:first-child { border-top: none; }
+.mem-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 3px; font-size: 11.5px; color: var(--muted); }
+.mem-meta .sid { font-family: var(--mono); }
+.mem-text { font-size: 13px; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+.l2-summary { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+.l2-summary b { color: var(--text); font-family: var(--mono); }
+
+/* ===== L3 分组 ===== */
+.l3-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .l3-cols { grid-template-columns: 1fr; } }
+.l3-head { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--bar-bg); border-bottom: 1px solid var(--line-soft); font-weight: 600; font-size: 13px; border-radius: var(--radius-card) var(--radius-card) 0 0; }
+.l3-body { padding: 10px 14px 14px; }
+.l3-card { margin-bottom: 0; }
+details.l3f summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; font-weight: 600; }
+details.l3f summary::-webkit-details-marker { display: none; }
+details.l3f summary .path { font-weight: 400; font-size: 11.5px; color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.l3f pre {
+  margin: 4px 0 10px; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--line-soft);
+  border-radius: 8px; font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.l3-line { border-bottom: 1px dashed var(--line-soft); }
+
+/* ===== 检索页 ===== */
+.search-bar { display: flex; gap: 8px; }
+.search-bar input { flex: 1; }
+.result-item { border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.result-item .rt { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+.result-item .rx { font-size: 12.5px; color: var(--text-2); white-space: pre-wrap; word-break: break-all; }
+.result-item .rm { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+
+/* ===== 演示控制条 ===== */
+.demo {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 9;
+  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
+  background: var(--panel); border-top: 1px solid var(--line); box-shadow: 0 -4px 16px rgba(16,24,40,.06);
+  font-size: 12.5px; flex-wrap: wrap;
+}
+.demo .dl { color: var(--muted); }
+.demo button { padding: 3px 10px; font-size: 12px; }
+.demo button.on { background: var(--brand-weak); border-color: var(--brand); color: var(--brand); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 左侧导航（简化） -->
+  <aside class="nav">
+    <div class="logo"><span class="dot">L</span> loop-agent</div>
+    <a href="#"><span class="ico">💬</span> 对话</a>
+    <a href="#" class="active"><span class="ico">🧠</span> 记忆</a>
+    <a href="#"><span class="ico">🗂</span> 文件</a>
+    <a href="#"><span class="ico">⚙️</span> 配置</a>
+    <div class="tip">原型-20261026-004<br>记忆配置页标签页重设计<br>对应需求 20261026-004</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-head">
+      <h1>记忆</h1>
+      <span class="badge ok"><span class="dot"></span>已启用</span>
+      <span class="sub">情景 <b id="sDays">14</b> 天 · Gate 待定 2 / 已批准 30</span>
+      <span class="spacer"></span>
+      <button>✦ 立即梳理</button>
+      <button>⟳ 刷新</button>
+    </div>
+
+    <!-- ===== 标签页 ===== -->
+    <div class="tabs" role="tablist">
+      <button class="tab on" id="tab-sched" role="tab" aria-selected="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8V8l2.2 1.6"/></svg>
+        定时任务
+      </button>
+      <button class="tab" id="tab-l2" role="tab" aria-selected="false">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 4.5h11v8.5h-11z"/><path d="M2.5 7h11M5.5 2.5v2M10.5 2.5v2"/></svg>
+        L2 情景 <span class="n" id="nL2">25</span>
+      </button>
+      <button class="tab" id="tab-l3" role="tab" aria-selected="false">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5.5 8 3l5 2.5v5L8 13l-5-2.5z"/><path d="M3 5.5 8 8l5-2.5M8 8v5"/></svg>
+        L3 长期 <span class="n">5</span>
+      </button>
+      <button class="tab" id="tab-search" role="tab" aria-selected="false">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.2"/><path d="m10.4 10.4 3 3"/></svg>
+        检索
+      </button>
+    </div>
+
+    <!-- ============================================================
+         Tab1 定时任务：进程级一份 cron 配置 + 全空间聚合触发记录
+         ============================================================ -->
+    <section id="pane-sched" role="tabpanel">
+      <div class="sched-grid">
+        <div class="card">
+          <div class="card-h">
+            自动晋升定时 <span class="hint">进程级配置 · 所有工作空间共用</span>
+            <span class="spacer"></span>
+            <span class="badge brand">每天 03:00</span>
+          </div>
+          <div class="card-b">
+            <div class="form-grid">
+              <label>启用定时</label>
+              <span class="switch"><input type="checkbox" checked><span class="tr"></span></span>
+              <label>触发模式</label>
+              <span class="seg">
+                <button class="on">每天</button><button>每周</button><button>自定义 cron</button>
+              </span>
+              <label>触发时刻</label>
+              <span style="display:inline-flex;align-items:center;gap:8px">
+                <input type="time" value="03:00" style="width:110px">
+                <span class="muted" style="font-size:12px">本地时区 UTC+08:00</span>
+              </span>
+              <label>错过宽限</label>
+              <span style="display:inline-flex;align-items:center;gap:8px">
+                <input type="number" value="60" style="width:90px"> <span class="muted" style="font-size:12px">分钟内迟到则补跑</span>
+              </span>
+              <label>排期预览</label>
+              <div class="preview-row" style="margin-top:0">
+                <span class="preview-chip">下次 明天 03:00</span>
+                <span class="preview-chip">10-28 03:00</span>
+                <span class="preview-chip">10-29 03:00</span>
+                <span class="preview-chip">10-30 03:00</span>
+              </div>
+            </div>
+            <div class="kv" style="margin-top:12px;border-top:1px dashed var(--line-soft);padding-top:10px">
+              <span class="k">作用范围</span>
+              <span>触发一次会遍历<b style="font-family:var(--mono)">全部已装载工作空间</b>（当前 4 个），逐空间执行晋升并各自记录</span>
+            </div>
+            <div class="kv">
+              <span class="k">已整理进度</span>
+              <span class="mono">2026-10-25 <span class="muted">（各空间独立推进，见触发记录）</span></span>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px">
+              <button class="primary">保存并生效</button>
+              <button>恢复默认</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">下次触发 <span class="spacer"></span><span class="badge ok"><span class="dot"></span>等待中</span></div>
+          <div class="card-b">
+            <div style="font-size:22px;font-weight:700;font-family:var(--mono);letter-spacing:.3px">明天 03:00</div>
+            <div class="muted" style="font-size:12.5px;margin-top:4px">约 3 小时 28 分后 · 到点将依次处理 4 个已装载空间</div>
+            <div class="kv" style="margin-top:10px;border-top:1px dashed var(--line-soft);padding-top:10px">
+              <span class="k">历史保留</span><span class="mono">每空间 20 条</span>
+            </div>
+            <div class="kv"><span class="k">上次手动</span><span class="mono">今天 21:14</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 触发记录：聚合视图（修复读取恒为启动空间） -->
+      <div class="card">
+        <div class="card-h">
+          最近触发记录 <span class="hint">聚合全部已装载空间 · 跨重启保留</span>
+          <span class="spacer"></span>
+          <span class="sel-wrap">
+            <select id="histScope" title="记录范围">
+              <option value="all" selected>全部空间</option>
+              <option value="ws">按空间筛选</option>
+            </select>
+          </span>
+          <select id="histWs" class="hide" style="max-width:300px" title="选择空间">
+            <option>D:\trae_workspace\loop-agent-command</option>
+            <option>D:\trae_workspace\loop-agent-docs</option>
+          </select>
+          <button>清空记录</button>
+          <button>⟳ 刷新</button>
+        </div>
+        <div class="card-b" style="padding-top:6px">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th>触发时间</th>
+                <th>工作空间</th>
+                <th>来源</th>
+                <th>结果</th>
+                <th>窗口</th>
+                <th class="num">晋升 / 跳过 / 错误</th>
+                <th class="num">耗时</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="histBody"></tbody>
+          </table>
+          <div class="muted" style="font-size:12px;margin-top:8px">
+            「清空记录」作用于当前筛选范围（全部空间 / 所选空间）· 单空间文件仍存于各自 L2 目录 <span class="mono">.dreaming-runs.json</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         Tab2 L2 情景记忆：工作空间 → 会话 → scope/tag 三级筛选
+         ============================================================ -->
+    <section id="pane-l2" class="hide" role="tabpanel">
+      <div class="card">
+        <div class="card-h">
+          情景记忆（L2 · daily notes）
+          <span class="hint">按工作空间分目录 · 条目带会话与来源标记</span>
+          <span class="spacer"></span>
+          <span class="badge dim" id="l2Dir">~/.loop-agent/memory/&lt;workspaceId&gt;/</span>
+        </div>
+        <div class="card-b">
+          <!-- 三级筛选链 -->
+          <div class="filter-row">
+            <span class="fl">空间</span>
+            <span class="sel-wrap"><select id="fWs"></select></span>
+            <span class="fl">会话</span>
+            <span class="sel-wrap"><select id="fSession"></select></span>
+            <span class="fl">范围</span>
+            <span class="sel-wrap">
+              <select id="fScope">
+                <option value="">全部来源</option>
+                <option value="session">仅会话私有</option>
+                <option value="global">仅全局</option>
+              </select>
+            </span>
+            <span class="fl">标签</span>
+            <span class="sel-wrap">
+              <select id="fTag">
+                <option value="">全部标签</option>
+                <option>tool</option>
+                <option>compaction</option>
+                <option>error</option>
+                <option>summary</option>
+              </select>
+            </span>
+            <span class="fl">天数</span>
+            <input id="fDays" type="number" value="14" min="1" max="90" style="width:64px">
+            <button>加载</button>
+            <span class="spacer"></span>
+            <span class="muted" style="font-size:12px">筛选在已加载条目上进行，数据源 GET /memory/episodic</span>
+          </div>
+
+          <!-- 汇总条 -->
+          <div class="l2-summary">
+            <span>空间 <b>loop-agent-command</b></span>
+            <span>已选会话 <b id="smSession">全部会话</b></span>
+            <span>命中 <b id="smHit">6</b> 条 / 共 <b id="smTotal">23</b> 条（14 天）</span>
+            <span>涉及 <b id="smDays">3</b> 天</span>
+          </div>
+
+          <!-- 按天分组 -->
+          <div id="l2Groups"></div>
+
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button>加载更多（更早 14 天）</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         Tab3 L3 长期记忆：全局共享 vs 工作空间级
+         ============================================================ -->
+    <section id="pane-l3" class="hide" role="tabpanel">
+      <div class="card">
+        <div class="card-h">
+          长期记忆（L3 · Curated）
+          <span class="hint">SOUL/USER 全局共享 · MEMORY/PROJECT 等按空间隔离</span>
+          <span class="spacer"></span>
+          <span class="sel-wrap">
+            <select id="l3Ws" style="max-width:320px" title="切换工作空间（SOUL/USER 不受影响）">
+              <option>D:\trae_workspace\loop-agent-command</option>
+              <option>D:\trae_workspace\loop-agent-docs</option>
+            </select>
+          </span>
+        </div>
+      </div>
+      <div class="l3-cols">
+        <div class="card l3-card">
+          <div class="l3-head">
+            全局共享 <span class="badge dim">~/.loop-agent/curated</span>
+            <span class="hint" style="font-weight:400;font-size:11.5px;color:var(--muted)">跨空间注入每次对话</span>
+          </div>
+          <div class="l3-body">
+            <details class="l3f" open>
+              <summary>SOUL.md <span class="path">~/.loop-agent/curated/SOUL.md</span><span class="spacer"></span><span class="badge dim">64 行</span></summary>
+              <pre># SOUL - Agent 人格
+
+## 核心身份
+你是一个基于 ReAct 框架的智能 Agent，擅长通过工具调用解决复杂问题。
+…（示例数据，落地后为真实全文）</pre>
+            </details>
+            <details class="l3f">
+              <summary>USER.md <span class="path">~/.loop-agent/curated/USER.md</span><span class="spacer"></span><span class="badge dim">38 行</span></summary>
+              <pre># USER - 用户画像
+
+- 用户运行环境为 Windows（D盘）…
+…（示例数据）</pre>
+            </details>
+          </div>
+        </div>
+        <div class="card l3-card">
+          <div class="l3-head">
+            工作空间级 <span class="badge dim">D:\trae_workspace\loop-agent-command</span>
+          </div>
+          <div class="l3-body">
+            <details class="l3f" open>
+              <summary>MEMORY.md <span class="path">&lt;工作空间&gt;\MEMORY.md</span><span class="spacer"></span><span class="badge dim">120 行</span></summary>
+              <pre># MEMORY - 精炼事实
+
+- 用户当前项目工作目录为 D:\trae_workspace\loop-agent-command…
+…（示例数据）</pre>
+            </details>
+            <details class="l3f">
+              <summary>PROJECT.md <span class="path">&lt;工作空间&gt;\PROJECT.md</span><span class="spacer"></span><span class="badge dim">—</span></summary>
+              <pre>（空文件 — 尚未沉淀项目级事实）</pre>
+            </details>
+            <details class="l3f">
+              <summary>SKILLS.md <span class="path">&lt;工作空间&gt;\SKILLS.md</span><span class="spacer"></span><span class="badge dim">12 行</span></summary>
+              <pre># SKILLS
+…（示例数据）</pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         Tab4 检索
+         ============================================================ -->
+    <section id="pane-search" class="hide" role="tabpanel">
+      <div class="card">
+        <div class="card-h">
+          语义检索 <span class="hint">L2 向量 + 关键词混合检索</span>
+          <span class="spacer"></span>
+          <span class="sel-wrap">
+            <select id="sWs" style="max-width:320px">
+              <option>当前空间（loop-agent-command）</option>
+              <option>全部空间</option>
+            </select>
+          </span>
+        </div>
+        <div class="card-b">
+          <div class="search-bar">
+            <input placeholder="搜索记忆，如「端口占用」「记忆晋升作用域」" value="记忆晋升 作用域">
+            <button class="primary">搜索</button>
+          </div>
+          <div style="margin-top:12px">
+            <div class="result-item">
+              <div class="rt">记忆晋升作用域调研结论 <span class="badge brand">0.87</span></div>
+              <div class="rx">定时晋升的作用域是工作空间（进程内已装载的），触发一次遍历全部空间，各写一份 .dreaming-runs.json…</div>
+              <div class="rm">2026-10-26 · 会话 sess_2130_20261026_1533 · scope: session · tag: tool</div>
+            </div>
+            <div class="result-item">
+              <div class="rt">DreamRunLog 单文件环形结构 <span class="badge brand">0.81</span></div>
+              <div class="rx">运行历史独立于 .dreaming-state.json，环形裁剪 20 条，tmp→rename 原子替换，异常只记 debug 不影响主链路…</div>
+              <div class="rm">2026-10-25 · 会话 sess_2130_20261025_2201 · scope: global</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ===== 演示控制条 ===== -->
+<div class="demo">
+  <span class="dl">状态</span>
+  <button id="d-default" class="on">默认态</button>
+  <button id="d-empty">L2 空态</button>
+  <span class="dl" style="margin-left:8px">主题</span>
+  <button id="d-light" class="on">浅色</button>
+  <button id="d-dark">深色</button>
+  <span class="spacer"></span>
+  <span class="dl mono">?tab=sched|l2|l3|search&amp;theme=light|dark&amp;l2Ws=&amp;l2Session=&amp;histScope=all|ws</span>
+</div>
+
+<script>
+/* ============ 状态与 URL 参数 ============ */
+const q = new URLSearchParams(location.search);
+const state = {
+  tab: q.get('tab') || 'sched',
+  theme: q.get('theme') || 'light',
+  l2Ws: q.get('l2Ws') || '',
+  l2Session: q.get('l2Session') || '',
+  histScope: q.get('histScope') || 'all',
+};
+
+/* ============ 演示数据 ============ */
+/* 工作空间清单：真实结构（sessions 索引 ∪ memory 目录），落地时来自 GET /workspaces + 扫描 */
+const WORKSPACES = [
+  { id: '21305749b50cbf80', name: 'loop-agent-command', path: 'D:\\trae_workspace\\loop-agent-command', mem: true,  sess: true,  active: true  },
+  { id: '2ab3580ac41d6bf5', name: 'loop-agent-docs',    path: 'D:\\trae_workspace\\loop-agent-docs',    mem: true,  sess: true,  active: false },
+  { id: '3c0b69fb561cc59f', name: 'py-pptx-update',     path: 'D:\\trae_workspace\\py-pptx-update',     mem: true,  sess: true,  active: false },
+  { id: '08af611922fd7a3d', name: 'web-scraper',        path: 'D:\\trae_workspace\\web-scraper',        mem: true,  sess: false, active: false },
+  { id: '9fe148724e414aff', name: 'temp-sandbox-01',    path: 'C:\\Users\\muton\\AppData\\Local\\Temp\\sandbox-01', mem: false, sess: true, active: false },
+];
+
+/* 触发记录（聚合视图演示数据；落地时来自 GET /memory/dream/history?scope=all） */
+const RUNS = [
+  { at: '10-27 03:00', ws: 'loop-agent-command', reason: '定时', res: ['成功','ok'],  win: '7d', nums: [3,1,0], dur: '12.4s' },
+  { at: '10-27 03:00', ws: 'loop-agent-docs',    reason: '定时', res: ['成功','ok'],  win: '7d', nums: [1,0,0], dur: '6.1s' },
+  { at: '10-27 03:00', ws: 'py-pptx-update',     reason: '定时', res: ['跳过 · 对话中','dim'], win: '—', nums: null, dur: '—' },
+  { at: '10-26 21:14', ws: 'loop-agent-command', reason: '手动', res: ['成功','ok'],  win: '4d', nums: [30,0,0], dur: '123.1s' },
+  { at: '10-26 03:00', ws: 'loop-agent-command', reason: '定时', res: ['部分失败','warn'], win: '7d', nums: [5,2,1], dur: '45.8s', err: 'LLM 超时: request 1/6 failed after 3 retries' },
+  { at: '10-26 03:00', ws: 'loop-agent-docs',    reason: '定时', res: ['成功','ok'],  win: '7d', nums: [0,4,0], dur: '2.0s' },
+  { at: '10-25 03:00', ws: 'loop-agent-command', reason: '定时', res: ['错过','warn'], win: '—', nums: null, dur: '—', err: '错失触发点：迟 97 分钟，超出补跑宽限' },
+];
+
+/* L2 daily notes（条目结构对齐 episodic.ts：## [ts] [sessionId] [scope] [tag]） */
+const L2 = {
+  '21305749b50cbf80': {
+    sessions: {
+      all: '全部会话',
+      sess_2130_20261026_1533: 'sess_2130…1533 · 今天 15:33（记忆晋升作用域调研）',
+      sess_2130_20261026_1002: 'sess_2130…1002 · 今天 10:02（WebUI 终端联调）',
+      sess_2130_20261025_2201: 'sess_2130…2201 · 昨天 22:01（cron 引擎评审）',
+    },
+    days: [
+      { day: '2026-10-26', items: [
+        { ts: '23:12', sid: 'sess_2130_20261026_1533', scope: 'session', tag: 'tool', text: 'commandRun 执行 vitest run 全量回归：111 文件 1284 用例通过。' },
+        { ts: '22:47', sid: 'sess_2130_20261026_1533', scope: 'session', tag: 'summary', text: '结论：定时晋升作用域是工作空间（进程内已装载），读取历史却恒为启动空间，需补聚合端点。' },
+        { ts: '15:40', sid: 'sess_2130_20261026_1533', scope: 'global', tag: 'tool', text: 'fileRead episodic.ts:207-229 确认 daily notes 条目头含 sessionId/scope/tag 元数据。' },
+        { ts: '10:15', sid: 'sess_2130_20261026_1002', scope: 'session', tag: 'error', text: 'WS 终端握手 403：webui.terminal 未开启（预期行为，提示用户在配置页开启）。' },
+      ]},
+      { day: '2026-10-25', items: [
+        { ts: '22:05', sid: 'sess_2130_20261025_2201', scope: 'session', tag: 'tool', text: 'cron 引擎评审：day-of-month 与 day-of-week 同时受限取并集（vixie 语义）。' },
+        { ts: '21:30', sid: 'sess_2130_20261026_1533', scope: 'session', tag: 'compaction', text: '会话压缩笔记：讨论过的 12 个文件路径与结论已并入摘要。' },
+      ]},
+      { day: '2026-10-24', items: [
+        { ts: '19:02', sid: 'sess_2130_20261026_1533', scope: 'global', tag: 'tool', text: 'logGlobal 记录：全局技能包 task-driven-development 更新至 10 步流程。' },
+      ]},
+    ],
+  },
+  '2ab3580ac41d6bf5': {
+    sessions: { all: '全部会话', sess_2ab3_20261026_0900: 'sess_2ab3…0900 · 今天 09:00（文档站构建）' },
+    days: [
+      { day: '2026-10-26', items: [
+        { ts: '09:20', sid: 'sess_2ab3_20261026_0900', scope: 'session', tag: 'tool', text: 'vite build 文档站产物 2.1MB，双语文档同步完成。' },
+      ]},
+    ],
+  },
+};
+
+/* ============ 工具函数 ============ */
+const $ = (s) => document.querySelector(s);
+function badge(kind, text) { return `<span class="badge ${kind}">${text}</span>`; }
+
+/* ============ Tab 切换 ============ */
+const TAB_IDS = ['sched', 'l2', 'l3', 'search'];
+function switchTab(id) {
+  state.tab = id;
+  TAB_IDS.forEach((t) => {
+    $('#tab-' + t).classList.toggle('on', t === id);
+    $('#tab-' + t).setAttribute('aria-selected', t === id);
+    $('#pane-' + t).classList.toggle('hide', t !== id);
+  });
+}
+TAB_IDS.forEach((t) => $('#tab-' + t).addEventListener('click', () => switchTab(t)));
+
+/* ============ 触发记录（聚合 + 按空间筛选） ============ */
+function renderHistory() {
+  const all = state.histScope === 'all';
+  $('#histWs').classList.toggle('hide', all);
+  const rows = all ? RUNS : RUNS.filter((r) => r.ws === $('#histWs').value.split('\\').pop());
+  $('#histBody').innerHTML = rows.map((r) => `
+    <tr>
+      <td class="t">${r.at}${r.err ? `<span class="em" title="${r.err}">${r.err}</span>` : ''}</td>
+      <td class="ws-cell">${r.ws}<div class="p mono" title="${r.ws}">${WORKSPACES.find((w) => w.name === r.ws)?.id ?? ''}</div></td>
+      <td>${badge(r.reason === '定时' ? 'brand' : r.reason === '关停' ? 'warn' : 'dim', r.reason)}</td>
+      <td>${badge(r.res[1], r.res[0])}</td>
+      <td class="mono">${r.win}</td>
+      <td class="num">${r.nums ? `<span style="color:var(--ok)">${r.nums[0]}</span> / <span class="muted">${r.nums[1]}</span> / <span${r.nums[2] ? ' style="color:var(--danger)"' : ' class="muted"'}>${r.nums[2]}</span>` : '—'}</td>
+      <td class="num mono">${r.dur}</td>
+      <td></td>
+    </tr>`).join('');
+}
+$('#histScope').addEventListener('change', (e) => { state.histScope = e.target.value; renderHistory(); });
+$('#histWs').addEventListener('change', renderHistory);
+
+/* ============ L2 三级筛选 ============ */
+function wsLabel(w) {
+  return `${w.name}${w.active ? '' : ''}（${w.mem ? '有记忆' : '无记忆'}${w.sess ? ' · 有会话' : ''}）`;
+}
+function fillWsOptions() {
+  $('#fWs').innerHTML = WORKSPACES.map((w) =>
+    `<option value="${w.id}">${w.name}${w.mem ? '' : '（无记忆）'}</option>`).join('');
+  if (state.l2Ws) $('#fWs').value = state.l2Ws;
+}
+function fillSessionOptions(wsId) {
+  const ws = L2[wsId];
+  const sessions = ws ? ws.sessions : { all: '全部会话' };
+  $('#fSession').innerHTML = Object.entries(sessions).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+  if (state.l2Session && sessions[state.l2Session]) $('#fSession').value = state.l2Session;
+}
+function renderL2() {
+  const wsId = $('#fWs').value;
+  const ws = WORKSPACES.find((w) => w.id === wsId);
+  const data = L2[wsId];
+  const sid = $('#fSession').value;
+  const scope = $('#fScope').value;
+  const tag = $('#fTag').value;
+
+  let total = 0; const groups = [];
+  for (const d of (data?.days ?? [])) {
+    const items = d.items.filter((it) =>
+      (sid === 'all' || it.sid === sid) && (!scope || it.scope === scope) && (!tag || it.tag === tag));
+    if (items.length === 0) continue;
+    total += items.length;
+    groups.push({ day: d.day, items });
+  }
+
+  $('#l2Dir').textContent = `~/.loop-agent/memory/${wsId}/`;
+  $('#smSession').textContent = sid === 'all' ? '全部会话' : sid;
+  $('#smHit').textContent = total;
+  $('#smTotal').textContent = (data?.days ?? []).reduce((n, d) => n + d.items.length, 0);
+  $('#smDays').textContent = groups.length;
+
+  if (groups.length === 0) {
+    $('#l2Groups').innerHTML = `
+      <div class="empty-box">
+        <div class="ico">🗒</div>
+        <div class="t">所选范围内暂无情景记忆</div>
+        <div class="d">该工作空间尚无 daily notes，或筛选条件过严；切换空间/会话或放宽「范围 / 标签」。</div>
+      </div>`;
+    return;
+  }
+  $('#l2Groups').innerHTML = groups.map((g) => `
+    <div class="day-group">
+      <div class="day-h" onclick="this.parentNode.classList.toggle('day-collapsed')">
+        📅 ${g.day}
+        <span class="cnt">${g.items.length} 条</span>
+        <span class="badge dim">${g.items.filter((i) => i.scope === 'global').length} 全局</span>
+        <span class="caret">▼</span>
+      </div>
+      <div class="day-body">
+        ${g.items.map((it) => `
+          <div class="mem-item">
+            <div class="mem-meta">
+              <span class="mono">${it.ts}</span>
+              <span class="sid mono" title="${it.sid}">${it.sid.slice(5, 13)}…${it.sid.slice(-4)}</span>
+              ${badge(it.scope === 'global' ? 'brand' : 'dim', it.scope === 'global' ? '全局' : '会话')}
+              ${badge('dim', it.tag)}
+            </div>
+            <div class="mem-text">${it.text}</div>
+          </div>`).join('')}
+      </div>
+    </div>`).join('');
+}
+['fWs', 'fSession', 'fScope', 'fTag'].forEach((id) => $('#' + id).addEventListener('change', () => {
+  if (id === 'fWs') fillSessionOptions($('#fWs').value);
+  renderL2();
+}));
+
+/* ============ 主题与演示状态 ============ */
+function setTheme(t) {
+  state.theme = t;
+  document.documentElement.setAttribute('data-theme', t);
+  $('#d-light').classList.toggle('on', t === 'light');
+  $('#d-dark').classList.toggle('on', t === 'dark');
+}
+$('#d-light').addEventListener('click', () => setTheme('light'));
+$('#d-dark').addEventListener('click', () => setTheme('dark'));
+$('#d-default').addEventListener('click', () => {
+  $('#fWs').value = '21305749b50cbf80'; fillSessionOptions('21305749b50cbf80');
+  $('#fScope').value = ''; $('#fTag').value = ''; renderL2();
+  $('#histScope').value = 'all'; state.histScope = 'all'; renderHistory();
+  switchTab('sched');
+});
+$('#d-empty').addEventListener('click', () => {
+  switchTab('l2');
+  $('#fWs').value = '9fe148724e414aff';
+  fillSessionOptions('9fe148724e414aff');
+  renderL2();
+});
+
+/* ============ 初始化 ============ */
+setTheme(state.theme);
+fillWsOptions();
+fillSessionOptions($('#fWs').value);
+renderL2();
+renderHistory();
+switchTab(TAB_IDS.includes(state.tab) ? state.tab : 'sched');
+</script>
+</body>
+</html>

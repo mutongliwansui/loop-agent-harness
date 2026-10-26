@@ -132,3 +132,21 @@ The CLI runs Dreaming once on exit, but `--serve` is a long-lived process where 
 - **Incremental state**: `{L2 dir}/.dreaming-state.json` stores `lastProcessedDay` plus `lastRunAt` / `lastSummary`.
 - **Turning it off**: `memory.dreaming.schedule.enabled=false` stops only the scheduler (the shutdown fallback still runs); `memory.dreaming.onExit=false` stops only the shutdown fallback; `memory.dreaming.enabled=false` stops everything.
 - **Known limits**: running the CLI and `--serve` against the same workspace has no cross-process file lock — `lastProcessedDay` idempotency plus dedupe/merge covers it; on Windows, closing the console window may not give any cleanup chance (no graceful signal).
+
+### WebUI Memory Page (Four Tabs)
+
+The WebUI "Memory" page is reorganized into four tabs by data dimension (`#/memory?tab=<key>`; state lives in the hash, so refresh/share restores the view):
+
+| Tab | Content | Data sources |
+| --- | --- | --- |
+| **Scheduled** | Auto-promotion cron config + run history (with an "All workspaces / Current workspace" scope toggle) + tier summary + Gate decisions | `GET /memory/status`, `GET /memory/dream/preview`, `GET /memory/dream/history?scope=all\|ws`, `DELETE /memory/dream/history` |
+| **L2 Episodic** | Workspace → session → scope/tag three-level filter + day window, grouped by day; entry headers (session id / scope / tag) are parsed on the frontend | `GET /memory/episodic?limit=<1-90>[&ws=<id>]` + `GET /memory/workspaces` |
+| **L3 Curated** | Global shared (SOUL/USER, unaffected by workspace switching) vs. workspace-level (MEMORY) two columns; switch workspace via the top-right dropdown | `GET /memory/curated[?ws=<id>]` |
+| **Search** | L2 semantic search (current workspace) | `GET /memory/search?q=` |
+
+Companion endpoints:
+
+- **`GET /memory/workspaces`**: aggregates workspaces that "have sessions ∪ have memory", returning `{id, name, path, hasMemory, hasSession}[]` — the session side comes from scanning session indexes, the memory side from scanning `{memoryDir}/*/` directories; memory-only "orphan workspaces" are listed too (used by the L2/L3 workspace dropdowns).
+- **`GET /memory/episodic` / `GET /memory/curated` accept `?ws=<id or absolute path>`**: read memory for a specific workspace (routed through WorkspaceRuntime with canonical checks; unknown workspace → 404); omitted falls back to the startup workspace (existing behavior unchanged).
+- **`GET /memory/dream/history?scope=all|ws`**: with `all`, aggregates `.dreaming-runs.json` of all workspaces via file scan (no loaded runtime required), each row annotated with `workspaceId/workspaceName/workspacePath`; `ws` (default) = the startup workspace's single file.
+- **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**: clearing follows the selected scope; with `all`, records in every workspace are cleared (files kept, contents emptied, idempotent).

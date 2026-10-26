@@ -56,6 +56,8 @@ export interface ApiRuntimeDeps {
   createMemoryKit: () => Promise<MemoryKit>;
   /** 模型性能测试历史根目录（需求 20261027-003；单测注入临时目录） */
   benchRoot: string;
+  /** 记忆/会话索引用户根覆盖（需求 20261026-004 跨空间端点；单测注入临时目录） */
+  userDir?: string;
   /** 性能测试引擎（单测注入 fake 避免触网） */
   runBench: BenchRunner;
 }
@@ -139,6 +141,8 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     dreamScheduler: deps.dreamScheduler,
     // 模型性能测试（需求 20261027-003）：历史根目录与引擎均可注入，单测不触网不写用户目录
     benchRoot: rt.benchRoot ?? defaultBenchRoot(),
+    // 记忆跨空间端点（需求 20261026-004）：记忆/会话索引用户根（默认 ~/.loop-agent）
+    userDir: rt.userDir,
     runBench: rt.runBench ?? runBench,
     benchRuns: new BenchRunHub(),
   };
