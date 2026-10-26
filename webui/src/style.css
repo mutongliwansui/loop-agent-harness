@@ -793,6 +793,200 @@ details.why { margin-top: 10px; font-size: 12px; color: var(--muted); }
 details.why summary { cursor: pointer; }
 details.why p { margin: 6px 0 0; line-height: 1.6; }
 
+/* ===== 记忆页：自动晋升卡片 + 触发记录表（需求 20261026-003） ===== */
+/* 全部复用既有设计令牌（--brand/--ok/--warn/--danger/--muted/--line*），零新增色值 */
+.card .card-h .ch-hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+
+/* 卡片 A：左侧 3px 状态条（运行中 = --ok，关闭 = --line-strong，默认 = --brand） */
+.dream-card { position: relative; }
+.dream-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--brand);
+}
+.dream-card.off::before { background: var(--line-strong); }
+.dream-card.running::before { background: var(--ok); }
+
+.dgrid { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(240px, .85fr); gap: 22px; }
+.flabel {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.dream-card .seg { margin-bottom: 12px; }
+
+.row-time { display: flex; align-items: center; gap: 6px; }
+.row-time select { height: 34px; font-family: var(--mono); font-size: 14px; padding: 0 6px; }
+.row-time select.hh,
+.row-time select.mm { width: 62px; }
+.row-time select.dow { width: 92px; font-family: inherit; }
+.row-time .colon { color: var(--muted); font-weight: 700; }
+
+.row-cron { display: flex; align-items: center; gap: 8px; }
+.row-cron input { flex: 1; height: 34px; font-family: var(--mono); font-size: 13.5px; letter-spacing: .4px; }
+.row-cron input.bad { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-weak); }
+
+.echo { margin-top: 9px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.echo code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  color: var(--text-2);
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line-soft);
+}
+.err { margin-top: 8px; font-size: 12.5px; color: var(--danger); display: flex; align-items: flex-start; gap: 6px; }
+.err svg { flex: none; margin-top: 2px; }
+
+/* 排期预览 */
+.preview { border: 1px solid var(--line-soft); background: var(--bar-bg); border-radius: 10px; padding: 12px 14px; min-height: 106px; }
+.preview.is-off { opacity: .62; }
+.pn-abs { font-size: 17px; font-weight: 650; font-family: var(--mono); letter-spacing: .3px; }
+.pn-rel { margin-top: 2px; font-size: 12.5px; color: var(--brand); font-weight: 600; }
+.pn-rel.bad { color: var(--danger); }
+.preview.is-off .pn-rel { color: var(--muted); }
+.pn-desc { margin-top: 6px; font-size: 12.5px; color: var(--text-2); }
+.next-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.next-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  line-height: 1.9;
+}
+.next-list li .idx {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-family: inherit;
+}
+
+/* 高级折叠 */
+.adv { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.adv-toggle {
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.adv-toggle:hover { color: var(--brand); background: transparent; }
+.adv-toggle .car { transition: transform .15s; display: inline-block; }
+.adv-toggle.open .car { transform: rotate(90deg); }
+.adv-body { margin-top: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.adv-item { display: flex; flex-direction: column; gap: 4px; }
+.adv-item label { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.adv-item input { height: 30px; font-family: var(--mono); }
+.adv-item .tip { font-size: 11.5px; color: var(--muted); }
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.foot .dirty { font-size: 12px; color: var(--warn); display: inline-flex; align-items: center; gap: 5px; }
+.foot .spacer { flex: 1; }
+
+/* 开关（记忆页「启用定时」；与 Tools 的 .tgl 同视觉、带文字标签） */
+.switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track {
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  position: relative;
+  transition: background .15s;
+  flex: none;
+}
+.switch .track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .2);
+  transition: transform .15s;
+}
+.switch input:checked + .track { background: var(--brand); }
+.switch input:checked + .track::after { transform: translateX(15px); }
+.switch input:focus-visible + .track { box-shadow: 0 0 0 3px var(--brand-weak); }
+
+/* 卡片 B：触发记录表（.dtable；不复用 .hist 以免与压测历史迷你走势冲突） */
+.dream-hist .dtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dream-hist .dtable thead th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 0 10px 7px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.dream-hist .dtable thead th.num,
+.dream-hist .dtable tbody td.num { text-align: right; }
+.dream-hist .dtable tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.dream-hist .dtable tbody tr:last-child td { border-bottom: none; }
+.dream-hist .dtable tbody tr:hover { background: var(--hover); }
+.dream-hist .dtable td.t { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.dream-hist .dtable td.nums { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.dream-hist .dtable td.dur { font-family: var(--mono); font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.dream-hist .dtable td.win { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+.dream-hist .dtable .n-ok { color: var(--ok); }
+.dream-hist .dtable .n-err { color: var(--danger); }
+.dream-hist .dtable .em {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--danger);
+  font-family: inherit;
+  max-width: 460px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dream-hist .dtable td .badge + .badge { margin-left: 5px; }
+
+/* 卡片 C：分层状态四宫格 */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 20px; }
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat .k { font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
+.stat .v { font-size: 13px; font-family: var(--mono); word-break: break-all; }
+
+.page-head .sub { font-size: 12.5px; }
+
+/* 窄屏（900px 断点以下自动晋升两栏降为单列） */
+@media (max-width: 900px) {
+  .dgrid { grid-template-columns: 1fr; gap: 16px; }
+}
+
 /* 窄屏：抽屉全宽，指标卡两列 */
 @media (max-width: 1160px) {
   .drawer { width: 100vw; }

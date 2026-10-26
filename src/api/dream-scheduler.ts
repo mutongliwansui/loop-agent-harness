@@ -1,27 +1,48 @@
-// 记忆晋升（Dreaming）调度器（Task-20261026-002）
+// 记忆晋升（Dreaming）调度器（Task-20261026-002 / 20261026-003）
 //
 // 背景：CLI 在 readline close 时跑 Dreaming，但 --serve 是常驻进程、「退出时晋升」对它不成立，
 // 结果 WebUI 长期使用下 L3（SOUL/USER/MEMORY）不随对话演进。本模块补齐 serve 侧的三条触发路径：
-//   1) 定时轮（默认 24h，启动后 5 分钟首轮）—— 主力，跨天后才有新内容
+//   1) 定时轮 —— 主力，跨天后才有新内容
+//      · Task-20261026-002：固定间隔（startupDelayMin + intervalHours）
+//      · Task-20261026-003：crontab 表达式（默认每天 03:00），保存即热生效免重启
 //   2) 进程关停兜底（SIGINT/SIGTERM/SIGBREAK）—— 补最后一轮
 //   3) 手动端点 POST /memory/dream —— 与上两者共用同一把进程内锁
 //
-// 设计约束（详见 docs/tasks/task-20261026-002-记忆晋升自动化.md）：
+// 设计约束（详见 docs/tasks/task-20261026-002-记忆晋升自动化.md 与 task-20261026-003-01）：
 // - D7 进程内单飞锁（Map<root, Promise>）：撞车即跳过不排队；跨进程不做文件锁
 // - D8 定时触发遇同空间 in-flight run 让位（不抢对话的配额）；关停兜底不受此限
 // - D3 读取窗口按「距上次处理的天数 +1」放大（上限 maxDaysBack），修补停机多日漏数
 // - D12 定时器与超时定时器一律 unref，避免把进程/单测挂住
-// - 零新依赖：只用 node: 内置
+// - 零新依赖：只用 node: 内置（cron 引擎亦自写，见 ./cron.ts）
+//
+// Task-20261026-003 新增的四个运行期机制（方案 D4/D5/D7/D10）：
+// - 分片等待：单次等待上限 MAX_WAIT_MS(6h)——setTimeout 最大 2^31-1ms≈24.8 天，超限会立即触发
+// - 整分对齐 + 墙钟分钟键去重：DST 回拨时同一墙钟分钟出现两次，用 localMinuteKey 识别并跳过
+// - 错过补跑宽限 misfireGraceMin：迟于触发点但在宽限内→补跑并标 catchup；超出→记「错过」不跑
+// - 每轮重读配置兜底：cron 被别处改坏→回落间隔模式并暴露 cronError，不永久失灵
 
+import { join } from 'node:path';
 import type { AgentConfig } from '../config/schema.js';
 import { debug } from '../debug.js';
+import { DreamRunLog, truncateError } from '../memory/dream-runs.js';
+import type { DreamRunRecord, DreamRunReason, DreamRunSkipReason } from '../memory/dream-runs.js';
+import {
+  describeCron,
+  localMinuteKey,
+  nextFireTime,
+  nextFireTimes,
+  neverFires,
+  parseCron,
+  timezoneOffsetMin,
+} from './cron.js';
+import type { CronFields } from './cron.js';
 import type { WorkspaceRegistry } from './workspace-runtime.js';
 
-/** 触发来源 */
-export type DreamTriggerReason = 'schedule' | 'shutdown' | 'manual';
+/** 触发来源（与历史记录共用一套字面量，避免 api↔memory 循环依赖） */
+export type DreamTriggerReason = DreamRunReason;
 
 /** 提前结束原因（未真正跑 Dreaming） */
-export type DreamSkipReason = 'disabled' | 'busy' | 'already-running' | 'no-runtime';
+export type DreamSkipReason = DreamRunSkipReason;
 
 /** 单次晋升结果（对外可观测，同时用于日志与状态展示） */
 export interface DreamRunSummary {
@@ -37,6 +58,8 @@ export interface DreamRunSummary {
   errors: number;
   /** 有值表示未真正执行（不做 LLM 调用） */
   skippedBecause?: DreamSkipReason;
+  /** Task-20261026-003 D5：本次是否为「错过触发点后补跑」 */
+  catchup?: boolean;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
@@ -48,8 +71,26 @@ export interface DreamSchedulerStatus {
   enabled: boolean;
   /** 定时轮是否启用（memory.dreaming.schedule.enabled） */
   scheduleEnabled: boolean;
+  /** @deprecated Task-20261026-003：改用 cron；仅 `intervalMode==='interval'` 时有意义 */
   intervalHours: number;
+  /** @deprecated Task-20261026-003：同上 */
   startupDelayMin: number;
+  /** Task-20261026-003：当前 cron 表达式（空串 = 未启用 cron） */
+  cron: string;
+  /** Task-20261026-003：cron 是否可解析（空串视为 true，表示「未使用」） */
+  cronValid: boolean;
+  /** Task-20261026-003：cron 解析失败原因（cronValid=false 时有值） */
+  cronError?: string;
+  /** Task-20261026-003：cron 中文可读描述（如「每天 03:00」） */
+  describe?: string;
+  /** Task-20261026-003：服务器本地时区偏置（分钟，东八区为 480） */
+  timezoneOffsetMin: number;
+  /** Task-20261026-003：错过补跑宽限（分钟） */
+  misfireGraceMin: number;
+  /** Task-20261026-003：当前实际调度模式 */
+  intervalMode: 'cron' | 'interval';
+  /** Task-20261026-003：未来若干次触发时刻（ISO，按当前 cron 实时计算） */
+  nextRunTimes: string[];
   /** 该空间当前是否有晋升在跑 */
   running: boolean;
   lastRunAt?: string;
@@ -84,6 +125,12 @@ export interface DreamSchedulerDeps {
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
+/** 单次定时器等待上限（D4）：setTimeout 超过 2^31-1ms≈24.8 天会立即触发 */
+const MAX_WAIT_MS = 6 * HOUR_MS;
+/** 历史文件名（与 .dreaming-state.json 同目录、职责分离，见 memory/dream-runs.ts 头注） */
+const RUNS_FILE = '.dreaming-runs.json';
+/** 历史条数默认值（与 types.ts 默认值一致） */
+const DEFAULT_HISTORY_LIMIT = 20;
 
 /** 默认定时器：一次性 setTimeout，句柄 unref（D12） */
 function defaultTimer(fn: () => void, ms: number): DreamTimer {
@@ -96,6 +143,16 @@ function defaultTimer(fn: () => void, ms: number): DreamTimer {
 /** 取正整数配置，非法时回落默认并记一条日志 */
 function positive(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** 取非负整数配置（0 合法，如 misfireGraceMin=0 / historyLimit=0） */
+function nonNegative(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/** 历史条数归一化（默认 20；上限 200 防止单文件无限膨胀） */
+function normalizeHistoryLimit(value: number | undefined): number {
+  return Math.min(Math.floor(nonNegative(value, DEFAULT_HISTORY_LIMIT)), 200);
 }
 
 /**
@@ -149,6 +206,14 @@ export class DreamScheduler {
   private stopped = false;
   /** 定时轮进行中（防重入） */
   private ticking = false;
+  /** Task-20261026-003：当前调度模式 */
+  private mode: 'cron' | 'interval' = 'interval';
+  /** Task-20261026-003：cron 解析结果缓存（mode==='cron' 时有值） */
+  private fields?: CronFields;
+  /** Task-20261026-003：cron 解析失败原因（回落间隔模式时暴露给 status） */
+  private cronError?: string;
+  /** Task-20261026-003 D4：最近一次触发过的本地墙钟分钟键（DST 回拨去重） */
+  private lastFireKey?: string;
 
   constructor(deps: DreamSchedulerDeps) {
     this.registry = deps.registry;
@@ -161,24 +226,24 @@ export class DreamScheduler {
   /** 注册定时轮（schedule.enabled=false 时什么也不做；关停兜底由 onExit 独立控制） */
   start(): void {
     this.stopped = false;
-    const schedule = this.getConfig().memory.dreaming.schedule;
-    if (schedule?.enabled === false) {
-      debug.log('[dream] schedule.enabled=false，不注册定时轮');
-      return;
-    }
-    const delay = positive(schedule?.startupDelayMin, 5) * MINUTE_MS;
-    debug.log(`[dream] 定时轮已注册：首轮 ${Math.round(delay / MINUTE_MS)} 分钟后，间隔 ${positive(schedule?.intervalHours, 24)}h`);
-    this.scheduleNext(delay);
+    this.applySchedule(true);
+  }
+
+  /**
+   * Task-20261026-003 D10：保存 cron 后热重排（PUT /memory/dream/schedule 成功后调用）。
+   * 取消现定时器 → 重读配置 → 按新 cron 排下一次；`enabled:false` 时只清定时器并置空 nextRunAt。
+   * 正在跑的定时轮不受影响（单飞锁保证）。
+   */
+  reschedule(): void {
+    if (this.stopped) return;
+    this.applySchedule(false);
   }
 
   /** 停掉当前定时器并拒绝后续定时轮（幂等） */
   stop(): void {
     this.stopped = true;
     this.nextRunAt = undefined;
-    if (this.timer) {
-      this.timer.cancel();
-      this.timer = null;
-    }
+    this.clearTimer();
   }
 
   /** 释放（server.close 调用，与 stop 等价，语义化命名） */
@@ -189,8 +254,10 @@ export class DreamScheduler {
   /**
    * 定时轮：遍历全部已装载 runtime 逐个尝试（D8：有 in-flight run 的空间本轮让位）。
    * 返回每个空间的摘要（含跳过），便于日志与单测断言。
+   *
+   * @param opts.catchup Task-20261026-003 D5：本次是否为错过触发点后的补跑
    */
-  async tick(): Promise<DreamRunSummary[]> {
+  async tick(opts?: { catchup?: boolean }): Promise<DreamRunSummary[]> {
     if (this.stopped) return [];
     if (this.ticking) {
       debug.log('[dream] 上一轮定时任务仍在执行，本轮跳过');
@@ -205,7 +272,7 @@ export class DreamScheduler {
     const out: DreamRunSummary[] = [];
     try {
       for (const rt of this.registry.list()) {
-        out.push(await this.runFor(rt.root, 'schedule'));
+        out.push(await this.runFor(rt.root, 'schedule', opts));
       }
     } finally {
       this.ticking = false;
@@ -218,22 +285,27 @@ export class DreamScheduler {
    * 撞车、配置关闭、无 runtime、同空间有对话在跑（仅 schedule）→ 返回 skippedBecause 的摘要，不做 LLM 调用。
    * 内部异常一律收敛为 ok=false 的摘要，绝不向调用方抛出（保证关停链路不中断）。
    */
-  async runFor(root: string, reason: DreamTriggerReason): Promise<DreamRunSummary> {
+  async runFor(
+    root: string,
+    reason: DreamTriggerReason,
+    opts?: { catchup?: boolean },
+  ): Promise<DreamRunSummary> {
     const startedMs = this.now();
     const startedAt = new Date(startedMs).toISOString();
+    const catchup = opts?.catchup === true;
     const rt = this.registry.peek(root);
-    if (!rt) return this.skipSummary(root, '', reason, 'no-runtime', startedAt, startedMs);
+    if (!rt) return this.skipSummary(root, '', reason, 'no-runtime', startedAt, startedMs, catchup);
 
     const mem = rt.configLoader.load().config.memory;
     if (!mem.enabled || mem.dreaming.enabled === false) {
-      return this.skipSummary(root, rt.id, reason, 'disabled', startedAt, startedMs);
+      return this.skipSummary(root, rt.id, reason, 'disabled', startedAt, startedMs, catchup);
     }
     if (this.inflight.has(root)) {
-      return this.skipSummary(root, rt.id, reason, 'already-running', startedAt, startedMs);
+      return this.skipSummary(root, rt.id, reason, 'already-running', startedAt, startedMs, catchup);
     }
     // D8：定时轮不与对话抢配额；关停兜底此时已无新对话，不设此限
     if (reason === 'schedule' && rt.sessions.hasInFlight()) {
-      return this.skipSummary(root, rt.id, reason, 'busy', startedAt, startedMs);
+      return this.skipSummary(root, rt.id, reason, 'busy', startedAt, startedMs, catchup);
     }
 
     const task = (async (): Promise<DreamRunSummary> => {
@@ -266,9 +338,11 @@ export class DreamScheduler {
           errors: result.errors.length,
           startedAt,
           startedMs,
+          catchup,
         });
       } catch (e) {
-        this.log(`[api] dream ${reason} ws=${rt.id.slice(0, 8)} 异常: ${msgOf(e)}`);
+        const message = msgOf(e);
+        this.log(`[api] dream ${reason} ws=${rt.id.slice(0, 8)} 异常: ${message}`);
         return this.finishSummary(root, rt.id, reason, daysBack, {
           ok: false,
           promoted: 0,
@@ -276,6 +350,8 @@ export class DreamScheduler {
           errors: 1,
           startedAt,
           startedMs,
+          catchup,
+          errorMessage: message,
         });
       }
     })();
@@ -339,11 +415,25 @@ export class DreamScheduler {
     const mem = rt.configLoader.load().config.memory;
     const schedule = mem.dreaming.schedule;
     const rec = this.records.get(root);
+    const nowMs = this.now();
+    const cron = (schedule?.cron ?? '').trim();
+    const parsed = cron ? parseCron(cron) : null;
+    const fields = parsed?.ok ? parsed.fields : undefined;
     const status: DreamSchedulerStatus = {
       enabled: mem.enabled && mem.dreaming.enabled !== false,
       scheduleEnabled: schedule?.enabled !== false,
+      // deprecated 一版（D14）：cron 生效时前端不再消费
       intervalHours: positive(schedule?.intervalHours, 24),
       startupDelayMin: positive(schedule?.startupDelayMin, 5),
+      cron,
+      // 空 cron 表示「未使用 cron」，不算非法
+      cronValid: parsed === null ? true : parsed.ok,
+      cronError: parsed && !parsed.ok ? parsed.error : this.cronError,
+      describe: fields ? describeCron(fields) : undefined,
+      timezoneOffsetMin: timezoneOffsetMin(nowMs),
+      misfireGraceMin: nonNegative(schedule?.misfireGraceMin, 60),
+      intervalMode: this.mode,
+      nextRunTimes: fields ? nextFireTimes(fields, nowMs, 3).map((t) => new Date(t).toISOString()) : [],
       running: this.inflight.has(root),
       lastRunAt: rec?.lastRunAt,
       lastSummary: rec?.lastSummary,
@@ -363,8 +453,100 @@ export class DreamScheduler {
     return status;
   }
 
-  // ---- 内部 ----
+  // ---- Task-20261026-003：运行历史读写（供 /memory/dream/history 端点） ----
 
+  /** 读某空间的运行历史（新 → 旧）；runtime 未装载返回 null */
+  async historyFor(root: string, limit?: number): Promise<DreamRunRecord[] | null> {
+    if (!this.registry.peek(root)) return null;
+    const log = await this.logFor(root);
+    return log ? log.list(limit) : [];
+  }
+
+  /** 清空某空间的运行历史，返回删除条数；runtime 未装载返回 null */
+  async clearHistory(root: string): Promise<number | null> {
+    if (!this.registry.peek(root)) return null;
+    const log = await this.logFor(root);
+    return log ? log.clear() : 0;
+  }
+
+  // ---- 内部：调度 ----
+
+  private clearTimer(): void {
+    if (this.timer) {
+      this.timer.cancel();
+      this.timer = null;
+    }
+  }
+
+  /**
+   * 按当前配置（重）排定时器。
+   * @param isFirst true = 进程首次注册（间隔模式下用 startupDelayMin，避开启动期初始化）
+   */
+  private applySchedule(isFirst: boolean): void {
+    this.clearTimer();
+    if (this.stopped) return;
+    const schedule = this.getConfig().memory.dreaming.schedule;
+
+    if (schedule?.enabled === false) {
+      this.nextRunAt = undefined;
+      this.mode = 'interval';
+      this.fields = undefined;
+      this.cronError = undefined;
+      return;
+    }
+
+    const cron = (schedule?.cron ?? '').trim();
+    if (cron) {
+      const parsed = parseCron(cron);
+      if (parsed.ok && !neverFires(parsed.fields, this.now())) {
+        this.mode = 'cron';
+        this.fields = parsed.fields;
+        this.cronError = undefined;
+        this.scheduleNextByCron();
+        return;
+      }
+      // D10 兜底：配置被别处改坏 → 回落间隔模式并保留错误原因（status 暴露），不永久失灵
+      this.cronError = parsed.ok ? '该表达式不会触发' : parsed.error;
+      debug.log(`[dream] cron「${cron}」不可用（${this.cronError}），回落间隔模式`);
+    } else {
+      this.cronError = undefined;
+    }
+
+    this.mode = 'interval';
+    this.fields = undefined;
+    const delay = isFirst
+      ? positive(schedule?.startupDelayMin, 5) * MINUTE_MS
+      : positive(schedule?.intervalHours, 24) * HOUR_MS;
+    debug.log(`[dream] 定时轮已注册（间隔模式）：${Math.round(delay / MINUTE_MS)} 分钟后触发`);
+    this.scheduleNext(delay);
+  }
+
+  /** 按 cron 排下一次：分片等待（≤6h），到点由 onTimer 重算（D4） */
+  private scheduleNextByCron(): void {
+    if (this.stopped) return;
+    const fields = this.fields;
+    if (!fields) return;
+    const nowMs = this.now();
+    const next = nextFireTime(fields, nowMs);
+    if (next === null) {
+      // 理论上 applySchedule 已用 neverFires 拦过；防御性兜底
+      this.nextRunAt = undefined;
+      this.cronError = '该表达式不会触发';
+      debug.log(`[dream] cron「${fields.expr}」无可用触发点，定时轮停摆`);
+      return;
+    }
+    this.nextRunAt = next;
+    const delay = Math.min(Math.max(next - nowMs, 0), MAX_WAIT_MS);
+    debug.log(
+      `[dream] cron「${fields.expr}」下次 ${new Date(next).toISOString()}，本次等待 ${Math.round(delay / MINUTE_MS)} 分钟`,
+    );
+    this.timer = this.createTimer(() => {
+      this.timer = null;
+      void this.onTimer();
+    }, delay);
+  }
+
+  /** 间隔模式排下一次（cron 为空 / 不可用时的回落） */
   private scheduleNext(delayMs: number): void {
     if (this.stopped) return;
     this.nextRunAt = this.now() + delayMs;
@@ -375,23 +557,69 @@ export class DreamScheduler {
   }
 
   private async onTimer(): Promise<void> {
+    if (this.stopped) return;
     try {
-      await this.tick();
+      if (this.mode === 'cron' && this.fields) {
+        await this.onCronTimer();
+      } else {
+        await this.tick();
+      }
     } catch (e) {
       this.log(`[api] dream 定时轮异常: ${msgOf(e)}`);
     }
     if (this.stopped) return;
-    const schedule = this.getConfig().memory.dreaming.schedule;
-    if (schedule?.enabled === false) return;
-    this.scheduleNext(positive(schedule?.intervalHours, 24) * HOUR_MS);
+    // D10：每轮结束重读配置并重新解析 cron，避免「配置被改坏后调度器永久失灵」
+    this.applySchedule(false);
   }
+
+  /** cron 模式的到点判定：分片未到期 → 重排；墙钟键重复 → 跳过；超出宽限 → 记错过 */
+  private async onCronTimer(): Promise<void> {
+    const target = this.nextRunAt;
+    if (target === undefined) return;
+    const nowMs = this.now();
+    if (nowMs < target) {
+      // 只是 6h 分片到点，真正触发时刻还没到——由 onTimer 末尾重排下一片
+      return;
+    }
+
+    const key = localMinuteKey(target);
+    if (key === this.lastFireKey) {
+      // DST 回拨：同一本地墙钟分钟第二次到达，跳过（坑 3）
+      debug.log(`[dream] 墙钟分钟 ${key} 已触发过（DST 回拨），跳过本轮`);
+      return;
+    }
+    this.lastFireKey = key;
+
+    const grace = nonNegative(this.getConfig().memory.dreaming.schedule?.misfireGraceMin, 60) * MINUTE_MS;
+    const late = nowMs - target;
+    if (late > grace) {
+      this.log(
+        `[api] dream 定时轮错过：迟 ${Math.round(late / MINUTE_MS)} 分钟 > 宽限 ${Math.round(grace / MINUTE_MS)} 分钟，不补跑`,
+      );
+      this.recordMissed(target, late);
+      return;
+    }
+    // 超过 1 分钟才视为补跑（正常到点受事件循环抖动影响，通常几十毫秒）
+    await this.tick({ catchup: late >= MINUTE_MS });
+  }
+
+  // ---- 内部：摘要与历史 ----
 
   private finishSummary(
     root: string,
     workspaceId: string,
     reason: DreamTriggerReason,
     daysBack: number,
-    p: { ok: boolean; promoted: number; skipped: number; errors: number; startedAt: string; startedMs: number },
+    p: {
+      ok: boolean;
+      promoted: number;
+      skipped: number;
+      errors: number;
+      startedAt: string;
+      startedMs: number;
+      catchup?: boolean;
+      errorMessage?: string;
+    },
   ): DreamRunSummary {
     const finishedMs = this.now();
     const summary: DreamRunSummary = {
@@ -407,6 +635,7 @@ export class DreamScheduler {
       finishedAt: new Date(finishedMs).toISOString(),
       durationMs: Math.max(0, finishedMs - p.startedMs),
     };
+    if (p.catchup) summary.catchup = true;
     this.records.set(root, {
       lastRunAt: summary.finishedAt,
       lastSummary: {
@@ -418,6 +647,7 @@ export class DreamScheduler {
       },
     });
     this.logSummary(summary);
+    this.appendHistory(root, summary, p.errorMessage);
     return summary;
   }
 
@@ -428,6 +658,7 @@ export class DreamScheduler {
     skippedBecause: DreamSkipReason,
     startedAt: string,
     startedMs: number,
+    catchup?: boolean,
   ): DreamRunSummary {
     const finishedMs = this.now();
     const summary: DreamRunSummary = {
@@ -444,19 +675,83 @@ export class DreamScheduler {
       finishedAt: new Date(finishedMs).toISOString(),
       durationMs: Math.max(0, finishedMs - startedMs),
     };
+    if (catchup) summary.catchup = true;
     this.logSummary(summary);
+    this.appendHistory(root, summary);
     return summary;
+  }
+
+  /** D5：错过触发点（超出宽限）→ 为每个空间记一条「错过」，不跑 Dreaming */
+  private recordMissed(targetMs: number, lateMs: number): void {
+    for (const rt of this.registry.list()) {
+      const summary: DreamRunSummary = {
+        root: rt.root,
+        workspaceId: rt.id,
+        reason: 'schedule',
+        ok: false,
+        daysBack: 0,
+        promoted: 0,
+        skipped: 0,
+        errors: 0,
+        skippedBecause: 'missed',
+        startedAt: new Date(targetMs).toISOString(),
+        finishedAt: new Date(this.now()).toISOString(),
+        durationMs: 0,
+      };
+      this.logSummary(summary);
+      this.appendHistory(rt.root, summary, `错失触发点：迟 ${Math.round(lateMs / MINUTE_MS)} 分钟，超出补跑宽限`);
+    }
+  }
+
+  /** 历史落盘（旁路：异步 fire-and-forget，任何异常只记 debug 日志，绝不影响晋升结果） */
+  private appendHistory(root: string, summary: DreamRunSummary, errorMessage?: string): void {
+    // D8：配置关闭 / 无 runtime 期间每轮都会产生噪声，不入库
+    if (summary.skippedBecause === 'disabled' || summary.skippedBecause === 'no-runtime') return;
+    void (async () => {
+      try {
+        const log = await this.logFor(root);
+        if (!log) return;
+        const rec: DreamRunRecord = {
+          startedAt: summary.startedAt,
+          finishedAt: summary.finishedAt,
+          durationMs: summary.durationMs,
+          reason: summary.reason,
+          ok: summary.ok,
+          daysBack: summary.daysBack,
+          promoted: summary.promoted,
+          skipped: summary.skipped,
+          errors: summary.errors,
+        };
+        if (summary.catchup) rec.catchup = true;
+        if (summary.skippedBecause) rec.skippedBecause = summary.skippedBecause;
+        if (errorMessage) rec.errorMessage = truncateError(errorMessage);
+        log.append(rec);
+      } catch (e) {
+        debug.log(`[dream] 记录运行历史失败（忽略）: ${msgOf(e)}`);
+      }
+    })();
+  }
+
+  /** 构造某空间的运行历史读写器（limit<=0 时返回 null，表示不落盘） */
+  private async logFor(root: string): Promise<DreamRunLog | null> {
+    const rt = this.registry.peek(root);
+    if (!rt) return null;
+    const limit = normalizeHistoryLimit(rt.configLoader.load().config.memory.dreaming.historyLimit);
+    if (limit <= 0) return null;
+    const kit = await rt.getMemoryKit();
+    return new DreamRunLog({ file: join(kit.episodic.getMemoryDir(), RUNS_FILE), limit });
   }
 
   /** 统一日志格式，便于 grep：`[api] dream schedule ws=xxxxxxxx 窗口=4d 晋升=3 跳过=1 错误=0 用时=8.2s` */
   private logSummary(s: DreamRunSummary): void {
     const ws = s.workspaceId ? s.workspaceId.slice(0, 8) : '-';
+    const tail = s.catchup ? '（补跑）' : '';
     if (s.skippedBecause) {
-      this.log(`[api] dream ${s.reason} ws=${ws} 跳过（${s.skippedBecause}）`);
+      this.log(`[api] dream ${s.reason} ws=${ws} 跳过（${s.skippedBecause}）${tail}`);
       return;
     }
     this.log(
-      `[api] dream ${s.reason} ws=${ws} 窗口=${s.daysBack}d 晋升=${s.promoted} 跳过=${s.skipped} 错误=${s.errors} 用时=${(s.durationMs / 1000).toFixed(1)}s`,
+      `[api] dream ${s.reason} ws=${ws} 窗口=${s.daysBack}d 晋升=${s.promoted} 跳过=${s.skipped} 错误=${s.errors} 用时=${(s.durationMs / 1000).toFixed(1)}s${tail}`,
     );
   }
 }

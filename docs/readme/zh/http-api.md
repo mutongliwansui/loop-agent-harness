@@ -146,6 +146,11 @@ HTTP API 服务已启动
 | GET | `/memory/search?q=&limit=` | 跨层检索 `{results: [{content, score, layer}]}`（q 必填） |
 | GET | `/memory/gate` | 提升门阈值 + 近期判定 |
 | POST | `/memory/dream` | 触发异步整理 → 202 `{accepted, reason?, skippedBecause?}`（已有晋升在跑回 `accepted:false`） |
+| GET | `/memory/dream/schedule` | 读取当前定时排期 `{enabled, cron, describe, misfireGraceMin, nextRunAt, nextRunTimes, intervalMode}` |
+| PUT | `/memory/dream/schedule` | 改排期 `{enabled?, cron?, misfireGraceMin?}` → 校验通过即**热重排（无需重启）**；非法 cron → 400 且**不落盘、不改现有排期** |
+| GET | `/memory/dream/preview?cron=` | 输入期预览：`{ok:true, describe, next:[…5 个时刻], timezoneOffsetMin}`；非法 → **200** `{ok:false, error, fieldIndex?}`（预览不属于错误请求，前端单分支处理） |
+| GET | `/memory/dream/history?limit=` | 最近触发记录 `{runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?}]}` |
+| DELETE | `/memory/dream/history` | 清空触发记录 → `{deleted}` |
 | POST | `/memory/init` | 初始化分层目录（幂等） |
 
 **`/memory/status` 的 `dreaming` 字段（自动晋升可观测）**
@@ -160,17 +165,35 @@ HTTP API 服务已启动
     "scheduleEnabled": true,
     "intervalHours": 24,
     "startupDelayMin": 5,
+    "cron": "0 3 * * *",
+    "cronValid": true,
+    "describe": "每天 03:00",
+    "timezoneOffsetMin": 480,
+    "misfireGraceMin": 60,
+    "intervalMode": "cron",
+    "nextRunTimes": ["2026-10-27T19:00:00.000Z", "2026-10-28T19:00:00.000Z", "2026-10-29T19:00:00.000Z"],
     "running": false,
     "lastRunAt": "2026-10-26T00:12:33.000Z",
     "lastSummary": { "reason": "schedule", "promoted": 3, "skipped": 1, "errors": 0, "ok": true },
     "lastProcessedDay": "2026-10-25",
-    "nextRunAt": "2026-10-27T00:12:33.000Z"
+    "nextRunAt": "2026-10-27T19:00:00.000Z"
   }
 }
 ```
 
 > `dreaming` 仅在调度器已装配（`--serve` 启动）且该工作空间已装载时出现；`memory.enabled=false` 时整个响应仍为
 > `{enabled:false, layers:{}, counts:{}}`（200，不报错）。
+
+字段说明（需求 `20261026-003` 新增项，旧字段保留一版以兼容）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `cron` / `cronValid` / `describe` | 当前表达式、是否合法、人类可读描述（如「每天 03:00」「每周一 09:00」「每周二、三、四 06:00」） |
+| `intervalMode` | `cron`（默认）或 `interval`（`cron` 为空串时的旧语义回落） |
+| `timezoneOffsetMin` | 服务器本地时区偏移（分钟，东八区为 `480`）；`nextRunAt(s)` 均为 UTC ISO 串，按此换算本地时间 |
+| `misfireGraceMin` | 错过补跑宽限（分钟） |
+| `nextRunTimes` | 未来 3 次触发时刻（UTC ISO），供 WebUI 直接渲染 |
+| `intervalHours` / `startupDelayMin` | **已废弃**（仅 `intervalMode=interval` 时有意义），下一大版本移除 |
 
 
 **vision（/vision 命令，诊断语义：失败不失败端点）**

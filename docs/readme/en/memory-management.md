@@ -107,16 +107,28 @@ The CLI runs Dreaming once on exit, but `--serve` is a long-lived process where 
 
 | Trigger | Timing | Notes |
 | --- | --- | --- |
-| **Scheduled (primary)** | First round `schedule.startupDelayMin` (default 5) minutes after boot, then every `schedule.intervalHours` (default 24h) | Only processes days *before* today; today's content waits for tomorrow. **No new content means no LLM call** (the incremental check returns early) |
+| **Scheduled (primary)** | Driven by `schedule.cron` (5-field crontab expression, default `0 3 * * *` = daily 03:00, **server local timezone**) | Only processes days *before* today; today's content waits for tomorrow. **No new content means no LLM call** (the incremental check returns early) |
 | **Shutdown fallback** | On `Ctrl+C` (`SIGINT`) / `SIGTERM` / `SIGBREAK` | Promotes every loaded workspace serially within `shutdownBudgetMs` (default 30s); **a second Ctrl+C exits immediately** |
 | **Manual** | `POST /memory/dream` or the WebUI "✦ Dream" button | Shares the same in-process lock as the automatic triggers |
 
-Rules and limits:
+#### cron expression
+
+- **5 fields**: `minute hour day-of-month month day-of-week` (0-59 / 0-23 / 1-31 / 1-12 / 0-7, where both 0 and 7 mean Sunday). **No 6-field seconds form.**
+- **Supported syntax**: `*`, lists `,`, ranges `-`, steps `/`; macros `@yearly` `@monthly` `@weekly` `@daily` `@hourly`.
+- **Unsupported syntax**: `L` / `W` / `#` / `?` (Quartz extensions with no meaning under standard cron semantics).
+- **Day-of-month and day-of-week are OR-ed when both are restricted** (vixie cron semantics): `0 3 1 * 1` means "the 1st of every month **or** every Monday at 03:00".
+- **Hot reload**: writing `cron` reschedules immediately, **no restart required**; an invalid expression is rejected (400) and **neither persists nor disturbs the current schedule**.
+- **Compatibility**: an empty `cron` string falls back to the legacy fixed-interval behaviour (`startupDelayMin` + `intervalHours`, both deprecated).
+
+#### Rules and limits
 
 - **Mutual exclusion**: at most one promotion per workspace at a time; a latecomer is skipped (the manual endpoint returns `accepted:false`) — no queueing, no duplicate promotions.
 - **Never competes with chat**: the scheduled round yields when a conversation is in flight in that workspace; the shutdown fallback is exempt (no new conversations then).
 - **Gap repair**: the read window widens to "days since last processed day + 1", capped by `maxDaysBack` (default 30), so days missed during downtime are not lost forever.
-- **Observability**: the `dreaming` field of `GET /memory/status` exposes `running` / `lastRunAt` / `lastSummary` / `lastProcessedDay` / `nextRunAt`, mirrored in the WebUI memory page's "Layered status" card.
+- **Misfire catch-up**: when sleep or a clock rollback makes the run late but still within `misfireGraceMin` (default 60 minutes), it runs once and is flagged `catchup`; beyond that grace it only records a "missed" entry and **does not run** (so a boot does not trigger a burst of rounds).
+- **Day rollover and DST**: the scheduler dedupes on a *local wall-clock minute key* and never waits more than 6 hours in one slice (avoiding the 24.8-day `setTimeout` ceiling), so a DST fall-back does not double-fire and a spring-forward does not silently skip a long stretch.
+- **Observability**: the `dreaming` field of `GET /memory/status` (see [HTTP API](./http-api.md)) exposes `cron` / `describe` / `nextRunAt` / `nextRunTimes` / `running`; the WebUI memory page's "Auto-promotion" card edits it in place with a live preview of upcoming runs.
+- **Run history**: `{L2 dir}/.dreaming-runs.json` keeps a ring buffer of the latest `historyLimit` runs (default 20, `0` = no history) with time / source (scheduled·manual·shutdown) / result / read window / promoted·skipped·errors / duration — separate from the incremental state file.
 - **Incremental state**: `{L2 dir}/.dreaming-state.json` stores `lastProcessedDay` plus `lastRunAt` / `lastSummary`.
 - **Turning it off**: `memory.dreaming.schedule.enabled=false` stops only the scheduler (the shutdown fallback still runs); `memory.dreaming.onExit=false` stops only the shutdown fallback; `memory.dreaming.enabled=false` stops everything.
 - **Known limits**: running the CLI and `--serve` against the same workspace has no cross-process file lock — `lastProcessedDay` idempotency plus dedupe/merge covers it; on Windows, closing the console window may not give any cleanup chance (no graceful signal).

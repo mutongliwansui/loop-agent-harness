@@ -169,11 +169,27 @@ export interface MemoryConfig {
     schedule: {
       /** 是否启用定时轮（默认 true）；关停兜底由顶层 onExit 独立控制 */
       enabled: boolean;
-      /** 定时轮间隔小时数（默认 24；当天内容本就留到次日整理，更短间隔只会空跑） */
+      /**
+       * Task-20261026-003 D2：crontab 表达式（5 字段：分 时 日 月 周，**服务器本地时区**）。
+       * 默认 `0 3 * * *`（每天 03:00）。空串表示不启用 cron、回落旧 interval 语义。
+       * 写入即热生效（PUT /memory/dream/schedule → DreamScheduler.reschedule()）。
+       */
+      cron: string;
+      /**
+       * Task-20261026-003 D5：错过补跑的宽限分钟数（默认 60）。
+       * 休眠 / 系统时间回拨越过触发点：`late <= 该值` 补跑一次并标 catchup；超出记一条「错过」不补跑。
+       */
+      misfireGraceMin: number;
+      /** @deprecated Task-20261026-003：`cron` 为空时回落的固定间隔（小时，默认 24） */
       intervalHours: number;
-      /** 启动后延迟多少分钟开始首轮（默认 5，避开启动期初始化与首个对话） */
+      /** @deprecated Task-20261026-003：`cron` 为空时回落的启动延迟（分钟，默认 5） */
       startupDelayMin: number;
     };
+    /**
+     * Task-20261026-003 D7/D13：晋升运行历史保留条数（默认 20，0 = 不留历史）。
+     * 存于 {L2 记忆目录}/.dreaming-runs.json，环形裁剪，与 .dreaming-state.json 分离。
+     */
+    historyLimit: number;
     /** Task-20261026-002 D4：关停兜底的总时间预算（毫秒，默认 30000；超时后打印警告并继续关停） */
     shutdownBudgetMs: number;
     /**
@@ -219,9 +235,12 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     incremental: true,
     schedule: {
       enabled: true,
+      cron: '0 3 * * *',
+      misfireGraceMin: 60,
       intervalHours: 24,
       startupDelayMin: 5,
     },
+    historyLimit: 20,
     shutdownBudgetMs: 30000,
     maxDaysBack: 30,
   },

@@ -107,16 +107,28 @@ CLI 在退出时会跑一次 Dreaming；但 `--serve` 是常驻进程，「退�
 
 | 触发 | 时机 | 说明 |
 | --- | --- | --- |
-| **定时（主力）** | 启动 `schedule.startupDelayMin`（默认 5）分钟后首轮，此后每 `schedule.intervalHours`（默认 24h）一轮 | 只处理「今天之前」的天；当天内容留到次日。**没有新增内容时不调用 LLM**（增量判定直接 return） |
-| **关停兜底** | 收到 `Ctrl+C`（`SIGINT`）/ `SIGTERM` / `SIGBREAK` | 遍历全部已装载工作空间串行晋升，受 `shutdownBudgetMs`（默认 30s）约束；**再按一次 Ctrl+C 立即退出** |
-| **手动** | `POST /memory/dream` 或 WebUI「✦ 梳理（dream）」 | 与自动触发共用同一把进程内锁 |
+| **定时（主力）** | 按 `schedule.cron`（crontab 5 字段表达式，默认 `0 3 * * *` 即每天 03:00，**服务器本地时区**）触发 | 只处理「今天之前」的天；当天内容留到次日。**没有新增内容时不调用 LLM**（增量判定直接 return） |
+| **关停兜底** | 收到 `Ctrl+C`（`SIGINT`）/`SIGTERM`/`SIGBREAK` | 遍历全部已装载工作空间串行晋升，受 `shutdownBudgetMs`（默认 30s）约束；**再按一次 Ctrl+C 立即退出** |
+| **手动** | `POST /memory/dream` 或 WebUI「✦ 立即梳理」 | 与自动触发共用同一把进程内锁 |
 
-规则与限制：
+#### cron 表达式
+
+- **5 字段**：`分 时 日 月 周`（0-59 / 0-23 / 1-31 / 1-12 / 0-7，周中 0 与 7 都表示周日），**不支持 6 字段秒级**。
+- **支持的语法**：`*`、列表 `,`、区间 `-`、步长 `/`；宏 `@yearly` `@monthly` `@weekly` `@daily` `@hourly`。
+- **不支持的语法**：`L` / `W` / `#` / `?`（Quartz 扩展，标准 cron 语义下无意义）。
+- **「日」与「周」同时受限时取并集**（vixie cron 语义）：`0 3 1 * 1` 表示「每月 1 号 **或** 每周一 03:00」。
+- **热生效**：写 `cron` 后立即重排，**无需重启**；非法表达式直接拒绝（400），**不落盘、不打断现有排期**。
+- **兼容**：`cron` 为空串时回落到旧固定间隔语义（`startupDelayMin` + `intervalHours`，两者已 deprecated）。
+
+#### 规则与限制
 
 - **互斥**：同一工作空间同一时刻只跑一次晋升；撞车时后来者直接跳过（手动端点回 `accepted:false`），不排队、不重复晋升。
 - **不与对话抢资源**：定时轮遇到该空间有对话正在跑（in-flight）时本轮让位；关停兜底不受此限（此时已无新对话）。
 - **补漏**：读取窗口按「距上次处理的天数 + 1」放大（上限 `maxDaysBack`，默认 30），避免停机多日后中间的天永久晋升不到。
-- **可观测**：`GET /memory/status` 的 `dreaming` 字段给出 `running` / `lastRunAt` / `lastSummary` / `lastProcessedDay` / `nextRunAt`，WebUI 记忆页「分层状态」卡片同步展示。
+- **错过补跑**：睡眠 / 系统时间回拨导致迟于触发点但在 `misfireGraceMin`（默认 60 分钟）宽限内 → 补跑一次并标 `catchup`；超出宽限 → 记一条「错过」记录但**不补跑**（避免开机就狂跑一轮）。
+- **跨天与夏令时**：调度器按「本地墙钟分钟键」去重，且单次等待分片不超过 6 小时（规避 `setTimeout` 24.8 天上限）；因此 DST 回拨不重复触发、前拨不长时间漏触发。
+- **可观测**：`GET /memory/status` 的 `dreaming` 字段（见 [HTTP API](./http-api.md)）给出 `cron` / `describe` / `nextRunAt` / `nextRunTimes` / `running` 等；WebUI 记忆页「自动晋升」卡片可直接编辑并即时预览未来触发时刻。
+- **运行历史**：`{L2 目录}/.dreaming-runs.json` 环形保留最近 `historyLimit`（默认 20，`0` = 不留历史）条，记录时间 / 来源（定时·手动·关停）/ 结果 / 读取窗口 / 晋升·跳过·错误计数 / 耗时；与增量状态文件分离。
 - **增量状态**：`{L2 目录}/.dreaming-state.json` 保存 `lastProcessedDay`（已整理到哪一天）与 `lastRunAt` / `lastSummary`（上次执行记录）。
 - **关闭方式**：`memory.dreaming.schedule.enabled=false` 只停定时轮（关停兜底仍生效）；`memory.dreaming.onExit=false` 只停关停兜底；`memory.dreaming.enabled=false` 全停。
 - **已知边界**：CLI 与 `--serve` 同时跑同一工作空间时无跨进程文件锁，靠 `lastProcessedDay` 幂等 + 去重归并兜底；Windows 下关闭控制台窗口可能拿不到清理时机（无优雅关停信号）。

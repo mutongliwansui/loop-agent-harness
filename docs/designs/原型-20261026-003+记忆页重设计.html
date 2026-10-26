@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型-20261026-003 · 记忆页重设计 + cron 定时晋升</title>
+<!--
+  原型-20261026-003 · 记忆页重设计（自动晋升 cron 化 + 最近触发记录）
+  ---------------------------------------------------------------------------
+  自包含单文件原型：零外部依赖、亮暗双主题、六态可切换、真实 cron 预览。
+
+  用途：评审「记忆页」新的信息架构 —— ① 自动晋升卡片就地可编辑（每天/每周/自定义
+  cron 三档 + 排期预览 + 高级折叠）；② 最近触发记录列表；③ 其它卡片的信息层级收敛。
+
+  交互：
+    · 「每天/每周/自定义 cron」三档切换，时间选择或改表达式后实时重算「下次 / 后续 3 次」
+    · cron 非法 → 输入框红框 + 行内中文错误 + 「保存并生效」禁用（不改变右侧预览）
+    · 「启用定时」开关关闭 → 排期预览灰化
+    · 底部演示控制条 → 切换六态 / 亮暗 / 时间基准
+
+  ⚠ 本文件内的 cron 解析（parseCron / nextFireTimes）**仅用于原型演示**。
+    正式实现由后端 src/api/cron.ts 单点提供（GET /memory/dream/preview），
+    前端不重复实现，避免双实现漂移 —— 见设计方案 D11。
+
+  URL 参数：?state=default|running|invalid|off|empty|weekly&theme=light|dark&now=2026-10-26T22:13
+  令牌：全部复用 webui/src/style.css 既有令牌，零新增色值。
+-->
+<style>
+/* ===== 设计令牌：与 webui/src/style.css 完全对齐（亮色） ===== */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --code-bg: #f1f3f5;
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --line-soft: #eef0f3;
+  --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;
+  --bar-bg: #fbfcfd;
+  --view-bg: #ffffff;
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+}
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --brand-on: #0b221a;
+  --danger: #f87171;
+  --danger-weak: #3b1a1a;
+  --warn: #fbbf24;
+  --warn-weak: #3a2e10;
+  --ok: #34d399;
+  --ok-weak: #143528;
+  --code-bg: #22272f;
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+}
+button, input, select {
+  font: inherit; color: inherit; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius-ctl); padding: 5px 9px;
+}
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.06); color: var(--brand-on); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input:focus, select:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+input.bad { border-color: var(--danger); }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.spacer { flex: 1; }
+.hide { display: none !important; }
+
+/* ===== 应用骨架（简化：仅记忆页） ===== */
+.app { display: flex; height: 100vh; overflow: hidden; }
+.nav {
+  width: 212px; flex: none; display: flex; flex-direction: column;
+  padding: 14px 10px; background: var(--panel); border-right: 1px solid var(--line);
+}
+.nav .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; padding: 2px 10px 14px; }
+.nav .logo .dot {
+  width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+}
+.nav a {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px;
+}
+.nav a:hover { background: var(--bg); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico { width: 17px; display: inline-flex; justify-content: center; opacity: .85; }
+.nav .tip {
+  margin-top: auto; font-size: 11.5px; color: var(--muted); line-height: 1.5;
+  border-top: 1px solid var(--line-soft); padding-top: 10px;
+}
+
+.main { flex: 1; overflow: auto; padding: 20px 24px 96px; }
+
+/* ===== 页面头 ===== */
+.page-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.page-head h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
+.page-head .sub { color: var(--muted); font-size: 12.5px; }
+
+/* ===== 徽标 ===== */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px;
+  border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: .2px;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.badge.ok { background: var(--ok-weak); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 26%, transparent); }
+.badge.warn { background: var(--warn-weak); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 26%, transparent); }
+.badge.danger { background: var(--danger-weak); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 26%, transparent); }
+.badge.dim { background: var(--code-bg); color: var(--muted); border-color: var(--line); }
+.badge.brand { background: var(--brand-weak); color: var(--brand); border-color: color-mix(in srgb, var(--brand) 26%, transparent); }
+.badge .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+/* ===== 卡片 ===== */
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card); margin-bottom: 14px; overflow: hidden;
+}
+.card-h {
+  display: flex; align-items: center; gap: 8px; padding: 11px 16px;
+  border-bottom: 1px solid var(--line-soft); background: var(--bar-bg);
+  font-size: 13.5px; font-weight: 600;
+}
+.card-h .ch-hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+.card-b { padding: 14px 16px; }
+
+/* ===== 卡片 A：自动晋升 ===== */
+.dream-card { position: relative; }
+.dream-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--brand); opacity: 1;
+}
+.dream-card.is-off::before { background: var(--line-strong); }
+.dream-card.is-running::before { background: var(--ok); }
+
+.dgrid { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(240px, .85fr); gap: 22px; }
+@media (max-width: 900px) { .dgrid { grid-template-columns: 1fr; gap: 16px; } }
+
+.flabel {
+  font-size: 11.5px; font-weight: 700; letter-spacing: .6px; color: var(--muted);
+  text-transform: uppercase; margin-bottom: 8px;
+}
+
+/* 分段控件 */
+.seg { display: inline-flex; padding: 2px; background: var(--code-bg); border-radius: 8px; gap: 2px; margin-bottom: 12px; }
+.seg-btn {
+  border: 1px solid transparent; background: transparent; color: var(--text-2);
+  height: 26px; padding: 0 12px; border-radius: 6px; font-size: 12.5px; font-weight: 500;
+}
+.seg-btn:hover:not(.active) { color: var(--text); background: var(--hover); }
+.seg-btn.active { background: var(--panel); color: var(--brand); font-weight: 600; box-shadow: var(--shadow-card); }
+
+.row-time { display: flex; align-items: center; gap: 6px; }
+.row-time select { height: 34px; font-family: var(--mono); font-size: 14px; padding: 0 6px; }
+.row-time select.hh { width: 62px; }
+.row-time select.mm { width: 62px; }
+.row-time select.dow { width: 92px; font-family: inherit; }
+.row-time .colon { color: var(--muted); font-weight: 700; }
+
+.row-cron { display: flex; align-items: center; gap: 8px; }
+.row-cron input { flex: 1; height: 34px; font-family: var(--mono); font-size: 13.5px; letter-spacing: .4px; }
+
+.echo { margin-top: 9px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.echo code {
+  font-family: var(--mono); font-size: 12px; background: var(--code-bg); color: var(--text-2);
+  padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-soft);
+}
+.err {
+  margin-top: 8px; font-size: 12.5px; color: var(--danger); display: flex; align-items: flex-start; gap: 6px;
+}
+.err:empty { display: none; }
+.err svg { flex: none; margin-top: 2px; }
+
+/* 排期预览 */
+.preview {
+  border: 1px solid var(--line-soft); background: var(--bar-bg);
+  border-radius: 10px; padding: 12px 14px; min-height: 106px;
+}
+.preview.is-off { opacity: .62; }
+.pn-abs { font-size: 17px; font-weight: 650; font-family: var(--mono); letter-spacing: .3px; }
+.pn-rel { margin-top: 2px; font-size: 12.5px; color: var(--brand); font-weight: 600; }
+.preview.is-off .pn-rel { color: var(--muted); }
+.pn-desc { margin-top: 6px; font-size: 12.5px; color: var(--text-2); }
+.next-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.next-list li {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted);
+  font-family: var(--mono); line-height: 1.9;
+}
+.next-list li .idx {
+  width: 16px; height: 16px; border-radius: 4px; background: var(--code-bg); color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-family: inherit;
+}
+
+/* 高级折叠 */
+.adv { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.adv-toggle {
+  border: none; background: transparent; padding: 2px 0; color: var(--muted);
+  font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px;
+}
+.adv-toggle:hover { color: var(--brand); }
+.adv-toggle .car { transition: transform .15s; display: inline-block; }
+.adv-toggle.open .car { transform: rotate(90deg); }
+.adv-body { margin-top: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.adv-item { display: flex; flex-direction: column; gap: 4px; }
+.adv-item label { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.adv-item input { height: 30px; font-family: var(--mono); }
+.adv-item .tip { font-size: 11.5px; color: var(--muted); }
+
+.foot { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.foot .dirty { font-size: 12px; color: var(--warn); display: inline-flex; align-items: center; gap: 5px; }
+
+/* 开关 */
+.switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track {
+  width: 34px; height: 19px; border-radius: 999px; background: var(--line-strong); position: relative;
+  transition: background .15s; flex: none;
+}
+.switch .track::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%;
+  background: var(--panel); box-shadow: 0 1px 2px rgba(0, 0, 0, .2); transition: transform .15s;
+}
+.switch input:checked + .track { background: var(--brand); }
+.switch input:checked + .track::after { transform: translateX(15px); }
+.switch input:focus-visible + .track { box-shadow: 0 0 0 3px var(--brand-weak); }
+
+/* 运行中指示 */
+.spin {
+  width: 13px; height: 13px; border-radius: 50%; flex: none;
+  border: 2px solid var(--ok-weak); border-top-color: var(--ok); animation: sp .8s linear infinite;
+}
+@keyframes sp { to { transform: rotate(360deg); } }
+
+/* ===== 卡片 B：最近触发记录 ===== */
+.hist { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.hist thead th {
+  text-align: left; font-size: 11px; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; padding: 0 10px 7px; border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.hist thead th.num, .hist tbody td.num { text-align: right; }
+.hist tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.hist tbody tr:last-child td { border-bottom: none; }
+.hist tbody tr:hover { background: var(--hover); }
+.hist .t { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.hist .nums { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.hist .dur { font-family: var(--mono); font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.hist .win { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+.hist .em {
+  display: block; margin-top: 3px; font-size: 11.5px; color: var(--danger);
+  font-family: inherit; max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hist .catchup { margin-left: 5px; }
+.empty {
+  padding: 26px 10px; text-align: center; color: var(--muted); font-size: 12.5px; line-height: 1.8;
+}
+.empty .et { color: var(--text-2); font-weight: 600; margin-bottom: 2px; }
+
+/* ===== 卡片 C：分层状态 ===== */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 20px; }
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat .k { font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
+.stat .v { font-size: 13px; font-family: var(--mono); word-break: break-all; }
+.stat .v.plain { font-family: inherit; }
+.paths { margin-top: 12px; border-top: 1px solid var(--line-soft); padding-top: 10px; display: grid; gap: 5px; }
+.path-row { display: flex; gap: 10px; font-size: 12px; }
+.path-row .k { width: 62px; color: var(--muted); flex: none; }
+.path-row .v { font-family: var(--mono); color: var(--text-2); word-break: break-all; }
+
+/* ===== 其它卡片（收敛展示） ===== */
+.mini-list { display: flex; flex-direction: column; gap: 6px; }
+details.jv { border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bar-bg); }
+details.jv summary { cursor: pointer; padding: 7px 11px; font-size: 12.5px; list-style: none; display: flex; gap: 8px; }
+details.jv summary::-webkit-details-marker { display: none; }
+details.jv summary::before { content: '▸'; color: var(--muted); font-size: 10px; line-height: 1.7; }
+details.jv[open] summary::before { content: '▾'; }
+details.jv pre { margin: 0; padding: 0 12px 10px; font-family: var(--mono); font-size: 12px; color: var(--text-2); white-space: pre-wrap; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+/* ===== 演示控制条 ===== */
+.demo-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 16px; background: var(--panel-glass, var(--panel));
+  border-top: 1px solid var(--line); box-shadow: var(--shadow-pop); font-size: 12.5px;
+}
+.demo-bar .lbl { font-weight: 700; color: var(--muted); letter-spacing: .5px; font-size: 11px; text-transform: uppercase; }
+.demo-bar button.sm { height: 26px; padding: 0 10px; font-size: 12px; }
+.demo-bar button.on { background: var(--brand-weak); border-color: var(--brand); color: var(--brand); font-weight: 600; }
+.demo-bar .sep { width: 1px; height: 18px; background: var(--line); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 侧栏（骨架示意） -->
+  <nav class="nav">
+    <div class="logo"><span class="dot">L</span> loop-agent</div>
+    <a href="#"><span class="ico">＋</span> 新建会话</a>
+    <a href="#"><span class="ico">◍</span> 对话</a>
+    <a href="#"><span class="ico">▤</span> 文件</a>
+    <a href="#"><span class="ico">◈</span> 技能</a>
+    <a href="#" class="active"><span class="ico">✦</span> 记忆</a>
+    <a href="#"><span class="ico">◎</span> 模型</a>
+    <a href="#"><span class="ico">⚙</span> 配置</a>
+    <div class="tip">当前自动化：已启用<br>服务器本地时间 UTC+08:00</div>
+  </nav>
+
+  <main class="main">
+    <div class="page-head">
+      <h1>记忆</h1>
+      <span class="badge ok"><span class="dot"></span>已启用</span>
+      <span class="sub">情景 12 天 · Gate 待定 0 / 已批准 3</span>
+      <span class="spacer"></span>
+      <button id="btn-dream">✦ 立即梳理</button>
+      <button id="btn-refresh">⟳ 刷新</button>
+    </div>
+
+    <!-- ============ 卡片 A：自动晋升 ============ -->
+    <section class="card dream-card" id="card-dream">
+      <div class="card-h">
+        <span>自动晋升</span>
+        <span class="ch-hint">把 L2 情景记忆提炼进 L3 长期记忆</span>
+        <span class="spacer"></span>
+        <span class="badge ok hide" id="badge-running"><span class="spin"></span>正在晋升</span>
+        <span class="badge dim" id="badge-idle">空闲</span>
+        <label class="switch" title="关闭后不再按排期触发，关停兜底由「高级」里的开关独立控制">
+          <input type="checkbox" id="sw-enabled" checked>
+          <span class="track"></span>
+          <span>启用定时</span>
+        </label>
+      </div>
+      <div class="card-b">
+        <div class="dgrid">
+          <!-- 左：触发时间 -->
+          <div>
+            <div class="flabel">触发时间</div>
+            <div class="seg" id="seg">
+              <button class="seg-btn active" data-mode="daily">每天</button>
+              <button class="seg-btn" data-mode="weekly">每周</button>
+              <button class="seg-btn" data-mode="cron">自定义 cron</button>
+            </div>
+
+            <div class="row-time" id="row-time">
+              <select class="dow hide" id="sel-dow" aria-label="星期">
+                <option value="1">周一</option><option value="2">周二</option>
+                <option value="3">周三</option><option value="4">周四</option>
+                <option value="5">周五</option><option value="6">周六</option>
+                <option value="0">周日</option>
+              </select>
+              <select class="hh" id="sel-hour" aria-label="小时"></select>
+              <span class="colon">:</span>
+              <select class="mm" id="sel-min" aria-label="分钟"></select>
+            </div>
+
+            <div class="row-cron hide" id="row-cron">
+              <input id="inp-cron" class="mono" value="0 3 * * *" spellcheck="false"
+                     aria-label="cron 表达式" placeholder="分 时 日 月 周，如 0 3 * * *">
+            </div>
+
+            <div class="echo">
+              等价 cron <code id="echo-cron">0 3 * * *</code>
+              <span>· 服务器本地时间 UTC+08:00</span>
+            </div>
+
+            <div class="err" id="cron-err"></div>
+          </div>
+
+          <!-- 右：排期预览 -->
+          <div>
+            <div class="flabel">排期预览</div>
+            <div class="preview" id="preview">
+              <div class="pn-abs" id="pn-abs">2026-10-27 03:00</div>
+              <div class="pn-rel" id="pn-rel">还有 4 小时 47 分</div>
+              <div class="pn-desc" id="pn-desc">每天 03:00</div>
+              <ul class="next-list" id="next-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- 高级（默认折叠） -->
+        <div class="adv">
+          <button class="adv-toggle" id="adv-toggle" aria-expanded="false">
+            <span class="car">▸</span> 高级（关停兜底 / 读取窗口 / 错过补跑）
+          </button>
+          <div class="adv-body hide" id="adv-body">
+            <div class="adv-item">
+              <label>关停时兜底晋升</label>
+              <select id="sel-onexit">
+                <option value="1" selected>开启（最多等 30s）</option>
+                <option value="0">关闭</option>
+              </select>
+              <span class="tip">进程退出前补最后一轮</span>
+            </div>
+            <div class="adv-item">
+              <label>读取窗口（天）</label>
+              <input id="inp-days" value="3" class="mono">
+              <span class="tip">停机多日会按缺口自动放大，上限 30 天</span>
+            </div>
+            <div class="adv-item">
+              <label>错过补跑宽限（分钟）</label>
+              <input id="inp-grace" value="60" class="mono">
+              <span class="tip">休眠越过触发点后的容忍时长，超出记「错过」</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="foot">
+          <span class="dirty hide" id="dirty-hint">● 有未保存改动</span>
+          <span class="spacer"></span>
+          <button id="btn-reset">恢复默认</button>
+          <button class="primary" id="btn-save">保存并生效</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 卡片 B：最近触发记录 ============ -->
+    <section class="card" id="card-hist">
+      <div class="card-h">
+        <span>最近触发记录</span>
+        <span class="ch-hint">保留最近 20 条 · 跨重启保留</span>
+        <span class="spacer"></span>
+        <button class="sm" id="btn-clear">清空记录</button>
+      </div>
+      <div class="card-b" id="hist-body" style="padding-top:6px"></div>
+    </section>
+
+    <!-- ============ 卡片 C：分层状态 ============ -->
+    <section class="card">
+      <div class="card-h"><span>分层状态</span><span class="spacer"></span>
+        <span class="badge dim mono">GET /memory/status</span>
+      </div>
+      <div class="card-b">
+        <div class="stat-grid">
+          <div class="stat"><span class="k">情景记忆</span><span class="v">12 天</span></div>
+          <div class="stat"><span class="k">Gate 待定 / 已批准</span><span class="v">0 / 3</span></div>
+          <div class="stat"><span class="k">已整理至 <span class="badge dim" style="height:16px;font-size:10px">UTC</span></span><span class="v">2026-10-25</span></div>
+          <div class="stat"><span class="k">上次晋升</span><span class="v">2026-10-26 20:53 · 30 条</span></div>
+        </div>
+        <div class="paths">
+          <div class="path-row"><span class="k">episodic</span><span class="v">~/.loop-agent/memory/</span></div>
+          <div class="path-row"><span class="k">curated</span><span class="v">D:\trae_workspace\loop-agent-command\.loop-agent\curated\</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 其它卡片 ============ -->
+    <div class="two-col">
+      <section class="card" style="margin-bottom:0">
+        <div class="card-h"><span>Curated 长期记忆</span><span class="spacer"></span><span class="badge dim mono">GET /memory/curated</span></div>
+        <div class="card-b">
+          <div class="mini-list">
+            <details class="jv"><summary>SOUL.md <span class="muted">· 人格与行为准则</span></summary><pre># SOUL
+- 优先使用工具获取准确信息，不凭空臆造
+- 得到足够信息后直接给出最终答案</pre></details>
+            <details class="jv"><summary>USER.md <span class="muted">· 用户画像</span></summary><pre>## 基本信息
+- Windows（D 盘），项目根 D:\trae_workspace\loop-agent-command
+- 会打篮球，位置后卫</pre></details>
+            <details class="jv"><summary>MEMORY.md <span class="muted">· 精炼事实</span></summary><pre># MEMORY - 精炼事实
+- 项目为 TypeScript ReAct Agent CLI，附 HTTP API 与 Vue3 WebUI</pre></details>
+          </div>
+        </div>
+      </section>
+      <section class="card" style="margin-bottom:0">
+        <div class="card-h"><span>Gate 晋升</span><span class="spacer"></span><span class="badge dim mono">GET /memory/gate</span></div>
+        <div class="card-b">
+          <div class="mini-list">
+            <details class="jv"><summary>阈值 thresholds</summary><pre>{ "minScore": 0.6, "minOccurrences": 2 }</pre></details>
+            <details class="jv"><summary>已批准决策 <span class="badge ok" style="height:16px;font-size:10px">3</span></summary><pre>[ "使用 workspace 级配置", "cron 用本地时区", "历史独立文件" ]</pre></details>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ============ 演示控制条 ============ -->
+<div class="demo-bar">
+  <span class="lbl">原型控制</span>
+  <button class="sm" data-state="default">默认</button>
+  <button class="sm" data-state="running">运行中</button>
+  <button class="sm" data-state="invalid">cron 非法</button>
+  <button class="sm" data-state="off">定时关闭</button>
+  <button class="sm" data-state="weekly">每周档</button>
+  <button class="sm" data-state="empty">空记录</button>
+  <span class="sep"></span>
+  <button class="sm" id="btn-theme">切换深色</button>
+  <span class="sep"></span>
+  <span class="muted" id="demo-note">（原型内 cron 计算仅用于演示，正式实现走后端 preview 端点）</span>
+</div>
+
+<script>
+/* =========================================================================
+ * 一、cron 演示实现（仅原型用；正式实现见 src/api/cron.ts，D11 不在前端重复）
+ * ========================================================================= */
+const MACROS = {
+  '@hourly': '0 * * * *', '@daily': '0 0 * * *', '@weekly': '0 0 * * 0',
+  '@monthly': '0 0 1 * *', '@yearly': '0 0 1 1 *',
+};
+const FIELDS = [
+  { name: '分钟', min: 0, max: 59 },
+  { name: '小时', min: 0, max: 23 },
+  { name: '日', min: 1, max: 31 },
+  { name: '月', min: 1, max: 12 },
+  { name: '星期', min: 0, max: 6 },
+];
+
+function parseField(raw, spec) {
+  const out = new Set();
+  for (const part of raw.split(',')) {
+    if (!part) return { error: `${spec.name}字段出现空项` };
+    let body = part, step = 1;
+    const slash = part.indexOf('/');
+    if (slash >= 0) {
+      body = part.slice(0, slash);
+      step = Number(part.slice(slash + 1));
+      if (!Number.isInteger(step) || step <= 0) return { error: `${spec.name}字段步长「${part.slice(slash + 1)}」无效` };
+    }
+    let lo, hi;
+    if (body === '*') { lo = spec.min; hi = spec.max; }
+    else if (body.includes('-')) {
+      const [a, b] = body.split('-');
+      lo = Number(a); hi = Number(b);
+      if (!Number.isInteger(lo) || !Number.isInteger(hi)) return { error: `${spec.name}字段范围「${body}」无效` };
+    } else {
+      const n = Number(body);
+      if (!Number.isInteger(n)) return { error: `${spec.name}字段「${body}」不是数字` };
+      lo = n; hi = slash >= 0 ? spec.max : n;
+    }
+    if (lo < spec.min || hi > spec.max || lo > hi)
+      return { error: `${spec.name}字段「${part}」超出范围 ${spec.min}-${spec.max}` };
+    for (let v = lo; v <= hi; v += step) out.add(spec.name === '星期' && v === 7 ? 0 : v);
+  }
+  return { values: [...out].sort((a, b) => a - b) };
+}
+
+function parseCron(expr) {
+  let s = String(expr || '').trim().replace(/\s+/g, ' ');
+  if (!s) return { ok: false, error: '表达式为空' };
+  if (MACROS[s]) s = MACROS[s];
+  const parts = s.split(' ');
+  if (parts.length !== 5) {
+    return { ok: false, error: parts.length < 5 ? `需要 5 个字段（分 时 日 月 周），当前只有 ${parts.length} 个` : '只支持 5 个字段，不支持秒级（6 字段）' };
+  }
+  if (/[LW#?]/i.test(s)) return { ok: false, error: '不支持 L / W / # / ? 扩展语法' };
+  const fields = { expr: s, minute: [], hour: [], dayOfMonth: [], month: [], dayOfWeek: [], domRestricted: false, dowRestricted: false };
+  const keys = ['minute', 'hour', 'dayOfMonth', 'month', 'dayOfWeek'];
+  for (let i = 0; i < 5; i++) {
+    const r = parseField(parts[i], FIELDS[i]);
+    if (r.error) return { ok: false, error: `第 ${i + 1} 个字段（${FIELDS[i].name}）：${r.error}`, fieldIndex: i };
+    fields[keys[i]] = r.values;
+  }
+  fields.domRestricted = parts[2] !== '*';
+  fields.dowRestricted = parts[4] !== '*';
+  return { ok: true, fields };
+}
+
+/** 从 from 之后的下一个整分触发时刻（本地时区）；4 年搜不到 → null */
+function nextFireTimes(fields, fromMs, count) {
+  const out = [];
+  let cursor = new Date(fromMs);
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+  let guard = 0;
+  while (out.length < count && guard < 1461 * 24 * 60) {
+    guard++;
+    const mo = cursor.getMonth() + 1, dom = cursor.getDate(), dow = cursor.getDay();
+    const domOk = fields.dayOfMonth.includes(dom);
+    const dowOk = fields.dayOfWeek.includes(dow);
+    // vixie cron：两者同时受限取并集，否则各自约束
+    const dayOk = fields.domRestricted && fields.dowRestricted ? (domOk || dowOk) : (domOk && dowOk);
+    if (!fields.month.includes(mo) || !dayOk) {
+      cursor.setDate(cursor.getDate() + 1);
+      cursor.setHours(0, 0, 0, 0);
+      continue;
+    }
+    if (!fields.hour.includes(cursor.getHours())) {
+      cursor.setHours(cursor.getHours() + 1, 0, 0, 0);
+      continue;
+    }
+    if (!fields.minute.includes(cursor.getMinutes())) {
+      cursor.setMinutes(cursor.getMinutes() + 1, 0, 0);
+      continue;
+    }
+    out.push(cursor.getTime());
+    cursor.setMinutes(cursor.getMinutes() + 1, 0, 0);
+  }
+  return out;
+}
+
+function describeCron(fields) {
+  const hh = fields.hour.map((h) => String(h).padStart(2, '0'));
+  const mm = fields.minute.map((m) => String(m).padStart(2, '0'));
+  const time = hh.length === 1 && mm.length === 1 ? ` ${hh[0]}:${mm[0]}` : '';
+  if (fields.domRestricted && fields.dowRestricted)
+    return `每月 ${fields.dayOfMonth.join('/')} 日或每周${['日', '一', '二', '三', '四', '五', '六'][fields.dayOfWeek[0]]}${time}`;
+  if (fields.dowRestricted)
+    return `每周${fields.dayOfWeek.map((d) => ['日', '一', '二', '三', '四', '五', '六'][d]).join('、')}${time}`;
+  if (fields.domRestricted) return `每月 ${fields.dayOfMonth.join('/')} 日${time}`;
+  if (hh.length === 24 && mm.length === 1) return `每小时第 ${mm[0]} 分`;
+  if (time) return `每天${time}`;
+  return `自定义（${fields.expr}）`;
+}
+
+/* =========================================================================
+ * 二、原型状态与渲染
+ * ========================================================================= */
+const qs = new URLSearchParams(location.search);
+const THEME = qs.get('theme') === 'dark' ? 'dark' : 'light';
+document.documentElement.setAttribute('data-theme', THEME);
+
+/** 时间基准：?now=2026-10-26T22:13 固定，便于截图与断言复现 */
+const NOW = qs.get('now') ? new Date(qs.get('now')).getTime() : (() => {
+  const d = new Date(); d.setSeconds(0, 0); return d.getTime();
+})();
+
+const STATE_DEFAULTS = {
+  default: { mode: 'daily', hh: 3, mm: 0, dow: 1, enabled: true, running: false, cronBad: false, emptyHist: false },
+  running: { mode: 'daily', hh: 3, mm: 0, dow: 1, enabled: true, running: true, cronBad: false, emptyHist: false },
+  invalid: { mode: 'cron', badCron: '0 25 * * *', enabled: true, running: false, cronBad: true, emptyHist: false },
+  off: { mode: 'daily', hh: 3, mm: 0, dow: 1, enabled: false, running: false, cronBad: false, emptyHist: false },
+  weekly: { mode: 'weekly', hh: 9, mm: 0, dow: 1, enabled: true, running: false, cronBad: false, emptyHist: false },
+  empty: { mode: 'daily', hh: 3, mm: 0, dow: 1, enabled: true, running: false, cronBad: false, emptyHist: true },
+};
+let state = qs.get('state') && STATE_DEFAULTS[qs.get('state')] ? qs.get('state') : 'default';
+const S = () => STATE_DEFAULTS[state];
+
+const HISTORY = [
+  { t: '2026-10-26 20:53', reason: 'schedule', ok: true, daysBack: 3, promoted: 30, skipped: 0, errors: 0, dur: 123100 },
+  { t: '2026-10-26 20:49', reason: 'manual', ok: true, daysBack: 3, promoted: 2, skipped: 1, errors: 0, dur: 18400 },
+  { t: '2026-10-26 03:00', reason: 'schedule', ok: true, daysBack: 3, promoted: 12, skipped: 2, errors: 0, dur: 96700 },
+  { t: '2026-10-25 03:00', reason: 'schedule', ok: false, skippedBecause: 'already-running', daysBack: 3, promoted: 0, skipped: 0, errors: 0, dur: 0 },
+  { t: '2026-10-24 03:00', reason: 'schedule', ok: false, daysBack: 4, promoted: 8, skipped: 1, errors: 2, dur: 141200,
+    errorMessage: 'LLM 请求超时（30s），该天已跳过并保留待下轮重试' },
+  { t: '2026-10-23 03:00', reason: 'shutdown', ok: true, daysBack: 3, promoted: 5, skipped: 0, errors: 0, dur: 41200 },
+  { t: '2026-10-22 03:00', reason: 'schedule', ok: false, daysBack: 3, promoted: 0, skipped: 0, errors: 1, dur: 800,
+    errorMessage: '模型返回 429 限流，本轮放弃，下轮按缺口重试' },
+];
+
+const $ = (id) => document.getElementById(id);
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function fmt(d) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function rel(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const parts = [];
+  if (d) parts.push(`${d} 天`);
+  if (h) parts.push(`${h} 小时`);
+  if (m) parts.push(`${m} 分`);
+  if (!d && !h && !m) parts.push(`${s} 秒`);
+  return (ms >= 0 ? '还有 ' : '已过期 ') + parts.join(' ');
+}
+function dur(ms) {
+  if (ms < 1000) return (ms / 1000).toFixed(1) + 's';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  const m = Math.floor(ms / 60000), s = Math.round((ms % 60000) / 1000);
+  return `${m}m${pad(s)}s`;
+}
+
+/* --- 由当前 UI 状态得到 cron 表达式 --- */
+function currentCron() {
+  const st = S();
+  if (st.mode === 'cron' && st.badCron) return st.badCron;
+  if (st.mode === 'cron') return $('inp-cron').value.trim() || '0 3 * * *';
+  const hh = Number($('sel-hour').value), mm = Number($('sel-min').value);
+  if (st.mode === 'weekly') return `${mm} ${hh} * * ${$('sel-dow').value}`;
+  return `${mm} ${hh} * * *`;
+}
+
+/* --- 渲染排期预览（含 illegal 态判定） --- */
+function renderPreview() {
+  const st = S();
+  const enabled = $('sw-enabled').checked;
+  const expr = currentCron();
+  $('echo-cron').textContent = expr;
+
+  const parsed = parseCron(expr);
+  const errBox = $('cron-err');
+  const preview = $('preview');
+
+  if (!parsed.ok) {
+    errBox.innerHTML = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.4"/><path d="M8 5v4"/><path d="M8 11.2v.1"/></svg><span>${parsed.error}</span>`;
+    $('inp-cron').classList.add('bad');
+    $('btn-save').disabled = true;
+    // 非法时不改右侧已有预览（保持上一次合法结果）
+    preview.classList.toggle('is-off', !enabled);
+    $('pn-rel').textContent = enabled ? '表达式非法，排期保持不变' : '定时已关闭';
+    $('pn-rel').style.color = 'var(--danger)';
+    return;
+  }
+  errBox.innerHTML = '';
+  $('inp-cron').classList.remove('bad');
+  $('btn-save').disabled = false;
+  $('pn-rel').style.color = '';
+
+  const list = nextFireTimes(parsed.fields, NOW, 4);
+  const desc = describeCron(parsed.fields);
+  $('pn-desc').textContent = desc;
+  preview.classList.toggle('is-off', !enabled);
+
+  const ul = $('next-list');
+  ul.innerHTML = '';
+  if (enabled && list.length) {
+    $('pn-abs').textContent = fmt(new Date(list[0]));
+    $('pn-rel').textContent = rel(list[0] - NOW);
+    for (let i = 1; i < list.length; i++) {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="idx">${i}</span>${fmt(new Date(list[i]))}`;
+      ul.appendChild(li);
+    }
+  } else if (enabled) {
+    $('pn-abs').textContent = '永不触发';
+    $('pn-rel').textContent = '该表达式不会触发';
+  } else {
+    $('pn-abs').textContent = fmt(new Date(list[0] || NOW));
+    $('pn-rel').textContent = '定时已关闭';
+    for (let i = 1; i < list.length; i++) {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="idx">${i}</span>${fmt(new Date(list[i]))}`;
+      ul.appendChild(li);
+    }
+  }
+}
+
+/* --- 渲染历史记录 --- */
+const REASON = {
+  schedule: { text: '定时', cls: 'brand' },
+  manual: { text: '手动', cls: 'dim' },
+  shutdown: { text: '关停', cls: 'warn' },
+};
+function resultBadge(r) {
+  if (r.skippedBecause === 'already-running') return '<span class="badge dim">跳过 · 进行中</span>';
+  if (r.skippedBecause === 'missed') return '<span class="badge warn">错过</span>';
+  if (r.skippedBecause === 'busy') return '<span class="badge dim">跳过 · 对话中</span>';
+  // 后端 ok = (errors === 0)：有产出但有错误 → 部分失败；无产出且报错 → 失败
+  if (!r.ok) return r.promoted > 0
+    ? '<span class="badge warn">部分失败</span>'
+    : '<span class="badge danger">失败</span>';
+  return '<span class="badge ok">成功</span>';
+}
+function renderHistory() {
+  const box = $('hist-body');
+  if (S().emptyHist) {
+    box.innerHTML = `<div class="empty"><div class="et">尚无触发记录</div>
+      保存定时后，首次触发（或点「立即梳理」）会在这里留痕：<br>
+      时间 · 来源 · 结果 · 读取窗口 · 晋升/跳过/错误 · 耗时</div>`;
+    return;
+  }
+  const rows = HISTORY.map((r) => {
+    const rs = REASON[r.reason] || REASON.manual;
+    const catchup = r.catchup ? '<span class="badge brand catchup">补跑</span>' : '';
+    const nums = r.skippedBecause
+      ? '<span class="muted">—</span>'
+      : `<span style="color:var(--ok)">${r.promoted}</span> / <span style="color:var(--muted)">${r.skipped}</span> / <span style="color:${r.errors ? 'var(--danger)' : 'var(--muted)'}">${r.errors}</span>`;
+    const em = r.errorMessage ? `<span class="em" title="${r.errorMessage}">${r.errorMessage}</span>` : '';
+    return `<tr>
+      <td class="t">${r.t}${em}</td>
+      <td><span class="badge ${rs.cls}">${rs.text}</span>${catchup}</td>
+      <td>${resultBadge(r)}</td>
+      <td class="win">${r.skippedBecause ? '—' : r.daysBack + 'd'}</td>
+      <td class="nums">${nums}</td>
+      <td class="num dur">${r.skippedBecause ? '—' : dur(r.dur)}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `<table class="hist">
+    <thead><tr>
+      <th>触发时间</th><th>来源</th><th>结果</th><th>窗口</th>
+      <th class="num">晋升 / 跳过 / 错误</th><th class="num">耗时</th>
+    </tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+/* --- 按 state 重置全部 UI --- */
+function applyState(next) {
+  state = next;
+  const st = S();
+  // 分段控件
+  document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === st.mode));
+  $('row-time').classList.toggle('hide', st.mode === 'cron');
+  $('row-cron').classList.toggle('hide', st.mode !== 'cron');
+  $('sel-dow').classList.toggle('hide', st.mode !== 'weekly');
+  if (st.hh !== undefined) $('sel-hour').value = String(st.hh);
+  if (st.mm !== undefined) $('sel-min').value = String(st.mm);
+  if (st.dow !== undefined) $('sel-dow').value = String(st.dow);
+  $('inp-cron').value = st.mode === 'cron' && st.badCron ? st.badCron : '0 3 * * *';
+  $('sw-enabled').checked = st.enabled !== false;
+  // 运行中
+  $('badge-running').classList.toggle('hide', !st.running);
+  $('badge-idle').classList.toggle('hide', !!st.running);
+  const card = $('card-dream');
+  card.classList.toggle('is-running', !!st.running);
+  card.classList.toggle('is-off', st.enabled === false);
+  // 演示控制条高亮
+  document.querySelectorAll('.demo-bar [data-state]').forEach((b) => b.classList.toggle('on', b.dataset.state === state));
+  renderPreview();
+  renderHistory();
+}
+
+/* --- 初始化下拉 --- */
+for (let h = 0; h < 24; h++) {
+  const o = document.createElement('option');
+  o.value = String(h); o.textContent = pad(h);
+  $('sel-hour').appendChild(o);
+}
+for (let m = 0; m < 60; m += 5) {
+  const o = document.createElement('option');
+  o.value = String(m); o.textContent = pad(m);
+  $('sel-min').appendChild(o);
+}
+
+/* --- 事件 --- */
+document.querySelectorAll('.seg-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    const mode = b.dataset.mode;
+    const st = S(); st.mode = mode; st.badCron = mode === 'cron' ? st.badCron : undefined;
+    if (mode === 'cron' && !st.badCron) $('inp-cron').value = currentCronFromFields();
+    applyState(state);
+  });
+});
+function currentCronFromFields() {
+  const hh = Number($('sel-hour').value), mm = Number($('sel-min').value);
+  return `${mm} ${hh} * * *`;
+}
+['sel-hour', 'sel-min', 'sel-dow'].forEach((id) => $(id).addEventListener('change', renderPreview));
+$('inp-cron').addEventListener('input', () => {
+  const st = S(); st.badCron = $('inp-cron').value.trim();
+  renderPreview();
+});
+$('sw-enabled').addEventListener('change', () => {
+  const st = S(); st.enabled = $('sw-enabled').checked;
+  $('card-dream').classList.toggle('is-off', !st.enabled);
+  renderPreview();
+});
+$('adv-toggle').addEventListener('click', () => {
+  const open = $('adv-toggle').classList.toggle('open');
+  $('adv-toggle').setAttribute('aria-expanded', String(open));
+  $('adv-body').classList.toggle('hide', !open);
+  $('adv-toggle').querySelector('.car').textContent = open ? '▾' : '▸';
+});
+$('btn-save').addEventListener('click', () => {
+  if ($('btn-save').disabled) return;
+  const btn = $('btn-save');
+  btn.textContent = '已保存并生效 ✓';
+  const hint = $('dirty-hint');
+  hint.classList.add('hide');
+  $('pn-rel').textContent = '已热重排，无需重启';
+  setTimeout(() => { btn.textContent = '保存并生效'; }, 1800);
+});
+$('btn-reset').addEventListener('click', () => {
+  $('inp-cron').value = '0 3 * * *';
+  const st = S(); st.mode = 'daily'; st.badCron = undefined; st.hh = 3; st.mm = 0;
+  applyState(state);
+});
+$('btn-clear').addEventListener('click', () => {
+  S().emptyHist = true; renderHistory();
+});
+document.querySelectorAll('.demo-bar [data-state]').forEach((b) => {
+  b.addEventListener('click', () => applyState(b.dataset.state));
+});
+$('btn-theme').addEventListener('click', () => {
+  const now = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', now);
+  $('btn-theme').textContent = now === 'dark' ? '切换浅色' : '切换深色';
+});
+$('btn-theme').textContent = THEME === 'dark' ? '切换浅色' : '切换深色';
+
+applyState(state);
+</script>
+</body>
+</html>

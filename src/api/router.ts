@@ -21,6 +21,7 @@ import { benchRoutes } from './handlers/bench.js';
 import { mcpRoutes } from './handlers/mcp.js';
 import { skillRoutes } from './handlers/skills.js';
 import { memoryRoutes } from './handlers/memory.js';
+import { memoryDreamRoutes } from './handlers/memory-dream.js';
 import { visionRoutes } from './handlers/vision.js';
 import { doctorRoutes } from './handlers/doctor.js';
 import { terminalRoutes } from './handlers/terminal.js';
@@ -131,6 +132,7 @@ export function createRoutes(): Route[] {
     ...mcpRoutes(),
     ...skillRoutes(),
     ...memoryRoutes(),
+    ...memoryDreamRoutes(), // 需求 20261026-003：/memory/dream/schedule|preview|history（静态段，不与 POST /memory/dream 冲突）
     ...visionRoutes(),
     ...doctorRoutes(),
     ...terminalRoutes(),

@@ -96,12 +96,14 @@
       "onExit": true,
       "schedule": {
         "enabled": true,
-        "intervalHours": 24,
-        "startupDelayMin": 5
+        "cron": "0 3 * * *",
+        "misfireGraceMin": 60
       },
+      "historyLimit": 20,
       "shutdownBudgetMs": 30000,
       "maxDaysBack": 30
     }
+  },
   },
   "vision": {
     "enabled": false,
@@ -137,8 +139,11 @@
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | 三层记忆系统配置（含检索增强） | 全部启用 |
 | `memory.dreaming` | `onExit` | 进程关停时是否自动晋升（语义已由「CLI 退出」扩为「任何宿主进程关停」：CLI 的 `quit`/`exit`/`Ctrl+C` 与 `--serve` 的 `Ctrl+C`/`SIGTERM`/`SIGBREAK` 共用） | `true` |
 | `memory.dreaming` | `schedule.enabled` | `--serve`/WebUI 是否启用定时自动晋升（与 `onExit` 独立；CLI 不参与定时） | `true` |
-| `memory.dreaming` | `schedule.intervalHours` | 定时轮间隔小时数；当天内容本就留到次日整理，更短间隔只会空跑 | `24` |
-| `memory.dreaming` | `schedule.startupDelayMin` | 启动后延迟多少分钟开始首轮（避开启动期初始化与首个对话） | `5` |
+| `memory.dreaming` | `schedule.cron` | 定时触发表达式（crontab 5 字段：分 时 日 月 周，**服务器本地时区**）。支持 `*` `,` `-` `/` 与 `@daily`/`@hourly`/`@weekly`/`@monthly`/`@yearly` 宏；「日」与「周」同时受限取并集（vixie 语义）；不支持 `L`/`W`/`#`/`?` 与 6 字段秒级。改后**热生效无需重启**（也可在 WebUI 记忆页直接改） | `"0 3 * * *"`（每天 03:00） |
+| `memory.dreaming` | `schedule.misfireGraceMin` | 错过补跑宽限（分钟，`0`-`1440`）：迟于触发点但在此范围内 → 补跑一次并标 `catchup`；超出则只记一条「错过」不补跑 | `60` |
+| `memory.dreaming` | `historyLimit` | 触发运行历史保留条数（环形裁剪，存 `{L2}/.dreaming-runs.json`）；`0` = 不留历史 | `20` |
+| `memory.dreaming` | `schedule.intervalHours` | **已废弃**：仅在 `cron` 为空串时回落的固定间隔（小时） | `24` |
+| `memory.dreaming` | `schedule.startupDelayMin` | **已废弃**：仅在 `cron` 为空串时回落的启动延迟（分钟） | `5` |
 | `memory.dreaming` | `shutdownBudgetMs` | 关停兜底的总时间预算（毫秒）；超时打印警告后继续关停，不再等待 | `30000` |
 | `memory.dreaming` | `maxDaysBack` | 读取窗口放大上限（天）：触发时按「距上次处理天数 + 1」放大 `daysBack`，修补停机多日的漏晋升 | `30` |
 | `vision` | `enabled` / `baseUrl` / `apiKey` / `model` / `temperature` / `maxTokens` / `timeoutMs` / `maxImageBytes` / `maxResultChars` / `cacheEnabled` / `cacheTtlMs` | 视觉模型配置（Task-20261010-001）；`baseUrl` / `apiKey` / `model` 为空时回退主模型 `model.*` 三元组 | `enabled: false`，其余见上方配置结构 |

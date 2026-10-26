@@ -45,7 +45,7 @@ HTTP API 服务已启动
 | 🔧 工具 | 内置工具启用/禁用（开关即生效）、参数 schema 查看、热重载 | `/tools`、`/tools/:name`、`/tools/reload` |
 | 🔌 MCP | 服务器登记（stdio/SSE/HTTP）、连接测试、批量重连、删除、工具明细；登记连接失败提示「配置已落盘」半态 | `/mcp/servers`、`/mcp/reload` |
 | 🧩 技能 | 从本地目录安装（同名可选覆盖）、卸载（自动作用域）、SKILL.md 正文查看、热重载 | `/skills`、`/skills/reload` |
-| 🧠 记忆 | 三层记忆状态、情景记忆按天浏览、Curated 常驻条目、语义检索、Promotion Gate 决策、Dreaming 受理、初始化 | `/memory/*` |
+| 🧠 记忆 | **①自动晋升卡片**：`每天 HH:mm` / `每周 X HH:mm` 图形档位 + `自定义 cron` 输入，输入即预览未来 3 次触发时刻（300ms 防抖走后端单点解析）；非法表达式红框 + 行内中文错误 + 保存禁用且**右侧排期保持不变**；保存即热生效（`PUT /memory/dream/schedule`，无需重启）；高级项（关停兜底 / 读取窗口 / 错过补跑）默认折叠，展开状态记 `localStorage`。**②最近触发记录**：时间 / 来源 / 结果 / 窗口 / 晋升·跳过·错误 / 耗时，结果徽标按 `ok` → 成功、`!ok && promoted>0` → 部分失败、`!ok && promoted===0` → 失败、`skippedBecause` → 跳过/错过，空态文案 + 清空按钮。**③分层状态** 与 **④Curated / Episodic / Gate / 检索**。另含 Dreaming 手动受理与初始化 | `/memory/*`、`/memory/dream/schedule`、`/memory/dream/preview`、`/memory/dream/history` |
 | 🩺 诊断 | 一键体检卡片流（✅ 通过 / ⚠ 缺失 / ⛔ 阻断 三态配色）与整体健康徽标 | `/doctor` |
 
 <!-- 截图位：待补 -->

@@ -259,7 +259,21 @@ describe('DreamScheduler 定时轮（start/stop/tick）', () => {
     expect(spy.created).toHaveLength(0);
   });
 
-  it('默认配置按 startupDelayMin 注册首轮定时器，stop 后无残留', () => {
+  it('cron 为空时回落间隔模式，按 startupDelayMin 注册首轮定时器，stop 后无残留', () => {
+    const spy = makeTimerSpy();
+    const sched = new DreamScheduler({
+      registry: makeRegistry([]),
+      getConfig: () => makeAgentConfig({ schedule: { enabled: true, cron: '', intervalHours: 24, startupDelayMin: 5 } }),
+      log: () => {},
+      createTimer: spy.create,
+    });
+    sched.start();
+    expect(spy.created).toEqual([5 * 60_000]); // 5 分钟
+    sched.stop();
+    expect(spy.cancelled).toEqual([0]);
+  });
+
+  it('默认配置按 cron（每天 03:00）注册，单次等待不超过 6h 分片（Task-20261026-003 D4）', () => {
     const spy = makeTimerSpy();
     const sched = new DreamScheduler({
       registry: makeRegistry([]),
@@ -268,7 +282,10 @@ describe('DreamScheduler 定时轮（start/stop/tick）', () => {
       createTimer: spy.create,
     });
     sched.start();
-    expect(spy.created).toEqual([5 * 60_000]); // 5 分钟
+    expect(spy.created).toHaveLength(1);
+    // 单次等待上限 6h：超过 24.8 天的 setTimeout 会立即触发，故必须分片
+    expect(spy.created[0]).toBeGreaterThan(0);
+    expect(spy.created[0]).toBeLessThanOrEqual(6 * 60 * 60_000);
     sched.stop();
     expect(spy.cancelled).toEqual([0]);
   });

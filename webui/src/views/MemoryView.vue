@@ -1,27 +1,19 @@
 <script setup lang="ts">
-// 记忆视图（P1 §3.5）
+// 记忆视图（需求 20261026-003 重设计：自动晋升可编辑 + 最近触发记录 + 分层状态 + 分层内容 + 检索）
 // 端点映射：GET /memory/status（未启用恒 200 {enabled:false}）· GET /memory/curated · GET /memory/episodic?limit=
 // · GET /memory/search?q=&limit= · GET /memory/gate · POST /memory/dream（202 异步受理）
+// · PUT /memory/dream/schedule · GET /memory/dream/preview · GET|DELETE /memory/dream/history
 // · POST /memory/init；未启用时其余端点 409（消息提示开启方式）
 import { onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { showToast } from '../toast';
 import { errText } from '../utils';
+import { fmtLocal } from '../cron-ui';
+import type { DreamRunRecord, DreamStatus } from '../dream-types';
 import JsonViewer from '../components/JsonViewer.vue';
 import StatusBadge from '../components/StatusBadge.vue';
-
-/** 自动晋升状态（Task-20261026-002 D9：GET /memory/status 的 dreaming 字段） */
-interface DreamStatus {
-  enabled: boolean;
-  scheduleEnabled: boolean;
-  intervalHours: number;
-  startupDelayMin: number;
-  running: boolean;
-  lastRunAt?: string;
-  lastSummary?: { reason: string; promoted: number; skipped: number; errors: number; ok: boolean };
-  lastProcessedDay?: string;
-  nextRunAt?: string;
-}
+import DreamScheduleCard from '../components/DreamScheduleCard.vue';
+import DreamHistoryList from '../components/DreamHistoryList.vue';
 
 interface MemoryStatus {
   enabled: boolean;
@@ -34,12 +26,14 @@ const status = ref<MemoryStatus | null>(null);
 const curated = ref<{ entries: { key: string; path: string; content: string }[] } | null>(null);
 const episodic = ref<{ entries: unknown[] } | null>(null);
 const gate = ref<{ thresholds: unknown; recentDecisions: { pending: unknown[]; approved: unknown[] } } | null>(null);
+const runs = ref<DreamRunRecord[]>([]);
 
 const epiLimit = ref('7');
 const searchQ = ref('');
 const searching = ref(false);
 const results = ref<Record<string, unknown>[] | null>(null);
 const busy = ref(false);
+const histBusy = ref(false);
 
 function guard(e: unknown, fallback: string): void {
   if (!(e instanceof AuthError)) showToast(e instanceof ApiError ? e.message : `${fallback}: ${errText(e)}`, 'error');
@@ -64,32 +58,30 @@ function titleOf(r: Record<string, unknown>, i: number): string {
   return `结果 ${i + 1}`;
 }
 
-/** ISO 时间 → 本地 `YYYY-MM-DD HH:mm`（无法解析时原样返回） */
-function fmtTime(iso?: string): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const p = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+/** 加载运行历史（记忆未启用时也允许查看） */
+async function loadHistory(): Promise<void> {
+  histBusy.value = true;
+  try {
+    const res = await api<{ runs: DreamRunRecord[] }>('/memory/dream/history?limit=20');
+    runs.value = res.runs ?? [];
+  } catch (e) {
+    guard(e, '加载触发记录失败');
+  } finally {
+    histBusy.value = false;
+  }
 }
 
-/** 自动晋升明细文案：上次结果 + 已整理至 + 下次计划 */
-function dreamingDetail(d: DreamStatus): string {
-  const parts: string[] = [];
-  if (d.lastRunAt) {
-    parts.push(`上次 ${fmtTime(d.lastRunAt)}`);
-    const s = d.lastSummary;
-    if (s) {
-      let r = `晋升 ${s.promoted} 条 / 跳过 ${s.skipped} 条`;
-      if (s.errors > 0) r += ` / 错误 ${s.errors}`;
-      parts.push(r);
-    }
-  } else {
-    parts.push('尚未执行');
+async function clearHistory(): Promise<void> {
+  histBusy.value = true;
+  try {
+    const res = await api<{ deleted: number }>('/memory/dream/history', { method: 'DELETE' });
+    runs.value = [];
+    showToast(`已清空 ${res?.deleted ?? 0} 条触发记录`, 'success');
+  } catch (e) {
+    guard(e, '清空触发记录失败');
+  } finally {
+    histBusy.value = false;
   }
-  if (d.lastProcessedDay) parts.push(`已整理至 ${d.lastProcessedDay}`);
-  if (d.nextRunAt && !d.running) parts.push(`下次 ${fmtTime(d.nextRunAt)}`);
-  return parts.join(' · ');
 }
 
 async function refresh(): Promise<void> {
@@ -111,6 +103,7 @@ async function refresh(): Promise<void> {
   } finally {
     busy.value = false;
   }
+  await loadHistory();
 }
 
 async function loadEpisodic(): Promise<void> {
@@ -147,7 +140,7 @@ async function dream(): Promise<void> {
     if (res && res.accepted === false) {
       showToast(`已有晋升在进行中（${res.skippedBecause ?? 'already-running'}），本次请求已忽略`, 'error');
     } else {
-      showToast('已受理：记忆整理（dream）在后台异步执行，完成后见服务端日志', 'success');
+      showToast('已受理：记忆整理（dream）在后台异步执行，完成后可在「最近触发记录」看到结果', 'success');
     }
     // 轻量刷新状态，让「运行中」指示尽快可见
     try {
@@ -175,6 +168,16 @@ async function init(): Promise<void> {
   }
 }
 
+/** 保存定时后：刷新状态（下次触发时间以服务端为准）与历史 */
+async function onScheduleSaved(): Promise<void> {
+  try {
+    status.value = await api<MemoryStatus>('/memory/status');
+  } catch (e) {
+    guard(e, '刷新状态失败');
+  }
+  await loadHistory();
+}
+
 onMounted(refresh);
 </script>
 
@@ -182,49 +185,81 @@ onMounted(refresh);
   <div class="page">
     <div class="page-head">
       <h1>记忆</h1>
+      <template v-if="status">
+        <StatusBadge :kind="status.enabled ? 'ok' : 'warn'">{{ status.enabled ? '已启用' : '未启用' }}</StatusBadge>
+        <span v-if="status.enabled" class="muted sub">
+          情景 {{ status.counts.episodicDays ?? 0 }} 天 · Gate 待定 {{ status.counts.gatePending ?? 0 }} / 已批准
+          {{ status.counts.gateApproved ?? 0 }}
+        </span>
+      </template>
       <span v-if="busy" class="spin" title="处理中"></span>
-      <StatusBadge kind="dim">GET /memory/status</StatusBadge>
       <span class="spacer"></span>
-      <button :disabled="busy" @click="dream">✦ 梳理（dream）</button>
-      <button :disabled="busy" @click="init">初始化记忆库</button>
+      <button :disabled="busy || !status?.enabled" @click="dream">✦ 立即梳理</button>
       <button :disabled="busy" @click="refresh">⟳ 刷新</button>
     </div>
 
+    <template v-if="status && !status.enabled">
+      <div class="card">
+        <div class="card-b">
+          <StatusBadge kind="warn">未启用</StatusBadge>
+          <span class="muted" style="margin-left:10px">
+            可在「配置」页将 memory.enabled 置为 true 开启（写入后本页「⟳ 刷新」生效）。定时排期仍可在此页预先配置。
+          </span>
+          <button style="margin-left:10px" :disabled="busy" @click="init">初始化记忆库</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- 卡片 A：自动晋升（就地可编辑，保存即生效） -->
+    <DreamScheduleCard :status="status?.dreaming" :memory-enabled="status?.enabled" @saved="onScheduleSaved" />
+
+    <!-- 卡片 B：最近触发记录 -->
+    <DreamHistoryList :runs="runs" :loading="histBusy" @clear="clearHistory" @refresh="loadHistory" />
+
+    <!-- 卡片 C：分层状态 -->
     <div class="card">
-      <div class="card-h">分层状态</div>
+      <div class="card-h">
+        分层状态
+        <span class="spacer"></span>
+        <StatusBadge kind="dim">GET /memory/status</StatusBadge>
+      </div>
       <div class="card-b">
         <template v-if="status?.enabled">
-          <div class="form-row">
-            <StatusBadge kind="ok">已启用</StatusBadge>
-            <span class="mono muted">情景 {{ status.counts.episodicDays ?? 0 }} 天 · Gate 待定 {{ status.counts.gatePending ?? 0 }} / 已批准 {{ status.counts.gateApproved ?? 0 }}</span>
+          <div class="stat-grid">
+            <div class="stat">
+              <span class="k">情景记忆</span>
+              <span class="v mono">{{ status.counts.episodicDays ?? 0 }} 天</span>
+            </div>
+            <div class="stat">
+              <span class="k">Gate 晋升</span>
+              <span class="v mono">待定 {{ status.counts.gatePending ?? 0 }} / 批准 {{ status.counts.gateApproved ?? 0 }}</span>
+            </div>
+            <div class="stat">
+              <span class="k">已整理至 <StatusBadge kind="dim">UTC</StatusBadge></span>
+              <span class="v mono">{{ status.dreaming?.lastProcessedDay ?? '—' }}</span>
+            </div>
+            <div class="stat">
+              <span class="k">上次触发</span>
+              <span class="v mono">{{ status.dreaming?.lastRunAt ? fmtLocal(status.dreaming.lastRunAt) : '尚未执行' }}</span>
+            </div>
           </div>
-          <div v-if="status.layers.episodic" class="form-row" style="margin-top:6px">
-            <span class="muted" style="width:70px">episodic</span><span class="mono">{{ status.layers.episodic.dir }}</span>
+          <div v-if="status.layers.episodic" class="form-row" style="margin-top:10px">
+            <span class="muted" style="width:70px">episodic</span>
+            <span class="mono">{{ status.layers.episodic.dir }}</span>
           </div>
           <div v-if="status.layers.curated" class="form-row" style="margin-top:6px">
-            <span class="muted" style="width:70px">curated</span><span class="mono">{{ status.layers.curated.workspace }}</span>
-          </div>
-          <!-- Task-20261026-002 D9：自动晋升可观测（上次结果 / 已整理至 / 下次计划 / 运行中） -->
-          <div v-if="status.dreaming" class="form-row" style="margin-top:6px">
-            <span class="muted" style="width:70px">自动晋升</span>
-            <StatusBadge :kind="status.dreaming.scheduleEnabled ? 'ok' : 'dim'">
-              {{ status.dreaming.scheduleEnabled ? `每 ${status.dreaming.intervalHours}h` : '定时关闭' }}
-            </StatusBadge>
-            <span v-if="status.dreaming.running" class="spin" title="正在晋升（Dreaming）"></span>
-            <span class="mono muted">{{ dreamingDetail(status.dreaming) }}</span>
+            <span class="muted" style="width:70px">curated</span>
+            <span class="mono">{{ status.layers.curated.workspace }}</span>
           </div>
         </template>
-        <template v-else-if="status">
-          <StatusBadge kind="warn">未启用</StatusBadge>
-          <span class="muted" style="margin-left:10px">可在「配置」页将 memory.enabled 置为 true 开启（写入后本页「刷新」生效）。</span>
-        </template>
+        <template v-else> <span class="muted">记忆未启用，无分层数据。</span> </template>
       </div>
     </div>
 
     <template v-if="status?.enabled">
       <div class="card">
         <div class="card-h">Curated 长期记忆 <StatusBadge kind="dim">GET /memory/curated</StatusBadge></div>
-        <div class="card-b" v-if="curated">
+        <div v-if="curated" class="card-b">
           <div v-if="curated.entries.length === 0" class="muted">三层 Curated 文件暂无内容。</div>
           <div v-for="e in curated.entries" :key="e.key">
             <div class="jv">
@@ -244,7 +279,7 @@ onMounted(refresh);
           <input v-model="epiLimit" style="width:70px" title="天数（1-90）">
           <button @click="loadEpisodic">加载</button>
         </div>
-        <div class="card-b" v-if="episodic">
+        <div v-if="episodic" class="card-b">
           <div v-if="episodic.entries.length === 0" class="muted">最近无 daily notes。</div>
           <JsonViewer v-for="(entry, i) in episodic.entries" :key="i" :value="entry" :label="`第 ${i + 1} 条`" />
         </div>
@@ -258,10 +293,14 @@ onMounted(refresh);
             <StatusBadge kind="ok">已批准 {{ gate.recentDecisions.approved.length }}</StatusBadge>
           </template>
         </div>
-        <div class="card-b" v-if="gate">
+        <div v-if="gate" class="card-b">
           <JsonViewer :value="gate.thresholds" label="阈值 thresholds" />
           <JsonViewer v-if="gate.recentDecisions.pending.length > 0" :value="gate.recentDecisions.pending" label="待定决策" />
-          <JsonViewer v-if="gate.recentDecisions.approved.length > 0" :value="gate.recentDecisions.approved" label="已批准决策" />
+          <JsonViewer
+            v-if="gate.recentDecisions.approved.length > 0"
+            :value="gate.recentDecisions.approved"
+            label="已批准决策"
+          />
         </div>
       </div>
     </template>
@@ -281,7 +320,9 @@ onMounted(refresh);
                 <b>{{ titleOf(r, i) }}</b>
                 <StatusBadge v-if="scoreOf(r) !== null" kind="brand">{{ scoreOf(r)!.toFixed(2) }}</StatusBadge>
               </div>
-              <div class="muted" style="font-size:12.5px;margin-top:3px;white-space:pre-wrap;word-break:break-all">{{ textOf(r) }}</div>
+              <div class="muted" style="font-size:12.5px;margin-top:3px;white-space:pre-wrap;word-break:break-all">
+                {{ textOf(r) }}
+              </div>
             </div>
           </div>
         </div>

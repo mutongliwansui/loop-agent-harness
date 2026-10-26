@@ -147,6 +147,11 @@ Three auth modes:
 | GET | `/memory/search?q=&limit=` | Cross-layer search `{results: [{content, score, layer}]}` (q required) |
 | GET | `/memory/gate` | Promotion gate thresholds + recent decisions |
 | POST | `/memory/dream` | Trigger async curation → 202 `{accepted, reason?, skippedBecause?}` (`accepted:false` when a run is already in progress) |
+| GET | `/memory/dream/schedule` | Current schedule `{enabled, cron, describe, misfireGraceMin, nextRunAt, nextRunTimes, intervalMode}` |
+| PUT | `/memory/dream/schedule` | Update schedule `{enabled?, cron?, misfireGraceMin?}` → validated then **rescheduled hot (no restart)**; an invalid cron returns 400 and **neither persists nor changes the current schedule** |
+| GET | `/memory/dream/preview?cron=` | Preview while typing: `{ok:true, describe, next:[…5 instants], timezoneOffsetMin}`; invalid → **200** `{ok:false, error, fieldIndex?}` (a preview is not a failed request, so the UI has a single branch) |
+| GET | `/memory/dream/history?limit=` | Recent runs `{runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?}]}` |
+| DELETE | `/memory/dream/history` | Clear run history → `{deleted}` |
 | POST | `/memory/init` | Initialize layered directories (idempotent) |
 
 **`dreaming` field of `/memory/status` (auto-promotion observability)**
@@ -161,17 +166,35 @@ Three auth modes:
     "scheduleEnabled": true,
     "intervalHours": 24,
     "startupDelayMin": 5,
+    "cron": "0 3 * * *",
+    "cronValid": true,
+    "describe": "每天 03:00",
+    "timezoneOffsetMin": 480,
+    "misfireGraceMin": 60,
+    "intervalMode": "cron",
+    "nextRunTimes": ["2026-10-27T19:00:00.000Z", "2026-10-28T19:00:00.000Z", "2026-10-29T19:00:00.000Z"],
     "running": false,
     "lastRunAt": "2026-10-26T00:12:33.000Z",
     "lastSummary": { "reason": "schedule", "promoted": 3, "skipped": 1, "errors": 0, "ok": true },
     "lastProcessedDay": "2026-10-25",
-    "nextRunAt": "2026-10-27T00:12:33.000Z"
+    "nextRunAt": "2026-10-27T19:00:00.000Z"
   }
 }
 ```
 
 > `dreaming` is only present when the scheduler is wired (`--serve` boot) and the workspace is loaded.
 > With `memory.enabled=false` the whole response stays `{enabled:false, layers:{}, counts:{}}` (200, never an error).
+
+Fields added by requirement `20261026-003` (legacy fields are kept for one release):
+
+| Field | Meaning |
+| --- | --- |
+| `cron` / `cronValid` / `describe` | Current expression, validity, and a human-readable description (e.g. "每天 03:00", "每周一 09:00", "每周二、三、四 06:00") |
+| `intervalMode` | `cron` (default) or `interval` (legacy fallback when `cron` is an empty string) |
+| `timezoneOffsetMin` | Server local timezone offset in minutes (`480` for UTC+8); `nextRunAt(s)` are UTC ISO strings to be rendered in local time |
+| `misfireGraceMin` | Misfire catch-up grace window in minutes |
+| `nextRunTimes` | The next 3 trigger instants (UTC ISO) for the WebUI to render directly |
+| `intervalHours` / `startupDelayMin` | **Deprecated** (meaningful only when `intervalMode=interval`); removed in the next major version |
 
 
 **vision (`/vision` command, diagnostic semantics: failure does not fail the endpoint)**
