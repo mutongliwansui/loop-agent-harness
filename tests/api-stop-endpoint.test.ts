@@ -156,7 +156,7 @@ describe('POST /sessions/:id/stop', () => {
     runImpl = hangingAgent;
 
     const postPromise = req('POST', `/sessions/${id}/messages`, { message: '长任务', stream: true });
-    await waitFor(() => liveOptions !== null);
+    await waitFor(() => liveOptions !== null, 8000);
 
     const stopRes = await req('POST', `/sessions/${id}/stop`);
     expect(stopRes.status).toBe(202);
@@ -178,7 +178,7 @@ describe('POST /sessions/:id/stop', () => {
     runImpl = hangingAgent;
 
     const postPromise = req('POST', `/sessions/${id}/messages`, { message: '长任务', stream: true });
-    await waitFor(() => liveOptions !== null);
+    await waitFor(() => liveOptions !== null, 8000);
 
     const stop1 = await req('POST', `/sessions/${id}/stop`);
     expect(stop1.status).toBe(202);
@@ -195,7 +195,7 @@ describe('POST /sessions/:id/stop', () => {
     runImpl = hangingAgent;
 
     const postPromise = req('POST', `/sessions/${id}/messages`, { message: '长任务', stream: true });
-    await waitFor(() => liveOptions !== null);
+    await waitFor(() => liveOptions !== null, 8000);
 
     // attach：cursor=0 全量回放 + 实时续传
     const attachPromise = req('GET', `/sessions/${id}/stream?cursor=0`).then((r) => r.text());
@@ -217,16 +217,18 @@ describe('POST /sessions/:id/stop', () => {
     runImpl = hangingAgent;
 
     const postPromise = req('POST', `/sessions/${id}/messages`, { message: '工具任务', stream: true });
-    await waitFor(() => liveOptions !== null);
+    await waitFor(() => liveOptions !== null, 8000);
     await req('POST', `/sessions/${id}/stop`);
     await postPromise;
 
     // 落盘是异步完成的：轮询直到用户消息可见（落盘成功）
+    // 超时放宽到 8s：全量套件满载时磁盘持久化 + 详情请求可能明显慢于空载，
+    // 3s 曾在满负载回归里误判为「未落盘」（用例本身串行跑必过）。
     await waitFor(async () => {
       const detail = await req('GET', `/sessions/${id}`);
       const data = (await detail.json()) as { messages: ChatMessage[] };
       return data.messages.some((m) => m.role === 'user');
-    });
+    }, 8000);
     const detail = await req('GET', `/sessions/${id}`);
     const data = (await detail.json()) as { messages: ChatMessage[] };
     const declared: string[] = [];
@@ -255,7 +257,7 @@ describe('POST /sessions/:id/stop', () => {
       });
     try {
       const postPromise = req('POST', `/sessions/${id}/messages`, { message: '落盘失败', stream: true });
-      await waitFor(() => liveOptions !== null);
+      await waitFor(() => liveOptions !== null, 8000);
 
       const attachPromise = req('GET', `/sessions/${id}/stream?cursor=0`).then((r) => r.text());
       await new Promise((r) => setTimeout(r, 50));

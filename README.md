@@ -27,6 +27,7 @@
 | 📊 **Token 统计** | 每轮输出上下文/输入/输出 token 与缓存命中率，会话结束输出汇总（`showTokenStats` 可关） |
 | 🔌 **OpenAI 协议** | 兼容任意 OpenAI 协议服务商（OpenAI、DeepSeek、Moonshot、本地 vLLM 等） |
 | 🔀 **多模型接入与切换** | `/model` 登记多个 OpenAI 协议模型到登记簿，`/model use <别名>` 一键热切换（写盘即生效、零重启），支持连通性测试、漂移检测与全局/工作空间分层管理 |
+| 📈 **模型性能测速** | 连通性 ≠ 性能：后端实测 + SSE 实时读数，出 TTFT（首个**非空内容** chunk）、TPOT / ITL p90、纯解码 TPS（主指标）、端到端 TPS 与成功率；固定提示词 / `max_tokens` / `temperature:0` 保跨模型可比，默认破坏前缀缓存并记录 `prompt_cache_hit_tokens`，token 数以 `usage` 为权威，样本 < 3 轮不出 p90，网关攒包标注「疑似缓冲」，最多 4 模型串行对比，历史落 `~/.loop-agent/model-bench/history.json`（不存 apiKey） |
 | 📤 **文件上传** | `/upload` 把本地文件复制到会话隔离的上传目录并注入 Agent 上下文：支持拖拽（跨终端格式归一）、无参弹出系统文件选择框（Windows / macOS / Linux），Agent 下一轮即可读取处理 |
 | 🛠️ **内置工具** | 命令执行（前台 / `background:true` 后台运行）、后台任务管理（commandStatus 查状态、commandLogs 增量读日志、commandStop 终止进程树）、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活 |
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |

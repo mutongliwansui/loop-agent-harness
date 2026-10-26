@@ -110,6 +110,11 @@ Three auth modes:
 | POST | `/models` | Register a profile `{alias, profile, scope?}` → 201 (duplicate alias 409) |
 | DELETE | `/models/:alias?scope=` | Delete a profile `{deleted}` (409 while active; 404 across scopes with scope hint) |
 | POST | `/models/:alias/test` | Connectivity test `{ok, latencyMs, error?}` |
+| GET | `/models/bench` | Bench endpoint self-description (tiers / prompts / max aliases / history root) |
+| POST | `/models/bench` | Start a bench run `{aliases, tier?, prompts?, rounds?, maxTokens?, bustCache?}` → 202 `{runId, plan}` (max 4 aliases, server-side serial) |
+| GET | `/models/bench/:runId/stream` | SSE progress: `start` / `model_start` / `round_start` / `first_token` / `token` (throttled to 100ms) / `round_end` / `model_done` / `done` / `failed`; replays past events so reconnects are idempotent |
+| POST | `/models/bench/:runId/stop` | Abort a bench run (idempotent) `{runId, stopped, status}` |
+| GET | `/models/bench/history?alias=&limit=` | Bench history (without `alias`, only the latest run per model; stored in `~/.loop-agent/model-bench/history.json`, apiKey never persisted) |
 
 **mcp (`/mcp` command)**
 

@@ -37,6 +37,9 @@ import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
 import type { WorkspaceRegistry } from './workspace-runtime.js';
+import { runBench, type BenchRunner } from '../llm/bench.js';
+import { defaultBenchRoot } from '../llm/bench-store.js';
+import { BenchRunHub } from './bench-hub.js';
 
 /**
  * 命令资源化运行时依赖（Task-20261016-002 D8）：
@@ -50,6 +53,10 @@ export interface ApiRuntimeDeps {
   uploadsRoot: string;
   /** 记忆子系统工厂（/memory 组；单测注入临时目录版避免污染 ~/.loop-agent） */
   createMemoryKit: () => Promise<MemoryKit>;
+  /** 模型性能测试历史根目录（需求 20261027-003；单测注入临时目录） */
+  benchRoot: string;
+  /** 性能测试引擎（单测注入 fake 避免触网） */
+  runBench: BenchRunner;
 }
 
 /** 依赖注入面（D9：单测注入 fake runAgent + 临时目录 SessionStore） */
@@ -121,6 +128,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     createMemoryKit: rt.createMemoryKit ?? (() => defaultMemoryKitFactory(deps.sessionStore.path)),
     // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅透传，后续任务消费
     registry: deps.registry,
+    // 模型性能测试（需求 20261027-003）：历史根目录与引擎均可注入，单测不触网不写用户目录
+    benchRoot: rt.benchRoot ?? defaultBenchRoot(),
+    runBench: rt.runBench ?? runBench,
+    benchRuns: new BenchRunHub(),
   };
 
   /**
@@ -262,6 +273,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       }
       await new Promise<void>((resolve) => server.close(() => resolve()));
       runs.dispose(); // 清理结束态保留定时器
+      ctx.benchRuns.dispose(); // 中断在跑的模型测速并清保留定时器（需求 20261027-003）
     },
   };
 }

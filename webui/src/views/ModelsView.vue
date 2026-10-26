@@ -9,6 +9,8 @@ import { showToast } from '../toast';
 import { errText } from '../utils';
 import ConfirmButton from '../components/ConfirmButton.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import BenchDrawer from '../components/BenchDrawer.vue';
+import { fmtMs, ttftTone, type BenchHistoryEntryVM } from '../bench-format';
 
 interface ProfileRow {
   alias: string;
@@ -34,6 +36,20 @@ const regTemp = ref('');
 
 const tests = ref<Record<string, TestResult>>({});
 
+/** 性能摘要（需求 20261027-003）：每模型取最近一次测速的 TTFT p50 与成功率 */
+interface PerfCell {
+  ttft: number | null;
+  okCount: number;
+  total: number;
+  at: string;
+  tone: string;
+}
+const perf = ref<Record<string, PerfCell>>({});
+
+/** 测速抽屉 */
+const benchOpen = ref(false);
+const benchAlias = ref<string | null>(null);
+
 function guard(e: unknown, fallback: string): void {
   if (!(e instanceof AuthError)) showToast(e instanceof ApiError ? e.message : `${fallback}: ${errText(e)}`, 'error');
 }
@@ -52,6 +68,33 @@ async function refresh(): Promise<void> {
   } finally {
     busy.value = false;
   }
+  void loadPerf();
+}
+
+/** 拉测速历史（不带 alias 时后端只回每模型最近一次），失败静默降级为「未测」 */
+async function loadPerf(): Promise<void> {
+  try {
+    const res = await api<{ runs: BenchHistoryEntryVM[] }>('/models/bench/history?limit=50');
+    const map: Record<string, PerfCell> = {};
+    for (const r of res.runs) {
+      if (map[r.alias]) continue;
+      map[r.alias] = {
+        ttft: r.summary.ttft.p50,
+        okCount: r.summary.okCount,
+        total: r.summary.total,
+        at: r.startedAt,
+        tone: ttftTone(r.summary.ttft.p50),
+      };
+    }
+    perf.value = map;
+  } catch {
+    perf.value = {};
+  }
+}
+
+function openBench(alias: string): void {
+  benchAlias.value = alias;
+  benchOpen.value = true;
 }
 
 async function register(): Promise<void> {
@@ -184,7 +227,7 @@ onMounted(refresh);
       <table class="tbl">
         <thead>
           <tr>
-            <th>别名</th><th>型号</th><th>baseUrl</th><th>apiKey</th><th>连通性</th><th style="width:230px">操作</th>
+            <th>别名</th><th>型号</th><th>baseUrl</th><th>apiKey</th><th>连通性</th><th>性能</th><th style="width:290px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -199,13 +242,23 @@ onMounted(refresh);
               <StatusBadge v-else kind="warn">未测试</StatusBadge>
             </td>
             <td>
+              <StatusBadge
+                v-if="perf[p.alias] && perf[p.alias].ttft !== null"
+                :kind="perf[p.alias].tone === 'good' ? 'ok' : perf[p.alias].tone === 'warn' ? 'warn' : 'err'"
+                :title="`最近一次测速：${perf[p.alias].okCount}/${perf[p.alias].total} 轮成功`"
+              >TTFT {{ fmtMs(perf[p.alias].ttft) }}</StatusBadge>
+              <StatusBadge v-else-if="perf[p.alias]" kind="err" :title="`最近一次测速 ${perf[p.alias].okCount}/${perf[p.alias].total} 轮成功`">全部失败</StatusBadge>
+              <StatusBadge v-else kind="dim">未测</StatusBadge>
+            </td>
+            <td>
               <button :disabled="busy" @click="test(p.alias)">测试</button>
+              <button class="primary" :disabled="busy" @click="openBench(p.alias)">测速</button>
               <button :disabled="busy || p.isCurrent" @click="activate(p.alias)">设为 active</button>
               <ConfirmButton :disabled="busy" @confirm="del(p.alias)" />
             </td>
           </tr>
           <tr v-if="profiles.length === 0">
-            <td colspan="6" class="muted">暂无登记模型，点右上「＋ 登记模型」。</td>
+            <td colspan="7" class="muted">暂无登记模型，点右上「＋ 登记模型」。</td>
           </tr>
         </tbody>
       </table>
@@ -213,6 +266,15 @@ onMounted(refresh);
 
     <p class="muted" style="font-size:12.5px">
       删除当前激活模型将返回 409（需先切换）；测试走 POST /models/:alias/test，显示延迟与是否可用；apiKey 出于安全仅显示遮蔽值。
+      「测试」= 连通性（发 ping 收首块即断，近免费）；「测速」= 性能体检（固定提示词跑完整流，按输出 token 计费）。两者并存互不替代。
     </p>
+
+    <BenchDrawer
+      :open="benchOpen"
+      :alias="benchAlias"
+      :aliases="profiles.map((p) => p.alias)"
+      @close="benchOpen = false"
+      @finished="loadPerf"
+    />
   </div>
 </template>

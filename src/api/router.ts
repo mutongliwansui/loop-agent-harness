@@ -17,6 +17,7 @@ import { configRoutes } from './handlers/config.js';
 import { statusRoutes } from './handlers/status.js';
 import { toolsRoutes } from './handlers/tools.js';
 import { modelRoutes } from './handlers/models.js';
+import { benchRoutes } from './handlers/bench.js';
 import { mcpRoutes } from './handlers/mcp.js';
 import { skillRoutes } from './handlers/skills.js';
 import { memoryRoutes } from './handlers/memory.js';
@@ -32,6 +33,8 @@ import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
 import type { MemoryKit } from './memory-kit.js';
 import type { WorkspaceRegistry } from './workspace-runtime.js';
+import type { BenchRunner } from '../llm/bench.js';
+import type { BenchRunHub } from './bench-hub.js';
 
 /** 处理器共享上下文（createApiServer 构造一次，路由分发时透传） */
 export interface HandlerContext {
@@ -63,6 +66,12 @@ export interface HandlerContext {
    * deps.sessionStore/runAgent/getConfig 整体指向该 runtime 的不可变实例。
    */
   registry?: WorkspaceRegistry;
+  /** 模型性能测试历史根目录（默认 ~/.loop-agent/model-bench；单测注入临时目录，需求 20261027-003） */
+  benchRoot: string;
+  /** 性能测试引擎（默认 runBench；单测注入 fake 避免触网） */
+  runBench: BenchRunner;
+  /** 性能测试 run 注册表（SSE 进度 / 中断） */
+  benchRuns: BenchRunHub;
 }
 
 export type RouteHandler = (
@@ -112,6 +121,7 @@ export function createRoutes(): Route[] {
     ...statusRoutes(),
     ...toolsRoutes(), // 注意：/tools/reload 静态段须注册在 /tools/:name 之前（组内已保证）
     ...modelRoutes(),
+    ...benchRoutes(), // 需求 20261027-003：/models/bench/* 静态段先于 /models/:alias
     ...mcpRoutes(),
     ...skillRoutes(),
     ...memoryRoutes(),

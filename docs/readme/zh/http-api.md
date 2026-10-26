@@ -109,6 +109,11 @@ HTTP API 服务已启动
 | POST | `/models` | 登记 profile `{alias, profile, scope?}` → 201（同名 409） |
 | DELETE | `/models/:alias?scope=` | 删除 profile `{deleted}`（当前激活 409；跨层 404 提示 scope） |
 | POST | `/models/:alias/test` | 连通性测试 `{ok, latencyMs, error?}` |
+| GET | `/models/bench` | 测速端点自述（档位 / 提示词 / 最多对比模型数 / 历史目录） |
+| POST | `/models/bench` | 建测速 run `{aliases, tier?, prompts?, rounds?, maxTokens?, bustCache?}` → 202 `{runId, plan}`（`aliases` 最多 4 个，服务端串行） |
+| GET | `/models/bench/:runId/stream` | SSE 进度：`start` / `model_start` / `round_start` / `first_token` / `token`（100ms 节流）/ `round_end` / `model_done` / `done` / `failed`；先回放已有事件，断线重连幂等 |
+| POST | `/models/bench/:runId/stop` | 中断测速（幂等）`{runId, stopped, status}` |
+| GET | `/models/bench/history?alias=&limit=` | 测速历史（不带 `alias` 每个模型只回最近一次；落 `~/.loop-agent/model-bench/history.json`，不存 apiKey） |
 
 **mcp（/mcp 命令）**
 
