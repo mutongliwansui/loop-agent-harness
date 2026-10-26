@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型-20261027-003 · 模型性能指标测试（模型管理）</title>
+<!--
+  原型-20261027-003 · 模型性能指标测试（模型管理）
+  ---------------------------------------------------------------------------
+  自包含单文件原型：零外部依赖、亮暗双主题、四态可切换（空态 / 运行中 / 完成 / 失败）。
+  用途：评审「模型管理页 → 测速抽屉」的信息层级、指标口径呈现与操作路径。
+
+  交互：
+    · 模型表格行内「测速」→ 打开右侧抽屉（也可点右上「性能测试」）
+    · 抽屉内「开始测试」→ 真实跑一遍模拟采样（约 6s，可中断）
+    · 底部演示控制条 → 切换四态 / 亮暗 / 重新播放
+    · URL 参数：?state=empty|running|done|error&theme=light|dark（供截图脚本用）
+  令牌：全部复用 webui/src/style.css 既有令牌，零新增。
+-->
+<style>
+/* ===== 设计令牌：与 webui/src/style.css 完全对齐（亮色） ===== */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --code-bg: #f1f3f5;
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --line-soft: #eef0f3;
+  --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;
+  --bar-bg: #fbfcfd;
+  --view-bg: #ffffff;
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+}
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --brand-on: #0b221a;
+  --danger: #f87171;
+  --danger-weak: #3b1a1a;
+  --warn: #fbbf24;
+  --warn-weak: #3a2e10;
+  --ok: #34d399;
+  --ok-weak: #143528;
+  --code-bg: #22272f;
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font: 14px/1.6 -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+}
+button, input, select {
+  font: inherit; color: inherit; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--brand); color: var(--brand); }
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+button.primary:hover { filter: brightness(1.06); color: var(--brand-on); }
+button.danger { color: var(--danger); border-color: var(--danger); }
+button.danger:hover { background: var(--danger-weak); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input:focus, select:focus { outline: none; border-color: var(--brand); }
+
+/* ===== 应用骨架 ===== */
+.app { display: flex; height: 100vh; overflow: hidden; }
+.nav {
+  width: 224px; flex: none; display: flex; flex-direction: column;
+  padding: 14px 10px; background: var(--panel); border-right: 1px solid var(--line);
+}
+.nav .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; padding: 2px 10px 14px; }
+.nav .logo .dot {
+  width: 22px; height: 22px; border-radius: 7px; background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+}
+.nav .new-chat {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; margin-bottom: 12px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--brand-weak);
+  color: var(--brand); font-size: 13.5px; font-weight: 600;
+}
+.nav a {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none; font-size: 13.5px; margin-bottom: 1px;
+}
+.nav a:hover { background: var(--bg); }
+.nav a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav a .ico { width: 17px; text-align: center; opacity: .85; }
+.nav .grow { flex: 1; }
+
+.page { flex: 1; padding: 22px 26px 40px; overflow-y: auto; }
+.page-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.page-head h1 { font-size: 17px; font-weight: 700; margin: 0; }
+.page-head .spacer { flex: 1; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; }
+.card .card-h {
+  display: flex; align-items: center; gap: 9px; padding: 10px 16px;
+  border-bottom: 1px solid var(--line-soft); font-size: 13px; font-weight: 600;
+}
+.card .card-b { padding: 12px 16px; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.tbl th {
+  text-align: left; font-size: 11.5px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; padding: 9px 10px;
+  border-bottom: 1px solid var(--line); background: var(--bar-bg);
+}
+table.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.tbl tr:last-child td { border-bottom: none; }
+table.tbl tr:hover td { background: var(--code-bg); }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; vertical-align: 1px; }
+.badge.ok { background: var(--ok-weak); color: var(--ok); }
+.badge.warn { background: var(--warn-weak); color: var(--warn); }
+.badge.err { background: var(--danger-weak); color: var(--danger); }
+.badge.brand { background: var(--brand-weak); color: var(--brand); }
+.badge.dim { background: var(--code-bg); color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.foot-note { font-size: 12.5px; color: var(--muted); margin: 0; padding: 0 2px; }
+
+/* ===== 抽屉 ===== */
+.drawer-mask {
+  position: fixed; inset: 0; background: rgba(17, 24, 39, .32);
+  opacity: 0; pointer-events: none; transition: opacity .18s; z-index: 20;
+}
+.drawer-mask.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 520px; max-width: 100vw;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-pop); z-index: 21;
+  display: flex; flex-direction: column;
+  transform: translateX(100%); transition: transform .2s ease;
+}
+.drawer.open { transform: translateX(0); }
+.drawer-h {
+  display: flex; align-items: center; gap: 9px; padding: 13px 16px;
+  border-bottom: 1px solid var(--line); flex: none;
+}
+.drawer-h .t { font-size: 14px; font-weight: 700; }
+.drawer-h .spacer { flex: 1; }
+.drawer-b { flex: 1; overflow-y: auto; padding: 14px 16px 28px; }
+.drawer-close {
+  width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: 7px; color: var(--muted);
+}
+.drawer-close:hover { background: var(--hover); color: var(--text); border-color: var(--line); }
+
+/* ===== 抽屉内区块 ===== */
+.bench-sec { margin-bottom: 16px; }
+.bench-sec > .h {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  letter-spacing: .05em; text-transform: uppercase; margin-bottom: 9px;
+}
+.bench-sec > .h .line { flex: 1; height: 1px; background: var(--line-soft); }
+
+/* 配置卡 */
+.bench-config { border: 1px solid var(--line-soft); border-radius: var(--radius-card); padding: 12px 13px; background: var(--bar-bg); }
+.cfg-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.cfg-row > .k { width: 78px; flex: none; font-size: 12.5px; color: var(--muted); }
+.cfg-row > .v { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.seg button {
+  border: none; border-radius: 0; padding: 4px 11px; font-size: 12.5px;
+  background: transparent; color: var(--muted);
+}
+.seg button:hover { background: var(--hover); color: var(--text); }
+.seg button.on { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.cfg-hint { font-size: 11.5px; color: var(--muted); line-height: 1.55; margin: 6px 0 0; }
+.cfg-hint b { color: var(--text-2); font-weight: 600; }
+.aliases { display: flex; gap: 6px; flex-wrap: wrap; }
+.alias-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line); font-size: 12.5px; background: var(--panel); cursor: pointer;
+}
+.alias-chip.on { border-color: var(--brand); background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.alias-chip .x { font-size: 11px; opacity: .6; }
+.alias-add { border-style: dashed; color: var(--muted); }
+
+/* 运行区 */
+.bench-run { display: none; }
+body[data-state="running"] .bench-run { display: block; }
+body[data-state="running"] .bench-config { display: none; }
+/* 完成/失败：配置折叠成一行摘要，把结果顶到首屏（避免"评审先看到一堆下拉框"） */
+body[data-state="done"] .bench-config,
+body[data-state="error"] .bench-config { display: none; }
+.bench-cfgbar { display: none; }
+body[data-state="done"] .bench-cfgbar,
+body[data-state="error"] .bench-cfgbar { display: flex; }
+.bench-cfgbar {
+  align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px solid var(--line-soft); border-radius: var(--radius-card);
+  background: var(--bar-bg); padding: 8px 11px; margin-bottom: 14px; font-size: 12.5px;
+}
+.bench-cfgbar .who { font-family: var(--mono); font-weight: 600; }
+.bench-cfgbar .spacer { flex: 1; }
+.bench-cfgbar button { padding: 3px 9px; font-size: 12px; border-radius: 999px; }
+.result-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.prog-head { display: flex; align-items: center; gap: 9px; font-size: 12.5px; margin-bottom: 7px; }
+.prog-head .spacer { flex: 1; }
+.prog-track { height: 6px; border-radius: 999px; background: var(--code-bg); overflow: hidden; }
+.prog-bar { height: 100%; width: 0; background: var(--brand); border-radius: 999px; transition: width .2s linear; }
+.live-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0 10px; }
+.live-cell { border: 1px solid var(--line-soft); border-radius: 9px; padding: 8px 10px; background: var(--panel); }
+.live-cell .k { font-size: 11px; color: var(--muted); }
+.live-cell .v { font-family: var(--mono); font-size: 15px; font-weight: 600; margin-top: 2px; }
+.live-cell.wait .v { color: var(--warn); }
+.live-cell.hit .v { color: var(--brand); }
+.pulse-box { border: 1px solid var(--line-soft); border-radius: 9px; background: var(--bar-bg); padding: 6px 8px; }
+.pulse-box .cap { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+#pulse { display: block; width: 100%; height: 52px; }
+
+/* 指标卡 */
+.bench-result { display: none; }
+body[data-state="done"] .bench-result,
+body[data-state="error"] .bench-result { display: block; }
+.metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+.metric {
+  position: relative; border: 1px solid var(--line-soft); border-radius: var(--radius-card);
+  padding: 11px 12px 10px 15px; background: var(--panel); overflow: hidden;
+}
+.metric::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--line-strong);
+}
+.metric.good::before { background: var(--ok); }
+.metric.warn::before { background: var(--warn); }
+.metric.bad::before { background: var(--danger); }
+.metric .k { font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.metric .v { font-family: var(--mono); font-size: 21px; font-weight: 700; line-height: 1.25; margin-top: 3px; }
+.metric .v .unit { font-size: 11.5px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.metric .s { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.metric .s .up { color: var(--danger); }
+.metric .s .down { color: var(--ok); }
+body[data-state="error"] .metric-grid .metric { display: none; }
+body[data-state="error"] .metric-grid .metric.err-only { display: block; }
+.metric-grid .metric.err-only { display: none; }
+
+/* 对比条形图 */
+.cmp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cmp-head .spacer { flex: 1; }
+.cmp-head .seg button { padding: 3px 9px; font-size: 12px; }
+.cmp-row { display: flex; align-items: center; gap: 9px; padding: 5px 0; font-size: 12.5px; }
+.cmp-row .name { width: 108px; flex: none; text-align: right; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-row .name.me { color: var(--text); font-weight: 600; }
+.cmp-row .track { flex: 1; height: 16px; background: var(--code-bg); border-radius: 5px; overflow: hidden; }
+.cmp-row .bar { display: block; height: 100%; width: 0; background: var(--line-strong); border-radius: 5px; transition: width .35s ease; }
+.cmp-row.best .bar { background: var(--brand); }
+.cmp-row .val { width: 84px; flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.cmp-row.best .val { color: var(--brand); font-weight: 600; }
+
+/* 明细表 */
+.mini-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mini-tbl th {
+  text-align: left; font-size: 10.5px; font-weight: 600; color: var(--muted);
+  letter-spacing: .04em; text-transform: uppercase; padding: 6px 7px;
+  border-bottom: 1px solid var(--line); background: var(--bar-bg);
+}
+.mini-tbl td { padding: 6px 7px; border-bottom: 1px solid var(--line-soft); font-family: var(--mono); }
+.mini-tbl td.txt { font-family: inherit; }
+.mini-tbl tr:last-child td { border-bottom: none; }
+
+/* 历史 */
+.hist {
+  border: 1px solid var(--line-soft); border-radius: var(--radius-card);
+  padding: 10px 12px; background: var(--panel);
+}
+.hist .row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 3px 0; }
+.hist .row .when { width: 92px; flex: none; color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.hist .row .n { width: 72px; flex: none; color: var(--text-2); }
+.hist .row .spark { flex: 1; }
+.hist .row .d { width: 58px; flex: none; text-align: right; font-family: var(--mono); font-size: 11.5px; }
+.hist .row .d.up { color: var(--danger); }
+.hist .row .d.down { color: var(--ok); }
+.hist svg { display: block; }
+
+/* 提示条 */
+.notice {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.55;
+  border-radius: 9px; padding: 8px 10px; margin-bottom: 10px;
+}
+.notice.warn { background: var(--warn-weak); color: var(--warn); }
+.notice.info { background: var(--code-bg); color: var(--muted); }
+.notice b { font-weight: 600; }
+
+/* 空态 */
+.bench-empty { display: none; }
+body[data-state="empty"] .bench-empty { display: block; }
+.empty-box {
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-card);
+  padding: 26px 18px; text-align: center; background: var(--bar-bg);
+}
+.empty-box .ico { font-size: 22px; opacity: .5; }
+.empty-box .t { font-size: 13.5px; font-weight: 600; margin: 6px 0 4px; }
+.empty-box .d { font-size: 12.5px; color: var(--muted); max-width: 330px; margin: 0 auto 12px; line-height: 1.6; }
+details.why { margin-top: 10px; font-size: 12px; color: var(--muted); }
+details.why summary { cursor: pointer; }
+details.why p { margin: 6px 0 0; line-height: 1.6; }
+
+/* 演示控制条（原型专用，落地时删除） */
+.demo-bar {
+  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 7px; z-index: 30;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+  padding: 6px 10px; box-shadow: var(--shadow-pop); font-size: 12px;
+}
+.demo-bar .lbl { color: var(--muted); font-size: 11.5px; padding-left: 3px; }
+.demo-bar button { padding: 3px 9px; font-size: 12px; border-radius: 999px; }
+.demo-bar button.on { background: var(--brand-weak); border-color: var(--brand); color: var(--brand); font-weight: 600; }
+
+/* 窄屏：抽屉全宽，指标卡两列 */
+@media (max-width: 1160px) {
+  .drawer { width: 100vw; }
+}
+@media (max-width: 760px) {
+  .nav { width: 60px; padding: 12px 6px; }
+  .nav a span.lbl, .nav .logo .name, .nav .new-chat .lbl { display: none; }
+  .metric-grid { grid-template-columns: 1fr 1fr; }
+  .live-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body data-state="done">
+
+<div class="app">
+  <!-- 左侧导航（简化模拟，仅示意归属） -->
+  <aside class="nav">
+    <div class="logo"><span class="dot">L</span><span class="name">loop-agent</span></div>
+    <a class="new-chat" href="#"><span class="ico">＋</span><span class="lbl">新建对话</span></a>
+    <a href="#"><span class="ico">💬</span><span class="lbl">对话</span></a>
+    <a href="#"><span class="ico">🗂</span><span class="lbl">文件</span></a>
+    <a class="active" href="#"><span class="ico">🧠</span><span class="lbl">模型</span></a>
+    <a href="#"><span class="ico">🧰</span><span class="lbl">工具</span></a>
+    <a href="#"><span class="ico">🔌</span><span class="lbl">MCP</span></a>
+    <a href="#"><span class="ico">📦</span><span class="lbl">技能</span></a>
+    <a href="#"><span class="ico">⚙</span><span class="lbl">配置</span></a>
+    <div class="grow"></div>
+    <a href="#"><span class="ico">🩺</span><span class="lbl">诊断</span></a>
+  </aside>
+
+  <!-- 模型管理页 -->
+  <main class="page">
+    <div class="page-head">
+      <h1>模型</h1>
+      <span class="badge dim">GET /models</span>
+      <span class="spacer"></span>
+      <span class="muted">写入 scope：</span>
+      <select aria-label="写入 scope">
+        <option>workspace（工作空间）</option>
+        <option>global（全局）</option>
+      </select>
+      <button>＋ 登记模型</button>
+      <button>⟳ 刷新</button>
+    </div>
+
+    <div class="card">
+      <div class="card-h">当前生效 <span class="badge dim">GET /model</span></div>
+      <div class="card-b form-row">
+        <span class="mono">deepseek-chat</span>
+        <span class="mono muted">https://api.deepseek.com/v1</span>
+        <span class="mono">sk-****3f9a</span>
+        <span class="mono muted">temperature 0.3</span>
+        <span class="badge brand">active: deepseek</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>别名</th><th>型号</th><th>baseUrl</th><th>apiKey</th>
+            <th>连通性</th><th>性能</th><th style="width:290px">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>deepseek</b> <span class="badge brand">active</span></td>
+            <td class="mono">deepseek-chat</td>
+            <td class="mono">api.deepseek.com</td>
+            <td class="mono">sk-****3f9a</td>
+            <td><span class="badge ok">312ms</span></td>
+            <td><span class="badge ok" data-perf="deepseek">TTFT 780ms · 42 tok/s</span></td>
+            <td>
+              <button data-act="test">测试</button>
+              <button class="primary" data-act="bench" data-alias="deepseek">测速</button>
+              <button disabled>设为 active</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>openai</b></td>
+            <td class="mono">gpt-4.1-mini</td>
+            <td class="mono">api.openai.com</td>
+            <td class="mono">sk-****7c21</td>
+            <td><span class="badge ok">488ms</span></td>
+            <td><span class="badge ok" data-perf="openai">TTFT 520ms · 96 tok/s</span></td>
+            <td>
+              <button data-act="test">测试</button>
+              <button class="primary" data-act="bench" data-alias="openai">测速</button>
+              <button>设为 active</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>tokenhub-glm</b></td>
+            <td class="mono">glm-4.6</td>
+            <td class="mono">tokenhub.example.com</td>
+            <td class="mono">sk-****a10e</td>
+            <td><span class="badge ok">701ms</span></td>
+            <td><span class="badge warn" data-perf="glm">TTFT 1.24s · 29 tok/s</span></td>
+            <td>
+              <button data-act="test">测试</button>
+              <button class="primary" data-act="bench" data-alias="tokenhub-glm">测速</button>
+              <button>设为 active</button>
+            </td>
+          </tr>
+          <tr>
+            <td><b>qwen32b</b></td>
+            <td class="mono">qwen3-32b</td>
+            <td class="mono">dashscope.aliyuncs.com</td>
+            <td class="mono">sk-****88b0</td>
+            <td><span class="badge dim">未测试</span></td>
+            <td><span class="badge dim" data-perf="qwen">未测</span></td>
+            <td>
+              <button data-act="test">测试</button>
+              <button class="primary" data-act="bench" data-alias="qwen32b">测速</button>
+              <button>设为 active</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="foot-note">
+      「测试」= 连通性（发 ping 收首块即断，近免费）；「测速」= 性能体检（固定提示词跑完整流，按输出 token 计费）。
+      两者并存互不替代：前者当健康检查，后者回答「有多快、稳不稳」。
+    </p>
+  </main>
+</div>
+
+<!-- ===== 测速抽屉 ===== -->
+<div class="drawer-mask" id="mask"></div>
+<aside class="drawer" id="drawer" aria-label="模型性能测试">
+  <div class="drawer-h">
+    <span class="t">性能测试</span>
+    <span class="badge dim">POST /models/bench</span>
+    <span class="spacer"></span>
+    <button class="drawer-close" id="close" title="关闭">✕</button>
+  </div>
+  <div class="drawer-b">
+
+    <!-- ⓪ 配置摘要条（完成/失败态：一行折叠，点击回到配置） -->
+    <div class="bench-cfgbar" id="cfgbar">
+      <span class="who">deepseek · openai</span>
+      <span class="muted">标准 · 3 轮 × 短+中 · max 256 · 破坏缓存 · 60s</span>
+      <span class="spacer"></span>
+      <button id="reopen">改配置</button>
+    </div>
+
+    <!-- ① 配置 -->
+    <section class="bench-sec bench-config" id="cfg">
+      <div class="cfg-row">
+        <span class="k">被测模型</span>
+        <span class="v">
+          <span class="aliases" id="aliases">
+            <span class="alias-chip on" data-alias="deepseek">deepseek <span class="x">✕</span></span>
+            <span class="alias-chip on" data-alias="openai">openai <span class="x">✕</span></span>
+            <span class="alias-chip alias-add" id="alias-add">＋ 加入对比</span>
+          </span>
+        </span>
+      </div>
+      <div class="cfg-row">
+        <span class="k">档位</span>
+        <span class="v">
+          <span class="seg" id="seg-tier">
+            <button data-tier="fast">快速 · 1 轮</button>
+            <button data-tier="standard" class="on">标准 · 3 轮 × 2</button>
+            <button data-tier="custom">自定义</button>
+          </span>
+        </span>
+      </div>
+      <div class="cfg-row">
+        <span class="k">提示词</span>
+        <span class="v">
+          <span class="seg" id="seg-prompt">
+            <button data-prompt="short" class="on">短问答 ~20 字</button>
+            <button data-prompt="medium">中文写作 ~300 字</button>
+            <button data-prompt="code">代码改写 ~40 行</button>
+          </span>
+        </span>
+      </div>
+      <div class="cfg-row">
+        <span class="k">输出上限</span>
+        <span class="v">
+          <input id="max-tokens" value="256" style="width:76px" aria-label="max_tokens">
+          <span class="muted" style="font-size:12px">tokens · 固定值，保证跨模型可比</span>
+        </span>
+      </div>
+      <div class="cfg-row">
+        <span class="k">单轮超时</span>
+        <span class="v">
+          <select id="timeout" aria-label="超时">
+            <option>30s</option><option selected>60s</option><option>120s</option>
+          </select>
+          <label style="display:inline-flex;gap:5px;align-items:center;font-size:12.5px;color:var(--muted)">
+            <input type="checkbox" id="bust" checked> 破坏前缀缓存（每轮随机 nonce）
+          </label>
+        </span>
+      </div>
+      <p class="cfg-hint">
+        默认注入随机 nonce 前缀：否则第二轮起会命中 provider 前缀缓存，TTFT 被打到 1/10，「多轮平均」就变成缓存命中率测试。
+      </p>
+      <div class="form-row" style="margin-top:11px">
+        <button class="primary" id="start">开始测试</button>
+        <button id="cancel-cfg">取消</button>
+        <span class="muted" style="font-size:12px">预计上限 6 × 256 tok ≈ 1.5k tok</span>
+      </div>
+    </section>
+
+    <!-- ② 运行中 -->
+    <section class="bench-sec bench-run">
+      <div class="prog-head">
+        <span id="prog-text">第 1 / 3 轮 · 短问答</span>
+        <span class="spacer"></span>
+        <button class="danger" id="stop">中断</button>
+      </div>
+      <div class="prog-track"><div class="prog-bar" id="prog-bar"></div></div>
+      <div class="live-grid">
+        <div class="live-cell wait" id="live-ttft"><div class="k">等待首 token</div><div class="v" id="v-ttft">0.42s</div></div>
+        <div class="live-cell"><div class="k">已生成</div><div class="v" id="v-tok">0 tok</div></div>
+        <div class="live-cell"><div class="k">当前速度</div><div class="v" id="v-tps">— </div></div>
+        <div class="live-cell"><div class="k">已用时</div><div class="v" id="v-elapsed">0.0s</div></div>
+      </div>
+      <div class="pulse-box">
+        <div class="cap">token 到达节奏（每根竖条 = 一个非空 chunk，间隔越匀越顺）</div>
+        <svg id="pulse" viewBox="0 0 480 52" preserveAspectRatio="none"></svg>
+      </div>
+      <p class="cfg-hint">首 token 只认「delta 里有非空内容」的 chunk：空串与只带 usage 的尾块都不计（对齐 vLLM / NVIDIA 口径）。</p>
+    </section>
+
+    <!-- ③ 结果 -->
+    <section class="bench-result">
+      <div class="bench-sec" id="notice-wrap">
+        <div class="notice warn" id="buffered-note" style="display:none">
+          <span>⚠</span>
+          <span><b>疑似被网关缓冲</b>：本次 chunk 几乎一次性到达（间隔 ≈ 0），TPS 会虚高，不建议作为选型依据。</span>
+        </div>
+        <div class="notice info" id="error-note" style="display:none">
+          <span>⛔</span>
+          <span><b>429 请求过于频繁</b>：已按方案「不重试」提前结束，成功轮次仍可用于参考，但样本不足。</span>
+        </div>
+      </div>
+
+      <div class="bench-sec">
+        <div class="h">本轮结论<span class="line"></span><span class="muted" style="text-transform:none;font-weight:400" id="cfg-snapshot">标准 · 3 轮 × 短+中 · max 256 · 破坏缓存</span></div>
+        <div class="metric-grid">
+          <div class="metric good">
+            <div class="k">TTFT（首 token）</div>
+            <div class="v">780<span class="unit">ms</span></div>
+            <div class="s">p90 1.02s · 3 轮样本</div>
+          </div>
+          <div class="metric good">
+            <div class="k">解码吞吐</div>
+            <div class="v">42.1<span class="unit">tok/s</span></div>
+            <div class="s">端到端 31.6 tok/s</div>
+          </div>
+          <div class="metric warn">
+            <div class="k">稳定性</div>
+            <div class="v">67<span class="unit">%</span></div>
+            <div class="s">ITL p90 38ms · 1 轮 429</div>
+          </div>
+          <div class="metric bad err-only">
+            <div class="k">测试失败</div>
+            <div class="v" style="font-size:16px">429 限流</div>
+            <div class="s">2/6 轮成功 · 见下方明细</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bench-sec">
+        <div class="h">横向对比<span class="line"></span></div>
+        <div class="cmp-head">
+          <span class="muted" style="font-size:12px">排序依据</span>
+          <span class="seg" id="seg-sort">
+            <button data-sort="ttft" class="on">TTFT 越短越好</button>
+            <button data-sort="tps">吞吐越高越好</button>
+          </span>
+        </div>
+        <div id="cmp"></div>
+        <p class="cfg-hint">对比在服务端串行执行：并行会互相抢带宽，两条流的 TTFT 都不准。</p>
+      </div>
+
+      <div class="bench-sec">
+        <div class="h">每轮明细<span class="line"></span><span class="muted" style="text-transform:none;font-weight:400">GET /models/bench/history</span></div>
+        <table class="mini-tbl">
+          <thead>
+            <tr><th>轮</th><th>提示词</th><th>TTFT</th><th>TPOT</th><th>解码 TPS</th><th>输出</th><th>缓存</th><th>状态</th></tr>
+          </thead>
+          <tbody id="detail"></tbody>
+        </table>
+        <p class="cfg-hint">输出 token 以 <b>usage.completion_tokens</b> 为权威；服务商不回 usage 时按 chunk 数估算并加 <b>~</b> 前缀，避免跨模型误比。</p>
+      </div>
+
+      <div class="bench-sec">
+        <div class="h">历史（同模型最近 8 次）<span class="line"></span></div>
+        <div class="hist" id="hist"></div>
+      </div>
+
+      <div class="result-actions">
+        <button class="primary" id="retest">重新测试</button>
+        <button id="export-json">导出 JSON</button>
+        <span class="muted" style="font-size:12px">GET /models/bench/history?alias=deepseek</span>
+      </div>
+    </section>
+
+    <!-- ④ 空态 -->
+    <section class="bench-empty">
+      <div class="empty-box">
+        <div class="ico">⏱</div>
+        <div class="t">还没有针对 deepseek 的性能数据</div>
+        <div class="d">连通性只告诉你「能不能用」；性能测试才告诉你「有多快、稳不稳」——按当前默认档位（标准 · 3 轮 × 2 提示词 · max 256）跑一次即可。</div>
+        <button class="primary" id="start-empty">按默认档位开跑</button>
+        <details class="why">
+          <summary>为什么默认要「破坏缓存」？</summary>
+          <p>同一条 prompt 连打多轮会命中 provider 的前缀缓存，第二轮 TTFT 可能只有第一轮的 1/10。混合缓存状态的平均值没有意义，所以默认每轮注入随机 nonce，并把 <span class="mono">prompt_cache_hit_tokens</span> 一并记录下来供对照。</p>
+        </details>
+      </div>
+    </section>
+
+  </div>
+</aside>
+
+<!-- 演示控制条（原型专用） -->
+<div class="demo-bar" id="demo">
+  <span class="lbl">演示态</span>
+  <button data-s="empty">空态</button>
+  <button data-s="running">运行中</button>
+  <button data-s="done" class="on">完成</button>
+  <button data-s="error">失败</button>
+  <span style="width:1px;height:16px;background:var(--line);margin:0 3px"></span>
+  <button id="btn-play">▶ 重放</button>
+  <button id="btn-theme">◐ 主题</button>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- 演示数据（结构对齐 BenchSample / BenchSummary） ---------- */
+  var PROFILES = {
+    deepseek:      { label: 'deepseek',     host: 'api.deepseek.com',      ttft: 780,  tps: 42.1, tpot: 23.8, itlP90: 38,  color: 'best' },
+    openai:        { label: 'openai',       host: 'api.openai.com',        ttft: 520,  tps: 96.4, tpot: 10.4, itlP90: 16,  color: '' },
+    'tokenhub-glm':{ label: 'tokenhub-glm', host: 'tokenhub.example.com',  ttft: 1240, tps: 28.6, tpot: 35.0, itlP90: 71,  color: '' },
+    qwen32b:       { label: 'qwen32b',      host: 'dashscope.aliyuncs.com',ttft: 2100, tps: 18.3, tpot: 54.6, itlP90: 120, color: '' }
+  };
+  var DETAIL = [
+    { r: 1, p: '短问答', ttft: 742,  tpot: 22.9, tps: 43.7, out: 256, cache: '0',    st: 'ok' },
+    { r: 2, p: '中文写作', ttft: 1018, tpot: 24.6, tps: 40.7, out: 256, cache: '0',    st: 'ok' },
+    { r: 3, p: '短问答', ttft: 429,  tpot: 23.1, tps: 43.3, out: 12,  cache: '0',    st: '429' },
+    { r: 4, p: '中文写作', ttft: 795, tpot: 23.6, tps: 42.4, out: 256, cache: '0',    st: 'ok' },
+    { r: 5, p: '短问答', ttft: 806,  tpot: 24.0, tps: 41.7, out: 256, cache: '0',    st: 'ok' },
+    { r: 6, p: '中文写作', ttft: 1012, tpot: 25.1, tps: 39.8, out: 256, cache: '0',   st: 'ok' }
+  ];
+  var HISTORY = [
+    { when: '10-20 09:12', n: '标准', ttfts: [902, 980, 1040], tpsList: [38, 39, 37], d: -12 },
+    { when: '10-22 14:03', n: '快速', ttfts: [860, 890, 875],  tpsList: [40, 41, 39], d: -4 },
+    { when: '10-24 20:41', n: '标准', ttfts: [820, 850, 900],  tpsList: [41, 42, 40], d: -5 },
+    { when: '10-26 11:27', n: '快速', ttfts: [800, 820, 815],  tpsList: [42, 43, 41], d: 2 },
+    { when: '10-27 01:45', n: '标准', ttfts: [742, 795, 806],  tpsList: [43.7, 42.4, 41.7], d: -8 }
+  ];
+
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var state = 'done';
+  var theme = 'light';
+  var sortKey = 'ttft';
+  var timer = null;
+
+  /* ---------- 态切换 ---------- */
+  function setState(next) {
+    if (timer) { clearInterval(timer); timer = null; }
+    state = next;
+    document.body.dataset.state = next;
+    Array.prototype.forEach.call(document.querySelectorAll('#demo [data-s]'), function (b) {
+      b.classList.toggle('on', b.dataset.s === next);
+    });
+    if (next === 'running') startRun();
+    if (next === 'done' || next === 'error') {
+      $('#buffered-note').style.display = 'none';
+      $('#error-note').style.display = next === 'error' ? 'flex' : 'none';
+    }
+    if (next === 'error') {
+      // 失败态：明细只留 2 条成功
+      renderDetail(DETAIL.filter(function (d) { return d.st === 'ok'; }).slice(0, 2));
+    } else if (next === 'done') {
+      renderDetail(DETAIL);
+    }
+    if (next === 'empty') { openDrawer(); }
+  }
+
+  /* ---------- 抽屉 ---------- */
+  function openDrawer() {
+    $('#drawer').classList.add('open');
+    $('#mask').classList.add('open');
+  }
+  function closeDrawer() {
+    $('#drawer').classList.remove('open');
+    $('#mask').classList.remove('open');
+  }
+  $('#close').onclick = closeDrawer;
+  $('#mask').onclick = closeDrawer;
+  $('#cancel-cfg').onclick = closeDrawer;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-act="bench"]'), function (b) {
+    b.onclick = function () {
+      if (state === 'empty') setState('done');
+      openDrawer();
+    };
+  });
+
+  /* ---------- 配置交互 ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll('.alias-chip'), function (chip) {
+    if (chip.id === 'alias-add') return;
+    chip.onclick = function () { chip.classList.toggle('on'); };
+  });
+  $('#alias-add').onclick = function () {
+    var next = document.createElement('span');
+    next.className = 'alias-chip on';
+    next.dataset.alias = 'tokenhub-glm';
+    next.innerHTML = 'tokenhub-glm <span class="x">✕</span>';
+    $('#alias-add').before(next);
+  };
+  Array.prototype.forEach.call(document.querySelectorAll('#seg-tier button'), function (b) {
+    b.onclick = function () {
+      Array.prototype.forEach.call(b.parentNode.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#seg-prompt button'), function (b) {
+    b.onclick = function () {
+      Array.prototype.forEach.call(b.parentNode.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#seg-sort button'), function (b) {
+    b.onclick = function () {
+      Array.prototype.forEach.call(b.parentNode.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      sortKey = b.dataset.sort;
+      renderCompare();
+    };
+  });
+
+  /* ---------- 模拟运行 ---------- */
+  function startRun() {
+    openDrawer();
+    var totalRounds = 6;
+    var round = 1;
+    var tokens = 0;
+    var t0 = performance.now();
+    var firstAt = null;
+    var pulseIdx = 0;
+    var pulse = $('#pulse');
+    pulse.innerHTML = '';
+    $('#v-ttft').textContent = '0.00s';
+    $('#v-tok').textContent = '0 tok';
+    $('#v-tps').textContent = '—';
+    $('#prog-bar').style.width = '0%';
+
+    timer = setInterval(function () {
+      var el = performance.now() - t0;
+      $('#v-elapsed').textContent = (el / 1000).toFixed(1) + 's';
+
+      if (firstAt === null) {
+        // 首 token 等待阶段：计时器跳动
+        $('#v-ttft').textContent = (el / 1000).toFixed(2) + 's';
+        if (el > 620 + Math.random() * 240) {
+          firstAt = el;
+          $('#live-ttft').classList.remove('wait');
+          $('#live-ttft').classList.add('hit');
+          $('#live-ttft').querySelector('.k').textContent = 'TTFT';
+          $('#v-ttft').textContent = Math.round(firstAt) + 'ms';
+        }
+        return;
+      }
+
+      // 解码阶段：token 增长 + 脉冲
+      tokens += 2 + Math.round(Math.random() * 4);
+      if (tokens > 46) tokens = 46;
+      $('#v-tok').textContent = tokens + ' tok';
+      var decode = (tokens * 1.7);
+      $('#v-tps').textContent = (42 + Math.random() * 6).toFixed(1) + ' tok/s';
+      var pct = Math.min(100, (tokens / 46) * 100);
+      $('#prog-bar').style.width = ((round - 1) / totalRounds * 100 + pct / totalRounds) + '%';
+
+      if (pulseIdx < 46) {
+        var h = 16 + Math.random() * 32;
+        var r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        r.setAttribute('x', String(pulseIdx * 10.3 + 1));
+        r.setAttribute('y', String(52 - h));
+        r.setAttribute('width', '6');
+        r.setAttribute('height', String(h));
+        r.setAttribute('rx', '1.5');
+        r.style.fill = 'var(--brand)';
+        r.style.opacity = String(0.45 + Math.random() * 0.5);
+        pulse.appendChild(r);
+        pulseIdx++;
+      }
+
+      if (tokens >= 46) {
+        tokens = 0;
+        pulseIdx = 0;
+        round++;
+        if (round > totalRounds) {
+          clearInterval(timer); timer = null;
+          $('#prog-bar').style.width = '100%';
+          setState('done');
+          return;
+        }
+        $('#prog-text').textContent = '第 ' + round + ' / ' + totalRounds + ' 轮 · ' + (round % 2 ? '短问答' : '中文写作');
+        firstAt = null;
+        pulse.innerHTML = '';
+        $('#live-ttft').classList.add('wait');
+        $('#live-ttft').classList.remove('hit');
+        $('#live-ttft').querySelector('.k').textContent = '等待首 token';
+        $('#v-ttft').textContent = '0.00s';
+      }
+    }, 120);
+
+    $('#prog-text').textContent = '第 1 / 6 轮 · 短问答';
+  }
+
+  $('#start').onclick = function () { setState('running'); };
+  $('#start-empty').onclick = function () { setState('running'); };
+  $('#retest').onclick = function () { setState('running'); };
+  $('#reopen').onclick = function () { setState('empty'); };
+  $('#export-json').onclick = function () {
+    var blob = new Blob([JSON.stringify({ demo: true, detail: DETAIL, history: HISTORY }, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'bench-demo.json';
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  };
+  $('#stop').onclick = function () {
+    if (timer) { clearInterval(timer); timer = null; }
+    setState('done');
+  };
+  $('#btn-play').onclick = function () { setState('running'); };
+
+  /* ---------- 对比条形图 ---------- */
+  function renderCompare() {
+    var rows = Object.keys(PROFILES).map(function (k) {
+      return { key: k, label: PROFILES[k].label, ttft: PROFILES[k].ttft, tps: PROFILES[k].tps };
+    });
+    // 条长统一「越长越好」：TTFT 按相对最优值的比值反算（最优=100%），吞吐按相对最大值正算
+    var best;
+    if (sortKey === 'ttft') {
+      rows.sort(function (a, b) { return a.ttft - b.ttft; });
+      best = rows[0].key;
+      var minT = rows[0].ttft;
+      rows.forEach(function (r) { r.pct = (minT / r.ttft) * 100; r.txt = r.ttft + ' ms'; });
+    } else {
+      rows.sort(function (a, b) { return b.tps - a.tps; });
+      best = rows[0].key;
+      var maxP = rows[0].tps;
+      rows.forEach(function (r) { r.pct = (r.tps / maxP) * 100; r.txt = r.tps.toFixed(1) + ' tok/s'; });
+    }
+    var html = rows.map(function (r) {
+      var me = (r.key === 'deepseek') ? ' me' : '';
+      var bst = (r.key === best) ? ' best' : '';
+      return '<div class="cmp-row' + bst + '">' +
+        '<span class="name' + me + '">' + r.label + '</span>' +
+        '<span class="track"><span class="bar" style="width:' + r.pct.toFixed(1) + '%"></span></span>' +
+        '<span class="val">' + r.txt + '</span>' +
+        '</div>';
+    }).join('');
+    $('#cmp').innerHTML = html;
+  }
+
+  /* ---------- 明细表 ---------- */
+  function renderDetail(rows) {
+    $('#detail').innerHTML = rows.map(function (d) {
+      var badge = d.st === 'ok'
+        ? '<span class="badge ok">ok</span>'
+        : '<span class="badge err">' + d.st + '</span>';
+      return '<tr>' +
+        '<td>' + d.r + '</td>' +
+        '<td class="txt">' + d.p + '</td>' +
+        '<td>' + d.ttft + 'ms</td>' +
+        '<td>' + d.tpot.toFixed(1) + 'ms</td>' +
+        '<td>' + d.tps.toFixed(1) + '</td>' +
+        '<td>' + d.out + '</td>' +
+        '<td>' + d.cache + '</td>' +
+        '<td>' + badge + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  /* ---------- 历史迷你走势 ---------- */
+  function spark(vals, color) {
+    var w = 100, h = 18;
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var span = Math.max(1, max - min);
+    var pts = vals.map(function (v, i) {
+      var x = (i / Math.max(1, vals.length - 1)) * (w - 4) + 2;
+      var y = h - 3 - ((v - min) / span) * (h - 6);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.6" ' +
+      'stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  }
+  function renderHistory() {
+    $('#hist').innerHTML = HISTORY.map(function (r) {
+      var up = r.d > 0;
+      return '<div class="row">' +
+        '<span class="when">' + r.when + '</span>' +
+        '<span class="n">' + r.n + '</span>' +
+        '<span class="spark">' + spark(r.ttfts, 'var(--brand)') + '</span>' +
+        '<span class="spark">' + spark(r.tpsList, 'var(--muted)') + '</span>' +
+        '<span class="d ' + (up ? 'up' : 'down') + '">' + (up ? '↑' : '↓') + Math.abs(r.d) + '%</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  /* ---------- 主题 ---------- */
+  function setTheme(t) {
+    theme = t;
+    document.documentElement.dataset.theme = t;
+  }
+  $('#btn-theme').onclick = function () { setTheme(theme === 'light' ? 'dark' : 'light'); };
+
+  /* ---------- 初始化 ---------- */
+  renderCompare();
+  renderDetail(DETAIL);
+  renderHistory();
+
+  var q = new URLSearchParams(location.search);
+  if (q.get('theme') === 'dark') setTheme('dark');
+  var closed = q.get('closed') === '1';
+  var initial = q.get('state');
+  if (initial === 'empty' || initial === 'running' || initial === 'done' || initial === 'error') {
+    if (!closed) openDrawer();
+    setState(initial);
+  } else {
+    if (!closed) openDrawer();
+    setState('done');
+  }
+
+  // 暴露给验证脚本（headless Chrome 断言用）
+  window.__benchDemo = {
+    setState: setState,
+    setTheme: setTheme,
+    sort: function (k) { sortKey = k; renderCompare(); },
+    getState: function () { return state; }
+  };
+})();
+</script>
+</body>
+</html>
