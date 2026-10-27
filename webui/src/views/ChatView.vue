@@ -53,6 +53,7 @@ import {
 import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js';
 import ToolCard from '../components/ToolCard.vue';
 import { nextTextareaHeight } from '../autogrow.js';
+import { createFollowState, type FollowState } from '../scroll-follow.js';
 import { buildPickerRows, resolvePill, type ModelProfileRow, type PickerRow } from '../model-picker.js';
 
 /* ===== 工具调用卡片（Task-20261024-001：方案 B 卡片内聚式，渲染与样式在 ToolCard.vue）===== */
@@ -225,10 +226,86 @@ watch(streamTextLen, () => {
 // mermaid 容器构建（缩放/平移/全屏/源码切换）与渲染排队逻辑见 ../mermaid.ts、
 // ../chart-box.ts，样式见 ../mermaid.css
 
-function scrollBottom(): void {
-  nextTick(() => {
-    if (msgsEl.value) msgsEl.value.scrollTop = msgsEl.value.scrollHeight;
-  });
+/* ===== 滚动跟随（task-20261027-004 / 优化建议 20261027-002）=====
+ * 问题：原实现无条件把 scrollTop 写成 scrollHeight，且 chat-stream 每个流式 chunk 都会
+ * 触发 setActivityHandler，导致用户上滑后几十毫秒就被拽回底部，中途无法阅读。
+ * 方案：贴底才跟随（pinned）+ 上滑即解绑（released），判定逻辑在 ../scroll-follow.ts。
+ *   - released 时 scrollBottom() 直接返回：既不写 scrollTop，也不读 scrollHeight（免一次强制重排）；
+ *   - released 由用户手势（滚轮/触摸/拖动滚动条/键盘）触发，滚回底部（距底 ≤ 24px）自动回吸；
+ *   - 发送消息 / 切换会话 / 新建会话 / 点「回到最新」按钮为强制回底（D6）。
+ * 为何不处理程序化写入引发的 scroll 事件：released 态完全不写 scrollTop，故 scroll 事件
+ * 只可能在 pinned 态出现；而 pinned 态的 onScroll() 不做解绑判定（只做回吸），互不干扰。 */
+const followCtl = createFollowState();
+const follow = ref<'pinned' | 'released'>('pinned');
+/** 解绑期间是否有新内容（驱动按钮上的圆点，不计数：单条消息在增长，条数无意义） */
+const hasPending = ref(false);
+
+/** 控制器状态 → 模板响应式状态 */
+function syncFollow(st: FollowState): void {
+  if (follow.value !== st.follow) follow.value = st.follow;
+  if (hasPending.value !== st.hasPending) hasPending.value = st.hasPending;
+}
+
+/** 滚到底（仅在 pinned 时生效）；smooth 用于「回到最新」按钮的一次性回底（D8） */
+function scrollBottom(opts?: { smooth?: boolean }): void {
+  if (follow.value === 'released') return; // 已解绑：视口归用户，不读高度也不写位置
+  const el = msgsEl.value;
+  if (!el) return;
+  if (opts?.smooth) {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: reduce ? 'auto' : 'smooth' });
+    return;
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+/** DOM 更新（新增消息/切换会话）后滚底：nextTick 等 v-for 落地再读 scrollHeight */
+function scrollBottomAfterRender(opts?: { smooth?: boolean }): void {
+  void nextTick(() => scrollBottom(opts));
+}
+
+/** 强制回底（D6）：发送消息 / 切换会话 / 新建会话 / 点回底按钮，无视当前解绑状态 */
+function forceScrollBottom(opts?: { smooth?: boolean }): void {
+  syncFollow(followCtl.forcePin());
+  scrollBottomAfterRender(opts);
+}
+
+/** 用户手势 → 解绑跟随（D3）：wheel / touchmove / 拖动滚动条 / 键盘滚动键 */
+function markUserScroll(): void {
+  const el = msgsEl.value;
+  // 内容不足一屏（无滚动空间）时手势不算「脱离」：否则按钮会出现在无内容可滚的会话里
+  if (el && el.scrollHeight <= el.clientHeight + 1) return;
+  syncFollow(followCtl.onUserGesture());
+}
+
+/** 容器滚动 → 仅用于「滚回底部自动重新吸附」（距底 ≤ STICK_THRESHOLD_PX） */
+function onMsgsScroll(): void {
+  const el = msgsEl.value;
+  if (!el) return;
+  syncFollow(
+    followCtl.onScroll({
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    }),
+  );
+}
+
+/** 拖动滚动条才算滚动意图：点消息正文属选择/复制，不解绑 */
+function onMsgsPointerDown(e: PointerEvent): void {
+  if (e.target instanceof Element && e.target.closest('.msg-wrap')) return;
+  markUserScroll();
+}
+
+/** 键盘滚动键（事件绑在 .msgs 上，焦点必在该容器内，天然排除输入框，见 D3） */
+const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ', 'Spacebar']);
+function onMsgsKeydown(e: KeyboardEvent): void {
+  if (SCROLL_KEYS.has(e.key)) markUserScroll();
+}
+
+/** 点「回到最新」：恢复跟随并平滑回底，同时清掉新内容圆点 */
+function jumpToBottom(): void {
+  forceScrollBottom({ smooth: true });
 }
 
 // 高频事件（llm_stream / tool_call_delta）合并到下一帧：避免逐 chunk 读取 scrollHeight 强制重排
@@ -237,7 +314,7 @@ function scrollBottomSoon(): void {
   if (scrollRaf) return;
   scrollRaf = requestAnimationFrame(() => {
     scrollRaf = 0;
-    scrollBottom();
+    scrollBottom(); // rAF 在 Vue 的 nextTick 之后执行，读到的 scrollHeight 已是最新
   });
 }
 
@@ -266,7 +343,7 @@ async function createSession(workspacePath?: string): Promise<string | null> {
     await loadSessions();
     activeId.value = r.id;
     initEmpty(r.id);
-    scrollBottom();
+    forceScrollBottom(); // 新建会话：强制回底（D6）
     if (fromPop) {
       closeNewPop();
       showToast('会话已创建', 'success');
@@ -385,7 +462,7 @@ async function selectSession(id: string): Promise<void> {
       }
     }
     modelOpen.value = false;
-    scrollBottom();
+    forceScrollBottom(); // 切换会话：强制回底（D6）；不再保留上一个会话的滚动位置
     void postRenderMsgs();
   } catch (e) {
     if (e instanceof AuthError) return;
@@ -426,7 +503,7 @@ async function send(): Promise<void> {
   const draftSnapshot = draft.value;
   uploads.value = [];
   draft.value = '';
-  scrollBottom();
+  forceScrollBottom(); // 自己发消息：强制回底（D6）
 
   // 发送与流式累加在 chat-stream（模块级状态，切换会话/离开聊天页不中断）
   const outcome = await sendMessage(sessionId, {
@@ -630,12 +707,17 @@ onMounted(() => {
   setChatViewMounted(true);
   setActiveSession(activeId.value);
   // 流式事件到达时仅活跃会话滚动（组件卸载后 handler 置空，run 不受影响）
+  // task-20261027-004：先喂跟随状态机——released 态只点亮「新内容」圆点，不拽回视口
   setActivityHandler((id) => {
-    if (id === activeId.value) scrollBottomSoon();
+    if (id !== activeId.value) return;
+    syncFollow(followCtl.onActivity());
+    scrollBottomSoon();
   });
   offRunFinished = onRunFinished((id) => {
     if (id === activeId.value) {
+      // run 结束仅在 pinned 时回底；released 时保持阅读位置（用户正在读的内容不该被抢走）
       scrollBottom();
+      syncFollow(followCtl.onActivity());
       void postRenderMsgs();
     }
   });
@@ -691,57 +773,90 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div ref="msgsEl" class="msgs">
-        <div class="msg-wrap">
-          <div v-if="!activeId && messages.length === 0" class="chat-empty">
-            选择左侧会话，或点击「＋ 新建对话」开始
-          </div>
-          <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
-            <div v-if="m.role === 'assistant'" class="m-head">
-              <div class="ava">L</div><span class="m-role">Loop Agent</span>
+      <!-- 消息滚动区（task-20261027-004）：外层只为给「回到最新」按钮提供定位上下文，
+           避免按钮 absolute 到 .chat-main 时压住输入坞（composer 高度随自增高变化） -->
+      <div class="msgs-wrap">
+        <div
+          ref="msgsEl"
+          class="msgs"
+          tabindex="0"
+          @scroll="onMsgsScroll"
+          @wheel.passive="markUserScroll"
+          @touchmove.passive="markUserScroll"
+          @pointerdown="onMsgsPointerDown"
+          @keydown="onMsgsKeydown"
+        >
+          <div class="msg-wrap">
+            <div v-if="!activeId && messages.length === 0" class="chat-empty">
+              选择左侧会话，或点击「＋ 新建对话」开始
             </div>
-            <div :class="m.role === 'user' ? 'bubble' : 'body'">
-              <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
-              <template
-                v-for="it in renderItems(m)"
-                :key="it.kind === 'tool' ? `t${it.card.index}` : `s${it.index}`"
-              >
-                <ToolCard v-if="it.kind === 'tool'" :card="cardVM(it)" />
-                <div v-else-if="m.role === 'assistant'" class="md">
-                  <!-- 稳定块 + 可变尾部（D1）：内容未变的块 key 不变 → Vue 复用 DOM，
-                       块内 append 的图表容器得以存活；每个 chunk 只重渲尾部块 -->
-                  <template v-for="blk in segBlocks(m, it.seg, it.index)" :key="blk.k">
-                    <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒（../markdown.ts） -->
-                    <div v-if="blk.kind === 'md'" v-html="blk.html"></div>
-                    <div v-else-if="blk.kind === 'chart'" class="chart-slot" :data-lang="blk.lang" :data-src="blk.src"></div>
-                    <!-- 未闭合的图表围栏：显示占位而非逐字刷屏的裸源码（D5） -->
-                    <div v-else class="chart-pending">
-                      <span class="cp-spin"></span>
-                      <span>正在生成 {{ blk.lang }} 图表…</span>
-                      <span class="cp-num">已生成 {{ blk.chars }} 字符</span>
-                    </div>
-                  </template>
-                </div>
-                <div v-else class="plain">{{ textOf(it) }}</div>
-              </template>
-              <!-- 压缩 loading 放在消息末尾：长链路时仍可见（滚动由 compaction_start 的 notifyActivity 驱动） -->
-              <div v-if="m.compacting" class="compact-loading">
-                <span class="cl-spin"></span>正在压缩对话历史…
+            <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+              <div v-if="m.role === 'assistant'" class="m-head">
+                <div class="ava">L</div><span class="m-role">Loop Agent</span>
               </div>
-              <LiveStatus
-                v-if="m.streaming && !m.compacting && !m.failed && m.live"
-                :live="m.live ?? null"
-                :last-event-at="m.lastEventAt"
-              />
-              <span v-if="m.streaming && !m.compacting && !m.live" class="cursor"></span>
-              <div v-if="m.failed" class="fatal">⚠ {{ m.failedText }}</div>
-              <div v-if="m.aborted" class="aborted-note">⏹ 已被用户停止，以上为已生成的部分输出</div>
-              <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
+              <div :class="m.role === 'user' ? 'bubble' : 'body'">
+                <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
+                <template
+                  v-for="it in renderItems(m)"
+                  :key="it.kind === 'tool' ? `t${it.card.index}` : `s${it.index}`"
+                >
+                  <ToolCard v-if="it.kind === 'tool'" :card="cardVM(it)" />
+                  <div v-else-if="m.role === 'assistant'" class="md">
+                    <!-- 稳定块 + 可变尾部（D1）：内容未变的块 key 不变 → Vue 复用 DOM，
+                         块内 append 的图表容器得以存活；每个 chunk 只重渲尾部块 -->
+                    <template v-for="blk in segBlocks(m, it.seg, it.index)" :key="blk.k">
+                      <!-- eslint-disable-next-line vue/no-v-html — 内容经 DOMPurify 消毒（../markdown.ts） -->
+                      <div v-if="blk.kind === 'md'" v-html="blk.html"></div>
+                      <div v-else-if="blk.kind === 'chart'" class="chart-slot" :data-lang="blk.lang" :data-src="blk.src"></div>
+                      <!-- 未闭合的图表围栏：显示占位而非逐字刷屏的裸源码（D5） -->
+                      <div v-else class="chart-pending">
+                        <span class="cp-spin"></span>
+                        <span>正在生成 {{ blk.lang }} 图表…</span>
+                        <span class="cp-num">已生成 {{ blk.chars }} 字符</span>
+                      </div>
+                    </template>
+                  </div>
+                  <div v-else class="plain">{{ textOf(it) }}</div>
+                </template>
+                <!-- 压缩 loading 放在消息末尾：长链路时仍可见（滚动由 compaction_start 的 notifyActivity 驱动） -->
+                <div v-if="m.compacting" class="compact-loading">
+                  <span class="cl-spin"></span>正在压缩对话历史…
+                </div>
+                <LiveStatus
+                  v-if="m.streaming && !m.compacting && !m.failed && m.live"
+                  :live="m.live ?? null"
+                  :last-event-at="m.lastEventAt"
+                />
+                <span v-if="m.streaming && !m.compacting && !m.live" class="cursor"></span>
+                <div v-if="m.failed" class="fatal">⚠ {{ m.failedText }}</div>
+                <div v-if="m.aborted" class="aborted-note">⏹ 已被用户停止，以上为已生成的部分输出</div>
+                <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
+              </div>
             </div>
           </div>
+          <!-- 时间线尾注记（task-06）：重启后的中断/停止说明，前端态灰条，不进消息数组 -->
+          <div v-if="stream?.note" class="aborted-note run-note">{{ stream.note }}</div>
         </div>
-        <!-- 时间线尾注记（task-06）：重启后的中断/停止说明，前端态灰条，不进消息数组 -->
-        <div v-if="stream?.note" class="aborted-note run-note">{{ stream.note }}</div>
+        <!-- 回到最新（D5）：仅在解绑（用户上滑阅读中）出现；有新 chunk 时右上角点圆点提示 -->
+        <button
+          v-if="follow === 'released'"
+          class="jump-bottom"
+          :class="{ pending: hasPending }"
+          title="回到最新"
+          aria-label="回到最新"
+          @click="jumpToBottom"
+        >
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+            <path
+              d="M10 4.6v9.8M5.7 10.3 10 14.6l4.3-4.3"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
       </div>
 
       <div class="composer">
@@ -1073,7 +1188,69 @@ onUnmounted(() => {
 }
 
 /* ===== 消息流 ===== */
-.msgs { flex: 1; overflow-y: auto; padding: 20px 0; }
+/* 外层只承担「回到最新」按钮的定位上下文（task-20261027-004）：
+   composer 高度随输入自增高变化，按钮若 absolute 到 .chat-main 会压住输入坞，
+   故定位基准收在这一层（等价于滚动区可视范围） */
+.msgs-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.msgs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 0;
+  /* 显式开启滚动锚定（D4）：postRenderMsgs 的高亮与图表槽位渲染会改变块高度，
+     用户解绑阅读时由浏览器校正位置，避免已读内容漂移 */
+  overflow-anchor: auto;
+  /* 程序化聚焦不显示轮廓；仅键盘 Tab 进入时可见（见 :focus-visible） */
+  outline: none;
+}
+.msgs:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+/* 回到最新（D5）：解绑态浮于滚动区右下角，不占文档流、不遮挡输入坞 */
+.jump-bottom {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+  z-index: 5;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.jump-bottom:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+  background: var(--brand-weak);
+}
+.jump-bottom:active { transform: scale(0.94); }
+/* 解绑期间有新内容：右上角品牌色圆点（不计数——单条消息在增长，条数无意义） */
+.jump-bottom.pending::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-bottom { transition: none; }
+}
 .msg-wrap { max-width: 800px; margin: 0 auto; padding: 0 20px; }
 .chat-empty {
   text-align: center;

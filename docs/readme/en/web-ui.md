@@ -117,6 +117,16 @@ Markdown bodies (the chat answers and md/doc file previews share one pipeline, `
 - **Preview ⇄ source**: the `</>` button at the right of the chart toolbar switches to the source view (monospace, copyable); switching back does not rebuild the chart instance, and zoom/fullscreen buttons are disabled in source mode.
 - Both load on demand and adapt to light/dark themes (already-rendered charts re-render on theme switch); KaTeX fonts are bundled locally for offline use.
 
+### Scroll Following and "Back to Latest"
+
+While output streams in, the viewport sticks to the tail by default so the newest content stays visible. That follow is releasable, so you can read back mid-stream:
+
+- **Scrolling up releases it**: the mouse wheel, touch scrolling, dragging the scrollbar, or `PageUp/PageDown/Home/End/ArrowUp/ArrowDown` while the message area is focused all release the follow. The viewport stays where it is and later deltas no longer yank it back to the bottom — you can re-read the tool arguments and reasoning of long, multi-tool answers at any point.
+- **Returning to the bottom re-engages it**: scrolling back within 24px of the bottom re-pins the viewport to the tail.
+- **Back-to-latest button**: while released, a floating down-arrow button appears in the bottom-right of the message area; clicking it smoothly returns to the bottom and resumes following. If new content arrives while released, the button shows a brand-colored dot (no counter — a streaming reply is a single message growing, so a count would be meaningless).
+- **Forced back to bottom**: sending a message, switching sessions, and creating a session always return to the latest regardless of the released state; a run finishing while released does not steal the viewport back — it only lights the dot.
+- **Stable reading position**: highlighting and chart rendering during a released state (which change block heights) are corrected by the browser's scroll anchoring, so what you already read does not drift.
+
 ### Security Details
 
 - The static layer prevents path traversal (`..%2f` etc. → 403); `/assets/*` is cached immutable for one year while `index.html` is not cached (upgrades take effect immediately).
