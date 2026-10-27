@@ -28,6 +28,7 @@ import { terminalRoutes } from './handlers/terminal.js';
 import type { ApiServerDeps } from './server.js';
 import type { SessionManager } from './session-manager.js';
 import type { RunHub } from './run-hub.js';
+import type { WorkspaceRuntime } from './workspace-runtime.js';
 import type { ConfigLoader } from '../config/loader.js';
 import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
@@ -81,6 +82,16 @@ export interface HandlerContext {
   runBench: BenchRunner;
   /** 性能测试 run 注册表（SSE 进度 / 中断） */
   benchRuns: BenchRunHub;
+  /**
+   * 缺省空间（需求 20261027-004 D1/D3）：进程内「最近使用空间」指针的同步读。
+   * 替代原「缺省回落 deps.sessionStore.path（启动空间）」的语义——handler 缺省回落一律用此。
+   */
+  defaultRoot: () => string;
+  /**
+   * 解析缺省空间 runtime（懒装载 + 指针改写 + MRU touch）。
+   * 无 registry（既有单测/嵌入用法）时抛 internal——此类场景不存在跨空间语义。
+   */
+  resolveDefaultRuntime: () => Promise<WorkspaceRuntime>;
 }
 
 export type RouteHandler = (
@@ -108,7 +119,7 @@ export function createRoutes(): Route[] {
     { method: 'GET', path: '/health', handler: handleHealth },
     // 会话资源（Task-20261016-001）
     { method: 'POST', path: '/sessions', handler: (ctx, req, res) => handleCreateSession(ctx, req, res) },
-    { method: 'GET', path: '/sessions', handler: (ctx, _req, res) => handleListSessions(ctx, res) },
+    { method: 'GET', path: '/sessions', handler: (ctx, req, res) => handleListSessions(ctx, req, res) },
     // 服务端目录浏览（新建会话选择工作空间；静态段，无 :param 冲突）
     { method: 'GET', path: '/fs/dirs', handler: (ctx, req, res) => handleListDirs(ctx, req, res) },
     // 工作空间文件浏览器（原型-20261018-001）：树 / 文件预览 / 全文搜索（均静态段）

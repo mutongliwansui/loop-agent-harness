@@ -7,8 +7,20 @@ import { createApiServer, type ApiServer } from './server.js';
 import { DreamScheduler } from './dream-scheduler.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
+import { markWorkspaceUsed, resolveRecentRoot, setCwdFallback } from './recent-workspace.js';
 
-export async function startApiServer(): Promise<ApiServer> {
+export interface StartApiServerOptions {
+  /** 会话/记忆/自愈扫描根目录覆盖（默认 ~/.loop-agent；单测注入临时目录） */
+  userDir?: string;
+}
+
+/** A4 收口：cwd 兜底值统一由此（白名单文件）读出，供 index.ts 等非白名单文件转交 */
+export function cwdFallbackValue(): string {
+  return process.cwd();
+}
+
+/** 启动选项（需求 20261027-004：userDir 供单测隔离冷启动推导与全盘自愈） */
+export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiServer> {
   const { configLoader } = await import('../config/index.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
@@ -16,12 +28,18 @@ export async function startApiServer(): Promise<ApiServer> {
 
   const { config: cfg } = configLoader.load();
 
-  // 工作空间运行时注册表（Task-20261021-010-01）：本阶段只装启动目录一个 runtime，
-  // store / configLoader / configWriter / sessions / pool / memory-kit 全部自该 runtime 解构，
-  // 对外行为与改造前一致（L1：HandlerContext 字段不变）。
-  // 启动目录即初始空间（应用启动参数，非"当前空间"全局态）：process.cwd() 保留语义。
-  const registry = new WorkspaceRegistry();
-  const rt = await registry.get(process.cwd());
+  // A4：cwd 兜底注入（本模块白名单持有 process.cwd()，recent-workspace 自身零依赖）
+  setCwdFallback(process.cwd());
+
+  // 工作空间运行时注册表（Task-20261021-010-01）。
+  // 需求 20261027-004：不再以 process.cwd() 为「启动空间」——缺省空间语义改为
+  // 「最近使用空间」：冷启动扫 sessions/*/ 推导最近会话所在空间（canonical），无会话兜底 cwd。
+  // 仍预装这 1 个 runtime（L1：HandlerContext 字段与既有单测零破坏），
+  // 但身份从 cwd 换成 recentRoot；后续空间仍由 handler 按 ws 参数/会话归属懒装载。
+  const registry = new WorkspaceRegistry({ userDir: opts?.userDir });
+  const recentRoot = await resolveRecentRoot(opts?.userDir);
+  markWorkspaceUsed(recentRoot);
+  const rt = await registry.get(recentRoot);
   const store = rt.store;
 
   // 启动扫描（Task-20261021-002-06）：上个进程遗留的 running journal 标记为 interrupted。
@@ -42,10 +60,13 @@ export async function startApiServer(): Promise<ApiServer> {
 
   // 记忆晋升调度器（Task-20261026-002）：定时轮为主力，关停兜底补最后一轮。
   // getConfig 读进程级配置（节奏/预算/onExit）；每空间的记忆配置另由各自 runtime 的 configLoader 读。
+  // 需求 20261027-004 D4：全空间参与——定时轮/关停兜底磁盘枚举候选空间 + 预判 + 懒装载。
   const dreamScheduler = new DreamScheduler({
     registry,
     getConfig: () => configLoader.load().config,
     log: (msg) => console.log(msg),
+    enumerateAllSpaces: true,
+    userDir: opts?.userDir,
   });
 
   // 版本取自 package.json：tsup 打包时内联进产物（build:sea 的 SEA 单文件同样可用），
@@ -85,6 +106,7 @@ export async function startApiServer(): Promise<ApiServer> {
   console.log(`\x1b[1m\x1b[36mHTTP API 服务已启动\x1b[0m`);
   console.log(`  地址:    http://${api.host}:${port}`);
   console.log(`  鉴权:    ${api.token ? 'Bearer Token' : '仅本机（未配置 api.token）'}`);
+  console.log(`  缺省空间: ${recentRoot}（最近使用；新会话未指定空间时落此处）`);
   console.log(`  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory`);
   console.log(`  提示:    Ctrl+C 退出；配置变更需重启生效`);
   console.log('');

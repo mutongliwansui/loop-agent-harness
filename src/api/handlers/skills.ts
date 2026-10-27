@@ -68,7 +68,7 @@ async function handleCreateSkill(
 
   const targetRoot = scope === 'global'
     ? ctx.skillLoader.globalDir
-    : ctx.skillLoader.getWorkspaceDir(ctx.deps.sessionStore.path);
+    : ctx.skillLoader.getWorkspaceDir(ctx.defaultRoot());
 
   // D5：同名冲突确认由 overwrite 参数承接（true 直接覆盖，false 拒绝）
   const result = await installSkillDirs([sourcePath], {
@@ -85,7 +85,7 @@ async function handleCreateSkill(
   }
 
   const installed = result.installed[0];
-  if (result.installed.length > 0) ctx.skillLoader.reload(ctx.deps.sessionStore.path);
+  if (result.installed.length > 0) ctx.skillLoader.reload(ctx.defaultRoot());
   ctx.log(`[api] Skill 已安装（${scope}）: ${installed.name} → ${installed.targetDir}`);
   sendJson(res, 201, { name: installed.name, scope, path: installed.targetDir });
 }
@@ -99,7 +99,7 @@ async function handleDeleteSkill(
 ): Promise<void> {
   const scope = parseSkillScope(queryScope(req));
   const globalDir = ctx.skillLoader.globalDir;
-  const workspaceDir = ctx.skillLoader.getWorkspaceDir(ctx.deps.sessionStore.path);
+  const workspaceDir = ctx.skillLoader.getWorkspaceDir(ctx.defaultRoot());
   // auto 需同时看到两层（list() 合并视图会遮蔽同名全局项），直接扫两个目录（与 CLI remove 同款）
   const candidates = [...scanSkillsDir(workspaceDir, 'workspace'), ...scanSkillsDir(globalDir, 'global')];
 
@@ -113,7 +113,7 @@ async function handleDeleteSkill(
 
   const removed = result.removed[0];
   if (removed) {
-    ctx.skillLoader.reload(ctx.deps.sessionStore.path);
+    ctx.skillLoader.reload(ctx.defaultRoot());
     ctx.log(`[api] Skill 已删除（${removed.scope}）: ${name}`);
     sendJson(res, 200, { deleted: true, name, scope: removed.scope, dir: removed.dir });
     return;
@@ -127,7 +127,7 @@ async function handleDeleteSkill(
 
 /** POST /skills/reload：重新扫描 Skill 目录 */
 async function handleReloadSkills(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const skills = ctx.skillLoader.reload(ctx.deps.sessionStore.path);
+  const skills = ctx.skillLoader.reload(ctx.defaultRoot());
   ctx.log(`[api] Skill 已重新扫描: ${skills.length} 个`);
   sendJson(res, 200, { loaded: skills.length });
 }
@@ -187,7 +187,7 @@ async function handleUploadSkill(
 
   const targetRoot = scope === 'global'
     ? ctx.skillLoader.globalDir
-    : ctx.skillLoader.getWorkspaceDir(ctx.deps.sessionStore.path);
+    : ctx.skillLoader.getWorkspaceDir(ctx.defaultRoot());
 
   // 写临时目录后复用安装链（校验/同名/覆盖/护栏全部白得），finally 清理
   const tmp = await mkdtemp(join(tmpdir(), 'skill-upload-'));
@@ -212,7 +212,7 @@ async function handleUploadSkill(
     }
 
     const installed = result.installed[0];
-    ctx.skillLoader.reload(ctx.deps.sessionStore.path);
+    ctx.skillLoader.reload(ctx.defaultRoot());
     ctx.log(`[api] Skill 已上传安装（${scope}）: ${installed.name} → ${installed.targetDir}`);
     sendJson(res, 201, { name: installed.name, scope, path: installed.targetDir });
   } finally {

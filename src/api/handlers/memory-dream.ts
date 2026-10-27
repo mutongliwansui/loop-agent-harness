@@ -70,9 +70,9 @@ function sessionsBaseDir(ctx: HandlerContext): string {
  * 为保持既有单测零改动，无 registry 一律回落启动空间。
  */
 async function resolveHistoryTargetRoot(ctx: HandlerContext, wsParam: string): Promise<string> {
-  if (!wsParam) return ctx.deps.sessionStore.path;
+  if (!wsParam) return ctx.defaultRoot();
   const registry = ctx.registry;
-  if (!registry) return ctx.deps.sessionStore.path;
+  if (!registry) return ctx.defaultRoot();
   if (/^[A-Za-z]:[\\/]/.test(wsParam) || wsParam.startsWith('/')) {
     return registry.ensureRoot(wsParam);
   }
@@ -161,7 +161,7 @@ async function handlePutSchedule(
 
   // ---- 3. 热重排（不重启即生效）----
   ctx.dreamScheduler?.reschedule();
-  const status = await ctx.dreamScheduler?.statusFor(ctx.deps.sessionStore.path).catch(() => null);
+  const status = await ctx.dreamScheduler?.statusFor(ctx.defaultRoot()).catch(() => null);
 
   sendJson(res, 200, {
     ok: true,

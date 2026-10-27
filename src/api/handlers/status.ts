@@ -20,8 +20,11 @@ export function hostnameOf(baseUrl: string): string {
 
 export async function handleStatus(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
   const cfg = ctx.deps.getConfig();
+  // 需求 20261027-004：会话数取缺省空间（最近使用）；无 registry（既有单测）回落 deps.sessionStore
   const [sessions, uploadDirs] = await Promise.all([
-    ctx.deps.sessionStore.listSessions(),
+    ctx.registry
+      ? ctx.resolveDefaultRuntime().then((rt) => rt.store.listSessions())
+      : ctx.deps.sessionStore.listSessions(),
     readdir(ctx.uploadsRoot, { withFileTypes: true }).catch(() => []),
   ]);
 

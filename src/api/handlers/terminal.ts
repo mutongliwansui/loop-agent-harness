@@ -33,8 +33,8 @@ async function handleTerminalInfo(
     shells: shells.map((s) => ({ id: s.id, label: s.label })),
     maxSessions: cfg.webui?.terminalMax ?? 4,
     idleMs: cfg.webui?.terminalIdleMs ?? 30 * 60 * 1000,
-    /** 默认工作目录（启动空间），便于未连接时也有可读信息 */
-    cwd: ctx.deps.sessionStore.path,
+    /** 默认工作目录（缺省空间=最近使用），便于未连接时也有可读信息 */
+    cwd: ctx.defaultRoot(),
   });
 }
 

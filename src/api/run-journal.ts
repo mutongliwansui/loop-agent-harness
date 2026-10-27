@@ -13,7 +13,7 @@
 // - interrupted 是 journal 独有状态，不进 RunStatus（后者描述本进程内 run 实时状态）
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SessionStore } from '../session/index.js';
 import { debug } from '../debug.js';
@@ -39,6 +39,23 @@ export interface RunJournal {
 
 /** lastSeq 类补丁的合并写盘窗口（D3：journal 用于判中断+概要，不追求精确） */
 const FLUSH_INTERVAL_MS = 500;
+
+/**
+ * pid 存活守卫的陈旧阈值（D5）：属主 pid 活着但 journal 超过此时长无任何写活动，
+ * 视为 pid 被系统复用导致的假活，仍标记 interrupted。
+ */
+const STALE_RUNNING_MS = 24 * 60 * 60 * 1000;
+
+/** 进程存活探测（D5 pid 守卫）：kill(pid, 0) 只验权限不杀进程；ESRCH=不存在，EPERM=活着但无权限 */
+function pidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 
 /** 进程启动 UUID（进程内常量）：journal 记录的 bootId ≠ 此值 → 该 run 非本进程所写 */
 const BOOT_ID = randomUUID();
@@ -179,9 +196,14 @@ export async function readJournal(store: SessionStore, sessionId: string): Promi
 }
 
 /**
- * 启动扫描：status==='running' 且 bootId ≠ 当前进程 → 改写 interrupted。
+ * 启动扫描：status==='running' 且非本进程所写 → 改写 interrupted。
  * 扫描 sessions 根目录下全部工作空间的 runs/（跨空间僵尸 run 一并收敛）。
  * 返回处理条数。fire-and-forget 调用（bootstrap 不等待）。
+ *
+ * 判定（需求 20261027-004 D5）：bootId ≠ 当前进程只说明「非本进程所写」——
+ * 本机并存第二个 serve 实例（如测试实例）时，其正在运行的 journal 也会命中。
+ * 因此追加 pid 存活守卫：属主进程还活着且 journal 近期仍有活动（mtime < 24h）→ 跳过；
+ * pid 已死，或存活但 mtime 超过 24h（pid 被系统复用的假活）→ 标记 interrupted。
  */
 export async function reconcileInterruptedOnBoot(store: SessionStore): Promise<number> {
   let count = 0;
@@ -209,6 +231,11 @@ export async function reconcileInterruptedOnBoot(store: SessionStore): Promise<n
         const path = join(runsDir, f);
         const jr = await readJournalFile(path);
         if (!jr || jr.status !== 'running' || jr.bootId === BOOT_ID) continue;
+        // pid 存活守卫：另一实例（bootId 必不同）正在跑的 journal 不能误标
+        if (pidAlive(jr.pid)) {
+          const age = Date.now() - (await stat(path).then((s) => s.mtimeMs).catch(() => 0));
+          if (age < STALE_RUNNING_MS) continue; // 活着且近期有活动：属主实例仍在运行
+        }
         try {
           const fixed: RunJournal = {
             ...jr,

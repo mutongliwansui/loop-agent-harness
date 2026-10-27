@@ -7,7 +7,8 @@
 import { execSync } from 'node:child_process';
 import { initRuntime } from './runtime/init.js';
 import { startCli } from './cli/start.js';
-import { startApiServer } from './api/server.js';
+import { startApiServer, cwdFallbackValue } from './api/bootstrap.js';
+import { setCwdFallback } from './api/recent-workspace.js';
 import { mcpManager } from './tools/index.js';
 import { COLORS as C } from './ui/colors.js';
 
@@ -22,6 +23,9 @@ if (process.platform === 'win32') {
 
 async function main() {
   const serveMode = process.argv.includes('--serve');
+
+  // A4 收口：cwd 兜底由白名单文件读出、入口转交（recent-workspace 自身零 process.cwd()）
+  setCwdFallback(cwdFallbackValue());
 
   // 共享初始化：初次引导 → 配置 → 内置工具 → MCP → Skill
   const { config } = await initRuntime({ noSetup: process.argv.includes('--no-setup') });

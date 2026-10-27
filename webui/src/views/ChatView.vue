@@ -383,7 +383,7 @@ function closeNewPop(): void {
 function openBrowse(): void {
   browseOpen.value = true;
   dirError.value = '';
-  if (!dirPath.value) void browseDirs(''); // 缺省 → 服务端当前空间
+  if (!dirPath.value) void browseDirs(''); // 缺省 → 服务端缺省空间（最近使用）
 }
 
 /** GET /fs/dirs：失败（404/403 等）以错误条展示并保持当前位置 */

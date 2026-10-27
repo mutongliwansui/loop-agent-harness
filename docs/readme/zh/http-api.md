@@ -142,7 +142,7 @@ HTTP API 服务已启动
 |------|------|------|
 | GET | `/memory/status` | 分层状态 `{enabled, layers, counts, dreaming?}`（未启用恒 200 `{enabled:false,...}`；`dreaming` 为自动晋升状态，见下） |
 | GET | `/memory/workspaces` | 聚合「有会话 ∪ 有记忆」的空间清单 `{workspaces: [{id, name, path, hasMemory, hasSession}]}`（会话侧来自 sessions 索引扫描，记忆侧来自 `{memoryDir}/*/` 目录扫描；仅有记忆的孤儿空间也列出） |
-| GET | `/memory/curated?ws=` | 整理层三层文件全文 `{entries}`（`ws` 可选：空间 id 或绝对路径；缺省=启动空间；未知空间 404） |
+| GET | `/memory/curated?ws=` | 整理层三层文件全文 `{entries}`（`ws` 可选：空间 id 或绝对路径；缺省=缺省空间（最近使用，需求 20261027-004）；未知空间 404） |
 | GET | `/memory/episodic?limit=&ws=` | 情景层日志 `{entries}`（`ws` 可选，语义同 curated；`limit` 1–90 天） |
 | GET | `/memory/search?q=&limit=` | 跨层检索 `{results: [{content, score, layer}]}`（q 必填；当前空间） |
 | GET | `/memory/gate` | 提升门阈值 + 近期判定 |
@@ -150,7 +150,7 @@ HTTP API 服务已启动
 | GET | `/memory/dream/schedule` | 读取当前定时排期 `{enabled, cron, describe, misfireGraceMin, nextRunAt, nextRunTimes, intervalMode}` |
 | PUT | `/memory/dream/schedule` | 改排期 `{enabled?, cron?, misfireGraceMin?}` → 校验通过即**热重排（无需重启）**；非法 cron → 400 且**不落盘、不改现有排期** |
 | GET | `/memory/dream/preview?cron=` | 输入期预览：`{ok:true, describe, next:[…5 个时刻], timezoneOffsetMin}`；非法 → **200** `{ok:false, error, fieldIndex?}`（预览不属于错误请求，前端单分支处理） |
-| GET | `/memory/dream/history?limit=&scope=&ws=` | 最近触发记录 `{scope, runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?, workspaceId?, workspaceName?, workspacePath?}]}`；`scope=all` 文件扫描聚合全部空间（不要求已装载），`scope=ws`（缺省）= 启动空间 |
+| GET | `/memory/dream/history?limit=&scope=&ws=` | 最近触发记录 `{scope, runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?, workspaceId?, workspaceName?, workspacePath?}]}`；`scope=all` 文件扫描聚合全部空间（不要求已装载），`scope=ws`（缺省）= 缺省空间（最近使用）；另有 `no-new-content` / `runtime-unavailable` 两种跳过原因 |
 | DELETE | `/memory/dream/history?scope=&ws=` | 清空触发记录 `{deleted}`（跟随筛选范围；`all` 时遍历清空各空间记录，文件保留） |
 | POST | `/memory/init` | 初始化分层目录（幂等） |
 

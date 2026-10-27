@@ -189,7 +189,7 @@ async function listChildren(
  */
 async function resolveFsRoot(ctx: HandlerContext, query: URLSearchParams): Promise<string> {
   const ws = query.get('ws')?.trim();
-  if (!ws) return ctx.deps.sessionStore.path;
+  if (!ws) return ctx.defaultRoot();
   const target = await canonicalWorkspacePath(ws);
   const known = await ctx.deps.sessionStore.listAllWorkspaces();
   for (const w of known) {

@@ -24,6 +24,7 @@ import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
 import { ensureDirUsable, type WorkspaceRuntime } from '../workspace-runtime.js';
+import { markWorkspaceUsed } from '../recent-workspace.js';
 import { locateSession } from '../session-locator.js';
 import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
 import { SessionStore } from '../../session/index.js';
@@ -49,7 +50,7 @@ async function listDrives(): Promise<string[]> {
 /** GET /fs/dirs?path=：列出目录下的子目录；path 缺省为当前空间，盘根 parent=null，drives 供跳盘 */
 export async function handleListDirs(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
-  const target = lexicalWorkspacePath(query.get('path')?.trim() || ctx.deps.sessionStore.path);
+  const target = lexicalWorkspacePath(query.get('path')?.trim() || ctx.defaultRoot());
   let isDir: boolean;
   try {
     isDir = (await stat(target)).isDirectory();
@@ -88,6 +89,8 @@ export async function resolveWorkspaceRuntime(ctx: HandlerContext, target: strin
   }
   const root = await registry.ensureRoot(target);
   const rt = await registry.getCanonical(root);
+  // 需求 20261027-004：显式空间解析成功即刷新「最近使用空间」指针（缺省空间语义的事实源）
+  markWorkspaceUsed(root);
 
   // 指针刷新：以下字段均来自 runtime（实例本身不可变，仅替换 handler 的引用）
   ctx.deps.sessionStore = rt.store;
@@ -121,17 +124,23 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
   if (requested) {
     // 空间身份按 canonical 形式比较（'D:' 特例 + 绝对化 + win32 真实大小写，D2/L2）
     const target = await canonicalWorkspacePath(requested);
-    const startup = await canonicalWorkspacePath(ctx.deps.sessionStore.path);
+    // 需求 20261027-004：缺省空间 = 最近使用空间（defaultRoot），不再是「启动空间」
+    const startup = await canonicalWorkspacePath(ctx.defaultRoot());
     if (!isSameWorkspace(target, startup)) {
       // 目录校验先于创建（保持改造前错误优先级）
       if (ctx.registry) await ctx.registry.ensureRoot(target);
       else await ensureDirUsable(target);
       rt = await resolveWorkspaceRuntime(ctx, target);
+    } else {
+      // 显式指定恰好等于缺省空间：也走一次 resolve，统一完成指针改写与 touch
+      rt = await resolveWorkspaceRuntime(ctx, target);
     }
   }
 
-  const sessions = rt?.sessions ?? ctx.sessions;
-  const store = rt?.store ?? ctx.deps.sessionStore;
+  // 需求 20261027-004：未显式指定空间 → 缺省落「最近使用空间」的 runtime
+  // （resolveDefaultRuntime 内部复用 resolveWorkspaceRuntime：懒装载 + 指针改写 + touch）
+  const sessions = rt?.sessions ?? (ctx.registry ? (await ctx.resolveDefaultRuntime()).sessions : ctx.sessions);
+  const store = rt?.store ?? (ctx.registry ? (await ctx.resolveDefaultRuntime()).store : ctx.deps.sessionStore);
   const meta = await sessions.createSessionSafe(title, []);
   sessions.set(meta.id, { history: [], inFlight: null });
   ctx.log(`[api] 会话已创建: ${meta.id}${rt ? `（目标工作空间: ${store.path}）` : ''}`);
@@ -145,9 +154,19 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
   });
 }
 
-/** GET /sessions：启动空间的会话列表 */
-export async function handleListSessions(ctx: HandlerContext, res: ServerResponse): Promise<void> {
-  const store = ctx.deps.sessionStore;
+/** GET /sessions：缺省空间（最近使用）的会话列表；?ws= 显式指定（绝对路径）时切目标空间 */
+export async function handleListSessions(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // 需求 20261027-004：显式 ?ws= 优先（走 ensureRoot 校验 + 指针改写），
+  // 缺省 = 最近使用空间 runtime（懒装载）。无 registry（既有单测）回落 deps.sessionStore。
+  const ws = new URL(req.url ?? '/', 'http://localhost').searchParams.get('ws')?.trim();
+  let store: SessionStore;
+  if (ws && ctx.registry) {
+    store = (await resolveWorkspaceRuntime(ctx, await ctx.registry.ensureRoot(ws))).store;
+  } else if (ctx.registry) {
+    store = (await ctx.resolveDefaultRuntime()).store;
+  } else {
+    store = ctx.deps.sessionStore;
+  }
   const list = await store.listSessions();
   sendJson(res, 200, { sessions: list });
 }

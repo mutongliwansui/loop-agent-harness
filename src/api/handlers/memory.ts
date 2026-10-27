@@ -204,7 +204,7 @@ async function handleGate(ctx: HandlerContext, _req: IncomingMessage, res: Serve
 async function handleDream(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
   const scheduler = ctx.dreamScheduler;
   if (scheduler) {
-    const root = ctx.deps.sessionStore.path;
+    const root = ctx.defaultRoot();
     if (scheduler.isRunning(root)) {
       sendJson(res, 202, { accepted: false, reason: 'manual', skippedBecause: 'already-running' });
       return;
@@ -257,7 +257,7 @@ async function handleMemoryStatus(ctx: HandlerContext, _req: IncomingMessage, re
   }
   const kit = await ctx.createMemoryKit();
   // Task-20261026-002 D9：附带自动晋升状态（调度器未注入或该空间未装载时不返回该字段）
-  const dreaming = await ctx.dreamScheduler?.statusFor(ctx.deps.sessionStore.path).catch(() => null);
+  const dreaming = await ctx.dreamScheduler?.statusFor(ctx.defaultRoot()).catch(() => null);
   sendJson(res, 200, {
     enabled: true,
     layers: {

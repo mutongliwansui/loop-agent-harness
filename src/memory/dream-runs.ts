@@ -18,7 +18,7 @@ import { debug } from '../debug.js';
 export type DreamRunReason = 'schedule' | 'shutdown' | 'manual';
 
 /** 未真正执行的原因（有值即 skippedBecause 摘要） */
-export type DreamRunSkipReason = 'disabled' | 'busy' | 'already-running' | 'no-runtime' | 'missed';
+export type DreamRunSkipReason = 'disabled' | 'busy' | 'already-running' | 'no-runtime' | 'missed' | 'no-new-content' | 'runtime-unavailable';
 
 /** 单条运行记录（对外直接给 WebUI 用） */
 export interface DreamRunRecord {

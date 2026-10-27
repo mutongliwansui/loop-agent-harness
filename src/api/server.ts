@@ -32,11 +32,13 @@ import { defaultMemoryKitFactory, type MemoryKit } from './memory-kit.js';
 import { attachTerminalWs } from '../terminal/ws.js';
 import { TerminalManager } from '../terminal/manager.js';
 import { canonicalWorkspacePath, isSameWorkspace } from '../session/path-utils.js';
+import { currentWorkspaceRoot } from './recent-workspace.js';
+import { resolveWorkspaceRuntime } from './handlers/sessions.js';
 import type { ConfigLoader } from '../config/loader.js';
 import type { ConfigWriter } from '../config/writer.js';
 import type { MCPManager } from '../config/mcp-manager.js';
 import type { SkillLoader } from '../skill/loader.js';
-import type { WorkspaceRegistry } from './workspace-runtime.js';
+import type { WorkspaceRegistry, WorkspaceRuntime } from './workspace-runtime.js';
 import type { DreamScheduler } from './dream-scheduler.js';
 import { runBench, type BenchRunner } from '../llm/bench.js';
 import { defaultBenchRoot } from '../llm/bench-store.js';
@@ -145,6 +147,23 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     userDir: rt.userDir,
     runBench: rt.runBench ?? runBench,
     benchRuns: new BenchRunHub(),
+    // 需求 20261027-004：缺省空间 = 进程内「最近使用空间」指针（bootstrap 启动时置为冷启动推导值）。
+    // 无 registry（既有单测/嵌入用法）时回落 deps.sessionStore.path，保持旧「启动空间」行为零破坏。
+    defaultRoot: () => currentWorkspaceRoot() || deps.sessionStore.path,
+    // 缺省空间 runtime：复用 resolveWorkspaceRuntime（懒装载 + ctx 指针改写 + ensureScaffold + MRU touch）。
+    // 无 registry（既有单测/嵌入用法）时回落 deps 对应的伪 runtime——此类场景不存在跨空间语义，
+    // 保证 status 等端点在旧单测下行为不变。
+    resolveDefaultRuntime: async () => {
+      if (!deps.registry) {
+        return {
+          root: deps.sessionStore.path,
+          id: deps.sessionStore.id,
+          store: deps.sessionStore,
+          sessions: deps.sessions,
+        } as unknown as WorkspaceRuntime;
+      }
+      return resolveWorkspaceRuntime(ctx, currentWorkspaceRoot() || deps.sessionStore.path);
+    },
   };
 
   /**
@@ -153,7 +172,7 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
    */
   async function resolveTerminalCwd(wsParam: string | null): Promise<string> {
     const raw = wsParam?.trim();
-    if (!raw) return deps.sessionStore.path;
+    if (!raw) return currentWorkspaceRoot() || deps.sessionStore.path;
     const target = await canonicalWorkspacePath(raw);
     const known = await deps.sessionStore.listAllWorkspaces();
     for (const w of known) {

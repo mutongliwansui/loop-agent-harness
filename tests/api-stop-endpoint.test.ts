@@ -222,13 +222,13 @@ describe('POST /sessions/:id/stop', () => {
     await postPromise;
 
     // 落盘是异步完成的：轮询直到用户消息可见（落盘成功）
-    // 超时放宽到 8s：全量套件满载时磁盘持久化 + 详情请求可能明显慢于空载，
-    // 3s 曾在满负载回归里误判为「未落盘」（用例本身串行跑必过）。
+    // 超时放宽到 15s：全量套件满载时磁盘持久化 + 详情请求可能明显慢于空载，
+    // 8s 曾在满负载回归里触发 waitFor 超时误报（用例串行跑必过，连跑 3 次验证）。
     await waitFor(async () => {
       const detail = await req('GET', `/sessions/${id}`);
       const data = (await detail.json()) as { messages: ChatMessage[] };
       return data.messages.some((m) => m.role === 'user');
-    }, 8000);
+    }, 15000);
     const detail = await req('GET', `/sessions/${id}`);
     const data = (await detail.json()) as { messages: ChatMessage[] };
     const declared: string[] = [];

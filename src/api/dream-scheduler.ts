@@ -22,9 +22,13 @@
 // - 每轮重读配置兜底：cron 被别处改坏→回落间隔模式并暴露 cronError，不永久失灵
 
 import { join } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import type { AgentConfig } from '../config/schema.js';
 import { debug } from '../debug.js';
 import { DreamRunLog, truncateError } from '../memory/dream-runs.js';
+import { workspaceId as toWorkspaceId } from '../session/store.js';
+import { listMemoryWorkspaces } from './memory-workspaces.js';
 import type { DreamRunRecord, DreamRunReason, DreamRunSkipReason } from '../memory/dream-runs.js';
 import {
   describeCron,
@@ -120,6 +124,15 @@ export interface DreamSchedulerDeps {
   now?: () => number;
   /** 定时器工厂注入（单测用；默认 setTimeout + unref） */
   createTimer?: (fn: () => void, ms: number) => DreamTimer;
+  /**
+   * 全空间参与（需求 20261027-004 D4）：定时轮/关停兜底遍历改为
+   * 「磁盘枚举候选空间（sessions ∪ memory 目录）→ 逐空间磁盘预判 → 需要跑才懒装载」。
+   * 缺省 false（遍历 registry.list()，与原行为一致）——bootstrap 显式开启；
+   * 既有单测用 fake registry（仅 peek/list）+ 临时 userDir 场景不受影响。
+   */
+  enumerateAllSpaces?: boolean;
+  /** 记忆/会话索引根目录（枚举用；缺省 ~/.loop-agent；单测注入临时目录） */
+  userDir?: string;
 }
 
 const DAY_MS = 86_400_000;
@@ -190,6 +203,10 @@ export class DreamScheduler {
   private readonly log: (msg: string) => void;
   private readonly now: () => number;
   private readonly createTimer: (fn: () => void, ms: number) => DreamTimer;
+  /** D4：全空间参与开关（bootstrap 显式开启；既有单测缺省 false 行为不变） */
+  private readonly enumerateAllSpaces: boolean;
+  /** D4：枚举用用户根（缺省 ~/.loop-agent） */
+  private readonly userDir: string;
 
   /** D7 单飞锁：每空间一个在跑任务 */
   private readonly inflight = new Map<string, Promise<DreamRunSummary>>();
@@ -221,6 +238,8 @@ export class DreamScheduler {
     this.log = deps.log;
     this.now = deps.now ?? (() => Date.now());
     this.createTimer = deps.createTimer ?? defaultTimer;
+    this.enumerateAllSpaces = deps.enumerateAllSpaces === true;
+    this.userDir = deps.userDir ?? join(homedir(), '.loop-agent');
   }
 
   /** 注册定时轮（schedule.enabled=false 时什么也不做；关停兜底由 onExit 独立控制） */
@@ -271,13 +290,77 @@ export class DreamScheduler {
     this.ticking = true;
     const out: DreamRunSummary[] = [];
     try {
-      for (const rt of this.registry.list()) {
-        out.push(await this.runFor(rt.root, 'schedule', opts));
+      // D4：全空间参与——磁盘枚举 + 预判，候选不再局限于已装载 runtime
+      for (const root of await this.enumerateCandidateRoots()) {
+        // 预判（磁盘小文件粗筛，空转零 LLM 零 runtime）；放行后 runFor 内真实增量判定兜底
+        if (this.enumerateAllSpaces && !(await this.shouldAttempt(root))) {
+          out.push(
+            this.skipSummary(root, toWorkspaceId(root), 'schedule', 'no-new-content', new Date(this.now()).toISOString(), this.now()),
+          );
+          continue;
+        }
+        out.push(await this.runFor(root, 'schedule', opts));
       }
     } finally {
       this.ticking = false;
     }
     return out;
+  }
+
+  /**
+   * D4 第一步：磁盘枚举候选空间根（enumerateAllSpaces=false 时回落 registry.list()）。
+   * 复用 listMemoryWorkspaces（sessions meta ∪ memory 目录；孤儿空间 path='' 跳过），
+   * 枚举失败按空集（与定时轮「单侧失败不 500」同哲学）。
+   */
+  private async enumerateCandidateRoots(): Promise<string[]> {
+    if (!this.enumerateAllSpaces) {
+      return this.registry.list().map((rt) => rt.root);
+    }
+    try {
+      const list = await listMemoryWorkspaces({
+        sessionsDir: join(this.userDir, 'sessions'),
+        memoryDir: join(this.userDir, 'memory'),
+      });
+      return list.map((w) => w.path).filter((p) => p.length > 0);
+    } catch (e) {
+      debug.log(`[dream] 空间枚举失败（按空集处理）: ${msgOf(e)}`);
+      return [];
+    }
+  }
+
+  /**
+   * D4 第二步：逐空间磁盘预判（空转空间每 tick 只读 2 个小文件，零 LLM 零 runtime）。
+   * - 无状态文件 → true（首次参与，交给真实增量判定兜底）
+   * - lastProcessedDay 落后于昨天（UTC）→ true（有未处理天）
+   * - lastRunAt 距今超过调度周期（intervalHours）→ true（周期兜底，防 lastProcessedDay 口径漂移）
+   * - 其余 → false（no-new-content）
+   * 读不到/解析失败一律 true（宁多跑一次粗筛后的空轮，不漏真增量）。
+   */
+  private async shouldAttempt(root: string): Promise<boolean> {
+    const wsId = toWorkspaceId(root);
+    const stateFile = join(this.userDir, 'memory', wsId, '.dreaming-state.json');
+    let raw: string;
+    try {
+      raw = await readFile(stateFile, 'utf-8');
+    } catch {
+      return true; // 无状态文件：首次/新空间，放行
+    }
+    try {
+      const state = JSON.parse(raw) as { lastProcessedDay?: string; lastRunAt?: string };
+      const nowMs = this.now();
+      const yesterdayUtc = new Date(nowMs - DAY_MS).toISOString().slice(0, 10);
+      if (state.lastProcessedDay && state.lastProcessedDay < yesterdayUtc) return true;
+      const intervalHours = positive(this.getConfig().memory.dreaming.schedule?.intervalHours, 24);
+      if (state.lastRunAt) {
+        const last = Date.parse(state.lastRunAt);
+        if (!Number.isFinite(last) || nowMs - last > intervalHours * HOUR_MS) return true;
+      } else {
+        return true; // 从未记录运行时间：放行
+      }
+      return false;
+    } catch {
+      return true; // 状态文件损坏：放行，真实增量判定兜底
+    }
   }
 
   /**
@@ -293,7 +376,15 @@ export class DreamScheduler {
     const startedMs = this.now();
     const startedAt = new Date(startedMs).toISOString();
     const catchup = opts?.catchup === true;
-    const rt = this.registry.peek(root);
+    // D4：懒装载——未装载空间经 getCanonical 现建 runtime（目录失效收敛为摘要不抛错）
+    let rt = this.registry.peek(root);
+    if (!rt && this.enumerateAllSpaces) {
+      try {
+        rt = await this.registry.getCanonical(root);
+      } catch (e) {
+        return this.skipSummary(root, '', reason, 'no-runtime', startedAt, startedMs, catchup, msgOf(e));
+      }
+    }
     if (!rt) return this.skipSummary(root, '', reason, 'no-runtime', startedAt, startedMs, catchup);
 
     const mem = rt.configLoader.load().config.memory;
@@ -383,8 +474,9 @@ export class DreamScheduler {
 
     const out: DreamRunSummary[] = [];
     const work = (async (): Promise<void> => {
-      for (const rt of this.registry.list()) {
-        out.push(await this.runFor(rt.root, 'shutdown'));
+      // D4：关停兜底同样全空间参与（enumerateAllSpaces=false 时与原行为一致）
+      for (const root of await this.enumerateCandidateRoots()) {
+        out.push(await this.runFor(root, 'shutdown'));
       }
     })();
 
@@ -659,6 +751,7 @@ export class DreamScheduler {
     startedAt: string,
     startedMs: number,
     catchup?: boolean,
+    errorMessage?: string,
   ): DreamRunSummary {
     const finishedMs = this.now();
     const summary: DreamRunSummary = {
@@ -677,7 +770,7 @@ export class DreamScheduler {
     };
     if (catchup) summary.catchup = true;
     this.logSummary(summary);
-    this.appendHistory(root, summary);
+    this.appendHistory(root, summary, errorMessage);
     return summary;
   }
 

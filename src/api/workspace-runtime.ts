@@ -70,6 +70,8 @@ export interface WorkspaceRegistryOptions {
   poolCapacity?: number;
   /** 空闲释放阈值（默认 30min） */
   idleTtlMs?: number;
+  /** 空闲回收扫描间隔（默认 5min；传 0 关闭定时回收——既有单测用，避免 fake timers 干扰） */
+  evictIntervalMs?: number;
   /** 会话/密钥根目录覆盖（默认 ~/.loop-agent；仅单测隔离用，避免污染真实用户目录） */
   userDir?: string;
   /**
@@ -93,6 +95,8 @@ function intFromEnv(name: string, fallback: number): number {
 
 const DEFAULT_MAX_RUNTIMES = 4;
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000;
+/** 空闲回收扫描间隔（D6，默认 5min） */
+const DEFAULT_EVICT_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
  * 校验目录存在且可进入（stat + access R|X），返回 canonical root。
@@ -133,6 +137,8 @@ export class WorkspaceRegistry {
   /** 会话/密钥根目录覆盖（session-locator 全扫回退定位需要；默认 ~/.loop-agent） */
   readonly userDir?: string;
   private readonly runAgentFactory?: (root: string, id: string) => RuntimeRunAgent;
+  /** 空闲回收定时器（evictIntervalMs>0 时存在；reset 时清理） */
+  private evictTimer: NodeJS.Timeout | null = null;
   /**
    * 进程级并发闸门（Task-20261021-010-04 D18）：跨空间 run 总数上限
    * min(maxRuntimes × poolCapacity, LOOP_AGENT_MAX_CONCURRENCY ?? 8)，
@@ -149,6 +155,19 @@ export class WorkspaceRegistry {
     this.gate = new Semaphore(
       Math.min(this.maxRuntimes * this.poolCapacity, intFromEnv('LOOP_AGENT_MAX_CONCURRENCY', 8)),
     );
+    // 需求 20261027-004 D6：evictIdle 接定时器（原实现为死代码，runtime 只增不降）。
+    // 间隔默认 5min、unref 不阻碍退出；evictIntervalMs=0 关闭（既有单测零感知）。
+    // 首跑延迟同间隔（启动后 5min 才开始扫，避免启动期抖动）。
+    const evictInterval = opts.evictIntervalMs ?? DEFAULT_EVICT_INTERVAL_MS;
+    if (evictInterval > 0) {
+      this.evictTimer = setInterval(() => {
+        const before = this.runtimes.size;
+        this.evictIdle();
+        const freed = before - this.runtimes.size;
+        if (freed > 0) debug.log(`[registry] 空闲回收：已释放 ${freed} 个工作空间运行时`);
+      }, evictInterval);
+      this.evictTimer.unref?.();
+    }
   }
 
   /** 当前保有的 runtime 数量上限 */
@@ -242,6 +261,10 @@ export class WorkspaceRegistry {
 
   /** 清空全部 runtime（测试/关停用；生产不得在运行期调用） */
   reset(): void {
+    if (this.evictTimer) {
+      clearInterval(this.evictTimer);
+      this.evictTimer = null;
+    }
     for (const rt of this.runtimes.values()) rt.pool.reset();
     this.runtimes.clear();
     this.building.clear();

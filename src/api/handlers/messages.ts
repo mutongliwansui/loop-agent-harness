@@ -10,6 +10,7 @@ import { AgentAbortedError } from '../../types.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
 import { locateSession } from '../session-locator.js';
+import { markWorkspaceUsed } from '../recent-workspace.js';
 
 export async function handleMessage(
   ctx: HandlerContext,
@@ -36,6 +37,8 @@ export async function handleMessage(
     sessions = rt.sessions;
     store = rt.store;
     runAgent = (sessionId, input, options) => rt.runAgent(sessionId, input, options);
+    // 需求 20261027-004：活跃对话刷新「最近使用空间」指针（缺省空间语义的事实源）
+    markWorkspaceUsed(rt.root);
   }
 
   const entry = await sessions.ensureEntry(id);

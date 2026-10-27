@@ -143,7 +143,7 @@ Three auth modes:
 |--------|------|-------------|
 | GET | `/memory/status` | Layered status `{enabled, layers, counts, dreaming?}` (always 200 `{enabled:false,...}` when disabled; `dreaming` is the auto-promotion state, see below) |
 | GET | `/memory/workspaces` | Aggregated workspace list "with sessions ∪ with memory" `{workspaces: [{id, name, path, hasMemory, hasSession}]}` (session side from session-index scans, memory side from `{memoryDir}/*/` directory scans; memory-only orphan workspaces listed too) |
-| GET | `/memory/curated?ws=` | Full text of curated-layer files `{entries}` (`ws` optional: workspace id or absolute path; default = startup workspace; unknown workspace → 404) |
+| GET | `/memory/curated?ws=` | Full text of curated-layer files `{entries}` (`ws` optional: workspace id or absolute path; default = default workspace (most recently used, req. 20261027-004); unknown workspace → 404) |
 | GET | `/memory/episodic?limit=&ws=` | Episodic-layer log `{entries}` (`ws` optional, same semantics as curated; `limit` 1–90 days) |
 | GET | `/memory/search?q=&limit=` | Cross-layer search `{results: [{content, score, layer}]}` (q required; current workspace) |
 | GET | `/memory/gate` | Promotion gate thresholds + recent decisions |
@@ -151,7 +151,7 @@ Three auth modes:
 | GET | `/memory/dream/schedule` | Current schedule `{enabled, cron, describe, misfireGraceMin, nextRunAt, nextRunTimes, intervalMode}` |
 | PUT | `/memory/dream/schedule` | Update schedule `{enabled?, cron?, misfireGraceMin?}` → validated then **rescheduled hot (no restart)**; an invalid cron returns 400 and **neither persists nor changes the current schedule** |
 | GET | `/memory/dream/preview?cron=` | Preview while typing: `{ok:true, describe, next:[…5 instants], timezoneOffsetMin}`; invalid → **200** `{ok:false, error, fieldIndex?}` (a preview is not a failed request, so the UI has a single branch) |
-| GET | `/memory/dream/history?limit=&scope=&ws=` | Recent runs `{scope, runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?, workspaceId?, workspaceName?, workspacePath?}]}`; `scope=all` aggregates all workspaces via file scan (no loaded runtime required), `scope=ws` (default) = startup workspace |
+| GET | `/memory/dream/history?limit=&scope=&ws=` | Recent runs `{scope, runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?, workspaceId?, workspaceName?, workspacePath?}]}`; `scope=all` aggregates all workspaces via file scan (no loaded runtime required), `scope=ws` (default) = default workspace (most recently used); two new skip reasons `no-new-content` / `runtime-unavailable` |
 | DELETE | `/memory/dream/history?scope=&ws=` | Clear run history `{deleted}` (follows the selected scope; with `all`, records in every workspace are cleared, files kept) |
 | POST | `/memory/init` | Initialize layered directories (idempotent) |
 

@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { SessionStore } from '../src/session/store.js';
 import {
   currentBootId,
@@ -134,6 +134,54 @@ describe('reconcileInterruptedOnBoot（6.2.2）', () => {
     });
     expect(await reconcileInterruptedOnBoot(store)).toBe(0);
     expect((await readJournal(store, meta.id))?.status).toBe('done');
+  });
+
+  it('pid 守卫：属主进程存活且 journal 近期有活动 → 跳过不误标（另一实例在跑）', async () => {
+    await store.init();
+    const meta = await store.createSession('hi', [{ role: 'user', content: 'hi' }]);
+    await writeJournal(store, meta.id, {
+      runId: 'r-live',
+      sessionId: meta.id,
+      status: 'running',
+      startedAt: Date.now(),
+      pid: process.pid, // 本测试进程：必然存活（bootId 不同模拟另一实例）
+      bootId: 'another-instance-boot-id',
+    });
+    expect(await reconcileInterruptedOnBoot(store)).toBe(0);
+    expect((await readJournal(store, meta.id))?.status).toBe('running');
+  });
+
+  it('pid 守卫：pid 存活但 journal 超过 24h 无写活动 → 视为假活，仍标 interrupted', async () => {
+    await store.init();
+    const meta = await store.createSession('hi', [{ role: 'user', content: 'hi' }]);
+    await writeJournal(store, meta.id, {
+      runId: 'r-stale',
+      sessionId: meta.id,
+      status: 'running',
+      startedAt: Date.now() - 25 * 60 * 60 * 1000,
+      pid: process.pid, // 活着，但 mtime 被拨到 25h 前
+      bootId: 'another-instance-boot-id',
+    });
+    const jp = await store.sessionDirOf(meta.id).then((d) => join(d, 'runs', `${meta.id}.json`));
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    utimesSync(jp, old, old);
+    expect(await reconcileInterruptedOnBoot(store)).toBe(1);
+    expect((await readJournal(store, meta.id))?.status).toBe('interrupted');
+  });
+
+  it('pid 守卫：pid 已死 → 立即标 interrupted（不依赖 mtime）', async () => {
+    await store.init();
+    const meta = await store.createSession('hi', [{ role: 'user', content: 'hi' }]);
+    await writeJournal(store, meta.id, {
+      runId: 'r-dead',
+      sessionId: meta.id,
+      status: 'running',
+      startedAt: Date.now(),
+      pid: 999_999, // Windows 下几乎必然不存在的 pid
+      bootId: 'another-instance-boot-id',
+    });
+    expect(await reconcileInterruptedOnBoot(store)).toBe(1);
+    expect((await readJournal(store, meta.id))?.status).toBe('interrupted');
   });
 });
 

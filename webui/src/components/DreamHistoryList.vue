@@ -3,7 +3,7 @@
 //
 // 20261026-004 扩展（D5/D6/D8）：
 // - 支持 ?scope=all|ws 聚合范围切换（卡片头部分段按钮），清空跟随范围；
-// - 表格新增「工作空间」列（名称 + wsId 副行）；scope=ws 时行内无空间字段，显示「当前空间」。
+// - 表格新增「工作空间」列（名称 + wsId 副行）；scope=ws 时行内无空间字段，显示「缺省空间」。
 // 展示 GET /memory/dream/history 的环形记录（新 → 旧，最多 historyLimit 条，默认 20）。
 // 结果判定口径与后端一致：ok = (errors === 0)；有产出但有错误 → 部分失败，无产出且报错 → 失败。
 import { computed } from 'vue';
@@ -21,7 +21,7 @@ export interface HistoryRow extends DreamRunRecord {
 const props = defineProps<{
   runs: HistoryRow[];
   loading?: boolean;
-  /** 展示范围：all=全部空间聚合（默认）；ws=仅当前空间 */
+  /** 展示范围：all=全部空间聚合（默认）；ws=仅缺省空间（最近使用） */
   scope?: 'all' | 'ws';
 }>();
 const emit = defineEmits<{ clear: []; refresh: []; scopeChange: [s: 'all' | 'ws'] }>();
@@ -60,7 +60,7 @@ const rows = computed(() => props.runs ?? []);
       <span class="spacer"></span>
       <span class="seg" role="group" aria-label="记录范围">
         <button :class="{ on: scope !== 'ws' }" :disabled="loading" @click="emit('scopeChange', 'all')">全部空间</button>
-        <button :class="{ on: scope === 'ws' }" :disabled="loading" @click="emit('scopeChange', 'ws')">当前空间</button>
+        <button :class="{ on: scope === 'ws' }" :disabled="loading" @click="emit('scopeChange', 'ws')">缺省空间（最近使用）</button>
       </span>
       <button class="sm" :disabled="loading || rows.length === 0" @click="emit('clear')">清空记录</button>
       <button class="sm" :disabled="loading" @click="emit('refresh')">⟳ 刷新</button>
@@ -97,7 +97,7 @@ const rows = computed(() => props.runs ?? []);
                 <span class="ws-id mono">{{ r.workspaceId }}</span>
               </template>
               <template v-else>
-                <span class="muted">当前空间</span>
+                <span class="muted">缺省空间</span>
               </template>
             </td>
             <td>
