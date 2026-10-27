@@ -478,6 +478,13 @@ input:focus, textarea:focus { outline: none; border-color: var(--brand); }
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-pop);
   z-index: 20;
+  /* 单列后面板高 388px（双列时约 280px）。矮视口下向上展开会把顶部顶出视口，
+     且 overflow 为 visible 时首项被裁掉、无法滚动（实测 380px 视口裁掉 38.7px）。
+     限制上限 = 视口高 - 底部占用（入口 45 + 间隙 4 + 侧栏 padding ≈ 62，取 96 留余量），
+     超出即面板内滚动，保证「配置」等首项始终可见。 */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -502,7 +509,10 @@ input:focus, textarea:focus { outline: none; border-color: var(--brand); }
   letter-spacing: .04em;
 }
 .nav .p-cap:first-child { padding-top: 3px; }
-.nav .p-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+/* 单列竖排（用户反馈：双列不好看，2026-10-28 改）。
+   双列时每格仅 92px，MCP 只能缩写成「MCP」；单列每行 187px，直接用全称。
+   gap 取 2px：单列项紧贴成一条列表，靠 hover 底色区分边界。 */
+.nav .p-grid { display: grid; grid-template-columns: 1fr; gap: 2px; }
 .nav .panel .p-item {
   display: flex;
   align-items: center;
@@ -706,7 +716,7 @@ label.chk { display: inline-flex; gap: 5px; align-items: center; font-size: 12.5
   .nav .entry { width: 40px; height: 40px; margin: 0 auto; padding: 0; justify-content: center; }
   .nav .entry .lbl, .nav .entry .cur, .nav .entry .caret { display: none; }
   /* 浮层向右弹出：fixed 脱离 60px 侧栏的裁切，left 68px = 侧栏 60 + 8 间隙 */
-  .nav .panel { position: fixed; left: 68px; right: auto; bottom: 12px; width: 210px; }
+  .nav .panel { position: fixed; left: 68px; right: auto; bottom: 12px; width: 210px; max-height: calc(100vh - 24px); }
   /* 面板项不受上面 `.nav a { justify-content:center; padding:9px 0 }` 影响 */
   .nav .panel .p-item { justify-content: flex-start; padding: 0 8px; height: 34px; }
   .page { padding: 14px 12px 32px; }

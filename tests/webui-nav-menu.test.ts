@@ -2,13 +2,14 @@
  * 侧边栏底部「设置与管理」菜单重设计回归测试（需求 20261028-002）
  *
  * 固化三组不变量：
- * 1. 数据结构：7 个管理项分三组（运行 / 扩展 / 数据与排查），路径与本项目 hash 路由逐一对应，
- *    MCP 项短标签为「MCP」（2 列网格放不下全称，全称进 title）；图标全部为 16×16 线性 SVG
- *    inner path，且 gear / wrench / puzzle 与 tool-meta.ts 的 TOOL_ICON_PATHS 逐字节一致（防漂移）。
+ * 1. 数据结构：7 个管理项分三组（运行 / 扩展 / 数据与排查），路径与本项目 hash 路由逐一对应；
+ *    面板行渲染全称（单列宽度足够），MCP 项的 short「MCP」只用于入口徽标（62px 限制）；
+ *    图标全部为 16×16 线性 SVG inner path，且 gear / wrench / puzzle 与 tool-meta.ts 的
+ *    TOOL_ICON_PATHS 逐字节一致（防漂移）。
  * 2. 外观三态：auto → 删除 data-theme（跟随系统），light / dark 显式覆盖。
- * 3. 样式契约：入口 36px、面板是向上浮层（absolute + bottom: calc(100% + 4px)）、
- *    窄屏下入口仍可见且面板改 fixed 向右弹出（修 P7：旧实现把 .grp-body 与
- *    .grp.open .grp-body 一并 display:none，窄屏管理菜单完全不可达）。
+ * 3. 样式契约：入口 36px、面板是向上浮层（absolute + bottom: calc(100% + 4px)）、面板项单列竖排
+ *    （2026-10-28 由双列改单列）、窄屏下入口仍可见且面板改 fixed 向右弹出（修 P7：旧实现把
+ *    .grp-body 与 .grp.open .grp-body 一并 display:none，窄屏管理菜单完全不可达）。
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -95,14 +96,14 @@ describe('nav-menu：分组结构（D3 / D4 / D5）', () => {
     ]);
   });
 
-  it('MCP 项：短标签 MCP、全称保留（title），其余项 short = label', () => {
+  it('MCP 项：全称「MCP 服务器」，short MCP 仅供入口徽标，其余项 short = label', () => {
     const mcp = ADMIN_ITEMS.find((i) => i.path === '#/mcp')!;
     expect(mcp.label).toBe('MCP 服务器');
     expect(mcp.short).toBe('MCP');
     for (const it of ADMIN_ITEMS.filter((i) => i.path !== '#/mcp')) {
       expect(it.short).toBe(it.label);
     }
-    // 短标签需在 2 列格宽（≈93px）内单行可容
+    // short 只用于入口徽标（max-width 62px），需 ≤4 字单行可容
     for (const it of ADMIN_ITEMS) expect(it.short.length).toBeLessThanOrEqual(4);
   });
 });
@@ -220,9 +221,30 @@ describe('style.css：入口 + 浮层样式契约（D1 / D8 / D9）', () => {
     expect(open).toMatch(/visibility:\s*visible/);
   });
 
-  it('2 列网格 + 当前项用 --brand-weak 高亮（与原型像素一致）', () => {
-    expect(bodyOf(rules, '.nav .p-grid')).toMatch(/grid-template-columns:\s*1fr 1fr/);
+  it('单列竖排 + 当前项用 --brand-weak 高亮（2026-10-28 由双列改单列）', () => {
+    const grid = bodyOf(rules, '.nav .p-grid');
+    // 必须是单列：只允许一条 1fr 轨道，禁止出现双列（1fr 1fr / repeat(2, …)）
+    expect(grid).toMatch(/grid-template-columns:\s*1fr;/);
+    expect(grid).not.toMatch(/grid-template-columns:[^;]*1fr\s+1fr/);
+    expect(grid).not.toMatch(/repeat\(\s*2\s*,/);
     expect(bodyOf(rules, '.nav .panel .p-item[aria-current="page"]')).toMatch(/background:\s*var\(--brand-weak\)/);
+  });
+
+  it('面板行渲染全称（单列宽度足够，不再用短标签）', () => {
+    // 模板里 p-item 的可见文字必须是 item.label；short 只留给入口徽标
+    expect(app).toMatch(/<span class="txt">\{\{ item\.label \}\}<\/span>/);
+    expect(app).not.toMatch(/<span class="txt">\{\{ item\.short \}\}<\/span>/);
+    // 入口徽标仍走 currentLabel（内部取 short，受 62px 宽度限制）
+    expect(app).toMatch(/currentLabel/);
+  });
+
+  it('面板高度有上限且可内部滚动（单列变高后矮视口不再顶出视口）', () => {
+    const panel = bodyOf(rules, '.nav .panel');
+    expect(panel).toMatch(/max-height:\s*calc\(100vh - 96px\)/);
+    expect(panel).toMatch(/overflow-y:\s*auto/);
+    // 窄屏是 fixed + bottom:12px，只需留 24px 余量
+    const narrow = blockOf(css, '@media (max-width: 900px)');
+    expect(narrow).toMatch(/\.nav \.panel \{[^}]*max-height:\s*calc\(100vh - 24px\)/);
   });
 
   it('P7 回归：窄屏入口仍可见、面板向右弹出，且不再隐藏 .grp-body', () => {

@@ -51,7 +51,7 @@ export function navIconSvg(key: NavIconKey, strokeWidth = 1.6): string {
   );
 }
 
-/** 一个管理项：label 为全称（title / aria），short 为 2 列网格内的短标签（D4） */
+/** 一个管理项：label 为全称（面板行 / title），short 为入口徽标用的短标签（≤4 字，受 62px 宽度限制） */
 export interface AdminItem {
   path: string;
   label: string;
@@ -77,7 +77,7 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
   {
     cap: '扩展',
     items: [
-      // 2 列格宽约 93px 放不下「MCP 服务器」，短标签用 MCP，全称进 title（D4）
+      // 面板行显示全称「MCP 服务器」；short 仅用于入口徽标（max-width 62px，故取 MCP）
       { path: '#/mcp', label: 'MCP 服务器', short: 'MCP', icon: 'link' },
       { path: '#/skills', label: '技能', short: '技能', icon: 'puzzle' },
     ],

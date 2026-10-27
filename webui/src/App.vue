@@ -279,7 +279,8 @@ onUnmounted(() => {
                 @click="onPick"
               >
                 <span class="ico" v-html="navIconSvg(item.icon)"></span>
-                <span class="txt">{{ item.short }}</span>
+                <!-- 单列后每行 187px，直接显示全称（双列时代此处是 short） -->
+                <span class="txt">{{ item.label }}</span>
               </a>
             </div>
           </template>
