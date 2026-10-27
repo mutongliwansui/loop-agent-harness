@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>原型-20261028-002 · 侧边栏左下角「管理」菜单重设计</title>
+<style>
+/* ===== 设计令牌：与 webui/src/style.css 同源，零新增 ===== */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+}
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --brand-on: #0b221a;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== 原型控制条（非产品 UI） ===== */
+.bar {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.bar b { font-size: 12.5px; letter-spacing: .02em; }
+.bar-grp { display: flex; align-items: center; gap: 4px; }
+.bar-grp > span { color: var(--muted); margin-right: 2px; }
+.bar button {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.bar button:hover { border-color: var(--line-strong); color: var(--text); }
+.bar button.on { background: var(--brand-weak); border-color: var(--brand); color: var(--brand); font-weight: 600; }
+.bar-hint { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+/* ===== 舞台 ===== */
+.stage { display: flex; height: calc(100vh - 46px); }
+body[data-device="narrow"] .stage { width: 880px; }
+
+/* ===== 侧边栏（按真实尺寸复刻） ===== */
+.nav {
+  width: 224px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 10px;
+  position: relative;
+  min-height: 0;
+}
+body[data-device="narrow"] .nav { width: 60px; padding: 12px 6px; align-items: center; }
+
+.lg { display: flex; align-items: center; gap: 8px; padding: 2px 4px 12px; font-weight: 700; font-size: 15px; }
+.lg-dot {
+  width: 22px; height: 22px; border-radius: 7px;
+  background: var(--brand); color: var(--brand-on);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; flex: none;
+}
+.newchat {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; height: 36px; padding: 0 10px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-ctl);
+  border: 1px solid var(--line);
+  background: var(--brand-weak); color: var(--brand);
+  font: inherit; font-size: 13.5px; font-weight: 600;
+  cursor: pointer;
+}
+.newchat:hover { border-color: var(--brand); }
+body[data-device="narrow"] .newchat, body[data-device="narrow"] .lg { justify-content: center; padding: 0; }
+body[data-device="narrow"] .newchat .lbl, body[data-device="narrow"] .lg-name { display: none; }
+
+.sess { flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 1px; min-height: 0; }
+body[data-device="narrow"] .sess { display: none; }
+.sf { position: relative; margin-bottom: 8px; }
+.sf input {
+  width: 100%; height: 30px; padding: 0 9px 0 28px;
+  border-radius: var(--radius-ctl); border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px;
+}
+.sf .sf-ico { position: absolute; left: 9px; top: 7px; font-size: 12px; opacity: .6; }
+.ws-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; font-size: 12px; font-weight: 600; color: var(--text-2);
+}
+.ws-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); flex: none; }
+.ws-head .cnt { margin-left: auto; color: var(--muted); font-weight: 500; }
+.srow { padding: 7px 9px; border-radius: var(--radius-ctl); font-size: 13px; }
+.srow .s-t { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srow .s-m { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.srow.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+
+/* ===== 改造后：底栏单行入口 + 向上浮层面板 ===== */
+.nb {
+  position: relative;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.entry {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; height: 36px; padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  background: none; color: var(--text);
+  font: inherit; font-size: 13.5px; font-weight: 500;
+  cursor: pointer; text-align: left;
+}
+.entry:hover { background: var(--hover); }
+.entry[aria-expanded="true"] { background: var(--hover); border-color: var(--line); }
+.entry .ico { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+.entry[aria-expanded="true"] .ico { color: var(--brand); }
+.entry .lbl { flex: 1; }
+.entry .cur {
+  font-size: 11.5px; font-weight: 500; color: var(--muted);
+  padding: 1px 6px; border-radius: 20px; background: var(--bg);
+  max-width: 62px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.entry .caret { width: 12px; height: 12px; flex: none; color: var(--muted); transition: transform .15s; }
+.entry[aria-expanded="true"] .caret { transform: rotate(180deg); }
+body[data-device="narrow"] .nb { width: 100%; }
+body[data-device="narrow"] .entry { justify-content: center; padding: 0; width: 40px; height: 40px; margin: 0 auto; }
+body[data-device="narrow"] .entry .lbl,
+body[data-device="narrow"] .entry .cur,
+body[data-device="narrow"] .entry .caret { display: none; }
+
+/* 浮层：绝对定位覆盖，不参与文档流 */
+.panel {
+  position: absolute;
+  left: 0; right: 0; bottom: calc(100% + 4px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+  padding: 7px;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity .12s ease-out, transform .12s ease-out;
+  z-index: 20;
+}
+.nav[data-state="open"] .panel { opacity: 1; transform: none; pointer-events: auto; }
+body[data-device="narrow"] .panel {
+  position: fixed;
+  left: 68px; right: auto; bottom: 12px;
+  width: 210px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel, .entry .caret { transition: none; }
+}
+
+.p-cap {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  color: var(--muted); padding: 7px 8px 3px;
+}
+.p-cap:first-child { padding-top: 3px; }
+.p-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.p-item {
+  display: flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 8px;
+  border-radius: var(--radius-ctl);
+  color: var(--text); text-decoration: none;
+  font-size: 12.5px;
+}
+.p-item:hover { background: var(--hover); }
+.p-item[aria-current="page"] { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.p-item .ico { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+.p-item[aria-current="page"] .ico { color: var(--brand); }
+.p-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+.p-appear {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 6px; padding: 8px 8px 2px;
+  border-top: 1px solid var(--line);
+}
+.pa-lbl { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--muted); flex: none; }
+.seg { display: flex; gap: 2px; padding: 2px; background: var(--bg); border-radius: var(--radius-ctl); margin-left: auto; }
+.seg button {
+  font: inherit; font-size: 11.5px; line-height: 1;
+  padding: 4px 7px; border: none; border-radius: 5px;
+  background: none; color: var(--muted); cursor: pointer;
+}
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16,24,40,.1); }
+
+/* 高度徽标已取消：徽标在宽屏会压住文档区、窄屏会压住面板，数值统一改由右侧「空间占用」KPI 卡片呈现 */
+
+/* ===== 改造前：复刻现状（8 行内联平铺 + emoji） ===== */
+.nb-old .grp { display: block; }
+.nb-old .grp-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: var(--radius-ctl);
+  font-size: 13.5px; cursor: pointer; user-select: none;
+}
+.nb-old .grp-head:hover { background: var(--bg); }
+.nb-old .grp-head .arrow { margin-left: auto; font-size: 11px; color: var(--muted); transform: rotate(90deg); }
+.nb-old .grp-body { display: block; }
+.nb-old a, .nb-old .theme-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 8px;
+  color: var(--text); text-decoration: none;
+  font-size: 13.5px; margin-bottom: 1px;
+}
+.nb-old .theme-item { border: none; background: none; width: 100%; text-align: left; cursor: pointer; font: inherit; }
+.nb-old a:hover, .nb-old .theme-item:hover { background: var(--bg); }
+.nb-old a.active { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nb-old .ico { width: 17px; text-align: center; opacity: .85; font-size: 13px; }
+
+/* ===== 右侧说明区 ===== */
+.doc { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px 60px; }
+body[data-device="narrow"] .doc { padding: 16px; }
+.doc h1 { font-size: 17px; margin: 0 0 4px; }
+.doc .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-card); padding: 14px 16px; margin-bottom: 14px;
+}
+.card h2 { font-size: 13.5px; margin: 0 0 10px; }
+.card table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.card th, .card td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.card th { color: var(--muted); font-weight: 600; font-size: 11.5px; white-space: nowrap; }
+.card tr:last-child td { border-bottom: none; }
+.card td b { color: var(--brand); }
+.kv { display: flex; gap: 10px; flex-wrap: wrap; }
+.kpi {
+  flex: 1; min-width: 132px; padding: 10px 12px;
+  background: var(--bg); border-radius: var(--radius-ctl);
+}
+.kpi .n { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi .n.ok { color: var(--brand); }
+.kpi .t { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+ul.tight { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; }
+ul.tight code, .card code {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 11.5px; background: var(--bg); padding: 1px 4px; border-radius: 4px;
+}
+.pill { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 20px; background: var(--brand-weak); color: var(--brand); }
+.pill.bad { background: #fdecec; color: #dc2626; }
+:root[data-theme="dark"] .pill.bad { background: #3b1a1a; color: #f87171; }
+</style>
+</head>
+<body data-device="wide" data-view="after">
+
+<div class="bar">
+  <b>原型 · 20261028-002</b>
+  <div class="bar-grp"><span>视图</span>
+    <button data-view="after" class="on">改造后</button>
+    <button data-view="before">改造前</button>
+  </div>
+  <div class="bar-grp"><span>主题</span>
+    <button data-theme="auto" class="on">跟随系统</button>
+    <button data-theme="light">浅色</button>
+    <button data-theme="dark">深色</button>
+  </div>
+  <div class="bar-grp"><span>设备</span>
+    <button data-device="wide" class="on">宽屏</button>
+    <button data-device="narrow">窄屏 ≤900</button>
+  </div>
+  <div class="bar-grp"><span>面板</span>
+    <button id="btnOpen">展开</button>
+  </div>
+  <span class="bar-hint">URL 可复现：?view=&amp;theme=&amp;device=&amp;state=</span>
+</div>
+
+<div class="stage">
+  <aside class="nav" id="nav" data-state="closed">
+    <div class="lg"><span class="lg-dot">L</span><span class="lg-name">Loop Agent</span></div>
+    <button class="newchat"><span>＋</span><span class="lbl">新建对话</span></button>
+
+    <div class="sess">
+      <div class="sf"><span class="sf-ico">🔍</span><input placeholder="搜索会话 / 工作空间" readonly></div>
+      <div class="ws-head"><span class="dot"></span>loop-agent-command<span class="cnt">4</span></div>
+      <div class="srow active"><span class="s-t">修复触发记录表列错位</span><span class="s-m">8 条 · 20:41</span></div>
+      <div class="srow"><span class="s-t">左下角管理菜单重设计</span><span class="s-m">2 条 · 20:38</span></div>
+      <div class="srow"><span class="s-t">文件预览区终端</span><span class="s-m">13 条 · 昨天</span></div>
+      <div class="ws-head" style="margin-top:6px"><span class="dot" style="background:#8b5cf6"></span>loop-agent-web<span class="cnt">2</span></div>
+      <div class="srow"><span class="s-t">模型性能指标测试</span><span class="s-m">21 条 · 昨天</span></div>
+    </div>
+
+    <!-- ===== 改造后 ===== -->
+    <div class="nb" id="nbAfter">
+      <div class="panel" id="panel" role="menu" aria-label="设置与管理">
+        <div class="p-cap">运行</div>
+        <div class="p-grid">
+          <a class="p-item" role="menuitem" href="#/config" aria-current="page" data-page="配置" title="配置">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.9v1.7M8 12.4v1.7M1.9 8h1.7M12.4 8h1.7M3.7 3.7l1.2 1.2M11.1 11.1l1.2 1.2M12.3 3.7l-1.2 1.2M4.9 11.1l-1.2 1.2"/></svg>
+            <span>配置</span>
+          </a>
+          <a class="p-item" role="menuitem" href="#/models" data-page="模型" title="模型">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="2"/><rect x="6.3" y="6.3" width="3.4" height="3.4" rx=".9"/></svg>
+            <span>模型</span>
+          </a>
+          <a class="p-item" role="menuitem" href="#/tools" data-page="工具" title="工具">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 2.6a3.1 3.1 0 0 0-3.7 4L2.7 10.8a1.45 1.45 0 0 0 2.05 2.05l4.2-4.2a3.1 3.1 0 0 0 3.9-3.7l-1.9 1.9-1.7-.45-.45-1.7z"/></svg>
+            <span>工具</span>
+          </a>
+        </div>
+
+        <div class="p-cap">扩展</div>
+        <div class="p-grid">
+          <a class="p-item" role="menuitem" href="#/mcp" data-page="MCP 服务器" title="MCP 服务器">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.6" cy="11.4" r="1.7"/><circle cx="11.4" cy="4.6" r="1.7"/><path d="M5.9 10.1 10.1 5.9"/></svg>
+            <span>MCP</span>
+          </a>
+          <a class="p-item" role="menuitem" href="#/skills" data-page="技能" title="技能">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z"/></svg>
+            <span>技能</span>
+          </a>
+        </div>
+
+        <div class="p-cap">数据与排查</div>
+        <div class="p-grid">
+          <a class="p-item" role="menuitem" href="#/memory" data-page="记忆" title="记忆">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.4 13 5 8 7.6 3 5z"/><path d="M3 8.2 8 10.8 13 8.2"/><path d="M3 11.2 8 13.8 13 11.2"/></svg>
+            <span>记忆</span>
+          </a>
+          <a class="p-item" role="menuitem" href="#/doctor" data-page="诊断" title="诊断">
+            <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 8h2.5l1.5-3.6L8.5 12l1.5-4h4.2"/></svg>
+            <span>诊断</span>
+          </a>
+        </div>
+
+        <div class="p-appear">
+          <span class="pa-lbl">外观</span>
+          <div class="seg" id="seg" role="group" aria-label="外观主题">
+            <button type="button" data-appear="auto" aria-pressed="true">跟随</button>
+            <button type="button" data-appear="light" aria-pressed="false">浅色</button>
+            <button type="button" data-appear="dark" aria-pressed="false">深色</button>
+          </div>
+        </div>
+      </div>
+
+      <button class="entry" id="entry" aria-haspopup="menu" aria-expanded="false" aria-controls="panel">
+        <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.2h10M3 10.8h10"/><circle cx="6" cy="5.2" r="1.7"/><circle cx="10.4" cy="10.8" r="1.7"/></svg>
+        <span class="lbl">设置与管理</span>
+        <span class="cur" id="curPage">配置</span>
+        <svg class="caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.6 8 5.6 12 9.6"/></svg>
+      </button>
+    </div>
+
+    <!-- ===== 改造前（复刻现状，用于对照） ===== -->
+    <div class="nb nb-old" id="nbBefore" hidden>
+      <div class="grp">
+        <div class="grp-head"><span class="ico">🗂️</span><span class="lbl">管理</span><span class="arrow">▸</span></div>
+        <div class="grp-body">
+          <a href="#/config" class="active"><span class="ico">⚙️</span><span class="lbl">配置</span></a>
+          <a href="#/models"><span class="ico">🤖</span><span class="lbl">模型</span></a>
+          <a href="#/tools"><span class="ico">🔧</span><span class="lbl">工具</span></a>
+          <a href="#/mcp"><span class="ico">🔌</span><span class="lbl">MCP 服务器</span></a>
+          <a href="#/skills"><span class="ico">🧩</span><span class="lbl">技能</span></a>
+          <a href="#/memory"><span class="ico">🧠</span><span class="lbl">记忆</span></a>
+          <a href="#/doctor"><span class="ico">🩺</span><span class="lbl">诊断</span></a>
+          <button class="theme-item"><span class="ico">🌗</span><span class="lbl">主题</span></button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="doc">
+    <h1>侧边栏左下角「管理」菜单重设计</h1>
+    <div class="sub">需求 20261028-002 · 入口 + 向上浮层面板 · 三组分层 · 自绘线性图标 · 宽窄屏均可达</div>
+
+    <div class="card">
+      <h2>一、空间占用（实测）</h2>
+      <div class="kv">
+        <div class="kpi"><div class="n" id="kpiOld">337.3px</div><div class="t">改造前常驻高度（占 900px 视口 37.5%）</div></div>
+        <div class="kpi"><div class="n ok" id="kpiNew">45px</div><div class="t">改造后常驻高度（含 1px 分隔线 + 8px 间距，入口按钮本身 36px）</div></div>
+        <div class="kpi"><div class="n ok" id="kpiSave">−87%</div><div class="t">会话列表可用高度回收</div></div>
+        <div class="kpi"><div class="n" id="kpiPanel">—</div><div class="t">浮层面板高度（覆盖式，不占布局）</div></div>
+      </div>
+      <p style="font-size:12.5px;color:var(--muted);margin:10px 0 0;line-height:1.7">
+        改造前面板与菜单**同处文档流**，8 行（7 管理项 + 主题）全部常驻；改造后只有一行入口常驻，
+        面板 <code>position:absolute</code> 覆盖在会话列表之上，内容增删不再影响布局。
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>二、现状诊断（2026-10-28 CDP 实测）</h2>
+      <table>
+        <thead><tr><th>问题</th><th>实测证据</th><th>性质</th></tr></thead>
+        <tbody>
+          <tr><td>P1 空间侵占</td><td><code>.nav-bottom</code> 展开态 <b>337.3px</b>，会话列表被压到不足 200px</td><td>布局</td></tr>
+          <tr><td>P2 图标撕裂</td><td>9 个平台彩色 emoji，饱和度/视觉重量不一，跨平台渲染不同</td><td>视觉</td></tr>
+          <tr><td>P3 无层次</td><td>7 个管理项 + 主题同层平铺，零分组</td><td>信息架构</td></tr>
+          <tr><td>P4 主从同权</td><td>入口行与子项同为 13.5px、<code>7px 10px</code>、同款 hover；箭头仅 11px</td><td>视觉层级</td></tr>
+          <tr><td>P5 发现性差</td><td>收起态只剩「管理」二字，看不出内含 7 项</td><td>可用性</td></tr>
+          <tr><td>P6 展开突变</td><td><code>display:none ↔ block</code> 硬切，无过渡</td><td>动效</td></tr>
+          <tr><td>P7 窄屏不可达</td><td><code>@media(max-width:900px)</code> 同时隐藏 <code>.grp-body</code> 与 <code>.grp.open .grp-body</code>，管理菜单<b>完全无法进入</b></td><td><span class="pill bad">功能缺陷</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>三、关键决策（推荐值，待确认）</h2>
+      <table>
+        <thead><tr><th>编号</th><th>决策</th><th>取舍</th></tr></thead>
+        <tbody>
+          <tr><td>D1</td><td>入口 + 向上弹出浮层，非常驻内联展开</td><td>否决「分组竖排压缩」（≈320px，省不下来）与「横向图标条」（纯图标发现性差）</td></tr>
+          <tr><td>D2</td><td>自绘 16px 线性 SVG，复用 <code>gear/wrench/puzzle</code>，新增 <code>chip/link/stack/pulse/sliders</code></td><td>否决保留 emoji、否决引入图标库（零新依赖）</td></tr>
+          <tr><td>D3</td><td>2 列网格，每格 34px，横排「图标 + 标签」</td><td>否决单列（7 项 7 行，失去压缩意义）</td></tr>
+          <tr><td>D4</td><td>「MCP 服务器」渲染为「MCP」，全称进 <code>title</code></td><td>2 列格宽约 92px，6 字放不下；<code>label</code> 原值保留</td></tr>
+          <tr><td>D5</td><td>三组：运行 / 扩展 / 数据与排查</td><td>按「改参数 / 装能力 / 看数据与排障」切分</td></tr>
+          <tr><td>D6</td><td>外观改三段控件（跟随 / 浅色 / 深色）</td><td>三态可见优于循环盲切；<code>localStorage</code> 语义不变</td></tr>
+          <tr><td>D7</td><td>入口常驻显示当前页名</td><td>「我在哪」可见；否决不显示</td></tr>
+          <tr><td>D8</td><td>常驻高度 ≤40px（实测 36px）</td><td>与「新建对话」同高，形成底栏节奏</td></tr>
+          <tr><td>D9</td><td>120ms 淡入 + 6px 上移；<code>prefers-reduced-motion</code> 禁用</td><td>否决无动画与 &gt;150ms 长动画</td></tr>
+          <tr><td>D10</td><td>窄屏入口缩为图标按钮，面板向右弹出</td><td>修 P7；否决窄屏隐藏与全屏抽屉</td></tr>
+          <tr><td>D11</td><td>WAI-ARIA menu：↑↓/Home/End、ESC 关闭并焦点回归、点外部关闭</td><td>否决仅鼠标可用</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>四、验证方法</h2>
+      <ul class="tight">
+        <li>点击「设置与管理」→ 面板上浮；点击面板外部 → 关闭</li>
+        <li>键盘：焦点在面板内按 <code>↑</code> <code>↓</code> 循环移动项，<code>Home</code> <code>End</code> 跳首尾，<code>ESC</code> 关闭且焦点回到入口</li>
+        <li>点「窄屏 ≤900」→ 入口缩为齿轮图标，面板改向右弹出（现状此场景管理菜单完全不可见）</li>
+        <li>点「改造前」→ 侧边栏底部变回 8 行 emoji 平铺，对照高度徽标数值</li>
+        <li>外观三段可切：跟随系统 / 浅色 / 深色，整页令牌同步</li>
+      </ul>
+    </div>
+  </main>
+</div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const q = new URLSearchParams(location.search);
+
+  const state = {
+    view: q.get('view') === 'before' ? 'before' : 'after',
+    theme: ['auto', 'light', 'dark'].includes(q.get('theme')) ? q.get('theme') : 'auto',
+    device: q.get('device') === 'narrow' ? 'narrow' : 'wide',
+    open: q.get('state') === 'open',
+  };
+
+  const nav = $('#nav');
+  const entry = $('#entry');
+  const panel = $('#panel');
+  const nbAfter = $('#nbAfter');
+  const nbBefore = $('#nbBefore');
+
+  /* ---------- 主题 ---------- */
+  function applyTheme(t) {
+    state.theme = t;
+    const root = document.documentElement;
+    if (t === 'auto') delete root.dataset.theme;
+    else root.dataset.theme = t;
+    $$('.bar [data-theme]').forEach((b) => b.classList.toggle('on', b.dataset.theme === t));
+    $$('#seg [data-appear]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.appear === t)));
+  }
+
+  /* ---------- 视图 / 设备 ---------- */
+  function applyView(v) {
+    state.view = v;
+    document.body.dataset.view = v;
+    nbAfter.hidden = v !== 'after';
+    nbBefore.hidden = v !== 'before';
+    $$('.bar [data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
+    measure();
+  }
+  function applyDevice(d) {
+    state.device = d;
+    document.body.dataset.device = d;
+    $$('.bar [data-device]').forEach((b) => b.classList.toggle('on', b.dataset.device === d));
+    measure();
+  }
+
+  /* ---------- 面板开合 ---------- */
+  function setOpen(v) {
+    state.open = v;
+    nav.dataset.state = v ? 'open' : 'closed';
+    entry.setAttribute('aria-expanded', String(v));
+    $('#btnOpen').textContent = v ? '收起' : '展开';
+    if (v) {
+      const cur = panel.querySelector('[role="menuitem"][aria-current="page"]') || panel.querySelector('[role="menuitem"]');
+      if (cur) cur.focus({ preventScroll: true });
+    }
+  }
+
+  entry.addEventListener('click', () => setOpen(!state.open));
+  $('#btnOpen').addEventListener('click', () => setOpen(!state.open));
+
+  // 点击外部关闭
+  document.addEventListener('pointerdown', (e) => {
+    if (!state.open) return;
+    if (e.target.closest('#panel') || e.target.closest('#entry')) return;
+    setOpen(false);
+  });
+
+  // 入口键盘：↑ / Enter / Space 打开
+  entry.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setOpen(true);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setOpen(true);
+    }
+  });
+
+  // 面板键盘导航
+  panel.addEventListener('keydown', (e) => {
+    const items = $$('[role="menuitem"]', panel);
+    const i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    else if (e.key === 'Home') { e.preventDefault(); items[0].focus(); }
+    else if (e.key === 'End') { e.preventDefault(); items[items.length - 1].focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); setOpen(false); entry.focus(); }
+  });
+
+  // 选中管理项：切当前页并关闭
+  $$('.p-item', panel).forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      $$('.p-item', panel).forEach((x) => x.removeAttribute('aria-current'));
+      a.setAttribute('aria-current', 'page');
+      $('#curPage').textContent = a.dataset.page;
+      setOpen(false);
+      entry.focus();
+    });
+  });
+
+  // 外观三段
+  $$('#seg [data-appear]').forEach((b) => {
+    b.addEventListener('click', () => applyTheme(b.dataset.appear));
+  });
+
+  // 控制条
+  $$('.bar [data-view]').forEach((b) => b.addEventListener('click', () => applyView(b.dataset.view)));
+  $$('.bar [data-theme]').forEach((b) => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
+  $$('.bar [data-device]').forEach((b) => b.addEventListener('click', () => applyDevice(b.dataset.device)));
+
+  /* ---------- 高度实测 ---------- */
+  // 改造前常驻高度为真实环境 CDP 实测值（1440×900，webui/src/style.css 现状 .nav-bottom 展开态）。
+  // 下方 #nbBefore 复刻仅作视觉对照，其渲染高度受字体/emoji 行高影响，不作为指标口径。
+  const REAL_BEFORE_H = 337.3;
+
+  // hidden 元素的 offsetHeight 恒为 0：临时脱离布局再测
+  function hOf(el) {
+    if (!el) return 0;
+    if (!el.hidden) return el.offsetHeight;
+    el.style.position = 'absolute';
+    el.style.visibility = 'hidden';
+    el.hidden = false;
+    const h = el.offsetHeight;
+    el.hidden = true;
+    el.style.position = '';
+    el.style.visibility = '';
+    return h;
+  }
+
+  function measure() {
+    const hNew = hOf(nbAfter);
+    const hPanel = hOf(panel);
+    $('#kpiNew').textContent = hNew + 'px';
+    $('#kpiOld').textContent = REAL_BEFORE_H + 'px';
+    $('#kpiSave').textContent = '−' + Math.round((1 - hNew / REAL_BEFORE_H) * 100) + '%';
+    $('#kpiPanel').textContent = hPanel + 'px';
+    window.__proto = {
+      state,
+      heights: { entry: hNew, before: REAL_BEFORE_H, panel: hPanel, entryButton: entry.offsetHeight },
+      viewport: { w: innerWidth, h: innerHeight },
+    };
+  }
+
+  applyTheme(state.theme);
+  applyView(state.view);
+  applyDevice(state.device);
+  setOpen(state.open);
+  if (state.open) $('#btnOpen').textContent = '收起';
+  measure();
+  window.addEventListener('resize', measure);
+})();
+</script>
+</body>
+</html>

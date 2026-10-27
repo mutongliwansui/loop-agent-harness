@@ -416,23 +416,158 @@ input:focus, textarea:focus { outline: none; border-color: var(--brand); }
 .nav .sess .del.armed { color: var(--danger); font-weight: 600; }
 .nav .sess-empty { font-size: 12.5px; color: var(--muted); text-align: center; padding: 14px 0; }
 
-/* 底部：管理折叠组 + 主题行 */
-.nav .nav-bottom { margin-top: auto; border-top: 1px solid var(--line); padding-top: 6px; }
-.nav .grp-head {
+/* ===== 底部：设置与管理入口 + 向上浮层面板（需求 20261028-002）=====
+ * 常驻仅入口一行 45px（1px 分隔线 + 8px 间距 + 36px 按钮），原折叠组展开态 337.3px；
+ * 面板为 position:absolute 浮层，覆盖会话列表但不参与文档流。
+ * 旧类名 .grp / .grp-head / .grp-body 在文件末尾保留一版别名（项目兼容惯例）。
+ */
+.nav .nav-bottom {
+  position: relative;
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.nav .entry {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  background: none;
+  color: var(--text);
+  font: inherit;
   font-size: 13.5px;
+  font-weight: 500;
   cursor: pointer;
-  user-select: none;
+  text-align: left;
 }
-.nav .grp-head:hover { background: var(--bg); }
-.nav .grp-head .arrow { margin-left: auto; font-size: 11px; color: var(--muted); transition: transform .15s; }
-.nav .grp.open .grp-head .arrow { transform: rotate(90deg); }
-.nav .grp-body { display: none; }
-.nav .grp.open .grp-body { display: block; }
+.nav .entry:hover { background: var(--hover); }
+.nav .entry[aria-expanded="true"] { background: var(--hover); border-color: var(--line); }
+.nav .entry .ico { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+.nav .entry[aria-expanded="true"] .ico { color: var(--brand); }
+.nav .entry .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 当前页名徽标：让「我在哪」常驻可见（D7） */
+.nav .entry .cur {
+  flex: none;
+  max-width: 62px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav .entry .caret { width: 12px; height: 12px; flex: none; color: var(--muted); transition: transform .15s; }
+.nav .entry[aria-expanded="true"] .caret { transform: rotate(180deg); }
+
+/* 浮层：绝对定位向上展开；收起态 visibility:hidden 使其内部项不可聚焦 */
+.nav .panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 4px);
+  padding: 7px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-pop);
+  z-index: 20;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(6px);
+  /* 收起方向：opacity/transform 淡出 120ms，visibility 延后到动画结束再切 hidden。
+     展开方向的 transition 在 .panel.open 里覆盖为 visibility 0s —— 必须让可见性立即生效，
+     否则 nextTick 里 focus() 时元素仍 visibility:hidden，键盘焦点会丢失（实测 bug）。 */
+  transition: opacity .12s ease-out, transform .12s ease-out, visibility 0s linear .12s;
+}
+.nav .panel.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+  transition: opacity .12s ease-out, transform .12s ease-out, visibility 0s;
+}
+.nav .p-cap {
+  padding: 7px 8px 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.nav .p-cap:first-child { padding-top: 3px; }
+.nav .p-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.nav .panel .p-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: var(--radius-ctl);
+  color: var(--text);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+.nav .panel .p-item:hover { background: var(--hover); }
+.nav .panel .p-item[aria-current="page"] { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.nav .panel .p-item .ico { width: 16px; height: 16px; flex: none; color: var(--text-2); opacity: 1; }
+.nav .panel .p-item[aria-current="page"] .ico { color: var(--brand); }
+.nav .panel .p-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.nav .panel .p-item .txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 面板底部：外观三态三段控件（D6） */
+.nav .p-appear {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 8px 2px;
+  border-top: 1px solid var(--line);
+}
+.nav .pa-lbl { flex: none; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+.nav .p-appear .seg {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  background: var(--bg);
+  border: none;
+  border-radius: var(--radius-ctl);
+  overflow: visible;
+}
+.nav .p-appear .seg button {
+  padding: 4px 7px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+.nav .p-appear .seg button:hover { color: var(--text); }
+.nav .p-appear .seg button[aria-pressed="true"] {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .1);
+}
+
+/* 内联 SVG 图标：统一 16×16、按容器 currentColor 描边 */
+.nav .entry .ico svg,
+.nav .entry .caret svg,
+.nav .panel .p-item .ico svg { display: block; width: 100%; height: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nav .panel, .nav .entry .caret { transition: none; }
+}
 
 .main {
   flex: 1;
@@ -563,10 +698,17 @@ label.chk { display: inline-flex; gap: 5px; align-items: center; font-size: 12.5
 /* ===== 窄屏适配（≤900px：导航收为竖向图标条，卡片/表格横向滚动） ===== */
 @media (max-width: 900px) {
   .nav { width: 60px; padding: 12px 6px; }
-  .nav a span.lbl, .nav .logo .name, .nav .new-chat .lbl,
-  .nav .sess-list, .nav .grp-head .lbl, .nav .grp-head .arrow,
-  .nav .grp-body, .nav .grp.open .grp-body { display: none; }
-  .nav a, .nav .new-chat, .nav .grp-head { justify-content: center; padding: 9px 0; }
+  .nav a span.lbl, .nav .logo .name, .nav .new-chat .lbl, .nav .sess-list { display: none; }
+  .nav a, .nav .new-chat { justify-content: center; padding: 9px 0; }
+  /* 修 P7：旧实现把 .grp-body 与 .grp.open .grp-body 一并 display:none，窄屏管理菜单完全不可达。
+     现在入口常驻可见，缩为 40px 纯图标按钮。 */
+  .nav .nav-bottom { width: 100%; padding-top: 6px; }
+  .nav .entry { width: 40px; height: 40px; margin: 0 auto; padding: 0; justify-content: center; }
+  .nav .entry .lbl, .nav .entry .cur, .nav .entry .caret { display: none; }
+  /* 浮层向右弹出：fixed 脱离 60px 侧栏的裁切，left 68px = 侧栏 60 + 8 间隙 */
+  .nav .panel { position: fixed; left: 68px; right: auto; bottom: 12px; width: 210px; }
+  /* 面板项不受上面 `.nav a { justify-content:center; padding:9px 0 }` 影响 */
+  .nav .panel .p-item { justify-content: flex-start; padding: 0 8px; height: 34px; }
   .page { padding: 14px 12px 32px; }
   .card { overflow-x: auto; }
 }
@@ -1053,3 +1195,23 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
 .dtable td.ws .ws-id { display: block; font-size: 10.5px; color: var(--muted); }
 .ch-hint { font-size: 12px; color: var(--muted); font-weight: 400; }
 
+
+/* ===== 兼容别名（一版）：20261028-002 把底部折叠组换成「入口 + 浮层面板」，
+ * 旧 .grp / .grp-head / .grp-body 不再由 App.vue 渲染，此处仅保证残留引用仍有观感，
+ * 下个版本删除（参照 .mermaid-block → .chart-* 的兼容做法）。 */
+.nav .grp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius-ctl);
+  font-size: 13.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.nav .grp-head:hover { background: var(--hover); }
+.nav .grp-head .arrow { margin-left: auto; font-size: 11px; color: var(--muted); transition: transform .15s; }
+.nav .grp.open .grp-head .arrow { transform: rotate(90deg); }
+.nav .grp-body { display: none; }
+.nav .grp.open .grp-body { display: block; }

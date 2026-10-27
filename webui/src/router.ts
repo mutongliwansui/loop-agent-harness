@@ -4,6 +4,7 @@
 // currentPath 只保留路径段（路由表匹配与导航高亮均用路径段），
 // query 段经 hashQuery 暴露给视图做可还原的页面状态（刷新/分享不丢）。
 import { ref, computed, type Component } from 'vue';
+import { ADMIN_ITEMS, type AdminItem } from './nav-menu';
 import ChatView from './views/ChatView.vue';
 import ConfigView from './views/ConfigView.vue';
 import ModelsView from './views/ModelsView.vue';
@@ -13,22 +14,13 @@ import SkillsView from './views/SkillsView.vue';
 import MemoryView from './views/MemoryView.vue';
 import DoctorView from './views/DoctorView.vue';
 
-export interface NavItem {
-  path: string;
-  label: string;
-  icon: string;
-}
+/**
+ * 底部「设置与管理」7 项（原型-20261018-001 建立；20261028-002 重设计）。
+ * 数据源迁到 nav-menu.ts（分组 + SVG 图标 key + 短标签），此处保留同名导出以兼容旧引用。
+ */
+export type NavItem = AdminItem;
 
-/** 底部「管理」分组 7 项（原型-20261018-001：聊天即主页由「新建对话」+ 会话列表承载） */
-export const adminItems: readonly NavItem[] = [
-  { path: '#/config', label: '配置', icon: '⚙️' },
-  { path: '#/models', label: '模型', icon: '🤖' },
-  { path: '#/tools', label: '工具', icon: '🔧' },
-  { path: '#/mcp', label: 'MCP 服务器', icon: '🔌' },
-  { path: '#/skills', label: '技能', icon: '🧩' },
-  { path: '#/memory', label: '记忆', icon: '🧠' },
-  { path: '#/doctor', label: '诊断', icon: '🩺' },
-];
+export const adminItems: readonly NavItem[] = ADMIN_ITEMS;
 
 /** 拆 hash：路径段 + query 段（`#/memory?tab=l2` → base `#/memory`，query `tab=l2`） */
 function parseHash(h: string): { base: string; query: string } {

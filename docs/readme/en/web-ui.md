@@ -35,7 +35,13 @@ Exactly the same policy as the REST API: the static page itself requires no auth
 
 ### Interface Overview
 
-Eight items in the left navigation (Chinese UI, light/dark follows the system, navigation collapses into an icon bar on narrow screens):
+Eight items in the left navigation (Chinese UI; the navigation collapses into an icon bar on narrow screens). At the bottom sits a single-row **Settings & management** entry (redesigned in requirement 20261028-002):
+
+- **One resident row, 45px**: the entry keeps a badge on the right showing the page you are on (配置 / 模型 / MCP…, or 「对话」 on chat), and opens a grouped panel **upwards** that overlays the session list without stealing its height (the old collapsible group occupied 337.3px, 37.5% of a 900px viewport, whenever expanded).
+- **Three groups in a 2-column grid**: Run (config / models / tools), Extend (MCP / skills), Data & diagnostics (memory / doctor). Icons are hand-drawn 16×16 line SVGs (`stroke-width: 1.6`, `currentColor`, round caps) sharing the same icon language as tool cards and chart containers, replacing the nine multi-coloured platform emojis.
+- **Three-state appearance**: a segmented control at the panel bottom (Follow / Light / Dark, current value in `aria-pressed`). An explicit choice is persisted to `localStorage`; picking *Follow* deletes `data-theme` and hands control back to `prefers-color-scheme`.
+- **Keyboard and a11y**: the entry carries `aria-haspopup` / `aria-expanded` / `aria-controls`; the panel is `role="menu"` with `role="menuitem"` items carrying `aria-current="page"`. Opening focuses the current page item, `↑`/`↓` cycle, `Home`/`End` jump to the ends, `Esc` closes and returns focus to the entry, and a click outside closes it.
+- **Narrow screens (≤900px)**: the entry shrinks to a 40px icon-only button and **stays reachable** (the old CSS set both `.grp-body` and `.grp.open .grp-body` to `display: none`, making the admin menu unreachable below 900px), while the panel pops out to the right.
 
 | View | Capabilities | Endpoints |
 |---|---|---|
