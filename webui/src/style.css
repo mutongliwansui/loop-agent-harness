@@ -950,8 +950,11 @@ details.why p { margin: 6px 0 0; line-height: 1.6; }
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
+/* 数值列对齐：表头 th.num 与单元格 td.num / td.nums 必须同侧（都靠右），
+   否则表头右对齐、数值左对齐会看起来「列错位」（缺陷修复 20261028-001） */
 .dream-hist .dtable thead th.num,
-.dream-hist .dtable tbody td.num { text-align: right; }
+.dream-hist .dtable tbody td.num,
+.dream-hist .dtable tbody td.nums { text-align: right; }
 .dream-hist .dtable tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .dream-hist .dtable tbody tr:last-child td { border-bottom: none; }
 .dream-hist .dtable tbody tr:hover { background: var(--hover); }
