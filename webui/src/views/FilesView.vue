@@ -25,7 +25,9 @@ import {
   renameFsEntry,
   uploadToWorkspace,
 } from '../api/client.js';
+import { fetchRawUploads } from '../api/uploads-view.js';
 import { showToast } from '../toast.js';
+import { isUploadsPath } from '../tool-meta.js';
 import DOMPurify from 'dompurify';
 import { highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
@@ -674,6 +676,117 @@ async function openFile(path: string, anchor = ''): Promise<void> {
     if (seq === openSeq) fileLoading.value = false;
   }
 }
+
+/* ================= 对话流路径入口（20261028-006 D1/D2） ================= */
+
+/**
+ * 对话流工具卡片路径 chip 统一入口：自动展开面板，按类型分流——
+ * - 目录（kind='dir'）→ gotoCrumb 定位（退出搜索态 + 展开目录链 + 滚动到行）；
+ * - uploads 路径 → /uploads/view 受控端点（工作空间外，/fs/* 不可达）；
+ * - 其余 → openFile 既有链路（/fs/file | /fs/raw，含 404/403 错误态）。
+ * kind 缺省时按 viewKindOf 推断目录形态：无扩展名末段视为目录。
+ */
+async function openPath(raw: string, kind?: 'file' | 'dir'): Promise<void> {
+  if (!raw || !raw.trim()) return;
+  open.value = true; // 自动展开面板（窄屏为抽屉态，同样适用）
+  const p = raw.replaceAll('\\', '/');
+  if (kind === 'dir') {
+    await gotoCrumb(p);
+    return;
+  }
+  if (kind !== 'file' && looksLikeDirPath(p)) {
+    await gotoCrumb(p);
+    return;
+  }
+  if (isUploadsPath(p)) {
+    await openUploads(p);
+    return;
+  }
+  await openFile(p);
+  // 不存在/越界等失败的 toast 兜底（D8）：预览区错误态之外补一条轻提示，不阻塞界面
+  if (fileError.value) showToast('文件不存在或已被删除', 'error');
+}
+
+/** 目录形态推断（kind 未带时的兜底）：末段无扩展名即视为目录（面板树里目录 chip 语义） */
+function looksLikeDirPath(p: string): boolean {
+  const last = p.replaceAll('\\', '/').split('/').filter(Boolean).pop() ?? '';
+  return last !== '' && !last.includes('.');
+}
+
+/**
+ * uploads 文件预览（D5/D6）：图片等二进制走 disp=raw（blob 直显，复用 openBinary 的
+ * objectURL 管理），文本类走 disp=file（响应与 /fs/file 同构，复用既有渲染分支）。
+ * wsQuery() 不附加：uploads 根与工作空间无关。
+ */
+async function openUploads(p: string): Promise<void> {
+  const k = viewKindOf(p);
+  selected.value = p;
+  activeTab.value = 'file';
+  viewMode.value = 'prev';
+  const seq = ++openSeq;
+  fileLoading.value = true;
+  fileError.value = '';
+  releaseBinary();
+  fileData.value = null;
+  try {
+    if (BINARY_KINDS.has(k)) {
+      // 复用 openBinary 的解析链，但用 /uploads/view 取字节（fetchRaw 固定打 /fs/raw）
+      const blob = await uploadsRaw(p);
+      if (seq !== openSeq) return;
+      binData.value = blob;
+      if (k === 'pdf') pdfUrl.value = URL.createObjectURL(blob);
+      else if (k === 'img' || k === 'svg') imgUrl.value = URL.createObjectURL(blob);
+      else if (k === 'legacy') { /* 仅占位卡 */ }
+      else if (k === 'pptx') {
+        pptxBuf = await blob.arrayBuffer();
+        if (seq !== openSeq) return;
+      } else {
+        // docx/xlsx/xls：同 openBinary 尾段
+        const buf = await blob.arrayBuffer();
+        if (seq !== openSeq) return;
+        if (k === 'docx') {
+          const mammoth = (await import('mammoth')).default;
+          const r = await mammoth.convertToHtml({ arrayBuffer: buf });
+          if (seq !== openSeq) return;
+          docxHtml.value = DOMPurify.sanitize(r.value, { ADD_DATA_URI_TAGS: ['img'] });
+        } else {
+          xlsxMod = await import('xlsx');
+          if (seq !== openSeq) return;
+          workbook = xlsxMod.read(buf, { type: 'array' });
+          sheetNames.value = workbook.SheetNames;
+          selectSheet(workbook.SheetNames[0] ?? '');
+        }
+      }
+    } else {
+      fileData.value = await api<{ name: string; bytes: number; truncated: boolean; content: string }>(
+        `/uploads/view?path=${encodeURIComponent(p)}&disp=file`,
+      );
+      if (seq !== openSeq) return;
+      if (k === 'csv') parseDelimited(fileData.value.content, ',');
+      else if (k === 'tsv') parseDelimited(fileData.value.content, '\t');
+    }
+    if (seq !== openSeq) return;
+    if (seq === openSeq) fileLoading.value = false;
+    await nextTick();
+    if (seq !== openSeq) return;
+    if (k === 'pptx') void mountPptx(seq);
+    if (viewerEl.value) highlightIn(viewerEl.value);
+  } catch (e) {
+    if (seq !== openSeq) return;
+    fileData.value = null;
+    releaseBinary();
+    fileError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (seq === openSeq) fileLoading.value = false;
+  }
+}
+
+/** /uploads/view?disp=raw：uploads 文件原始字节（Bearer 注入同 fetchRaw） */
+function uploadsRaw(path: string): Promise<Blob> {
+  return fetchRawUploads(path);
+}
+
+defineExpose({ openPath });
 
 /* ================= 写操作与下载（优化建议 20261021-005） ================= */
 // 删除 / 重命名 / 新建目录 / 上传（按钮、右键菜单、拖拽）/ 下载（文件附件、目录 zip）。

@@ -568,8 +568,9 @@ function insideRealRoot(realRoot: string, candidate: string): boolean {
  * 符号链接逃逸校验：沿路径向上找到最深的存在节点做 realpath，要求位于根的真实路径内。
  * followLeaf=false 用于删除/移动符号链接本身（链接指向外部也允许操作链接）；
  * true 用于读取/写入目标（链接指向外部必须拒绝）。
+ * 20261028-006：/uploads/view 复用（导出），语义不变。
  */
-async function assertRealInside(root: string, abs: string, followLeaf: boolean): Promise<void> {
+export async function assertRealInside(root: string, abs: string, followLeaf: boolean): Promise<void> {
   const realRoot = await realpath(root).catch(() => root);
   let cur = followLeaf ? abs : dirname(abs);
   for (;;) {

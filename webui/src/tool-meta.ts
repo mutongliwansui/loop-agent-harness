@@ -42,6 +42,10 @@ export interface ParamRow {
   key: string;
   zh: string;
   text: string;
+  /** 路径型参数的原始完整值（20261028-006 D3/D4）：可点击 chip 用；非路径参数缺省 */
+  path?: string;
+  /** 路径分类：file=文件（预览）、dir=目录（面板定位）；仅 path 存在时有意义 */
+  kind?: 'file' | 'dir';
 }
 
 /** 摘要短语内字符串的最大长度（问题/字段列表等自由文本） */
@@ -397,7 +401,11 @@ export function toolParamRows(tool: string, argsJson: string): ParamRow[] {
   const rows: ParamRow[] = [];
   if (meta) {
     for (const [key, zh] of Object.entries(meta.params)) {
-      if (key in args) rows.push({ key, zh, text: formatParamValue(args[key]) });
+      if (key in args) {
+        const row: ParamRow = { key, zh, text: formatParamValue(args[key]) };
+        annotatePathArg(row, tool, args); // 20261028-006：路径参数补原始值与分类
+        rows.push(row);
+      }
     }
   }
   for (const [key, v] of Object.entries(args)) {
@@ -405,6 +413,92 @@ export function toolParamRows(tool: string, argsJson: string): ParamRow[] {
     rows.push({ key, zh: key, text: formatParamValue(v) });
   }
   return rows;
+}
+
+/* ================= 路径参数分类与可点 chip 判定（20261028-006 D3） ================= */
+
+/**
+ * 路径型参数映射：工具 → 参数名 → 文件/目录。
+ * 与 TOOL_META.params 键序配合：参数表仍按 params 键序渲染，命中本表的值渲染为可点 chip。
+ * grep 的 path 参数可传目录也可传文件，归为 dir（点击走面板定位更稳）。
+ */
+export const PATH_ARGS: Record<string, Record<string, 'file' | 'dir'>> = {
+  fileRead: { path: 'file' },
+  fileWrite: { path: 'file' },
+  editFile: { path: 'file' },
+  grep: { path: 'dir' },
+  commandRun: { cwd: 'dir' },
+  describe_image: { image: 'file' },
+  ask_image: { image: 'file' },
+  extract_json: { image: 'file' },
+  ocr_image: { image: 'file' },
+};
+
+/** 参数行附加信息（20261028-006）：路径参数补原始值与分类，供 ToolCard 渲染可点 chip */
+function annotatePathArg(row: ParamRow, tool: string, args: Record<string, unknown>): void {
+  const kind = PATH_ARGS[tool]?.[row.key];
+  if (!kind) return;
+  const raw = args[row.key];
+  if (typeof raw !== 'string' || !raw.trim()) return; // 缺失/非字符串：纯文本，无 chip
+  row.path = raw;
+  row.kind = kind;
+}
+
+/**
+ * uploads 图片路径嗅探（20261028-006 D6）：归一分隔符后含 `/.loop-agent/uploads/`。
+ * 仅做前端分流提示，后端 `/uploads/view` 强校验兜底（越界一律 403）。
+ */
+export function isUploadsPath(raw: string): boolean {
+  return raw.replaceAll('\\', '/').includes('/.loop-agent/uploads/');
+}
+
+/** Windows 盘符（含 UNC）判定 */
+function looksAbsolute(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || /^\\\\/.test(p) || p.startsWith('/');
+}
+
+/** 外部资源判定（20261028-006 D7）：http(s) 链接与 data URI 不做文件预览 */
+function isExternalResource(p: string): boolean {
+  return /^https?:\/\//i.test(p) || /^data:/i.test(p);
+}
+
+/**
+ * 参数行是否渲染为可点 chip：
+ * - 相对路径 → 视为 ws 内（工具语义即相对工作空间根），可点；
+ * - uploads 绝对路径（~ 展开前的字面量或绝对形式）→ 可点（走 /uploads/view）；
+ *   「~」开头的字面量：后端工具能解析（resolveToolPath 不展开 ~，视觉工具各自处理），
+ *   前端不做 ~ 展开，仅当含 uploads 段时放行，实际可达性由后端校验兜底；
+ * - ws 内绝对路径 → 可点（/fs/* 兼容绝对路径，且 activeWsPath 可得时前端已做内判定）；
+ * - ws 外绝对路径（非 uploads）→ 不可点。
+ * wsRoot 为可选的当前工作空间绝对路径（归一分隔符比较，大小写不敏感——Windows 盘符惯例）。
+ */
+export function isPathArgClickable(raw: string, wsRoot?: string): boolean {
+  const p = raw.replaceAll('\\', '/');
+  if (isExternalResource(p)) return false; // http(s)/data URI：无文件预览语义（D7）
+  if (p.startsWith('~')) return isUploadsPath(p);
+  if (!looksAbsolute(p)) return true; // 相对路径：工具语义即 ws 内
+  if (isUploadsPath(p)) return true;
+  if (!wsRoot) return true; // 前端无 ws 根信息时不猜测，放行由后端校验兜底（误判最多 403 toast）
+  const root = wsRoot.replaceAll('\\', '/').replace(/[\\/]+$/, '').toLowerCase();
+  const abs = p.replace(/[\\/]+$/, '').toLowerCase();
+  return abs === root || abs.startsWith(`${root}/`);
+}
+
+/** 判定不可点原因（D7：纯文本 + title 注明），可点时返回空串 */
+export function pathArgDisabledReason(raw: string, wsRoot?: string): string {
+  const p = raw.replaceAll('\\', '/');
+  if (/^https?:\/\//i.test(p)) return '外部链接不支持预览';
+  if (/^data:/i.test(p)) return '内联数据不支持预览';
+  if (p.startsWith('~')) {
+    return isUploadsPath(p) ? '' : '文件在工作空间之外';
+  }
+  if (!looksAbsolute(p)) return '';
+  if (isUploadsPath(p)) return '';
+  if (!wsRoot) return '';
+  const root = wsRoot.replaceAll('\\', '/').replace(/[\\/]+$/, '').toLowerCase();
+  const abs = p.replace(/[\\/]+$/, '').toLowerCase();
+  if (abs === root || abs.startsWith(`${root}/`)) return '';
+  return '文件在工作空间之外';
 }
 
 /* ================= 结果判定与结果区口径 ================= */

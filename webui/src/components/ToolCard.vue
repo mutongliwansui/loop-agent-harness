@@ -11,6 +11,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
+  isPathArgClickable,
+  PATH_ARGS,
   prettyJson,
   resultLines,
   resultMetaText,
@@ -36,7 +38,10 @@ interface CardSeg {
   aborted?: boolean;
 }
 
-const props = defineProps<{ card: ToolCardVM<CardSeg> }>();
+const props = defineProps<{ card: ToolCardVM<CardSeg>; wsRoot?: string }>();
+
+/** 20261028-006 D2：chip 点击向外冒泡，由 ChatView 接线到 FilesView.openPath */
+const emit = defineEmits<{ (e: 'open-path', payload: { path: string; kind: 'file' | 'dir' }): void }>();
 
 /** 结果硬截断上限（超过 2 万字符前端不再渲染全文，防卡顿） */
 const MAX_RESULT_CHARS = 20000;
@@ -115,6 +120,48 @@ const subtitle = computed(() => {
 const rows = computed(() => (grouped.value ? [] : toolParamRows(props.card.tool, headSeg.value.args)));
 const jsonText = computed(() => (grouped.value ? '' : prettyJson(headSeg.value.args)));
 const canJson = computed(() => !!jsonText.value);
+
+/* ===== 路径 chip（20261028-006 D4/D7） ===== */
+
+/** chip 图标：目录 / 文件（形制对齐 FilesView ICONS，stroke 1.2） */
+const CHIP_ICONS = {
+  dir: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>',
+  file: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/><path d="M8.6 2.4v3.2h3.3" stroke="currentColor" stroke-width="1.2"/></svg>',
+} as const;
+
+/** 单卡参数行 → chip 渲染模型：可点返回 {path,kind}，不可点路径参数返回 {disabled}，其余 undefined */
+function chipOf(row: { path?: string; kind?: 'file' | 'dir' }): { path: string; kind: 'file' | 'dir' } | { disabled: string } | undefined {
+  if (!row.path || !row.kind) return undefined;
+  if (!isPathArgClickable(row.path, props.wsRoot)) return { disabled: '文件在工作空间之外' };
+  return { path: row.path, kind: row.kind };
+}
+
+/** 单卡键值行的 chip 模型（v-for 内逐行判定，避免模板里塞复杂表达式） */
+const rowChips = computed(() => rows.value.map((r) => chipOf(r)));
+
+/**
+ * 组卡子行 chip：本次调用 args 命中 PATH_ARGS 的路径参数（file 类优先），
+ * 未命中或不可点返回 undefined（子行保持纯文本摘要）。
+ */
+function subChipOf(seg: CardSeg): { path: string; kind: 'file' | 'dir' } | undefined {
+  const kindOf = PATH_ARGS[props.card.tool];
+  if (!kindOf) return undefined;
+  let args: Record<string, unknown> | undefined;
+  try {
+    const v: unknown = JSON.parse(seg.args || '{}');
+    if (v && typeof v === 'object' && !Array.isArray(v)) args = v as Record<string, unknown>;
+  } catch {
+    return undefined; // 历史脏数据/中断残片：保持纯文本
+  }
+  if (!args) return undefined;
+  const fileEntry = Object.entries(kindOf).find(([k, kd]) => kd === 'file' && typeof args[k] === 'string' && args[k]);
+  const dirEntry = Object.entries(kindOf).find(([k, kd]) => kd === 'dir' && typeof args[k] === 'string' && args[k]);
+  const entry = fileEntry ?? dirEntry;
+  if (!entry) return undefined;
+  const raw = args[entry[0]] as string;
+  if (!raw.trim() || !isPathArgClickable(raw, props.wsRoot)) return undefined;
+  return { path: raw, kind: entry[1] };
+}
 
 const headArgs = computed(() => headSeg.value.args || '');
 
@@ -260,7 +307,19 @@ function rowState(it: { seg: CardSeg }): string {
         <div v-for="(it, k) in items" :key="it.index" class="trow" :data-state="rowState(it)">
           <span class="trow-n">{{ k + 1 }}</span>
           <span class="trow-dot"></span>
-          <span class="trow-sub">{{ summaryOf(it) }}</span>
+          <template v-if="subChipOf(it.seg)">
+            <button
+              type="button"
+              class="path-chip"
+              :title="`${subChipOf(it.seg)!.path}（点击在文件面板打开）`"
+              @click.stop="emit('open-path', subChipOf(it.seg)!)"
+            >
+              <!-- eslint-disable-next-line vue/no-v-html — 图标为内置 SVG 常量，非用户输入 -->
+              <span class="path-chip-ico" v-html="CHIP_ICONS[subChipOf(it.seg)!.kind]"></span>
+              <span class="path-chip-txt">{{ subChipOf(it.seg)!.path }}</span>
+            </button>
+          </template>
+          <span v-else class="trow-sub">{{ summaryOf(it) }}</span>
           <span v-if="it.seg.elapsedMs != null" class="trow-ms">{{ fmtSecs(it.seg.elapsedMs) }}</span>
         </div>
       </div>
@@ -268,9 +327,23 @@ function rowState(it: { seg: CardSeg }): string {
       <!-- 单卡：键值表 + 结果区 -->
       <template v-else>
         <div v-if="rows.length" class="tkv">
-          <template v-for="row in rows" :key="row.key">
+          <template v-for="(row, ri) in rows" :key="row.key">
             <span class="k">{{ row.zh }}</span>
-            <span class="v">{{ row.text }}</span>
+            <button
+              v-if="rowChips[ri] && 'path' in rowChips[ri]"
+              type="button"
+              class="path-chip"
+              :title="`${rowChips[ri].path}（点击在文件面板打开）`"
+              @click="emit('open-path', { path: rowChips[ri].path, kind: rowChips[ri].kind })"
+            >
+              <!-- eslint-disable-next-line vue/no-v-html — 图标为内置 SVG 常量，非用户输入 -->
+              <span class="path-chip-ico" v-html="CHIP_ICONS[rowChips[ri].kind]"></span>
+              <span class="path-chip-txt">{{ rowChips[ri].path }}</span>
+            </button>
+            <span v-else-if="rowChips[ri] && 'disabled' in rowChips[ri]" class="v v-disabled" :title="rowChips[ri].disabled">{{
+              row.text
+            }}</span>
+            <span v-else class="v">{{ row.text }}</span>
           </template>
         </div>
         <div class="tout" :class="{ fail: state === 'fail', big: expandedResult }">
@@ -555,4 +628,35 @@ function rowState(it: { seg: CardSeg }): string {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* ===== 路径 chip（20261028-006）：等宽 + 虚线下划线 + hover 反馈，零新令牌 ===== */
+.path-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 2px;
+  font: 11.5px/1.5 ui-monospace, Consolas, monospace;
+  color: var(--brand);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--line-strong);
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.path-chip:hover { background: var(--hover); }
+.path-chip:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.path-chip-ico { flex: none; display: grid; place-items: center; color: var(--brand); }
+.path-chip-ico svg { width: 13px; height: 13px; }
+.path-chip-txt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 键值表中的 chip 占满值列并允许换行省略 */
+.tkv .path-chip { min-width: 0; align-self: start; }
+.tkv .v-disabled { color: var(--muted); cursor: help; }
 </style>

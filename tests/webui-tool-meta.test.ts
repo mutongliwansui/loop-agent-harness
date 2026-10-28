@@ -224,7 +224,8 @@ describe('toolParamRows：中文参数表', () => {
       JSON.stringify({ lineNumbers: true, path: 'a.ts', startLine: 1, endLine: 9 }),
     );
     expect(rows.map((r) => r.key)).toEqual(['path', 'startLine', 'endLine', 'lineNumbers']);
-    expect(rows[0]).toEqual({ key: 'path', zh: '文件路径', text: 'a.ts' });
+    // 20261028-006：路径参数注记原始值与分类（可点 chip 数据源）
+    expect(rows[0]).toEqual({ key: 'path', zh: '文件路径', text: 'a.ts', path: 'a.ts', kind: 'file' });
   });
 
   it('未登记参数追加在末尾（zh 回退英文键名）', () => {

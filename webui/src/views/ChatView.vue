@@ -145,6 +145,15 @@ const activeWs = computed(
 );
 // 工作空间文件浏览器（原型-20261018-001）：右侧面板默认展开
 const filesOpen = ref(true);
+/** FilesView 实例引用（20261028-006 D2：工具卡片路径 chip 直调 openPath） */
+const filesRef = ref<InstanceType<typeof FilesView> | null>(null);
+/**
+ * 工具卡片路径 chip 点击（20261028-006 D1/D2）：自动展开文件面板并打开预览/定位目录。
+ * openPath 内部已含 toast 兜底，此处不再重复提示。
+ */
+function onOpenPath(payload: { path: string; kind: 'file' | 'dir' }): void {
+  void filesRef.value?.openPath(payload.path, payload.kind);
+}
 
 let chipSeq = 0;
 let composing = false; // 中文输入法组词中的 Enter 不发送
@@ -912,7 +921,12 @@ onUnmounted(() => {
                   v-for="it in renderItems(m)"
                   :key="it.kind === 'tool' ? `t${it.card.index}` : `s${it.index}`"
                 >
-                  <ToolCard v-if="it.kind === 'tool'" :card="cardVM(it)" />
+                  <ToolCard
+                    v-if="it.kind === 'tool'"
+                    :card="cardVM(it)"
+                    :ws-root="activeWsPath"
+                    @open-path="onOpenPath"
+                  />
                   <div v-else-if="m.role === 'assistant'" class="md">
                     <!-- 稳定块 + 可变尾部（D1）：内容未变的块 key 不变 → Vue 复用 DOM，
                          块内 append 的图表容器得以存活；每个 chunk 只重渲尾部块 -->
@@ -1143,7 +1157,7 @@ onUnmounted(() => {
     </div>
 
     <!-- ===== 工作空间文件浏览器（对话右侧，v-model 控制展开） ===== -->
-    <FilesView v-model:open="filesOpen" :ws-path="activeWsPath" />
+    <FilesView ref="filesRef" v-model:open="filesOpen" :ws-path="activeWsPath" />
 
     <!-- ===== 新建会话弹窗（已知工作空间 + 服务端目录浏览器） ===== -->
     <div v-if="newPopOpen" class="np-mask" @click.self="closeNewPop">
