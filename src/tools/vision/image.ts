@@ -16,8 +16,9 @@ export interface ResolvedImage {
   fileFingerprint?: string;
 }
 
-/** 支持的图片扩展名 → MIME 映射 */
-const MIME_BY_EXT: Record<string, string> = {
+/** 支持的图片扩展名 → MIME 映射
+ *  （task-20261028-005 D11：供 upload/manager.ts 生成 contextNote 图片类型行，保持单一来源） */
+export const MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',

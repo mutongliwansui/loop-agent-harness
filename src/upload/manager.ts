@@ -4,8 +4,9 @@
 import { exec } from 'node:child_process';
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { MIME_BY_EXT } from '../tools/vision/image.js';
 
 const execAsync = promisify(exec);
 
@@ -351,7 +352,19 @@ export async function cleanAllUploads(uploadsRoot: string): Promise<void> {
   await mkdir(uploadsRoot, { recursive: true });
 }
 
-/** 生成注入 _chatHistory 的上下文消息（D2：Agent 感知上传文件） */
+/** 生成注入 _chatHistory 的上下文消息（D2：Agent 感知上传文件）
+ *  图片文件追加「类型」行（task-20261028-005 D11）：note 里只有文件名/路径/大小时，
+ *  主模型看到 paste.png 并不知道这是能看的图，容易用 fileRead 读出二进制垃圾；
+ *  显式标出 MIME 与可用视觉工具，才能把「贴图 → 问图」这条路走通。 */
 export function buildContextNote(entry: UploadEntry): string {
-  return `[文件上传] ${entry.fileName}\n  上传路径: ${entry.targetPath}\n  大小: ${formatBytes(entry.bytes)}`;
+  const lines = [
+    `[文件上传] ${entry.fileName}`,
+    `  上传路径: ${entry.targetPath}`,
+    `  大小: ${formatBytes(entry.bytes)}`,
+  ];
+  const mime = MIME_BY_EXT[extname(entry.fileName).toLowerCase()];
+  if (mime) {
+    lines.push(`  类型: 图片 ${mime}（可用 ask_image / describe_image / extract_json / ocr_image 查看）`);
+  }
+  return lines.join('\n');
 }

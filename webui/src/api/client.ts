@@ -108,14 +108,17 @@ export async function fetchRaw(path: string, ws?: string): Promise<Blob> {
   return await res.blob();
 }
 
-/** 原始字节上传（POST /uploads/raw：body=文件字节，X-File-Name=encodeURIComponent 文件名） */
+/** 原始字节上传（POST /uploads/raw：body=文件字节，X-File-Name=encodeURIComponent 文件名）
+ *  fileName 可选：仅替换 X-File-Name 头（body 仍是原 file），供粘贴链路上传重命名后的名字
+ *  （task-20261028-005 D5：不构造新 File，避免 blob 复制与 lastModified 脱钩） */
 export async function uploadRaw(
   file: File,
   sessionId: string,
+  fileName?: string,
 ): Promise<{ fileName: string; bytes: number; contextNote: string }> {
   const res = await fetch(`/uploads/raw?sessionId=${encodeURIComponent(sessionId)}`, {
     method: 'POST',
-    headers: { 'x-file-name': encodeURIComponent(file.name), ...authHeaders() },
+    headers: { 'x-file-name': encodeURIComponent(fileName ?? file.name), ...authHeaders() },
     body: file,
   });
   if (!res.ok) await throwFor(res);

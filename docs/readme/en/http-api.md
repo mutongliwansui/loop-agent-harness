@@ -72,8 +72,11 @@ Three auth modes:
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/uploads` | Upload files `{sessionId, paths: string[]}` → 201 `{entries, contextNote, failed}` (partial success 201, all failed 400; contextNote is returned only, not injected — the client sends it with the next /messages round) |
+| POST | `/uploads/raw?sessionId=` | Raw byte upload (body = file bytes, `X-File-Name` = encodeURIComponent file name) → 201 `{fileName, bytes, contextNote}`; both the WebUI 📎 picker and the composer's `Ctrl+V` paste (screenshots / files copied in Explorer) go through this endpoint |
 | GET | `/uploads?sessionId=` | List uploaded files of a session |
 | DELETE | `/uploads?sessionId=` | Clear a session's upload directory (verb as confirmation) |
+
+`contextNote` is the text block injected into the Agent context: `[文件上传] <on-disk name>` plus the upload path and size. Image files (png/jpg/jpeg/webp/gif/bmp) get one extra line, `类型: 图片 <mime>（可用 ask_image / describe_image / extract_json / ocr_image 查看）` — without it the main model sees `paste.png` and has no idea it is an image it can look at, and tends to `fileRead` raw binary instead.
 
 **config (`/config` command)**
 

@@ -109,7 +109,7 @@ describe('POST /uploads/raw 正常路径', () => {
     // 文件真实落盘且字节一致
     expect(existsSync(entry.targetPath)).toBe(true);
     expect(readFileSync(entry.targetPath)).toEqual(content);
-    // contextNote 真实格式（与 buildContextNote 一致）
+    // contextNote 真实格式（与 buildContextNote 一致；txt 非图片，不含「类型」行）
     expect(body.contextNote).toBe(
       `[文件上传] ${entry.fileName}\n  上传路径: ${entry.targetPath}\n  大小: ${entry.bytes}B`,
     );

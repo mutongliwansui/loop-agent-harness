@@ -16,6 +16,13 @@
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { api, AuthError, ApiError, uploadRaw } from '../api/client.js';
+import {
+  capPasteFiles,
+  collectPasteFiles,
+  visionSkipReason,
+  PASTE_MAX_FILES,
+  type VisionGate,
+} from '../paste-files.js';
 import { showToast } from '../toast.js';
 import { highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
@@ -74,6 +81,10 @@ interface UploadChip {
   fileName: string;
   bytes: number;
   contextNote: string;
+  /** 图片附件的本地缩略图 blob URL（task-20261028-005 D6）；非图片为 undefined */
+  thumbUrl?: string;
+  /** 视觉链路不可用/超限等可观测警告（D8）；无问题为 undefined */
+  warn?: string;
 }
 
 // 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
@@ -516,9 +527,12 @@ async function send(): Promise<void> {
     modelAlias: modelAlias.value,
   });
   if (outcome === 'failed') {
-    // 请求未成功：恢复输入，用户可直接重试
+    // 请求未成功：恢复输入，用户可直接重试（D7：此处不释放缩略图 URL，恢复后仍要能显示）
     uploads.value = chipsSnapshot;
     setDraft(draftSnapshot);
+  } else {
+    // 发送成功：此时 chip 已被清空，缩略图不再需要（D7）
+    releaseChips(chipsSnapshot);
   }
   scrollBottom();
   void postRenderMsgs(); // 流式/非流式/停止/失败统一在此做代码高亮 + mermaid
@@ -566,7 +580,103 @@ async function onPickFiles(ev: Event): Promise<void> {
   }
 }
 
+/* ===== 粘贴附件（task-20261028-005）=====
+ * 截图与资源管理器复制的文件都落在 paste.clipboardData.files（实测见需求台账），
+ * 故只有一条收集路径；纯文本粘贴（files 为空）必须原样放行，绝不 preventDefault。 */
+
+/** 视觉链路门控配置：GET /vision 的 available（已含 enabled=false 与无 Key 两种判定）+ 图片字节上限 */
+const visionGate = ref<VisionGate | null>(null);
+let visionGateLoading: Promise<VisionGate | null> | null = null;
+
+/** 惰性加载一次并缓存（D8）；失败降级为 null → 不显示警告、不阻断上传 */
+async function loadVisionGate(): Promise<VisionGate | null> {
+  if (visionGate.value) return visionGate.value;
+  if (visionGateLoading) return visionGateLoading;
+  visionGateLoading = (async () => {
+    try {
+      const [st, maxBytes] = await Promise.all([
+        api<{ available: boolean; reason?: string }>('/vision'),
+        api<{ value: unknown }>(`/config/${encodeURIComponent('vision.maxImageBytes')}`),
+      ]);
+      const n = Number(maxBytes.value);
+      const gate: VisionGate = {
+        available: st.available === true,
+        ...(st.reason ? { unavailableReason: st.reason } : {}),
+        maxImageBytes: Number.isFinite(n) && n > 0 ? n : 10 * 1024 * 1024,
+      };
+      visionGate.value = gate;
+      return gate;
+    } catch {
+      return null; // 配置读不到不该阻止用户传图
+    } finally {
+      visionGateLoading = null;
+    }
+  })();
+  return visionGateLoading;
+}
+
+/** 释放单个 chip 的缩略图 URL（幂等） */
+function releaseChip(u: UploadChip): void {
+  if (!u.thumbUrl) return;
+  try {
+    URL.revokeObjectURL(u.thumbUrl);
+  } catch {
+    // 环境不支持 revokeObjectURL 时忽略（不影响功能）
+  }
+  u.thumbUrl = undefined;
+}
+
+/** 批量释放（D7：仅在发送成功 / 删除 chip / 清空 / 卸载四处调用；发送失败不释放） */
+function releaseChips(list: readonly UploadChip[]): void {
+  for (const u of list) releaseChip(u);
+}
+
+/** 输入框粘贴：有文件才接管（D1），无文件一律走浏览器默认文本粘贴（D2） */
+async function onPaste(ev: ClipboardEvent): Promise<void> {
+  const pasted = collectPasteFiles(ev.clipboardData);
+  if (pasted.length === 0) return; // 纯文本粘贴：不拦、不提示
+  ev.preventDefault();
+  if (streaming.value) {
+    showToast('当前会话正在生成回复，请先停止', 'error');
+    return;
+  }
+  if (upBusy.value) {
+    showToast('已有附件正在上传，请稍候', 'error');
+    return;
+  }
+  const { accepted, dropped } = capPasteFiles(pasted);
+  if (dropped > 0) showToast(`单次最多 ${PASTE_MAX_FILES} 个附件，已忽略 ${dropped} 个`, 'error');
+  const sessionId = await ensureSession();
+  if (!sessionId) return;
+  const gate = await loadVisionGate();
+  upBusy.value = true;
+  try {
+    for (const p of accepted) {
+      try {
+        const r = await uploadRaw(p.file, sessionId, p.name);
+        const chip: UploadChip = {
+          id: ++chipSeq,
+          fileName: r.fileName,
+          bytes: r.bytes,
+          contextNote: r.contextNote,
+        };
+        if (p.isImage) chip.thumbUrl = URL.createObjectURL(p.file);
+        const warn = gate ? visionSkipReason(p.name, p.file.type, p.file.size, gate) : null;
+        if (warn) chip.warn = warn;
+        uploads.value.push(chip);
+        showToast(`已粘贴 → ${r.fileName}（${fmtBytes(r.bytes)}）`, 'success');
+      } catch (e) {
+        if (e instanceof AuthError) break;
+        showToast(`上传失败 ${p.name}: ${errText(e)}`, 'error');
+      }
+    }
+  } finally {
+    upBusy.value = false;
+  }
+}
+
 function removeChip(u: UploadChip): void {
+  releaseChip(u);
   uploads.value = uploads.value.filter((x) => x.id !== u.id);
   showToast('已从注入列表移除（服务器文件保留）');
 }
@@ -583,6 +693,7 @@ function onCleanUploads(): void {
   void (async () => {
     try {
       await api('/uploads', { method: 'DELETE' });
+      releaseChips(uploads.value);
       uploads.value = [];
       showToast('上传目录已清空', 'success');
     } catch (e) {
@@ -745,6 +856,7 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   clearRenderTimer(); // 流式图表渲染的节流定时器
+  releaseChips(uploads.value); // 粘贴附件的缩略图 blob URL（task-20261028-005 D7）
 });
 </script>
 
@@ -868,9 +980,11 @@ onUnmounted(() => {
                 v-for="u in uploads"
                 :key="u.id"
                 class="file-pill"
+                :class="{ 'is-img': u.thumbUrl }"
                 :title="u.contextNote + '（将随下一条消息注入）'"
               >
-                <svg class="fp-ic" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                <img v-if="u.thumbUrl" class="fp-thumb" :src="u.thumbUrl" alt="" />
+                <svg v-else class="fp-ic" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
                   <path
                     d="M10.6 4.6 6.2 9a1.6 1.6 0 0 0 2.3 2.3l4.6-4.6a3 3 0 0 0-4.2-4.2L4.2 7.2a4.4 4.4 0 0 0 6.2 6.2l3.3-3.3"
                     fill="none"
@@ -881,6 +995,7 @@ onUnmounted(() => {
                 </svg>
                 <span class="fp-name">{{ u.fileName }}</span>
                 <span class="fp-size">{{ fmtBytes(u.bytes) }}</span>
+                <span v-if="u.warn" class="fp-warn" :title="u.warn" role="img" aria-label="视觉可用性警告">⚠</span>
                 <button class="fp-x" title="移除（不再注入，服务器文件保留）" @click="removeChip(u)">
                   <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
                     <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
@@ -897,6 +1012,7 @@ onUnmounted(() => {
               placeholder="输入消息…"
               @input="autoGrow"
               @keydown.enter="onEnter"
+              @paste="onPaste"
               @compositionstart="setComposing(true)"
               @compositionend="setComposing(false)"
             ></textarea>
@@ -1692,6 +1808,19 @@ onUnmounted(() => {
   color: var(--text-2);
 }
 .file-pill .fp-ic { flex: none; color: var(--muted); }
+/* 图片 chip：24×24 缩略图（task-20261028-005 D6），左内边距收紧保持与文本 chip 同高 */
+.file-pill.is-img { padding-left: 3px; }
+.file-pill .fp-thumb {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+/* 视觉可用性警告角标（D8）：只着色，不改 chip 主色，原因走 title */
+.file-pill .fp-warn { flex: none; color: var(--warn); font-size: 11px; line-height: 1; cursor: help; }
 .file-pill .fp-name {
   min-width: 0;
   max-width: 190px;

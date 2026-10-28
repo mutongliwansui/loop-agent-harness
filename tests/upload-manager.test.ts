@@ -289,6 +289,41 @@ describe('辅助', () => {
     expect(note).toContain('[文件上传] 20261012-a.txt');
     expect(note).toContain('C:\\u\\.loop-agent\\uploads\\s1\\20261012-a.txt');
     expect(note).toContain('2.0KB');
+    // 非图片不追加类型行（task-20261028-005 D11）
+    expect(note).not.toContain('类型:');
+  });
+
+  it('buildContextNote 对图片追加类型行并点出可用视觉工具（D11）', () => {
+    const note = buildContextNote({
+      originalPath: '',
+      targetPath: 'C:\\u\\.loop-agent\\uploads\\s1\\20261028-paste.png',
+      fileName: '20261028-143012-paste.png',
+      bytes: 131481,
+      uploadedAt: '2026-10-28T14:30:12.000Z',
+    });
+    expect(note).toContain('类型: 图片 image/png');
+    expect(note).toContain('ask_image');
+    expect(note).toContain('describe_image');
+    // 大写的 .PNG 也要命中（扩展名按小写比对）
+    expect(
+      buildContextNote({
+        originalPath: '',
+        targetPath: 'C:\\u\\.loop-agent\\uploads\\s1\\A.PNG',
+        fileName: 'A.PNG',
+        bytes: 10,
+        uploadedAt: '2026-10-28T14:30:12.000Z',
+      }),
+    ).toContain('类型: 图片 image/png');
+    // jpg 要映射到 image/jpeg 而不是 image/jpg
+    expect(
+      buildContextNote({
+        originalPath: '',
+        targetPath: 'C:\\u\\.loop-agent\\uploads\\s1\\b.jpg',
+        fileName: 'b.jpg',
+        bytes: 10,
+        uploadedAt: '2026-10-28T14:30:12.000Z',
+      }),
+    ).toContain('类型: 图片 image/jpeg');
   });
 
   it('defaultUploadsRoot 指向 ~/.loop-agent/uploads', () => {

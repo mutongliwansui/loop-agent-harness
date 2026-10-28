@@ -101,6 +101,8 @@ Dependencies: `@xterm/xterm` + `@xterm/addon-fit` on the front end; `ws` + `@lyd
 
 The 📎 button in the composer opens the upload panel: file picker (multi-select) → each file is uploaded as raw bytes via `POST /uploads/raw` (browsers cannot obtain full local paths, hence this new endpoint; the CLI's `/upload` path mode is unaffected) → on success a context chip (file name + size) appears above the composer and is injected into the Agent context with the next message. The chip ✕ only removes it on the client (no longer injected); the management list can inspect/clear uploaded files (verb-as-confirmation).
 
+**Paste with `Ctrl+V`**: press `Ctrl+V` right in the composer to drop in a screenshot (Win+Shift+S / QQ / WeChat capture) or files copied with `Ctrl+C` in File Explorer — the browser exposes both through `paste.clipboardData.files`, so they share one upload path and you no longer need to save to disk before reaching for 📎. Chrome's default screenshot name `image.png` is renamed to `paste.png` / `paste-2.png` (the server prefixes the on-disk name with `YYYYMMDD-HHmmss-`; the client adds no timestamp of its own — otherwise several screenshots pasted within the same second would share a prefix and become indistinguishable once the chip ellipsises them), while ordinary files always keep their original name. Image chips show a 24×24 local thumbnail; the blob URL is released on delete / successful send / clear-all / unmount, and a failed send restores the chips untouched (no early release, so thumbnails never break). At most 6 files per paste, uploaded sequentially in paste order, and blocked while a reply is being generated. When an image exceeds `vision.maxImageBytes` or the vision pipeline is disabled, the chip shows a ⚠ badge (hover for the exact reason) instead of silently pretending it is readable. Plain-text pasting keeps the browser default behaviour — never intercepted, never toasted.
+
 ### Multi-tab sync and background-completion alerts
 
 When multiple tabs of the same browser are open, run state syncs automatically (Task-20261021-002-07): a run started/finished in tab A shows a running dot / unread dot in tab B within ~1s and refreshes the sidebar; deleting a session in A removes it in B; marking a session read in A clears the unread dot in B as well. The channel is `BroadcastChannel('loop-agent')` with automatic localStorage fallback in older browsers; only derived state is broadcast (run started/finished/read/deleted) — message content always comes from the server.
@@ -152,4 +154,4 @@ Tech stack: Vue 3 `<script setup>` + TypeScript + Vite; hash routing (`#/chat` e
 
 ### Non-goals
 
-Native mobile apps, multi-user accounts, SEO/public site scenarios, i18n bilingual UI (Chinese-only for now), drag-and-drop / paste upload (future evolution).
+Native mobile apps, multi-user accounts, SEO/public site scenarios, i18n bilingual UI (Chinese-only for now), drag-and-drop upload (future evolution).
