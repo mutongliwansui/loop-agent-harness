@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 20261028-006 对话流工具卡片文件路径可点击预览</title>
+<style>
+/* ===== 设计令牌（对齐 webui/style.css 既有令牌，零新增）===== */
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --panel-2:#f8f9fb; --bar-bg:#f1f3f5;
+  --line:#e3e6ea; --line-soft:#eef0f3; --line-strong:#d3d8de;
+  --text:#1f2430; --muted:#6b7280;
+  --brand:#059669; --brand-weak:#d1fae5; --hover:#f3f4f6;
+  --ok:#059669; --ok-weak:#d1fae5; --warn:#b45309; --warn-weak:#fef3c7;
+  --danger:#dc2626; --danger-weak:#fdecec;
+  --mono:ui-monospace,'Cascadia Code',Consolas,'Courier New',monospace;
+  --shadow-pop:0 8px 28px rgba(15,23,42,.14); --radius-card:12px;
+}
+html[data-theme="dark"]{
+  --bg:#12161c; --panel:#1a2129; --panel-2:#202832; --bar-bg:#222b35;
+  --line:#2a333e; --line-soft:#232b35; --line-strong:#3a424d;
+  --text:#e6e9ee; --muted:#9aa3af;
+  --brand:#34d399; --brand-weak:#143528; --hover:#242d38;
+  --ok:#34d399; --ok-weak:#143528; --warn:#fbbf24; --warn-weak:#3a2e10;
+  --danger:#f87171; --danger-weak:#3b1a1a;
+  --shadow-pop:0 8px 28px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;padding-bottom:48px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
+/* ===== 顶栏 ===== */
+.top{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:20}
+.top h1{font-size:16px;font-weight:600}
+.top .meta{font-size:12px;color:var(--muted);margin-top:2px}
+.theme-seg{display:flex;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden}
+.theme-seg button{padding:5px 12px;font-size:12px;color:var(--muted)}
+.theme-seg button+button{border-left:1px solid var(--line-strong)}
+.theme-seg button[aria-pressed="true"]{background:var(--brand-weak);color:var(--brand);font-weight:600}
+
+/* ===== 舞台 ===== */
+.hint{max-width:1160px;margin:14px auto 0;padding:9px 14px;border:1px dashed var(--line-strong);border-radius:10px;font-size:12.5px;color:var(--muted);background:var(--panel)}
+.hint b{color:var(--brand);font-weight:600}
+.stage{display:flex;gap:16px;padding:14px 20px 0;max-width:1200px;margin:0 auto;align-items:flex-start}
+.chat{flex:1;min-width:0}
+
+/* ===== 对话消息 ===== */
+.msg{margin-bottom:14px;display:flex}
+.msg.user{justify-content:flex-end}
+.msg .bubble{max-width:82%;border-radius:var(--radius-card);padding:10px 14px}
+.msg.user .bubble{background:var(--brand-weak);color:var(--text)}
+.msg.bot .bubble{background:var(--panel);border:1px solid var(--line)}
+.bot p{font-size:13.5px;margin-bottom:10px}
+.bot p:last-child{margin-bottom:0}
+
+/* ===== 工具卡（方案 B 形制）===== */
+.tcard{border:1px solid var(--line);border-radius:10px;background:var(--panel-2);margin-bottom:8px;overflow:hidden}
+.tcard-h{display:flex;align-items:center;gap:8px;padding:7px 10px}
+.badge{width:24px;height:24px;flex:none;display:grid;place-items:center;border-radius:7px;background:var(--bar-bg);color:var(--muted)}
+.tname{font-weight:600;font-size:13px}
+.tsub{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.pill{flex:none;font-size:11px;font-weight:600;padding:1px 8px;border-radius:99px}
+.pill.ok{color:var(--ok);background:var(--ok-weak)}
+.pill.run{color:var(--warn);background:var(--warn-weak)}
+.caret{flex:none;color:var(--muted);font-size:11px;width:20px;height:20px;border-radius:6px;display:grid;place-items:center}
+.caret:hover{background:var(--hover)}
+.trows{border-top:1px solid var(--line-soft);padding:6px 10px 8px}
+.trow{display:flex;align-items:baseline;gap:8px;padding:3px 0;font-size:12.5px}
+.tlabel{flex:none;width:64px;color:var(--muted)}
+.tval{font-family:var(--mono);font-size:12px;word-break:break-all}
+.tsubrow{display:flex;align-items:center;gap:6px;padding:3px 0 3px 24px;font-size:12px;color:var(--muted)}
+.tsubrow .seq{flex:none;color:var(--muted);opacity:.7}
+
+/* ===== 路径 chip（本原型核心）===== */
+.path-chip{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12px;color:var(--text);padding:1px 7px;border-radius:5px;border-bottom:1px dashed var(--line-strong);transition:background .12s}
+.path-chip svg{flex:none;opacity:.75}
+.path-chip:hover{background:var(--hover);border-bottom-color:var(--brand);color:var(--brand)}
+.path-chip:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+.plain-val{font-family:var(--mono);font-size:12px;color:var(--muted);word-break:break-all;border-bottom:1px dotted transparent;cursor:default}
+
+/* ===== 文件面板（FilesView 简化形制）===== */
+.panel{width:384px;flex:none;border:1px solid var(--line);border-radius:var(--radius-card);background:var(--panel);display:none;flex-direction:column;height:660px;position:sticky;top:76px;overflow:hidden}
+.panel.open{display:flex}
+.p-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);background:var(--panel-2)}
+.crumb{flex:1;min-width:0;font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crumb .seg{cursor:pointer}
+.crumb .seg:hover{color:var(--brand)}
+.crumb .cur{color:var(--text);font-weight:600}
+.p-close{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:var(--muted)}
+.p-close:hover{background:var(--hover)}
+.p-body{flex:1;display:flex;min-height:0}
+.tree{width:150px;flex:none;border-right:1px solid var(--line-soft);padding:8px 6px;overflow:auto;font-size:12.5px}
+.tn{display:flex;align-items:center;gap:5px;padding:2px 6px;border-radius:6px;color:var(--muted);white-space:nowrap}
+.tn svg{flex:none}
+.tn.d0{padding-left:6px}.tn.d1{padding-left:20px}.tn.d2{padding-left:34px}
+.tn.file{color:var(--text)}
+.tn.loc{background:var(--brand-weak);color:var(--brand);font-weight:600}
+.viewer{flex:1;min-width:0;display:flex;flex-direction:column}
+.v-head{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:12px;color:var(--muted)}
+.v-tag{flex:none;font-size:10.5px;font-weight:600;color:var(--brand);background:var(--brand-weak);padding:0 7px;border-radius:99px}
+.v-scroll{flex:1;overflow:auto;padding:12px}
+.v-empty{color:var(--muted);font-size:12.5px;display:grid;place-items:center;height:100%;text-align:center;line-height:2}
+.code{font-family:var(--mono);font-size:11.5px;line-height:1.7;white-space:pre;color:var(--text);background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;padding:10px}
+.md h3{font-size:14px;margin:4px 0 8px}
+.md p{font-size:12.5px;color:var(--text);margin-bottom:8px}
+.md li{font-size:12.5px;color:var(--text);margin-left:18px}
+.imgwrap{border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
+.upnote{margin-top:10px;font-size:11.5px;color:var(--muted);border-top:1px dashed var(--line-strong);padding-top:8px}
+
+/* ===== 决策点 ===== */
+.decisions{max-width:1200px;margin:22px auto 0;padding:0 20px}
+.decisions h2{font-size:14px;margin-bottom:10px;color:var(--text)}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
+.dcard{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:10px 12px;font-size:12.5px}
+.dcard b{color:var(--brand)}
+.dcard .no{color:var(--muted);font-size:11.5px;display:block;margin-top:2px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>对话流工具卡片文件路径可点击预览 · 交互原型</h1>
+    <div class="meta">需求 20261028-006 · 原型 v1（2026-10-28）· 点击对话流中带虚线下划线的路径 chip 体验</div>
+  </div>
+  <div class="theme-seg" role="group" aria-label="主题">
+    <button data-th="auto" aria-pressed="false">跟随</button>
+    <button data-th="light" aria-pressed="true">浅色</button>
+    <button data-th="dark" aria-pressed="false">深色</button>
+  </div>
+</header>
+
+<div class="hint">① 点击 <b>文件 chip</b>（虚线下划线）→ 右侧文件面板自动展开并打开预览；② 点击 <b>目录 chip</b>（folder 图标）→ 面板展开并在目录树定位；③ 灰色路径为不可点项（URL / 工作空间外），悬停可见原因；④ 右上角切换亮暗主题，URL 可带 <code>?theme=dark</code>。</div>
+
+<main class="stage">
+  <section class="chat" aria-label="对话流演示">
+    <div class="msg user"><div class="bubble">帮我读一下 src/agent/react-agent.ts 的核心循环，顺手把要点记到 docs/notes/demo.md，再看看我刚粘贴的截图。</div></div>
+
+    <div class="msg bot"><div class="bubble">
+      <p>我先读取核心循环代码：</p>
+
+      <!-- 卡1：fileRead 展开参数表（文件 chip） -->
+      <div class="tcard">
+        <div class="tcard-h">
+          <span class="badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/><path d="M8.6 2.4v3.2h3.3" stroke="currentColor" stroke-width="1.2"/></svg></span>
+          <span class="tname">读取文件</span>
+          <span class="tsub">react-agent.ts（430-500 行）</span>
+          <span class="pill ok">完成</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        <div class="trows">
+          <div class="trow"><span class="tlabel">文件路径</span>
+            <button class="path-chip" data-kind="file" data-path="src/agent/react-agent.ts" title="点击在右侧面板预览">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/><path d="M8.6 2.4v3.2h3.3" stroke="currentColor" stroke-width="1.2"/></svg>
+              src/agent/react-agent.ts</button>
+          </div>
+          <div class="trow"><span class="tlabel">起始行</span><span class="tval">430</span></div>
+          <div class="trow"><span class="tlabel">结束行</span><span class="tval">500</span></div>
+        </div>
+      </div>
+
+      <!-- 卡2：fileWrite（文件 chip） -->
+      <div class="tcard">
+        <div class="tcard-h">
+          <span class="badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M11.1 2.6l2.3 2.3-7.2 7.2-3 .7.7-3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.6 4.1l2.3 2.3" stroke="currentColor" stroke-width="1.2"/></svg></span>
+          <span class="tname">写入文件</span>
+          <span class="tsub">demo.md（追加 12 行）</span>
+          <span class="pill ok">完成</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        <div class="trows">
+          <div class="trow"><span class="tlabel">文件路径</span>
+            <button class="path-chip" data-kind="file" data-path="docs/notes/demo.md" title="点击在右侧面板预览">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/><path d="M8.6 2.4v3.2h3.3" stroke="currentColor" stroke-width="1.2"/></svg>
+              docs/notes/demo.md</button>
+          </div>
+          <div class="trow"><span class="tlabel">写入模式</span><span class="tval">append</span></div>
+        </div>
+      </div>
+
+      <p>要点已记录。接着定位 webui 源码目录确认构建脚本：</p>
+
+      <!-- 卡3：commandRun（目录 chip） -->
+      <div class="tcard">
+        <div class="tcard-h">
+          <span class="badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2" stroke="currentColor" stroke-width="1.2"/><path d="M5 6.6l1.9 1.9L5 10.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M8.9 10.4h2.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></span>
+          <span class="tname">执行命令</span>
+          <span class="tsub">npm run build</span>
+          <span class="pill ok">完成 · 26s</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        <div class="trows">
+          <div class="trow"><span class="tlabel">命令</span><span class="tval">npm run build</span></div>
+          <div class="trow"><span class="tlabel">工作目录</span>
+            <button class="path-chip" data-kind="dir" data-path="webui/src" title="点击在右侧目录树定位">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>
+              webui/src</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 卡4：组卡 ×3（子行 chip） -->
+      <div class="tcard">
+        <div class="tcard-h">
+          <span class="badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/><path d="M8.6 2.4v3.2h3.3" stroke="currentColor" stroke-width="1.2"/></svg></span>
+          <span class="tname">读取文件 ×3</span>
+          <span class="tsub">fileRead.ts · runner.ts · workspace-fs.ts</span>
+          <span class="pill ok">完成</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        <div class="trows">
+          <div class="tsubrow"><span class="seq">1</span>
+            <button class="path-chip" data-kind="file" data-path="src/tools/fileRead.ts" title="点击在右侧面板预览">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/></svg>
+              src/tools/fileRead.ts</button>
+          </div>
+          <div class="tsubrow"><span class="seq">2</span>
+            <button class="path-chip" data-kind="file" data-path="src/tools/runner.ts" title="点击在右侧面板预览">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/></svg>
+              src/tools/runner.ts</button>
+          </div>
+          <div class="tsubrow"><span class="seq">3</span>
+            <button class="path-chip" data-kind="file" data-path="src/tools/workspace-fs.ts" title="点击在右侧面板预览">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/></svg>
+              src/tools/workspace-fs.ts</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 卡5：ask_image（uploads 图片 chip，可点） -->
+      <div class="tcard">
+        <div class="tcard-h">
+          <span class="badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.8" stroke="currentColor" stroke-width="1.2"/><circle cx="5.8" cy="6.2" r="1.1" stroke="currentColor" stroke-width="1.1"/><path d="M2.6 10.6l3.2-2.8 2.6 2.2 2-1.7 2.9 2.4" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg></span>
+          <span class="tname">图片问答</span>
+          <span class="tsub">20261028-143000-sample.png</span>
+          <span class="pill ok">完成</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        <div class="trows">
+          <div class="trow"><span class="tlabel">图片</span>
+            <button class="path-chip" data-kind="file" data-uploads="1" data-path="C:\Users\muton\.loop-agent\uploads\sess_20261028_1430\20261028-143000-sample.png" title="uploads 会话图片 · 点击直显">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.8" stroke="currentColor" stroke-width="1.2"/><circle cx="5.8" cy="6.2" r="1.1" stroke="currentColor" stroke-width="1.1"/><path d="M2.6 10.6l3.2-2.8 2.6 2.2 2-1.7 2.9 2.4" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+              …\uploads\sess_20261028_1430\20261028-143000-sample.png</button>
+          </div>
+          <div class="trow"><span class="tlabel">问题</span><span class="tval">这张截图里的报错是什么？</span></div>
+        </div>
+      </div>
+
+      <!-- 卡6：不可点示例（URL + 工作空间外） -->
+      <div class="tcard">
+        <div class="tcard-h">
+          <span class="badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.4" stroke="currentColor" stroke-width="1.2"/><path d="M6.3 6.1a1.75 1.75 0 1 1 2.5 1.6c-.5.26-.8.62-.8 1.15" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="11.3" r=".7" fill="currentColor"/></svg></span>
+          <span class="tname">描述图片</span>
+          <span class="tsub">远程图片 · 不可点对照</span>
+          <span class="pill ok">完成</span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </div>
+        <div class="trows">
+          <div class="trow"><span class="tlabel">图片</span>
+            <span class="plain-val" title="外部链接不支持预览（D7）">https://example.com/chart.png</span>
+          </div>
+          <div class="trow"><span class="tlabel">备注</span>
+            <span class="plain-val" title="文件在工作空间之外，仅 Agent 可读（D7）">D:\other\project\secret.config</span>
+          </div>
+        </div>
+      </div>
+
+      <p>截图中的报错是 <b>ENOENT: module not found</b>，已在上方建议修复。你可以点击任意路径 chip 查看对应文件。</p>
+    </div></div>
+  </section>
+
+  <!-- ===== 文件面板 ===== -->
+  <aside class="panel" id="panel" data-open="false" aria-label="文件面板">
+    <div class="p-head">
+      <div class="crumb" id="crumb"><span class="cur">工作空间</span></div>
+      <button class="p-close" id="pclose" title="收起面板" aria-label="收起面板">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="p-body">
+      <div class="tree" id="tree">
+        <div class="tn d0" data-dir="docs"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>docs</div>
+        <div class="tn d1" data-dir="docs/notes"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>notes</div>
+        <div class="tn d2 file" data-file="docs/notes/demo.md">demo.md</div>
+        <div class="tn d0" data-dir="src"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>src</div>
+        <div class="tn d1" data-dir="src/agent"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>agent</div>
+        <div class="tn d2 file" data-file="src/agent/react-agent.ts">react-agent.ts</div>
+        <div class="tn d1" data-dir="src/tools"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>tools</div>
+        <div class="tn d2 file" data-file="src/tools/fileRead.ts">fileRead.ts</div>
+        <div class="tn d2 file" data-file="src/tools/runner.ts">runner.ts</div>
+        <div class="tn d2 file" data-file="src/tools/workspace-fs.ts">workspace-fs.ts</div>
+        <div class="tn d0" data-dir="webui"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>webui</div>
+        <div class="tn d1" data-dir="webui/src"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.9 4.4c0-.7.6-1.3 1.3-1.3h2.8c.4 0 .8.2 1 .5l.6.8h6.2c.7 0 1.3.6 1.3 1.3v6.5c0 .7-.6 1.3-1.3 1.3H3.2c-.7 0-1.3-.6-1.3-1.3V4.4Z" stroke="currentColor" stroke-width="1.2"/></svg>src</div>
+      </div>
+      <div class="viewer">
+        <div class="v-head"><span id="vname">未选择文件</span><span class="v-tag" id="vtag" hidden>uploads</span></div>
+        <div class="v-scroll" id="vbody"><div class="v-empty">点击对话流中的路径 chip<br>在此预览文件内容</div></div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<section class="decisions">
+  <h2>关键设计决策（D1–D10，待确认）</h2>
+  <div class="dgrid">
+    <div class="dcard"><b>D1 预览呈现</b>：复用对话页内 FilesView 面板（点 chip → 面板自动展开预览），窄屏为抽屉态。<span class="no">否决：独立浮层预览组件（渲染链路重复维护）</span></div>
+    <div class="dcard"><b>D2 跨组件通道</b>：ToolCard emit('open-path') → ChatView → FilesView defineExpose({ openPath }) 组件 ref 直调，不引全局总线、不进 URL。</div>
+    <div class="dcard"><b>D3 路径分类</b>：tool-meta 新增 PATH_ARGS 显式映射 + classifyPathArg 纯函数（file/dir/url/data/missing/outside 六态），单测覆盖。<span class="no">否决：按扩展名启发式猜目录</span></div>
+    <div class="dcard"><b>D4 chip 落点</b>：仅参数表行值与组卡子行；卡片副标题（brief）保持纯文本（非目标）。</div>
+    <div class="dcard"><b>D5 uploads 端点</b>：新增 GET /uploads/view?path=&amp;disp=file|raw（file 与 /fs/file 同构、raw 直显字节）；resolveInWs(uploadsRoot) + realpath 双重校验、只读。<span class="no">否决：给 /fs/* 加 uploads 分支（权限面混淆）</span></div>
+    <div class="dcard"><b>D6 uploads 识别</b>：前端以 /.loop-agent/uploads/ 子串嗅探分流 + 后端强校验兜底；可见范围为 uploads 根内全部会话（历史回放需要），误判最多 403 不越权。</div>
+    <div class="dcard"><b>D7 不可点分类</b>：url/data/outside/missing 渲染纯文本 + title 注明原因，不做「可点但必失败」噪音交互。</div>
+    <div class="dcard"><b>D8 文件不存在</b>：不预检 stat，直接走 openFile 既有错误链路 + toast，避免双请求竞态。</div>
+    <div class="dcard"><b>D9 相对路径基准</b>：相对工作空间根（与工具语义一致）；反斜杠归一为 /；ws 内绝对路径透传（/fs/* 本就兼容）。</div>
+    <div class="dcard"><b>D10 令牌与依赖</b>：零新依赖、零新令牌；chip 复用 --line-strong 虚线 + --hover + 线性 SVG（stroke 1.2~1.4）。</div>
+  </div>
+</section>
+
+<script>
+(function(){
+/* ===== 主题（URL ?theme= 优先，其次 localStorage，默认浅色）===== */
+  const seg = document.querySelectorAll('.theme-seg button');
+  function apply(t){
+    if (t === 'dark') document.documentElement.dataset.theme = 'dark';
+    else document.documentElement.removeAttribute('data-theme');
+    seg.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.th === t)));
+    try { localStorage.setItem('proto-theme', t); } catch {}
+  }
+  const q = new URLSearchParams(location.search).get('theme');
+  let init = q || (() => { try { return localStorage.getItem('proto-theme'); } catch { return null; } })() || 'light';
+  if (init === 'auto') init = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  apply(init);
+  seg.forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.th === 'auto') apply(matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    else apply(b.dataset.th);
+  }));
+})();
+
+/* ===== 模拟内容 ===== */
+const ICON_FILE = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4.1 2.2h4.6l3.2 3.2v8.4c0 .5-.4.9-.9.9H4.1a.9.9 0 0 1-.9-.9V3.1c0-.5.4-.9.9-.9Z" stroke="currentColor" stroke-width="1.2"/></svg>';
+function tsMock(path){
+  return `<div class="code">（原型演示内容） ${path}
+ 1  import type { ToolResult, ToolContext } from '../types.js';
+ 2
+ 3  export const name = '${path.split('/').pop().replace('.ts','')}';
+ 4
+ 5  export async function run(args: Record<string, unknown>, ctx: ToolContext) {
+ 6    // 边界与错误处理见任务文档 3.6
+ 7    const out = await exec(args, ctx);
+ 8    return { ok: true, out };
+ 9  }</div>`;
+}
+const mdMock = `<div class="md"><h3>ReAct 核心循环要点</h3><p>Thought → Action → Observation 循环，直到能给出最终答案。</p><ul><li>每轮先检查 signal.aborted</li><li>工具结果以 observation 注入下一轮</li><li>压缩触发时保持 tool 消息成对</li></ul></div>`;
+const imgMock = `<div class="imgwrap"><svg width="100%" height="190" viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="sample.png 预览"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="480" height="300" fill="url(#g)"/><rect x="52" y="60" width="376" height="180" rx="10" fill="rgba(255,255,255,.92)"/><text x="70" y="100" font-family="Consolas,monospace" font-size="15" fill="#dc2626">Error: ENOENT: no such file</text><text x="70" y="128" font-family="Consolas,monospace" font-size="13" fill="#6b7280">at require (node:internal/modules)</text><text x="70" y="150" font-family="Consolas,monospace" font-size="13" fill="#6b7280">module '@lydell/node-pty' not found</text><text x="70" y="200" font-family="sans-serif" font-size="12" fill="#059669">✓ 模拟截图内容（原型占位）</text></svg></div><div class="upnote">uploads 会话图片 · 经 GET /uploads/view 受控只读读取（D5/D6）</div>`;
+
+const panel = document.getElementById('panel');
+const crumbEl = document.getElementById('crumb');
+const vbody = document.getElementById('vbody');
+const vname = document.getElementById('vname');
+const vtag = document.getElementById('vtag');
+const tree = document.getElementById('tree');
+
+function setCrumb(path){
+  const parts = path.split('/').filter(Boolean);
+  let html = '<span class="seg">工作空间</span>';
+  parts.forEach((p, i) => {
+    html += ` <span style="opacity:.5">/</span> <span class="${i === parts.length - 1 ? 'cur' : 'seg'}">${p}</span>`;
+  });
+  crumbEl.innerHTML = html;
+}
+function setTreeLoc(dirPath){
+  tree.querySelectorAll('.tn').forEach(n => n.classList.remove('loc'));
+  const row = [...tree.querySelectorAll('.tn[data-dir]')].find(n => n.dataset.dir === dirPath);
+  if (row) row.classList.add('loc');
+}
+function renderFile(path, uploads){
+  const isPng = /\.png$/i.test(path);
+  vtag.hidden = !uploads;
+  vname.textContent = path.split(/[\\/]/).pop();
+  if (uploads && isPng) { vbody.innerHTML = imgMock; return; }
+  if (path.endsWith('.md')) vbody.innerHTML = mdMock;
+  else vbody.innerHTML = tsMock(path);
+}
+function renderDirHint(dirPath){
+  vtag.hidden = true;
+  vname.textContent = '目录定位';
+  vbody.innerHTML = `<div class="v-empty">已在目录树中定位<br><b style="font-family:var(--mono)">${dirPath}</b><br><span style="font-size:11.5px">（实际实现调 gotoCrumb()，预览区保留现状）</span></div>`;
+}
+
+/* ===== chip 点击 → openPath（模拟 D1/D2 通道）===== */
+document.addEventListener('click', (e) => {
+  const chip = e.target.closest('.path-chip');
+  if (!chip) return;
+  const kind = chip.dataset.kind;
+  const path = chip.dataset.path;
+  const uploads = chip.dataset.uploads === '1';
+  panel.classList.add('open');
+  panel.dataset.open = 'true';
+  if (kind === 'dir') {
+    setCrumb(path); setTreeLoc(path); renderDirHint(path);
+  } else {
+    // 文件：crumb 取父目录，树定位父目录
+    const norm = path.replaceAll('\\','/');
+    const dir = norm.includes('/') ? norm.slice(0, norm.lastIndexOf('/')) : '';
+    if (uploads) setCrumb('uploads / ' + norm.split(/[\\/]/).pop());
+    else if (dir) { setCrumb(dir); setTreeLoc(dir); }
+    renderFile(norm, uploads);
+  }
+});
+document.getElementById('pclose').addEventListener('click', () => {
+  panel.classList.remove('open');
+  panel.dataset.open = 'false';
+});
+</script>
+</body>
+</html>

@@ -73,6 +73,7 @@ HTTP API 服务已启动
 | POST | `/uploads` | 上传文件 `{sessionId, paths: string[]}` → 201 `{entries, contextNote, failed}`（部分成功 201，全败 400；contextNote 仅返回不注入，由客户端随下轮 /messages 发送） |
 | POST | `/uploads/raw?sessionId=` | 原始字节直传（body=文件字节，`X-File-Name`=encodeURIComponent 文件名）→ 201 `{fileName, bytes, contextNote}`；WebUI 的 📎 与输入框 Ctrl+V 粘贴（截图 / 资源管理器复制的文件）都走这里 |
 | GET | `/uploads?sessionId=` | 列出会话上传文件 |
+| GET | `/uploads/view?path=&disp=file\|raw` | 预览 uploads 文件（20261028-006）：`disp=file`（默认）返回 `{name, bytes, truncated, content}`（与 `/fs/file` 同构，>512KB 截断、二进制 400）；`disp=raw` 原始字节（图片直显，上限 100MB）。`path` 为相对 uploads 根的路径或含 `/.loop-agent/uploads/` 段的绝对路径（归一后必须位于 uploads 根内，`resolveInWs` + realpath 双重校验防穿越/逃逸，越界 403、不存在 404、缺参 400）。用途：对话流工具卡片路径 chip 点击预览视觉工具处理的 uploads 图片 |
 | DELETE | `/uploads?sessionId=` | 清空会话上传目录（动词即确认） |
 
 `contextNote` 是注入 Agent 上下文的文本块：`[文件上传] <落盘名>` + 上传路径 + 大小；图片文件（png/jpg/jpeg/webp/gif/bmp）额外追加一行 `类型: 图片 <mime>（可用 ask_image / describe_image / extract_json / ocr_image 查看）`——否则主模型看到 `paste.png` 并不知道这是能看的图，容易用 `fileRead` 读出二进制垃圾。
