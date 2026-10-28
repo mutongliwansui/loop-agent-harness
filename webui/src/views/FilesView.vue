@@ -40,6 +40,8 @@ import {
   fmtBytes,
   groupHits,
   highlightParts,
+  splitHits,
+  type DirHit,
   type FsNode,
   type SearchResult,
 } from '../fs-tree.js';
@@ -389,21 +391,42 @@ const rootLabel = computed(() => {
 });
 const crumbs = computed(() => crumbOf(selected.value, rootLabel.value));
 
-/** 面包屑点击：展开该目录链并滚动定位（D9） */
-function gotoCrumb(path: string): void {
-  const parts = path ? path.split('/') : [];
-  const next = new Set(expanded.value);
+/** 逐级确保 path 及其祖先目录的子项已加载（懒加载树里父级未加载则子行无从渲染） */
+async function ensurePathLoaded(path: string): Promise<void> {
+  const parts = path.split('/').filter(Boolean);
   for (let k = 1; k <= parts.length; k++) {
     const p = parts.slice(0, k).join('/');
-    next.add(p);
     const nd = findNodeByPath(p);
-    if (nd) void expandDir(nd); // 已加载则内部直接返回
+    if (!nd || nd.type !== 'dir') return; // 父级未出现在树中（如根未加载完）则无从继续
+    if (!loadedDirs.value.has(p)) await expandDir(nd);
   }
-  expanded.value = next;
-  void nextTick(() => {
-    const el = sideBodyEl.value?.querySelector<HTMLElement>(`[data-path="${CSS.escape(path)}"]`);
-    el?.scrollIntoView({ block: 'nearest' });
-  });
+}
+
+/** 面包屑/目录命中定位：展开目录链并滚动到该行（D9、20261028-004 D5） */
+async function gotoCrumb(path: string): Promise<void> {
+  // 搜索态会整体顶替树视图，此时展开/滚动都看不见结果，故先退出搜索态
+  if (searchKw.value.trim()) clearSearch();
+  if (path) {
+    const parts = path.split('/').filter(Boolean);
+    const next = new Set(expanded.value);
+    for (let k = 1; k <= parts.length; k++) next.add(parts.slice(0, k).join('/'));
+    expanded.value = next;
+    // 关键：先等子项加载完再查 DOM，否则深层目录（父级尚未展开过）永远找不到行
+    await ensurePathLoaded(path);
+  }
+  await nextTick();
+  // 并发加载中的目录 expandDir 会立即返回，DOM 可能还差一拍，这里小幅重试
+  let el: HTMLElement | null = null;
+  for (let i = 0; i < 6 && !el; i++) {
+    el = sideBodyEl.value?.querySelector<HTMLElement>(`[data-path="${CSS.escape(path)}"]`) ?? null;
+    if (!el) await new Promise((r) => setTimeout(r, 80));
+  }
+  el?.scrollIntoView({ block: 'nearest' });
+}
+
+/** 目录名命中点击（20261028-004 D5）：与面包屑同一条定位链路，gotoCrumb 内部负责退出搜索态 */
+function openDirHit(path: string): void {
+  void gotoCrumb(path);
 }
 const fileLoading = ref(false);
 const fileError = ref('');
@@ -1094,8 +1117,18 @@ const searchKw = ref('');
 const searching = ref(false);
 const searchResults = ref<SearchResult[]>([]);
 const searchTruncated = ref(false);
-/** 搜索结果按文件分组（D6）：组头显示目录 + 文件名 + 命中数，组内行号升序 */
-const hitGroups = computed(() => groupHits(searchResults.value));
+/**
+ * 搜索结果拆分（20261028-004 D6）：
+ * - fileGroups：文件命中分组，组头高亮文件名（nameHit）+ 内容命中行
+ * - dirHits：目录名命中，点击在树中展开并定位
+ */
+const hitSplit = computed(() => splitHits(searchResults.value));
+const fileGroups = computed(() => hitSplit.value.files);
+const dirHits = computed(() => hitSplit.value.dirs);
+/** 内容命中行数（不含名称/目录命中，用于状态条计数） */
+const contentHitCount = computed(() =>
+  fileGroups.value.reduce((n, g) => n + g.hits.length, 0),
+);
 
 /** 底部状态条左侧文案（D8）：上传中 > 加载/错误 > 搜索中 > 搜索命中 > 树项数 */
 const footCount = computed(() => {
@@ -1105,7 +1138,9 @@ const footCount = computed(() => {
   if (treeError.value) return '读取失败';
   if (searching.value) return '搜索中…';
   if (searchKw.value.trim()) {
-    return `${searchResults.value.length} 处命中 · ${hitGroups.value.length} 个文件`;
+    const parts = [`${contentHitCount.value} 处命中`, `${fileGroups.value.length} 个文件`];
+    if (dirHits.value.length) parts.push(`${dirHits.value.length} 个目录`);
+    return parts.join(' · ');
   }
   return `${rows.value.length} 项`;
 });
@@ -1543,7 +1578,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
               type="text"
               placeholder="搜索文件…"
               spellcheck="false"
-              title="搜索文件内容（Ctrl K 聚焦）"
+              title="搜索文件名与内容（Ctrl K 聚焦）"
             >
             <button v-if="searchKw" class="s-clr" title="清除搜索" @click="clearSearch">✕</button>
           </div>
@@ -1628,16 +1663,40 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
             </div>
             <template v-else-if="searchResults.length">
               <div class="res-head">
-                <span><b>{{ searchResults.length }}</b> 处命中 · <b>{{ hitGroups.length }}</b> 个文件</span>
+                <span>
+                  <b>{{ contentHitCount }}</b> 处命中 ·
+                  <b>{{ fileGroups.length }}</b> 个文件<template v-if="dirHits.length"> ·
+                    <b>{{ dirHits.length }}</b> 个目录</template>
+                </span>
                 <button @click="clearSearch">清除</button>
               </div>
               <div v-if="searchTruncated" class="res-trunc">结果过多，仅显示前 {{ searchResults.length }} 条</div>
-              <!-- 按文件分组 + 命中数徽标 + 关键词高亮（D6） -->
-              <div v-for="g in hitGroups" :key="g.path" class="res-group">
+              <!-- 目录名命中（20261028-004 D5）：点击在树中展开并定位该目录 -->
+              <div v-if="dirHits.length" class="res-group res-dirs">
+                <div
+                  v-for="d in dirHits"
+                  :key="'dir:' + d.path"
+                  class="res-dir"
+                  :title="d.path"
+                  @click="openDirHit(d.path)"
+                >
+                  <span class="ico" v-html="ICONS.folder"></span>
+                  <span class="dir">{{ d.dir }}</span><span class="name"><template
+                    v-for="(p, pi) in highlightParts(d.name, searchKw)"
+                    :key="pi"
+                  ><mark v-if="p.hit">{{ p.t }}</mark><template v-else>{{ p.t }}</template></template></span>
+                </div>
+              </div>
+              <!-- 文件命中：按文件分组 + 组头文件名高亮 + 命中数徽标（D6） -->
+              <div v-for="g in fileGroups" :key="g.path" class="res-group">
                 <div class="res-file" :title="g.path" @click="openFile(g.path)">
                   <span class="ico" v-html="ICONS.file"></span>
-                  <span class="dir">{{ g.dir }}</span><span class="name">{{ g.name }}</span>
-                  <span class="n">{{ g.hits.length }}</span>
+                  <span class="dir">{{ g.dir }}</span><span class="name"><template
+                    v-for="(p, pi) in highlightParts(g.name, searchKw)"
+                    :key="pi"
+                  ><mark v-if="p.hit">{{ p.t }}</mark><template v-else>{{ p.t }}</template></template></span>
+                  <span v-if="g.hits.length" class="n">{{ g.hits.length }}</span>
+                  <span v-else class="n name-only">文件名</span>
                 </div>
                 <div
                   v-for="h in g.hits"
@@ -1657,7 +1716,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
             <div v-else class="empt">
               <span class="big" v-html="ICONS.empty"></span>
               <b>没有匹配的文件</b>
-              <span class="sub">试试更短的关键词，或打开「隐藏项」把 . 开头的目录纳入搜索。</span>
+              <span class="sub">文件名与内容都会搜索。试试更短的关键词，或打开「隐藏项」把 . 开头的目录纳入搜索。</span>
               <button @click="clearSearch">清除搜索</button>
             </div>
           </template>
@@ -2441,6 +2500,47 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
   padding: 0 1px;
   border-radius: 2px;
   background: var(--warn-weak);
+  color: var(--text);
+}
+/* ---- 文件名 / 目录名命中（20261028-004） ---- */
+/* 组头文件名高亮：与命中行 mark 同款，避免两套高亮语汇 */
+.res-file .name mark,
+.res-dir .name mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--warn-weak);
+  color: var(--text);
+}
+/* 仅文件名命中（无内容命中）时的弱化标识 */
+.res-file .n.name-only {
+  border-color: transparent;
+  background: none;
+}
+/* 目录名命中行：图标走品牌色，点击在树中展开并定位 */
+.res-dir {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.res-dir:hover { background: var(--hover); }
+.res-dir .ico { display: flex; flex: none; color: var(--brand); }
+.res-dir .dir {
+  max-width: 44%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.res-dir .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
   color: var(--text);
 }
 

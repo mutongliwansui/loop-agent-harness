@@ -5,7 +5,7 @@
 // GET /fs/file   → 单文件文本预览（within 工作空间校验；二进制拒绝；超长截断）
 // GET /fs/raw    → 文件原始字节（pdf/docx/xlsx 等二进制文档与图片预览用；大小上限）
 // GET /fs/doc2md → 旧版 .doc 文本提取并转 markdown（word-extractor + 段落启发式；前端复用 md 渲染）
-// GET /fs/search → 关键词全文搜索（逐文件扫描，跳过二进制与大文件；结果上限）
+// GET /fs/search → 关键词搜索（文件名 + 目录名 + 内容，两阶段名称优先；跳过二进制与大文件；结果上限）
 // GET /fs/fingerprint?path=&path= → 已展开目录的变更指纹（前端轮询比对，只重拉变化目录）
 //
 // 根解析：?ws=<绝对路径> 显式指定已注册工作空间（文件面板跟随活跃会话所属空间）；
@@ -354,13 +354,71 @@ async function handleRaw(ctx: HandlerContext, req: IncomingMessage, res: ServerR
   res.end(buf);
 }
 
-/** 递归扫描目录做关键词行匹配；命中上限即停；二进制/大文件跳过 */
-async function scanFor(
+/**
+ * 搜索命中项（20261028-004 引入 kind 字段）。
+ * - kind='name'   文件名命中：line=0、text=''
+ * - kind='dir'    目录名命中：line=0、text=''
+ * - kind='content' 内容行命中：line 为 1-based 行号、text 为命中行
+ * line=0 与真实行号不可能冲突，旧前端据此降级渲染不会错位。
+ */
+interface SearchHit {
+  path: string;
+  name: string;
+  line: number;
+  text: string;
+  kind: 'content' | 'name' | 'dir';
+}
+
+/**
+ * 阶段①：只 readdir 遍历，收集文件名与目录名命中（D1/D3）。
+ * 不读文件内容，因此名称命中与文件大小/是否为二进制无关；命中上限即停。
+ * 恒排除目录（node_modules 等）自身的名字也不参与匹配，且不下钻。
+ */
+async function scanNames(
   dirAbs: string,
   dirRel: string,
   hidden: boolean,
   needle: string,
-  results: { path: string; name: string; line: number; text: string }[],
+  results: SearchHit[],
+): Promise<void> {
+  if (results.length >= MAX_SEARCH_RESULTS) return;
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dirAbs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const filtered = entries.filter((x) => (hidden || !x.name.startsWith('.')) && !ALWAYS_SKIP.has(x.name));
+  // 与内容阶段保持同一呈现序：先本层文件，再下钻目录
+  for (const e of filtered.filter((x) => x.isFile()).sort(cmpEntries)) {
+    if (results.length >= MAX_SEARCH_RESULTS) return;
+    if (!e.name.toLowerCase().includes(needle)) continue;
+    results.push({
+      path: dirRel ? `${dirRel}/${e.name}` : e.name,
+      name: e.name,
+      line: 0,
+      text: '',
+      kind: 'name',
+    });
+  }
+  for (const e of filtered.filter((x) => x.isDirectory()).sort(cmpEntries)) {
+    if (results.length >= MAX_SEARCH_RESULTS) return;
+    const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
+    if (e.name.toLowerCase().includes(needle)) {
+      // D5：目录命中只产出目录自身，其下文件由树承担浏览职责（仍继续下钻找更深的名字命中）
+      results.push({ path: rel, name: e.name, line: 0, text: '', kind: 'dir' });
+    }
+    await scanNames(join(dirAbs, e.name), rel, hidden, needle, results);
+  }
+}
+
+/** 阶段②：递归扫描目录做关键词行匹配；命中上限即停；二进制/大文件跳过 */
+async function scanContents(
+  dirAbs: string,
+  dirRel: string,
+  hidden: boolean,
+  needle: string,
+  results: SearchHit[],
 ): Promise<void> {
   if (results.length >= MAX_SEARCH_RESULTS) return;
   let entries: Dirent[];
@@ -400,24 +458,38 @@ async function scanFor(
         line: i + 1,
         // 命中行裁到 240 字符，命中词附近优先
         text: text.length > 240 ? text.slice(Math.max(0, idx - 60), idx + 180) : text,
+        kind: 'content',
       });
     }
   }
   for (const e of filtered.filter((x) => x.isDirectory()).sort(cmpEntries)) {
     if (results.length >= MAX_SEARCH_RESULTS) return;
-    await scanFor(join(dirAbs, e.name), dirRel ? `${dirRel}/${e.name}` : e.name, hidden, needle, results);
+    await scanContents(join(dirAbs, e.name), dirRel ? `${dirRel}/${e.name}` : e.name, hidden, needle, results);
   }
 }
 
-/** GET /fs/search?q=&hidden=1：工作空间全文搜索（大小写不敏感；dot 条目默认跳过） */
+/**
+ * 搜索编排（D3）：名称阶段先跑并优先占位，内容阶段在剩余额度内继续。
+ * 两阶段以「多跑一遍 readdir」换取「名称命中必有位置」——readdir 远比 readFile 便宜，
+ * 若合成单次深度优先遍历，深层名称命中会被浅层内容命中挤出 200 条上限。
+ * D4：已在名称阶段命中的文件，内容阶段仍照常扫描其内容（两处信息都保留）。
+ */
+async function searchWorkspace(root: string, hidden: boolean, q: string): Promise<SearchHit[]> {
+  const results: SearchHit[] = [];
+  const needle = q.toLowerCase();
+  await scanNames(root, '', hidden, needle, results);
+  await scanContents(root, '', hidden, needle, results);
+  return results;
+}
+
+/** GET /fs/search?q=&hidden=1：工作空间搜索（文件名 / 目录名 / 内容；大小写不敏感；dot 条目默认跳过） */
 async function handleSearch(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
   const q = query.get('q')?.trim() ?? '';
   if (!q) throw new ApiHttpError('bad_request', '缺少 q 参数');
   const hidden = query.get('hidden') === '1';
   const root = await resolveFsRoot(ctx, query);
-  const results: { path: string; name: string; line: number; text: string }[] = [];
-  await scanFor(root, '', hidden, q.toLowerCase(), results);
+  const results = await searchWorkspace(root, hidden, q);
   sendJson(res, 200, { query: q, truncated: results.length >= MAX_SEARCH_RESULTS, results });
 }
 

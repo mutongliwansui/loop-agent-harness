@@ -16,6 +16,7 @@ import {
   fmtBytes,
   groupHits,
   highlightParts,
+  splitHits,
   type FsNode,
   type SearchResult,
 } from '../webui/src/fs-tree.js';
@@ -230,5 +231,58 @@ describe('fmtBytes', () => {
   it('1MB 以上用 1 位小数 MB', () => {
     expect(fmtBytes(1048576)).toBe('1.0 MB');
     expect(fmtBytes(1572864)).toBe('1.5 MB');
+  });
+});
+
+/* ===================== splitHits / nameHit（20261028-004） ===================== */
+/** 造名称命中项（line=0、text=''） */
+const namedHit = (path: string): SearchResult => {
+  const i = path.lastIndexOf('/');
+  return { path, name: i >= 0 ? path.slice(i + 1) : path, line: 0, text: '', kind: 'name' };
+};
+/** 造目录名命中项 */
+const dirHit = (path: string): SearchResult => {
+  const i = path.lastIndexOf('/');
+  return { path, name: i >= 0 ? path.slice(i + 1) : path, line: 0, text: '', kind: 'dir' };
+};
+
+describe('splitHits', () => {
+  it('空结果拆成两个空数组', () => {
+    expect(splitHits([])).toEqual({ files: [], dirs: [] });
+  });
+
+  it('目录命中单独分离，不进入文件分组', () => {
+    const { files, dirs } = splitHits([dirHit('docs/tasks'), hit('a.md', 1)]);
+    expect(dirs).toEqual([{ path: 'docs/tasks', name: 'tasks', dir: 'docs/' }]);
+    expect(files.map((f) => f.path)).toEqual(['a.md']);
+  });
+
+  it('根级目录命中 dir 为空字符串', () => {
+    const { dirs } = splitHits([dirHit('tasks')]);
+    expect(dirs[0]).toEqual({ path: 'tasks', name: 'tasks', dir: '' });
+  });
+
+  it('名称命中置 nameHit 且不占内容行', () => {
+    const { files } = splitHits([namedHit('src/fs-tree.ts'), hit('src/fs-tree.ts', 12)]);
+    expect(files).toHaveLength(1);
+    expect(files[0].nameHit).toBe(true);
+    expect(files[0].hits).toHaveLength(1);
+    expect(files[0].hits[0].line).toBe(12);
+  });
+
+  it('仅名称命中的文件 hits 为空但仍在分组中', () => {
+    const { files } = splitHits([namedHit('README.md')]);
+    expect(files).toEqual([{ path: 'README.md', dir: '', name: 'README.md', hits: [], nameHit: true }]);
+  });
+
+  it('旧响应（无 kind）一律视为内容命中，不产生 nameHit', () => {
+    const { files, dirs } = splitHits([hit('a.md', 3)]);
+    expect(dirs).toEqual([]);
+    expect(files[0].nameHit).toBe(false);
+    expect(files[0].hits).toHaveLength(1);
+  });
+
+  it('groupHits 直接收到目录命中项时忽略它', () => {
+    expect(groupHits([dirHit('docs')])).toEqual([]);
   });
 });

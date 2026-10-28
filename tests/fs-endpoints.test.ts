@@ -250,7 +250,14 @@ describe('GET /fs/file（文件预览）', () => {
 
 // ===== 3. /fs/search =====
 
-describe('GET /fs/search（全文搜索）', () => {
+describe('GET /fs/search（文件名 / 目录名 / 内容）', () => {
+  /** 搜索响应体（kind 为 20261028-004 新增） */
+  type SearchBody = {
+    query: string;
+    truncated: boolean;
+    results: { path: string; name: string; line: number; text: string; kind: string }[];
+  };
+
   it('大小写不敏感命中，返回 相对路径/行号/文本；跳过 node_modules 与 __pycache__', async () => {
     const res = await req('/fs/search?q=' + encodeURIComponent('needle here'));
     expect(res.status).toBe(200);
@@ -289,6 +296,63 @@ describe('GET /fs/search（全文搜索）', () => {
     const res = await req('/fs/search?q=' + encodeURIComponent('NULL'));
     const body = (await res.json()) as { results: { path: string }[] };
     expect(body.results.map((r) => r.path)).not.toContain('blob.bin');
+  });
+
+  /* ---- 文件名 / 目录名匹配（20261028-004） ---- */
+
+  it('文件名命中：kind=name、line=0、text 为空', async () => {
+    const res = await req('/fs/search?q=' + encodeURIComponent('grep-me'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SearchBody;
+    expect(body.results).toEqual([
+      { path: 'src/grep-me.txt', name: 'grep-me.txt', line: 0, text: '', kind: 'name' },
+    ]);
+  });
+
+  it('目录名命中：kind=dir，且不把其下文件逐个当目录命中列出', async () => {
+    const body = (await (await req('/fs/search?q=' + encodeURIComponent('api'))).json()) as SearchBody;
+    const dirs = body.results.filter((r) => r.kind === 'dir');
+    expect(dirs.map((r) => r.path)).toContain('src/api');
+    expect(dirs.every((r) => r.line === 0 && r.text === '')).toBe(true);
+    // 目录命中只有目录自身一条，不展开其下 router.ts
+    expect(dirs.some((r) => r.path === 'src/api/router.ts')).toBe(false);
+  });
+
+  it('名称命中整体排在内容命中之前', async () => {
+    const body = (await (await req('/fs/search?q=' + encodeURIComponent('deep'))).json()) as SearchBody;
+    const kinds = body.results.map((r) => r.kind);
+    const firstContent = kinds.indexOf('content');
+    expect(kinds).toContain('dir');
+    expect(firstContent).toBeGreaterThan(0); // 至少一条名称命中排在最前
+    expect(kinds.slice(firstContent).every((k) => k === 'content')).toBe(true);
+  });
+
+  it('恒排除目录自身的名字也不参与匹配', async () => {
+    for (const q of ['node_modules', '__pycache__']) {
+      const body = (await (await req('/fs/search?q=' + encodeURIComponent(q))).json()) as SearchBody;
+      expect(body.results).toEqual([]);
+    }
+  });
+
+  it('二进制与大文件可被文件名命中，但不产生内容命中', async () => {
+    const blob = (await (await req('/fs/search?q=' + encodeURIComponent('blob'))).json()) as SearchBody;
+    expect(blob.results).toEqual([
+      { path: 'blob.bin', name: 'blob.bin', line: 0, text: '', kind: 'name' },
+    ]);
+    const big = (await (await req('/fs/search?q=' + encodeURIComponent('big'))).json()) as SearchBody;
+    expect(big.results).toEqual([
+      { path: 'big.log', name: 'big.log', line: 0, text: '', kind: 'name' },
+    ]);
+  });
+
+  it('hidden=0 时 dot 目录与其下名称均不参与匹配；hidden=1 参与', async () => {
+    const off = (await (await req('/fs/search?q=' + encodeURIComponent('secret'))).json()) as SearchBody;
+    expect(off.results).toEqual([]);
+    const on = (await (await req('/fs/search?q=' + encodeURIComponent('secret') + '&hidden=1')).json()) as SearchBody;
+    expect(on.results.map((r) => `${r.kind}:${r.path}`)).toEqual(['name:.hidden/secret.txt']);
+    // dot 目录名本身也参与匹配
+    const dirOn = (await (await req('/fs/search?q=' + encodeURIComponent('hidden') + '&hidden=1')).json()) as SearchBody;
+    expect(dirOn.results.some((r) => r.kind === 'dir' && r.path === '.hidden')).toBe(true);
   });
 });
 
