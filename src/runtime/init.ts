@@ -29,49 +29,65 @@ export interface RuntimeContext {
  * @param opts.workspaceRoot 技能扫描根（缺省为进程 cwd；CLI 单空间即启动目录，serve 侧由 runtime 传入）
  */
 export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: string } = {}): Promise<RuntimeContext> {
-  // 共享默认值：CLI 不传 root 时以启动目录为唯一空间（D11，CLI 零改动）
+  const startupT0 = Date.now();
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
-  // 0. 初次启动引导：自动检测必备目录与配置（齐备零打扰；主模型未配置进向导；仅目录/文件缺失静默补建）
-  //    引导可能写盘，随后重新加载即为生效值
+  console.log('[startup] 初始化运行时...');
+
+  // 0. 初次启动引导
+  const t0 = Date.now();
   await ensureBootstrap({ noSetup: opts.noSetup === true });
+  console.log(`  ├─ 初次引导完成 (+${Date.now() - t0}ms)`);
 
   // 0.1 加载合并配置
+  const t0b = Date.now();
   const { config } = configLoader.load();
+  console.log(`  ├─ 配置加载 (${config.model.name}) (+${Date.now() - t0b}ms)`);
 
-  // 1. 注册内置工具（根据配置的 enabled/disabled 过滤；vision 配置决定视觉工具是否注册）
+  // 1. 注册内置工具
   registerBuiltinTools(config.tools, config.vision);
-  // 1.1 后台任务孤儿清扫（Task-20261022-002 D6）：恢复上次进程遗留的后台任务状态
-  await backgroundTasks.sweepOrphans();
 
-  // 2. 加载 MCP 配置
+  // 1.1 后台任务：启动时**不阻塞**扫 runs 目录
+  //    历史上这里 await sweepOrphans()，但 runs/ 目录若积几千个旧 JSON，
+  //    同步 readFileSync + JSON.parse 在 Windows 上能卡 60s+（2026-10-28 观测 13374 个文件）
+  //    孤儿任务修补不是启动关键路径，且孤儿清理改由 pruneStaleRuns 定期处理
+  //    pruneStaleRuns 是同步的，用 stat mtime 粗筛，13374 个文件实测 <1s
+  try { backgroundTasks.pruneStaleRuns(); } catch { /* ignore */ }
+
+  // 2. 加载 MCP（并发 + 进度日志；单个失败不再阻塞整体启动）
+  const t2 = Date.now();
   try {
     const mcp = await mcpManager.loadFromConfig();
     if (mcp.failures.length) {
-      console.log(`${C.yellow}MCP 加载警告:${C.reset}`);
-      for (const f of mcp.failures) console.log(`  ${C.red}✗${C.reset} ${f}`);
+      console.log(`${C.yellow}  ├─ MCP 加载警告 (+${Date.now() - t2}ms):${C.reset}`);
+      for (const f of mcp.failures) console.log(`  │  ${C.red}✗${C.reset} ${f}`);
     }
     if (mcp.successes.length) {
-      console.log(`${C.green}MCP 加载成功:${C.reset}`);
-      for (const s of mcp.successes) console.log(`  ✓ ${s}`);
+      console.log(`${C.green}  ├─ MCP 加载成功 (+${Date.now() - t2}ms):${C.reset}`);
+      for (const s of mcp.successes) console.log(`  │  ✓ ${s}`);
+    } else if (!mcp.failures.length) {
+      console.log(`  ├─ MCP: 未配置 server (+${Date.now() - t2}ms)`);
     }
   } catch (e) {
-    console.error(`${C.yellow}MCP 加载异常 (继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+    console.error(`${C.yellow}  ├─ MCP 加载异常 (+${Date.now() - t2}ms，继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
   }
 
   // 3. 扫描 Skill
+  const t3 = Date.now();
   if (config.skill.enabled && config.skill.autoLoad) {
     try {
-      // 空间资源：缺省为启动目录（CLI 单空间），serve 侧由调用方传 runtime 根
       const skills = skillLoader.scan(workspaceRoot);
       if (skills.length > 0) {
-        console.log(`${C.green}Skill 加载成功:${C.reset} ${skills.length} 个`);
-        for (const s of skills) console.log(`  ✓ ${s.name} (${s.scope === 'workspace' ? '工作空间' : '全局'})`);
+        console.log(`${C.green}  ├─ Skill 加载成功 (+${Date.now() - t3}ms):${C.reset} ${skills.length} 个`);
+        for (const s of skills) console.log(`  │  ✓ ${s.name} (${s.scope === 'workspace' ? '工作空间' : '全局'})`);
+      } else {
+        console.log(`  ├─ Skill: 未发现可用 skill (+${Date.now() - t3}ms)`);
       }
     } catch (e) {
-      console.error(`${C.yellow}Skill 扫描异常 (继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+      console.error(`${C.yellow}  ├─ Skill 扫描异常 (+${Date.now() - t3}ms，继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
     }
   }
 
+  console.log(`  └─ 运行时就绪，总耗时 ${Date.now() - startupT0}ms`);
   return { config };
 }
 
@@ -80,13 +96,15 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
  * CLI 与 API 各自在合适的时序调用（CLI 在会话恢复之后，API 在起服务之前）。
  */
 export async function initAgentMemory(root = process.cwd()): Promise<void> {
+  const t0 = Date.now();
   try {
-    // 空间资源：缺省为启动目录（CLI 单空间），serve 侧显式传 runtime 根
     await agent.initMemory(root);
     if (agent.memoryEnabled) {
-      console.log(`${C.green}✓ 记忆系统已启用:${C.reset} L1(Working) + L2(Episodic) + L3(Curated)`);
+      console.log(`${C.green}✓ 记忆系统已启用 (+${Date.now() - t0}ms):${C.reset} L1(Working) + L2(Episodic) + L3(Curated)`);
+    } else {
+      console.log(`  ├─ 记忆系统未启用 (+${Date.now() - t0}ms)`);
     }
   } catch (e) {
-    console.error(`${C.yellow}记忆系统初始化失败（继续启动）: ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+    console.error(`${C.yellow}记忆系统初始化失败 (+${Date.now() - t0}ms，继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
   }
 }

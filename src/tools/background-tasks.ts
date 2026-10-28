@@ -2,7 +2,7 @@
 // Task-20261022-002（需求 20261021-006）：D2 taskId 格式 / D3 日志落盘 / D6 孤儿检测 / D8 stop 幂等
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { debug } from '../debug.js';
 
@@ -32,6 +32,9 @@ export interface BackgroundTask {
 const MAX_TASKS = 200;
 /** list() 返回上限 */
 const LIST_LIMIT = 50;
+/** pruneStaleRuns 默认清理阈值：已结束任务 24h，orphaned-running 1h */
+const DEFAULT_PRUNE_ELAPSED_MS = 24 * 60 * 60 * 1000;
+const PRUNE_ORPHANED_RUNNING_MS = 60 * 60 * 1000;
 
 /** 生成 taskId：bg_<8位随机hex>_<秒级时间戳>（D2：随机段防同秒碰撞，时间戳人眼可排序） */
 export function newTaskId(): string {
@@ -125,6 +128,9 @@ export class BackgroundTaskRegistry {
    * 扫 runs 目录所有 .json，status=running 的条目按 pid 存活探测：
    * - 存活 → orphaned-running（本进程不接管输出，仅可 commandStop）
    * - 已死 → orphaned-exited（exitCode 未知，保持原值/undefined）
+   *
+   * 注意：**本方法内部全是同步 I/O**，在 runs 目录积几千个旧文件时会卡 60s+
+   * （2026-10-28 实测 13374 个 JSON 读取耗时 ~60s）。因此不应放在启动关键路径上。
    */
   async sweepOrphans(): Promise<void> {
     let names: string[];
@@ -149,6 +155,70 @@ export class BackgroundTaskRegistry {
         debug.log(`孤儿扫描跳过 ${name}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+  }
+
+  /**
+   * 清理 runs 目录里的陈旧 JSON（用 mtime 粗筛，**不读 JSON 内容**）。
+   * - mtime < now - 24h 的已结束任务 .json → 直接 rm
+   * - 同步处理，O(N) 每个文件只 stat 一次（13374 个文件实测 <1s）
+   * - 保留内存中仍活跃（this.tasks.has）的条目，避免误删正在运行的任务
+   * @param olderThanMs 默认 24h，启动时调用一次即可把 runs 目录清到健康大小
+   * @returns 删除的 JSON 数量
+   */
+  pruneStaleRuns(olderThanMs = DEFAULT_PRUNE_ELAPSED_MS): number {
+    let names: string[];
+    try {
+      names = readdirSync(runsDir());
+    } catch {
+      return 0;
+    }
+    const now = Date.now();
+    const cutoff = now - olderThanMs;
+    const orphanedCutoff = now - PRUNE_ORPHANED_RUNNING_MS;
+    let pruned = 0;
+    // 先筛 mtime 太老的（绝大多数过期文件落这里，不碰 JSON 内容）
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      // 内存里还有的条目不删（活跃任务）
+      const taskId = name.slice(0, -5);
+      if (this.tasks.has(taskId)) continue;
+      let st;
+      try {
+        st = statSync(join(runsDir(), name));
+      } catch {
+        continue;
+      }
+      if (st.mtimeMs < cutoff) {
+        // 快速路径：mtime 已过 24h，直接删，不查内容
+        try {
+          rmSync(join(runsDir(), name));
+          pruned++;
+        } catch { /* ignore */ }
+      }
+    }
+    // 第二轮：保留时间窗口内但 status=orphaned-running 的（pid 探测不可靠，1h 后彻底放弃）
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const taskId = name.slice(0, -5);
+      if (this.tasks.has(taskId)) continue;
+      const path = join(runsDir(), name);
+      let st;
+      try {
+        st = statSync(path);
+      } catch { continue; }
+      if (st.mtimeMs >= orphanedCutoff) continue; // 还在窗口内
+      // 读一次内容（很少数目），只清理 orphaned-running
+      try {
+        const raw = JSON.parse(readFileSync(path, 'utf-8')) as BackgroundTask;
+        if (raw.status === 'orphaned-running') {
+          try { rmSync(path); pruned++; } catch {}
+        }
+      } catch { /* 损坏文件直接删 */
+        try { rmSync(path); pruned++; } catch {}
+      }
+    }
+    if (pruned > 0) debug.log(`后台任务清理: 删了 ${pruned} 个陈旧 .json`);
+    return pruned;
   }
 
   /** 表上限淘汰：>200 时移除最老的已结束任务（running 永不淘汰） */

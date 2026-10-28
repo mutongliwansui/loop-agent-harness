@@ -8,6 +8,7 @@ import {
 import { configLoader } from './loader.js';
 import type { ConfigLoader } from './loader.js';
 import type { ResolvedConfig } from './schema.js';
+import { debug } from '../debug.js';
 
 /**
  * 进程启动目录（模块加载时捕获，独立于任何工作空间运行时）。
@@ -54,19 +55,44 @@ export class MCPManager {
    * 已连接的跳过（幂等）
    */
   async loadServers(servers: Record<string, MCPServerConfig>): Promise<LoadResult> {
+    const entries = Object.entries(servers).filter(([name]) => !registry.listMCPServers().includes(name));
+    if (entries.length === 0) return { successes: [], failures: [] };
+
+    const t0 = Date.now();
+    debug.log(`[mcp] 开始连接 ${entries.length} 个 server（并发）...`);
+
+    // D20：并发连接，任何一个的超时不再阻塞其他 server 与整体启动
+    const results = await Promise.allSettled(
+      entries.map(async ([name, cfg]) => {
+        debug.log(`[mcp]   → ${name} 连接中...`);
+        const t1 = Date.now();
+        try {
+          const tools = await registry.registerMCPServer(name, withExplicitCwd(cfg));
+          debug.log(`[mcp]   ✓ ${name} (${tools.length} 工具, +${Date.now() - t1}ms)`);
+          return { name, ok: true, tools, elapsed: Date.now() - t1 } as const;
+        } catch (e) {
+          debug.log(`[mcp]   ✗ ${name} 失败 (+${Date.now() - t1}ms): ${e instanceof Error ? e.message : String(e)}`);
+          return { name, ok: false, err: e, elapsed: Date.now() - t1 } as const;
+        }
+      }),
+    );
+
     const successes: string[] = [];
     const failures: string[] = [];
-
-    for (const [name, cfg] of Object.entries(servers)) {
-      if (registry.listMCPServers().includes(name)) continue;
-      try {
-        const tools = await registry.registerMCPServer(name, withExplicitCwd(cfg));
-        successes.push(`${name} (${tools.length} 个工具)`);
-      } catch (e) {
-        failures.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    for (const r of results) {
+      if (r.status !== 'fulfilled') {
+        // allSettled 永不 reject，理论上不会走到这里
+        failures.push(`${(r.reason as { name?: string })?.name ?? '?'}: ${String(r.reason)}`);
+        continue;
+      }
+      const v = r.value;
+      if (v.ok) {
+        successes.push(`${v.name} (${v.tools.length} 个工具)`);
+      } else {
+        failures.push(`${v.name}: ${v.err instanceof Error ? v.err.message : String(v.err)}`);
       }
     }
-
+    debug.log(`[mcp] 完成：${successes.length} 成功 + ${failures.length} 失败，总耗时 ${Date.now() - t0}ms`);
     return { successes, failures };
   }
 

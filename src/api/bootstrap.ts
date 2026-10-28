@@ -21,6 +21,8 @@ export function cwdFallbackValue(): string {
 
 /** 启动选项（需求 20261027-004：userDir 供单测隔离冷启动推导与全盘自愈） */
 export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiServer> {
+  const bootT0 = Date.now();
+  console.log('[startup] 组装 HTTP API 服务...');
   const { configLoader } = await import('../config/index.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
@@ -37,21 +39,28 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   // 仍预装这 1 个 runtime（L1：HandlerContext 字段与既有单测零破坏），
   // 但身份从 cwd 换成 recentRoot；后续空间仍由 handler 按 ws 参数/会话归属懒装载。
   const registry = new WorkspaceRegistry({ userDir: opts?.userDir });
+
+  const t1 = Date.now();
   const recentRoot = await resolveRecentRoot(opts?.userDir);
   markWorkspaceUsed(recentRoot);
+  console.log(`  ├─ 最近使用空间解析 (+${Date.now() - t1}ms): ${recentRoot}`);
+
+  const t2 = Date.now();
   const rt = await registry.get(recentRoot);
   const store = rt.store;
+  console.log(`  ├─ 工作空间 runtime 装载 (+${Date.now() - t2}ms): ${rt.id}`);
 
   // 启动扫描（Task-20261021-002-06）：上个进程遗留的 running journal 标记为 interrupted。
   // fire-and-forget：不阻塞启动；bootId 不匹配即判中断（pid 复用不可靠，见 run-journal.ts D1）
   void reconcileInterruptedOnBoot(store).then((n) => {
-    if (n > 0) console.log(`[api] 启动扫描：${n} 个上次运行被标记为 interrupted`);
+    if (n > 0) console.log(`  ├─ 启动扫描：${n} 个上次运行被标记为 interrupted`);
   });
 
   // 记忆初始化（serve 时序：起服务之前；initAgentMemory 走 agent.initMemory 自建路径，
   // 仅用于启动期自检与旧目录迁移——池内实例的运行时记忆由 initAgent 钩子注入共享 kit）
-  // Task-20261021-010-03：显式传 runtime 根，不再依赖进程 cwd。
+  const t3 = Date.now();
   await initAgentMemory(rt.root);
+  console.log(`  ├─ 记忆系统初始化 (+${Date.now() - t3}ms)`);
 
   // Agent 实例池（Task-20261021-002-05）：替代单例 agent，同工作空间多会话并发。
   // D1：容量默认 4（含 busy）；D2：记忆按 workspaceId 共享 kit，禁止每实例自建；
@@ -73,6 +82,7 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   // 不依赖运行时文件读取与 import.meta，避免 CJS 产物中版本恒为空
   const version = pkg.version;
 
+  const t4 = Date.now();
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
     // D3：run 全程处于该空间 ALS 上下文（runtime.runAgent 内部已包裹）。
@@ -94,16 +104,21 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
       uploadsRoot: defaultUploadsRoot(),
       createMemoryKit: () => rt.getMemoryKit(),
     },
-    // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅装载启动目录，后续任务据此多空间并存
+    // 工作空间运行时注册表（Task-20261021-010-01）：本任务仅装载启动目录一个实例，行为与改造前一致；
+    // 后续任务据此让多个空间并存。
     registry,
     // 记忆晋升调度器（Task-20261026-002 D11）：手动端点与定时/关停共用同一把进程内锁
     dreamScheduler,
   });
+  console.log(`  ├─ API Server 组装 (+${Date.now() - t4}ms)`);
 
+  const t5 = Date.now();
   const { port } = await server.start();
+  console.log(`  ├─ HTTP 监听启动 (+${Date.now() - t5}ms)`);
+
   const api = cfg.api;
   console.log('');
-  console.log(`\x1b[1m\x1b[36mHTTP API 服务已启动\x1b[0m`);
+  console.log(`\x1b[1m\x1b[36mHTTP API 服务已启动\x1b[0m (总耗时 ${Date.now() - bootT0}ms)`);
   console.log(`  地址:    http://${api.host}:${port}`);
   console.log(`  鉴权:    ${api.token ? 'Bearer Token' : '仅本机（未配置 api.token）'}`);
   console.log(`  缺省空间: ${recentRoot}（最近使用；新会话未指定空间时落此处）`);
