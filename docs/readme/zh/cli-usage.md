@@ -43,17 +43,17 @@ Agent> 帮我读取 package.json 的版本号
 | `/skill` | Skill 管理（list / reload / show / upload / remove） |
 | `/memory` | 记忆管理（status / curated / episodic / search / dream / gate / init） |
 | `/vision` | 视觉模型管理（status / test） |
-| `/model` | 多模型管理（list / use / add / remove / test） |
+| `/model` | 多模型管理（list / use / add / remove / test / bench） |
 | `/upload` | 文件上传（复制到会话隔离上传目录并注入 Agent 上下文；list / clean） |
 | `/setup` | 重跑初始化配置向导（--global / --workspace 指定写入层级） |
 | `/doctor` | 启动体检：逐项检测模型配置 / 配置文件 / skills 目录（只读） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 连按两次同样有效） |
-| `Ctrl+C` | **回答中**：只中断本次回答（停止流式输出与工具执行，已生成内容保留到会话，可继续追问）；**空闲时**：3 秒内连按两次才退出（防误触） |
+| `Ctrl+C` | **回答中**：只中断本次回答（停止流式输出与工具执行，已生成内容保留到会话，可继续追问）；**测速等可中断命令执行中**：只中断该命令（如 `/model bench` 保留已完成样本）；**空闲时**：3 秒内连按两次才退出（防误触） |
 
 > **Tab 自动补全**：在提示符下按 `Tab` 可逐级补全——
 > - **命令**：输入 `/con` 再按 `Tab` 自动补全为 `/config`；
 > - **子命令**：输入 `/config ` 再按 `Tab` 列出并补全子命令（`list/get/set/delete/path`）；
-> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test / view ` 补 server 名、`/model use / remove / test ` 补已登记模型别名、`/config get / set / delete ` 补配置项名（如 `model.name`、`vision.enabled`）、`/upload ` 补 `list / clean` 子命令；
+> - **动态参数**：`/session load ` 补真实会话 id、`/tools enable ` 补内置工具名、`/skill show / remove ` 补技能名、`/mcp test / view ` 补 server 名、`/model use / remove / test / bench ` 补已登记模型别名、`/config get / set / delete ` 补配置项名（如 `model.name`、`vision.enabled`）、`/upload ` 补 `list / clean` 子命令；
 > - **单词命令**：`hel` → `help`、`ex` → `exit`。
 >
 > 多候选时按 `Tab` 会补全公共前缀并列出全部候选；普通提问（非 `/` 开头、含空格或中文）按 `Tab` 无任何副作用。
@@ -235,6 +235,46 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
   }
 }
 ```
+
+#### `/model bench` — 模型性能测速（与 WebUI 同一引擎）
+
+`/model test` 只回答「通不通、往返多久」；`/model bench` 回答的是「**多快**」——它复用 WebUI 测速的同一套引擎（`src/llm/bench.ts` `runBench`）与同一份历史文件（`~/.loop-agent/model-bench/history.json`），因此 CLI 与 WebUI 的数字口径完全一致，两端的数据互相可见：
+
+```
+/model bench                          # 测当前激活模型（quick 档，秒级出结果）
+/model bench deepseek glm             # 横向对比两个模型（最多 4 个，严格串行）
+/model bench --all                    # 测全部已登记模型（取前 4 个，被忽略的会明确列出）
+/model bench deepseek --tier standard # 标准档（2 档 × 3 轮，约 30–90s）
+/model bench --json                   # 只输出 JSON，供 CI / 脚本消费
+/model bench history                  # 历史（缺省每个模型最近一次）
+/model bench history deepseek --limit 5   # 某模型最近 5 次的走势
+```
+
+可选参数（位置参数只放别名，其余一律 `--flag`）：
+
+| 参数 | 说明 |
+|---|---|
+| `--tier quick\|standard` | 档位，默认 `quick`（1 档 1 轮）；`standard` 为 2 档 3 轮 |
+| `--rounds 1-10` | 每档轮数（覆盖档位预设） |
+| `--prompts short,medium,code` | 提示词档位（覆盖档位预设） |
+| `--max-tokens 32-1024` | 输出上限，默认 256 |
+| `--timeout 5-180` | 单轮超时秒数，默认 60 |
+| `--no-bust-cache` | 不破坏前缀缓存（TTFT 含缓存收益，跨模型不可比） |
+| `--json` | 只输出结构化结果，无动画、无颜色、无提示文案 |
+| `--limit 1-20` | `history` 的条数上限 |
+
+结果表列：`别名 | 型号 | TTFT | TPOT | 解码 TPS | 端到端 TPS | ITL p90 | 成功率 | 样本`；多模型并排，每列最优加 `*` 高亮（无颜色环境同样可辨），有历史时附「相比上次」变化。
+
+设计要点：
+
+- **单一测量口径**：所有测量参数（`temperature:0`、`max_tokens`、破坏前缀缓存、分位统计）都走引擎既有默认，CLI 侧不另算一套——否则与 WebUI 的数字不可比，测速就失去意义。
+- **前置整体校验**：别名拼错或 profile 缺 `apiKey` 在开跑**前**拦截并列出可用别名，不会「跑一半才发现第 3 个模型拼错」。
+- **实时读数**：TTY 下固定 3 行原地刷新（当前轮次 / 已出 token 与实时 TPS / TTFT 与成功失败计数）；管道、重定向、CI 等非 TTY 场景降级为逐轮一行，无 `\r`、无转义序列、无颜色。
+- **Ctrl+C 只停测速**：已完成样本照常汇总并落盘，表头标注「已中断 n/m」，随后回到 `Agent>`——进程不退出，可立刻重跑。
+- **失败样本不丢弃**：401 / 404 / 429 / 超时 / 网络错误按既有 `classifyBenchError` 分类，计入成功率分母；表格同时给出失败分类计数与主因说明。
+- **历史落盘**：写入与 WebUI 共享的 `history.json`（每模型保留 20 次、只存 host 不存 apiKey、临时文件 + rename 原子写），写入失败只告警不阻断结果。
+- **quick 档脚注**：quick 档首轮 TTFT 含 DNS + TCP + TLS 建连开销；要严格可比请用 `--tier standard`（多轮取 p50）。
+- **快照回落**：未设置 `models.active` 时回落生效快照，别名显示为 `(当前快照)` 且不写历史（它不在登记簿里，写进去会污染趋势）。
 
 #### `/upload` — 文件上传（会话隔离上传目录）
 

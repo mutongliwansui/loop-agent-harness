@@ -44,16 +44,16 @@ Agent> Read the version from package.json
 | `/skill` | Skill management (list / reload / show / upload / remove) |
 | `/memory` | Memory management (status / curated / episodic / search / dream / gate / init) |
 | `/vision` | Vision model management (status / test) |
-| `/model` | Multi-model management (list / use / add / remove / test) |
+| `/model` | Multi-model management (list / use / add / remove / test / bench) |
 | `/upload` | File upload (copies into the session-isolated upload directory and injects into Agent context; list / clean) |
 | `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
 | `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
 | `exit` / `quit` / `退出` | Exit the program (pressing Ctrl+C twice also works) |
-| `Ctrl+C` | **While answering**: interrupts only the current answer (stops streaming and tool execution, keeps the generated content in the session so you can keep asking); **When idle**: press twice within 3 seconds to exit (mis-touch protection) |
+| `Ctrl+C` | **While answering**: interrupts only the current answer (stops streaming and tool execution, keeps the generated content in the session so you can keep asking); **While an interruptible command runs** (e.g. `/model bench`): interrupts only that command and keeps the samples already collected; **When idle**: press twice within 3 seconds to exit (mis-touch protection) |
 
 > **Subcommand help**: append `help` (or the shorthand `-h` / `--help`) to any command to see its subcommand usage, e.g. `/mcp help`, `/skill help`, `/config help` — no need to remember the global `/help`.
 >
-> **Tab completion**: press `Tab` to complete commands (`/con` → `/config`), subcommands (`/config ` → list / get / set / …) and dynamic arguments (session ids, tool names, skill names, MCP server names, model aliases, and **config keys** for `/config get|set|delete`, e.g. `model.name` / `vision.enabled`).
+> **Tab completion**: press `Tab` to complete commands (`/con` → `/config`), subcommands (`/config ` → list / get / set / …) and dynamic arguments (session ids, tool names, skill names, MCP server names, model aliases (including `/model bench` and `history`), and **config keys** for `/config get|set|delete`, e.g. `model.name` / `vision.enabled`).
 
 ### Output Example
 
@@ -230,6 +230,46 @@ Config example (workspace `.loop-agent/.agent-config.json`):
   }
 }
 ```
+
+#### `/model bench` — Model Performance Benchmarks (same engine as the Web UI)
+
+`/model test` only answers "does it connect, how long round-trip"; `/model bench` answers "**how fast**" — it reuses the very engine the Web UI benchmark uses (`runBench` in `src/llm/bench.ts`) and the same history file (`~/.loop-agent/model-bench/history.json`), so CLI and Web UI numbers share one definition and each side can see the other's data:
+
+```
+/model bench                          # Bench the active model (quick tier, results in seconds)
+/model bench deepseek glm             # Compare two models side by side (max 4, strictly serial)
+/model bench --all                    # Bench every registered model (first 4; ignored aliases are listed)
+/model bench deepseek --tier standard # Standard tier (2 prompts × 3 rounds, ~30–90s)
+/model bench --json                   # Machine-readable output for CI / scripts
+/model bench history                  # History (latest run per model by default)
+/model bench history deepseek --limit 5   # Trend of the last 5 runs for one model
+```
+
+Options (positional arguments are aliases only; everything else is a `--flag`):
+
+| Option | Description |
+|---|---|
+| `--tier quick\|standard` | Tier, defaults to `quick` (1 prompt × 1 round); `standard` is 2 × 3 |
+| `--rounds 1-10` | Rounds per prompt (overrides the tier preset) |
+| `--prompts short,medium,code` | Prompt keys (overrides the tier preset) |
+| `--max-tokens 32-1024` | Output cap, default 256 |
+| `--timeout 5-180` | Per-round timeout in seconds, default 60 |
+| `--no-bust-cache` | Keep the prefix cache (TTFT then includes cache hits; not comparable across models) |
+| `--json` | Structured output only — no animation, no colors, no prose |
+| `--limit 1-20` | Row cap for `history` |
+
+Result columns: `alias | model | TTFT | TPOT | decode TPS | end-to-end TPS | ITL p90 | success | samples`; models are laid out side by side, the best value per column is marked with `*` (still readable without colors), and a "vs last time" delta is shown when history exists.
+
+Design notes:
+
+- **One measurement definition**: every measurement parameter (`temperature:0`, `max_tokens`, cache busting, percentiles) comes from the engine's existing defaults — the CLI never re-implements the math, otherwise its numbers would drift from the Web UI and the benchmark would be pointless.
+- **Up-front validation**: a mistyped alias or a profile without `apiKey` is rejected **before** the first request, with the list of available aliases — you never discover the third model is misspelled halfway through.
+- **Live readout**: on a TTY a fixed 3-line block is redrawn in place (current round / emitted tokens and live TPS / TTFT plus success-failure counts); on pipes, redirects and CI it degrades to one line per round with no `\r`, no escape sequences and no colors.
+- **Ctrl+C stops only the benchmark**: samples already collected are summarized and persisted, the header says `interrupted n/m`, and you are back at `Agent>` — the process stays alive and you can re-run immediately.
+- **Failed samples are kept**: 401 / 404 / 429 / timeout / network errors are classified by the existing `classifyBenchError`, count toward the success-rate denominator, and the failure-kind tally plus the dominant error are printed under the table.
+- **History persistence**: results are appended to the shared `history.json` (20 runs per model, host stored but never apiKey, temp file + rename atomic write); a write failure only warns, never blocks the result.
+- **Quick-tier footnote**: the first quick-tier TTFT includes DNS + TCP + TLS handshake cost; use `--tier standard` (multi-round p50) for strictly comparable numbers.
+- **Snapshot fallback**: with no `models.active`, the CLI falls back to the effective snapshot, labels the alias `(current snapshot)` and does not write history (it is not in the registry and would pollute the trend).
 
 #### `/upload` — File Upload (Session-Isolated Upload Directory)
 

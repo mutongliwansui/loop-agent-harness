@@ -77,7 +77,8 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}输入问题${C.reset}    → Agent 流式输出 Thought / Action / Observation / Final`);
   console.log(`  ${C.bold}/help${C.reset}         → 查看此帮助`);
   console.log(`  ${C.bold}/config${C.reset}       → 配置管理（get/set/delete/list/path）`);
-  console.log(`  ${C.bold}/model${C.reset}        → 多模型管理（list/use/add/remove/test）`);
+  console.log(`  ${C.bold}/model${C.reset}        → 多模型管理（list/use/add/remove/test/bench）`);
+  console.log(`  ${C.gray}               /model bench [别名…]：性能测速（TTFT / 解码 TPS / ITL p90，可 Ctrl+C 只停测速）${C.reset}`);
   console.log(`  ${C.bold}/vision${C.reset}       → 视觉模型管理（status/test）`);
   console.log(`  ${C.bold}/upload${C.reset}       → 文件上传（复制到会话隔离上传目录并注入上下文）`);
   console.log(`  ${C.bold}/mcp${C.reset}          → MCP 管理（list/add/remove/reload/test/view）`);

@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG, detectDrift, type AgentConfig, type ModelProfile } from
 import { defaultCheckConnectivity, type CheckConnectivityFn } from '../llm/connectivity.js';
 import { COLORS, sourceColor } from '../ui/colors.js';
 import { Spinner } from '../ui/spinner.js';
+import { createBenchRunner, type BenchCommand } from './bench-command.js';
 import { parseScope } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
@@ -23,6 +24,8 @@ export interface ModelCommandDeps {
   askSecret?: AskFn;
   /** 连通性校验（默认 openai SDK 直接 ping；add 可选测试与 /model test 共用） */
   checkConnectivity?: CheckConnectivityFn;
+  /** 测速子命令（默认真实实现；单测可注入 fake 引擎与临时历史目录） */
+  bench?: BenchCommand;
 }
 
 /** apiKey 展示遮蔽：仅保留尾 4 位 */
@@ -381,16 +384,18 @@ async function runTest(ctx: CommandContext, args: string[], deps: ModelCommandDe
 }
 
 export function createModelCommand(deps: ModelCommandDeps = {}): CommandHandler {
+  const bench = deps.bench ?? createBenchRunner();
   return {
     name: '/model',
-    description: '多模型接入与切换（list/use/add/remove/test）',
-    subcommands: ['list', 'use', 'add', 'remove', 'test', 'help'],
+    description: '多模型接入与切换（list/use/add/remove/test/bench）',
+    subcommands: ['list', 'use', 'add', 'remove', 'test', 'bench', 'help'],
     subcommandHelp: {
       list: '列出登记簿中的全部模型',
       use: '切换当前模型（/model use <别名>）',
       add: '登记新模型（/model add <别名>，交互式输入配置）',
       remove: '移除模型（/model remove <别名>）',
       test: '测试模型连通性（/model test <别名>）',
+      bench: '模型性能测速（/model bench [别名…]，history 查历史，help 看用法）',
     },
     match: (input) => /^\/model(?:\s|$)/i.test(input.trim()),
     async execute(input, ctx) {
@@ -419,10 +424,14 @@ export function createModelCommand(deps: ModelCommandDeps = {}): CommandHandler 
         await runTest(ctx, args, deps);
         return;
       }
+      if (sub === 'bench') {
+        await bench.execute(args, ctx);
+        return;
+      }
 
       out.blank();
       out.log(`${COLORS.red}未知子命令: ${sub}${COLORS.reset}`);
-      out.log(`用法: /model list | /model use <别名> | /model add <别名> | /model remove <别名> | /model test <别名>`);
+      out.log(`用法: /model list | /model use <别名> | /model add <别名> | /model remove <别名> | /model test <别名> | /model bench [别名…]`);
       out.blank();
     },
   };

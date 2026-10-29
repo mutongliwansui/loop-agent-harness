@@ -29,6 +29,12 @@ export interface CommandContext {
    * 返回 true 表示用户明确输入 y，其余（含回车）一律 false。
    */
   askConfirm: (question: string) => Promise<boolean>;
+  /**
+   * 命令级可中断入口（需求 20261029-002 D7）：
+   * 长命令（如 `/model bench`）把 AbortController 交给 REPL，使 Ctrl+C 能打断它；
+   * 命令结束务必传 null 释放。未实现时（Web/测试等非 REPL 宿主）可省略。
+   */
+  setAbortable?: (controller: AbortController | null) => void;
 }
 
 /** 命令处理器 */

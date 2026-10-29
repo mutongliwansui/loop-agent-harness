@@ -204,7 +204,10 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
         }
         if (
           command === '/model' &&
-          (subcommand === 'use' || subcommand === 'remove' || subcommand === 'test')
+          (subcommand === 'use' ||
+            subcommand === 'remove' ||
+            subcommand === 'test' ||
+            subcommand === 'bench')
         ) {
           const { config: c } = configLoader.load();
           return Object.keys(c.models.profiles).filter((n) => n.startsWith(prefix));
@@ -259,6 +262,20 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
     rl.write('n\n');
   };
 
+  /** 是否有正在执行的 Agent 任务 */
+  let running = false;
+  /** readline 是否已关闭 */
+  let rlClosed = false;
+  /**
+   * 本轮提问的取消句柄（Task-20261029-001）：普通提问由 run 分支设置；
+   * 长命令（如 /model bench）通过 ctx.setAbortable 注册（需求 20261029-002 D7）。
+   */
+  let currentRun: AbortController | null = null;
+  /** 已发出 abort、等待 run 返回（收尾中）：此阶段的 Ctrl+C 一律忽略，绝不退出 */
+  let aborting = false;
+  /** 空闲态退出确认窗口的开启时间戳（0 表示窗口未开启） */
+  let exitArmedAt = 0;
+
   const ctx: CommandContext = {
     agent,
     configLoader,
@@ -271,21 +288,16 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
     out: new ConsoleOutputChannel(),
     colors: C,
     askConfirm,
+    /**
+     * 命令级中断入口（需求 20261029-002 D7）：命令注册 AbortController 后，
+     * SIGINT 的 abortable 即为 true，Ctrl+C 走 abort-run 分支而不是 ignore-busy。
+     * 传 null 释放；同时复位 aborting，避免中断过的命令让后续 Ctrl+C 一直被吞。
+     */
+    setAbortable: (controller) => {
+      currentRun = controller;
+      if (controller === null) aborting = false;
+    },
   };
-
-  /** 是否有正在执行的 Agent 任务 */
-  let running = false;
-  /** readline 是否已关闭 */
-  let rlClosed = false;
-  /**
-   * 本轮提问的取消句柄（Task-20261029-001）：仅普通提问设置，斜杠命令为 null
-   * ——命令没有取消语义，Ctrl+C 在命令执行期只提示稍候。
-   */
-  let currentRun: AbortController | null = null;
-  /** 已发出 abort、等待 run 返回（收尾中）：此阶段的 Ctrl+C 一律忽略，绝不退出 */
-  let aborting = false;
-  /** 空闲态退出确认窗口的开启时间戳（0 表示窗口未开启） */
-  let exitArmedAt = 0;
 
   // loading 指示器：受 agent.loading 开关控制，且非 TTY（管道/重定向/CI）自动禁用
   // 显式传入 enabled 会覆盖 Spinner 内部 isTTY 默认值，故此处显式与 isTTY 相与
@@ -442,6 +454,10 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
       console.error(`\n${C.bold}${C.red}[Error]${C.reset} ${C.red}${msg}${C.reset}\n`);
     } finally {
       running = false;
+      // 兜底复位（需求 20261029-002 D7）：命令分支（如 /model bench 被中断）若不慎
+      // 遗留 currentRun/aborting，会让后续 Ctrl+C 恒被 ignore-busy 吞掉，这里幂等清一次
+      currentRun = null;
+      aborting = false;
       safePrompt();
     }
   });
@@ -484,13 +500,14 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
         return;
       }
       case 'abort-run': {
-        // 只中断本次回答：abort 之后由 agent.run 抛 AgentAbortedError，
+        // 只中断本次任务：abort 之后由 agent.run 抛 AgentAbortedError（普通提问），
+        // 或由命令自己收尾（/model bench 汇总已采样本）。
         // 收尾（封口/落盘/提示/回到提示符）由 handleAborted + finally 负责
         exitArmedAt = 0;
         aborting = true;
         currentRun?.abort();
         spinner.stop();
-        console.log(`\n${C.gray}⏹ 正在停止本次回答…${C.reset}`);
+        console.log(`\n${C.gray}⏹ 正在停止当前任务…${C.reset}`);
         return;
       }
       case 'arm-exit': {
