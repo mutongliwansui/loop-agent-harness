@@ -1225,3 +1225,299 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
 .nav .grp.open .grp-head .arrow { transform: rotate(90deg); }
 .nav .grp-body { display: none; }
 .nav .grp.open .grp-body { display: block; }
+
+/* ===== 模型页（#/models）重设计（需求 20261029-004 · 方案 D1–D13） =====
+ * 全部复用既有令牌（--brand/--ok/--warn/--danger/--line*/--radius-*/--shadow-*），零新增色值。
+ * 类名统一 .mv- 前缀，避免与 .fs-*（文件面板）/ .dream-*（记忆）/ .bench-*（测速抽屉）冲突。 */
+
+/* 页头：标题 + 说明 + 写入位置 + 主操作（D2/D3：不再放 HTTP 端点徽标） */
+.mv-page { max-width: 1180px; }
+.mv-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.mv-title h1 { font-size: 17px; font-weight: 700; margin: 0 0 3px; letter-spacing: .2px; }
+.mv-sub { margin: 0; font-size: 12.5px; color: var(--muted); }
+.mv-head-acts { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.mv-scope { display: inline-flex; align-items: center; gap: 8px; }
+.mv-scope > .lb { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* 主操作按钮（SVG 图标 + 文案，替代 ＋/⟳ 字符图标） */
+.mv-page .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-on);
+  font-weight: 600;
+  padding: 6px 12px;
+}
+.mv-page .btn-primary:hover { color: var(--brand-on); border-color: var(--brand); filter: brightness(1.06); }
+.mv-page .btn-primary svg { width: 15px; height: 15px; }
+
+/* 工具行：过滤 + 计数（D11） */
+.mv-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.mv-filter { position: relative; flex: 1; min-width: 210px; max-width: 380px; }
+.mv-filter > svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.mv-filter input { height: 32px; padding-left: 29px; font-size: 13px; width: 100%; }
+.mv-count { font-size: 12px; color: var(--muted); }
+.mv-count b { color: var(--text); font-weight: 600; }
+
+/* 行卡列表（D1：表格 → 行卡；D2：生效行置顶高亮） */
+.mv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.mv-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow .16s, border-color .16s;
+}
+.mv-row:hover { box-shadow: var(--shadow-card-hover); border-color: var(--line-strong); }
+.mv-row.on { border-color: var(--line-strong); background: var(--brand-weak); }
+.mv-row.on::before,
+.mv-row.bad::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--brand);
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+.mv-row.bad::before { background: var(--danger); }
+
+.mv-ico {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: var(--code-bg);
+  color: var(--muted);
+  border: 1px solid var(--line-soft);
+}
+.mv-ico svg { width: 16px; height: 16px; }
+.mv-row.on .mv-ico { background: var(--panel); color: var(--brand); border-color: transparent; }
+
+.mv-main { flex: 1; min-width: 0; }
+.mv-name { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; }
+.mv-name .alias { font-family: var(--mono); font-size: 13px; }
+.mv-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mv-meta .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.mv-meta .host { font-family: var(--mono); color: var(--text-2); }
+.mv-meta .key { font-family: var(--mono); }
+.mv-meta .clamp { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 状态区（D4：中性 dim / 成功 ok / 失败 bad / 偏慢 warn / 生效 brand） */
+.mv-state { display: flex; align-items: center; gap: 6px; flex: none; }
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 18px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pill svg { width: 11px; height: 11px; }
+.pill.ok { background: var(--ok-weak); color: var(--ok); }
+.pill.bad { background: var(--danger-weak); color: var(--danger); }
+.pill.warn { background: var(--warn-weak); color: var(--warn); }
+.pill.brand { background: var(--panel); color: var(--brand); }
+.pill.dim { background: var(--code-bg); color: var(--muted); }
+
+/* 操作区（D5：图标按钮 + 仅非生效行出现「设为生效」胶囊） */
+.mv-ops { display: flex; align-items: center; gap: 6px; flex: none; }
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+}
+.icon-btn svg { width: 15px; height: 15px; }
+.icon-btn:hover { background: var(--hover); border-color: transparent; color: var(--text); }
+.icon-btn.danger:hover { background: var(--danger-weak); color: var(--danger); }
+.icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+.icon-btn:disabled:hover { background: transparent; color: var(--muted); }
+.btn-use {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+}
+.btn-use svg { width: 13px; height: 13px; }
+.btn-use:hover { background: var(--brand-weak); color: var(--brand); border-color: var(--brand); }
+.btn-use:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 删除按钮（D6：动词即确认收进图标形态）——提特异度压过 .icon-btn.danger:hover */
+.mv-ops .confirm-btn.armed,
+.mv-ops .confirm-btn.armed:hover {
+  background: var(--danger);
+  border-color: transparent;
+  color: #fff;
+}
+.mv-ops .confirm-btn { color: var(--muted); }
+.mv-ops .confirm-btn svg { width: 15px; height: 15px; }
+
+/* 空态 / 无匹配 / 骨架（D9） */
+.mv-empty-ico {
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+  opacity: .55;
+  display: inline-block;
+}
+.mv-empty-ico svg { width: 26px; height: 26px; }
+.mv-none { padding: 22px 16px; text-align: center; font-size: 12.5px; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: var(--radius-card); background: var(--bar-bg); }
+.skel {
+  height: 62px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--line);
+  background: var(--bar-bg);
+  position: relative;
+  overflow: hidden;
+}
+.skel + .skel { margin-top: 8px; }
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--hover), transparent);
+  animation: mv-sweep 1.25s linear infinite;
+}
+@keyframes mv-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
+
+/* 版尾说明（D10：折叠，不再常驻两行长句） */
+.mv-note { margin-top: 14px; font-size: 12px; color: var(--muted); }
+.mv-note summary { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; list-style: none; padding: 3px 0; }
+.mv-note summary::-webkit-details-marker { display: none; }
+.mv-note summary svg { width: 13px; height: 13px; transition: transform .15s; }
+.mv-note[open] summary svg { transform: rotate(90deg); }
+.mv-note .body {
+  margin-top: 6px;
+  padding: 10px 13px;
+  line-height: 1.7;
+  background: var(--bar-bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  max-width: 720px;
+}
+.mv-note .body b { color: var(--text-2); font-weight: 600; }
+
+/* 登记抽屉（D7）：右侧 420px 浮层 + 遮罩 */
+.mv-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, .32);
+  z-index: 80;
+}
+.mv-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 92vw;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+}
+.mv-drawer .dh { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.mv-drawer .dh h2 { margin: 0; font-size: 14px; font-weight: 700; }
+.mv-drawer .dh .x { margin-left: auto; }
+.mv-drawer .db { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.mv-drawer .df { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bar-bg); }
+.mv-drawer .df .sp { flex: 1; }
+
+.field > label { display: flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+.field > label .req { color: var(--danger); font-weight: 700; }
+.field > label .opt { color: var(--muted); font-weight: 400; font-size: 11.5px; }
+.field .hint { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.field .err { margin: 6px 0 0; font-size: 11.5px; color: var(--danger); display: flex; align-items: center; gap: 5px; }
+.field .err svg { width: 12px; height: 12px; flex: none; }
+.field input.bad { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-weak); }
+.field .with-suffix { position: relative; }
+.field .with-suffix input { padding-right: 58px; }
+.field .with-suffix button {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 8px;
+  font-size: 11.5px;
+  border-radius: 6px;
+}
+.field-sep { height: 1px; background: var(--line-soft); }
+.scope-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bar-bg);
+  border: 1px solid var(--line-soft);
+  font-size: 12.5px;
+}
+.scope-line .t { color: var(--muted); }
+.scope-line .sp { flex: 1; }
+.mv-drawer .errbox {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--danger-weak);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 窄屏 ≤720px（D9）：行卡换行堆叠，操作区下沉，页头操作占满一行 */
+@media (max-width: 720px) {
+  .mv-page { padding: 16px 14px 32px; }
+  .mv-row { flex-wrap: wrap; }
+  .mv-main { flex: 1 1 calc(100% - 46px); }
+  .mv-state { order: 3; margin-left: 42px; }
+  .mv-ops { order: 4; margin-left: auto; }
+  /* flex-basis 100% + 不收缩：否则与标题同处一行时被 flex 压窄（实测 291px ≠ 347px） */
+  .mv-head-acts { margin-left: 0; flex: 1 0 100%; flex-wrap: wrap; }
+  .mv-filter { max-width: none; }
+  .mv-meta .clamp { max-width: 160px; }
+}
