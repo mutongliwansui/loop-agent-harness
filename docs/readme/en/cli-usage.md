@@ -48,7 +48,8 @@ Agent> Read the version from package.json
 | `/upload` | File upload (copies into the session-isolated upload directory and injects into Agent context; list / clean) |
 | `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
 | `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
-| `exit` / `quit` / `退出` | Exit the program (Ctrl+C also works) |
+| `exit` / `quit` / `退出` | Exit the program (pressing Ctrl+C twice also works) |
+| `Ctrl+C` | **While answering**: interrupts only the current answer (stops streaming and tool execution, keeps the generated content in the session so you can keep asking); **When idle**: press twice within 3 seconds to exit (mis-touch protection) |
 
 > **Subcommand help**: append `help` (or the shorthand `-h` / `--help`) to any command to see its subcommand usage, e.g. `/mcp help`, `/skill help`, `/config help` — no need to remember the global `/help`.
 >

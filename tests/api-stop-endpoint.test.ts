@@ -69,7 +69,10 @@ async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 3000)
   const start = Date.now();
   while (!(await cond())) {
     if (Date.now() - start > timeoutMs) throw new Error('waitFor 超时');
-    await new Promise((r) => setTimeout(r, 10));
+    // 轮询间隔 50ms：条件本身常是一次 GET /sessions/:id（读盘 + 解密），
+    // 10ms 间隔会在满负载回归下形成请求风暴，与后台落盘写盘争用磁盘，
+    // 反而把"等待落盘"拖到超时（2026-10-29 全量回归曾出现 6.2.6 因此误报 15s 超时）
+    await new Promise((r) => setTimeout(r, 50));
   }
 }
 

@@ -179,6 +179,21 @@ export class ReActAgent {
     return [...this._chatHistory];
   }
 
+  /**
+   * 接管一份外部已封口/已落盘的历史作为下一轮基线（Task-20261029-001 D4-B）。
+   *
+   * 用途：CLI 在 Ctrl+C 中断后用 `sealPendingToolCalls` 补齐孤立 tool_calls 并落盘，
+   * 需要把同一份内容回写到内存 `_chatHistory`，否则内存与磁盘分叉——下一轮 run 仍从
+   * 中断前的旧基线出发，用户已看到的半截回答与合成 tool 消息都不会被模型看到。
+   *
+   * 口径与 restoreSession 一致：丢弃 system（每轮按当前配置重建，保持前缀缓存可命中）、
+   * 丢弃 is_compact===true 的已折叠历史（仅用于 UI 展示），再经 repairMessageSequence 兜底修复。
+   */
+  adoptHistory(messages: ChatMessage[]): void {
+    const kept = messages.filter((m) => m.role !== 'system' && m.is_compact !== true);
+    this._chatHistory = repairMessageSequence(kept);
+  }
+
   /** 当前上下文消耗情况（供 /status 展示） */
   getContextUsage(): {
     contextTokens: number;
@@ -489,6 +504,11 @@ export class ReActAgent {
       transcript.push(m);
     };
 
+    // 本轮迭代已流出的文本（Task-20261029-001 D4-B）：
+    // 流式过程中被中断时 assistant 消息尚未入 messages，若不补一条，
+    // 落盘会话只剩 user 消息，「已生成内容已保留」就落空了。每轮迭代开始重置。
+    const streamedText = { value: '' };
+
     debug.session(messages.length, openaiTools.length, this._currentSessionId);
 
     // ===== 节流快照：进程崩溃时保留已产生的消息 =====
@@ -568,6 +588,7 @@ export class ReActAgent {
       for (let i = 0; i < maxIterations; i++) {
         // C1：每轮迭代入口——abort 后不再启动"下一轮"
         throwIfAborted(i);
+        streamedText.value = '';
         await safeEvents.onIterationStart(i, maxIterations);
 
         // ===== 记忆管理：L1 压缩检查 =====
@@ -766,7 +787,15 @@ export class ReActAgent {
         // C2：LLM 调用前——abort 后不再发起空转请求
         throwIfAborted(i);
         const llmStartTs = Date.now();
-        const resp = await this.streamLLM(llmMessages, openaiTools, { model, temperature, ...creds }, events);
+        // signal 必须一并透传（Task-20261029-001）：此前只传给工具层，流式请求本身收不到取消，
+        // 导致"回答中"按 Ctrl+C 后流仍在跑，要等本轮结束才在下一个检查点生效。
+        const resp = await this.streamLLM(
+          llmMessages,
+          openaiTools,
+          { model, temperature, ...creds, signal: options.signal },
+          events,
+          streamedText,
+        );
 
         await safeEvents.onLLMEnd(resp, i);
 
@@ -997,9 +1026,20 @@ export class ReActAgent {
         e.partial.messages.length === 0 &&
         e.partial.steps.length === 0
       ) {
+        const abortedMessages = [...messages];
+        const abortedTranscript = [...transcript];
+        // 流式中断时 assistant 消息还没入列（要等 done chunk），只补 user 消息会让
+        // 「已生成内容已保留」落空。这里把本轮已流出的文本补成一条 assistant 消息：
+        // 纯文本消息不会造成孤立 tool_calls，下一轮上下文合法，--resume 也能看到半截内容。
+        // 仅当末尾是 user 时补——末尾是 assistant(tool_calls)/tool 时补会与已有语义重复。
+        if (streamedText.value && abortedMessages[abortedMessages.length - 1]?.role === 'user') {
+          const partialMsg: ChatMessage = { role: 'assistant', content: streamedText.value };
+          abortedMessages.push(partialMsg);
+          abortedTranscript.push(partialMsg);
+        }
         throw new AgentAbortedError({
-          messages: [...messages],
-          transcript: [...transcript],
+          messages: abortedMessages,
+          transcript: abortedTranscript,
           steps: [...steps],
           // LLM/工具层抛错时本迭代尚在进行：statsHistory 未及 push，按已调用口径
           // 取 max(len,1)，避免出现 iterations=0 的空转轮（迭代从 0 计数）
@@ -1021,13 +1061,28 @@ export class ReActAgent {
   private async streamLLM(
     messages: ChatMessage[],
     tools: ReturnType<typeof registry.toOpenAITools>,
-    options: { model: string; temperature: number; baseUrl?: string; apiKey?: string },
+    options: {
+      model: string;
+      temperature: number;
+      baseUrl?: string;
+      apiKey?: string;
+      /** run 级取消信号（Task-20261029-001）：透传给 SDK，使流式请求可被中断 */
+      signal?: AbortSignal;
+    },
     events: AgentEvents,
+    /** 累积本轮已流出的文本（Task-20261029-001）：中断时用于补半截 assistant 消息 */
+    acc?: { value: string },
   ): Promise<LLMResponse> {
     let response: LLMResponse | null = null;
     const safeEvents = events as Required<AgentEvents>;
     const tracker = createToolCallGenTracker();
     for await (const chunk of llm.chatStream(messages, tools, options)) {
+      // 防御性检查：个别传输层会把 abort 收敛成"流正常结束"，此时不判 aborted
+      // 就会把半截流当成完整响应继续跑完整个迭代（空白 partial 由主循环换绑为完整快照）
+      if (options.signal?.aborted) {
+        throw new AgentAbortedError({ messages: [], transcript: [], steps: [], iterations: 0 });
+      }
+      if (chunk.type === 'delta' && acc) acc.value += chunk.content;
       const done = await dispatchStreamChunk(chunk, tracker, safeEvents);
       if (done) response = done;
     }

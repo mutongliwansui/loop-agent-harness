@@ -367,4 +367,60 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
     expect(result.answer).toBe('正常完成');
     expect(result.messages[result.messages.length - 1].role).toBe('assistant');
   });
+
+  it('6.2.8 流式中断：已流出文本补为 assistant 消息（Task-20261029-001 D4-B）', async () => {
+    const wsDir = join(BASE, 'stream-partial');
+    writeWorkspaceConfig(wsDir);
+    // 模拟"用户看到半截回答时按 Ctrl+C"：先流出文本，再由 chatStream 抛空 partial 中止错误
+    let streamed = false;
+    mocks.chatStream.mockImplementation(async function* () {
+      yield { type: 'delta', content: '这是用户已经看到的半截回答' };
+      streamed = true;
+      throw new AgentAbortedError({ messages: [], transcript: [], steps: [], iterations: 0 });
+    });
+
+    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const agent = new ReActAgent(loader);
+    await agent.initMemory(wsDir);
+
+    const ac = new AbortController();
+    const p = agent.run('写点东西', { messages: [msg('system', 'sys')], signal: ac.signal });
+    const errPromise = p.then(
+      () => {
+        throw new Error('应当抛出 AgentAbortedError');
+      },
+      (e) => e,
+    );
+    await vi.waitFor(() => {
+      if (!streamed) throw new Error('尚未流出文本');
+    });
+    ac.abort();
+
+    const err = await errPromise;
+    expect(err).toBeInstanceOf(AgentAbortedError);
+    const partial = (err as AgentAbortedError).partial;
+    const last = partial.messages[partial.messages.length - 1];
+    // 半截回答进入快照（否则落盘会话只剩 user 消息，"已生成内容已保留"落空）
+    expect(last.role).toBe('assistant');
+    expect(String(last.content)).toContain('这是用户已经看到的半截回答');
+    // 纯文本 assistant 不产生孤立 tool_calls：消息序对下一轮仍然合法
+    expect(partial.messages.some((m) => m.role === 'tool')).toBe(false);
+  });
+
+  it('6.2.9 signal 透传：run 的 signal 必须传到 chatStream（流式可中断的前提）', async () => {
+    const wsDir = join(BASE, 'signal-pass');
+    writeWorkspaceConfig(wsDir);
+    scriptMainCalls([{ content: '完成' }]);
+
+    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const agent = new ReActAgent(loader);
+    await agent.initMemory(wsDir);
+
+    const ac = new AbortController();
+    await agent.run('hi', { messages: [msg('system', 'sys')], signal: ac.signal });
+    // 第 3 个参数是 chatStream 的 options；此前漏传 signal，导致"回答中"无法中断
+    const call = mocks.chatStream.mock.calls.find((c) => !isFlushCall(c[0] as ChatMessage[]));
+    expect(call).toBeDefined();
+    expect((call?.[2] as { signal?: AbortSignal }).signal).toBe(ac.signal);
+  });
 });

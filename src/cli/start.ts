@@ -38,7 +38,9 @@ import { uploadCommand } from '../commands/upload-command.js';
 import { setupCommand } from '../commands/setup-command.js';
 import { doctorCommand } from '../commands/doctor-command.js';
 import { initAgentMemory, type RuntimeContext } from '../runtime/init.js';
-import type { ChatMessage } from '../types.js';
+import { AgentAbortedError, type ChatMessage } from '../types.js';
+import { sealPendingToolCalls } from '../agent/abort-utils.js';
+import { decideSigint, resolveExitArm, EXIT_WINDOW_MS } from './interrupt.js';
 
 /** 打印启动横幅与使用说明 */
 function printBanner(): void {
@@ -248,6 +250,15 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
       });
     });
 
+  /**
+   * 取消进行中的 y/N 确认（Task-20261029-001 D6）：Ctrl+C 时等价于回答 n。
+   * 走 rl.write('n\n') 而不是自己 resolve——question 期间 readline 会把该行交给
+   * question 回调（不 emit 'line'），监听自然解除，不留悬挂回调。
+   */
+  const cancelPendingConfirm = (): void => {
+    rl.write('n\n');
+  };
+
   const ctx: CommandContext = {
     agent,
     configLoader,
@@ -266,6 +277,15 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
   let running = false;
   /** readline 是否已关闭 */
   let rlClosed = false;
+  /**
+   * 本轮提问的取消句柄（Task-20261029-001）：仅普通提问设置，斜杠命令为 null
+   * ——命令没有取消语义，Ctrl+C 在命令执行期只提示稍候。
+   */
+  let currentRun: AbortController | null = null;
+  /** 已发出 abort、等待 run 返回（收尾中）：此阶段的 Ctrl+C 一律忽略，绝不退出 */
+  let aborting = false;
+  /** 空闲态退出确认窗口的开启时间戳（0 表示窗口未开启） */
+  let exitArmedAt = 0;
 
   // loading 指示器：受 agent.loading 开关控制，且非 TTY（管道/重定向/CI）自动禁用
   // 显式传入 enabled 会覆盖 Spinner 内部 isTTY 默认值，故此处显式与 isTTY 相与
@@ -275,6 +295,61 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
 
   const safePrompt = (): void => {
     if (!rlClosed) rl.prompt();
+  };
+
+  /**
+   * 中断收尾（Task-20261029-001 D4-B / D5）：封口 → 落盘 → 回写内存基线 → 打印摘要。
+   *
+   * 与 API 侧 `/stop` 收尾同一套语义（handlers/messages.ts:231-246）：
+   * 1. sealPendingToolCalls 给未响应的 tool_call 补合成 tool 消息——不封口就落盘，
+   *    下一轮会因"孤立 tool_calls"被 OpenAI 协议判定 400；
+   * 2. 有会话则 updateSession，首轮则 createSession，用 store 归一化结果作基线；
+   * 3. agent.adoptHistory 把同一份内容回写内存，避免内存与磁盘分叉；
+   * 4. 落盘失败只提示灰字 warning，不阻塞回到提示符。
+   */
+  const handleAborted = async (originalInput: string, err: AgentAbortedError): Promise<void> => {
+    const partial = err.partial;
+    spinner.stop();
+    // 流式中断时 Thought 未换行，补一个换行避免中断提示与半截输出粘在同一行
+    console.log('');
+
+    const sealed = sealPendingToolCalls(partial.messages);
+    let stored = sealed;
+    if (sessionStore && cfg.session.autoSave) {
+      try {
+        if (agent.currentSessionId) {
+          stored = await sessionStore.updateSession(agent.currentSessionId, sealed, originalInput, {
+            transcript: partial.transcript,
+          });
+        } else {
+          // 本轮才建会话：同样落盘，会话标题用本轮原始输入
+          const meta = await sessionStore.createSession(originalInput, sealed, {
+            transcript: partial.transcript,
+          });
+          agent.setCurrentSessionId(meta.id);
+          stored = (await sessionStore.loadSession(meta.id)).messages;
+        }
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.log(`${C.gray}（会话保存失败，已生成内容仅存内存：${reason}）${C.reset}`);
+      }
+    }
+    // 内存基线与磁盘对齐：否则下一轮 run 仍从中断前的旧基线出发，
+    // 用户已看到的半截回答与合成 tool 消息都不会被模型看到
+    agent.adoptHistory(stored);
+
+    console.log(
+      `${C.gray}⏹ 已中断（已完成 ${partial.iterations} 轮迭代 / ${partial.steps.length} 步工具）；已生成内容已保留，可继续追问${C.reset}\n`,
+    );
+  };
+
+  /**
+   * 执行退出链路（Ctrl+C 空闲态确认退出、exit 命令共用）：
+   * 断开 MCP → 关闭 readline（'close' 处理器负责 Dreaming 与 process.exit）。
+   */
+  const shutdown = async (): Promise<void> => {
+    await mcpManager.disconnectAll().catch(() => {});
+    rl.close();
   };
 
   // 12. REPL 主循环
@@ -302,8 +377,7 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
 
     // 退出
     if (['exit', 'quit', '退出', 'q'].includes(lower)) {
-      await mcpManager.disconnectAll().catch(() => {});
-      rl.close();
+      await shutdown();
       return;
     }
 
@@ -336,12 +410,31 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
       if (matched) {
         spinner.stop();
       } else {
-        // 未匹配到命令，执行 Agent
-        const result = await agent.run(input, { verbose: cfg.agent.verbose, spinner });
-        spinner.stop();
-        console.log(
-          `\n${C.gray}(完成：${result.iterations} 轮迭代 / ${result.steps.length} 步工具 / ${result.messages.length} 条消息历史)${C.reset}\n`,
-        );
+        // 未匹配到命令，执行 Agent。
+        // Task-20261029-001：为本次提问挂 AbortController，Ctrl+C 只中断本轮而不是退出进程。
+        const controller = new AbortController();
+        currentRun = controller;
+        try {
+          const result = await agent.run(input, {
+            verbose: cfg.agent.verbose,
+            spinner,
+            signal: controller.signal,
+          });
+          spinner.stop();
+          console.log(
+            `\n${C.gray}(完成：${result.iterations} 轮迭代 / ${result.steps.length} 步工具 / ${result.messages.length} 条消息历史)${C.reset}\n`,
+          );
+        } catch (e) {
+          // 取消不是失败：走中断收尾（保留部分输出），不打印 [Error]
+          if ((e as { aborted?: boolean }).aborted === true && e instanceof AgentAbortedError) {
+            await handleAborted(input, e);
+          } else {
+            throw e;
+          }
+        } finally {
+          currentRun = null;
+          aborting = false;
+        }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -353,10 +446,67 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
     }
   });
 
+  // ===== Ctrl+C 分派（Task-20261029-001）=====
+  // 两态语义：回答中 = 只中断本次回答；空闲 = 连按两次退出。
+  // 分派逻辑在 interrupt.ts 的纯函数里（可单测），这里只负责执行副作用。
   rl.on('SIGINT', async () => {
-    await mcpManager.disconnectAll().catch(() => {});
-    console.log('');
-    rl.close();
+    const action = decideSigint({
+      running,
+      aborting,
+      confirming,
+      exiting: rlClosed,
+      abortable: currentRun !== null,
+      exitArmed: resolveExitArm(exitArmedAt, Date.now()),
+    });
+
+    switch (action) {
+      case 'force-exit': {
+        // rl 已关闭＝正在跑 Dreaming：不再有正常退出路径，立即强退
+        // （与 api/bootstrap.ts 的二次信号强退语义对齐）
+        console.log(`\n${C.gray}已跳过记忆整理，立即退出${C.reset}`);
+        process.exit(0);
+        return;
+      }
+      case 'cancel-confirm': {
+        // 确认中：等价回答 n，不中断任务、不退出进程
+        console.log(`${C.gray}（已取消确认）${C.reset}`);
+        cancelPendingConfirm();
+        return;
+      }
+      case 'ignore-busy': {
+        spinner.stop();
+        console.log(
+          aborting
+            ? `\n${C.yellow}⚠️  正在停止本次回答，请稍候…${C.reset}`
+            : `\n${C.yellow}⚠️  当前命令执行中，暂不支持中断，请稍候…${C.reset}`,
+        );
+        if (!confirming) safePrompt();
+        return;
+      }
+      case 'abort-run': {
+        // 只中断本次回答：abort 之后由 agent.run 抛 AgentAbortedError，
+        // 收尾（封口/落盘/提示/回到提示符）由 handleAborted + finally 负责
+        exitArmedAt = 0;
+        aborting = true;
+        currentRun?.abort();
+        spinner.stop();
+        console.log(`\n${C.gray}⏹ 正在停止本次回答…${C.reset}`);
+        return;
+      }
+      case 'arm-exit': {
+        // 空闲第一次：开 3s 窗口并提示，防止"中断时连按两下"把进程送走
+        exitArmedAt = Date.now();
+        console.log(`\n${C.yellow}再按一次 Ctrl+C 退出（${EXIT_WINDOW_MS / 1000}s 内有效）${C.reset}`);
+        safePrompt();
+        return;
+      }
+      case 'exit': {
+        exitArmedAt = 0;
+        console.log('');
+        await shutdown();
+        return;
+      }
+    }
   });
 
   rl.on('close', async () => {
