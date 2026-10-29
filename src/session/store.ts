@@ -343,22 +343,23 @@ export class SessionStore {
       const system = messages.find((m) => m.role === 'system');
       if (system) stored.push(toStoredMessage(system, { isCompact: false }));
       const recentSet = new Set(recentIdx);
-      transcript.forEach((m, idx) => {
-        if (!recentSet.has(idx)) stored.push(toStoredMessage(m, { isCompact: true }));
-      });
+      // 按轨迹原始下标升序落盘（需求 20261029-003）：归档/保留只由 is_compact 区分，
+      // 磁盘顺序必须等于原始轨迹顺序。早前「先归档全部 dropped、再摘要、最后 recent」的写法，
+      // 在 planCompaction 单轮 token 截尾 + 任务锚点 pin 场景下会把被 pin 的当前轮 user
+      // 排到它引发的整段归档消息之后（用户消息错位）。
       stored.push(
         toStoredMessage(
           { role: 'user', content: extractSummaryText(summaryPlaceholder) },
           { isCompact: false, isSummary: true },
         ),
       );
-      for (const idx of recentIdx) {
-        stored.push(toStoredMessage(transcript[idx], { isCompact: false }));
-      }
+      transcript.forEach((m, idx) => {
+        stored.push(toStoredMessage(m, { isCompact: !recentSet.has(idx) }));
+      });
       debug.log(
         `[createSession ${id}] 压缩轮次 轨迹=${transcript.length}条 ` +
           `归档=${transcript.length - recentIdx.length}条 recent=${recentIdx.length}条 ` +
-          `摘要=${extractSummaryText(summaryPlaceholder).length}字`,
+          `摘要=${extractSummaryText(summaryPlaceholder).length}字（已按轨迹下标升序落盘）`,
       );
     } else {
       for (const m of messages) {
@@ -462,12 +463,15 @@ export class SessionStore {
         // 需要从已有归档尾部识别并替换，避免重复落盘
         const replayed = countReplayedArchive(prevArchived, dropped);
         const keptArchived = prevArchived.slice(0, prevArchived.length - replayed);
-        const compacted = [
-          ...keptArchived,
-          ...dropped,
-        ].map((m) => toStoredMessage(m, { isCompact: true }));
-        const recent = keptIdx.map((idx) => toStoredMessage(transcript[idx], { isCompact: false }));
-        rebuilt = [...compacted, summaryMsg, ...recent];
+        // 按 transcript 原始下标升序重建本轮轨迹（需求 20261029-003）：
+        // 归档(is_compact=true) 与保留(is_compact=false) 只在标记上区分，磁盘顺序必须等于原始轨迹顺序。
+        // 早前按「先 dropped 后 kept」拼接，在 planCompaction 的「单轮 token 截尾 + 任务锚点 pin」场景下，
+        // 被 pin 的当前轮 user 是 kept 首条但下标更靠前，会被排到它引发的那一整段归档消息之后，
+        // 落盘后表现为用户消息错位（webui/CLI 按磁盘顺序平铺渲染）。压缩语义与恢复集合均不变。
+        const ordered = transcript.map((m, idx) =>
+          toStoredMessage(m, { isCompact: !keptSet.has(idx) }),
+        );
+        rebuilt = [...keptArchived, summaryMsg, ...ordered];
         log(
           `压缩轮次(轨迹) 已有归档=${prevArchived.length}条(其中本轮重复${replayed}条) ` +
             `已有recent=${prevRecent.length}条 轨迹=${transcript.length}条 kept=${kept.length}条`,
@@ -476,8 +480,8 @@ export class SessionStore {
           `本次归档轨迹未保留=${dropped.length}条（含本轮已从内存视图删除、尚未落盘的消息）`,
         );
         log(
-          `结果 compacted=${compacted.length}条 + summary=${extractSummaryText(summaryPlaceholder).length}字 + recent=${recent.length}条 ` +
-            `=> ${rebuilt.length}条`,
+          `结果 compacted=${keptArchived.length + dropped.length}条 + summary=${extractSummaryText(summaryPlaceholder).length}字 + recent=${keptIdx.length}条 ` +
+            `=> ${rebuilt.length}条（已按轨迹下标升序重排）`,
         );
       } else if (transcript?.length) {
         log(

@@ -100,6 +100,7 @@ const merged = rrfMerge(ftsHits, vectorHits);
 - **晋升有闸门**：不同来源（用户直述 / 工具输出 / 网页搜索）需不同确认次数才能晋升 L3（Promotion Gate 已实现，`/memory gate` 可查看）
 - **混合检索**：BM25 全文检索 + 向量检索（可选）通过 RRF 融合排序，配置 `episodic.vectorSearch` 后自动启用，embedding 失败自动降级
 - **失败降级**：记忆子系统异常不影响主回复路径
+- **落盘顺序即轨迹顺序**：L1 压缩只用 `is_compact` 标记区分「折叠进摘要」与「保留」，但**磁盘数组顺序始终等于本轮原始轨迹顺序**。单轮长任务按 token 预算截尾时，被「任务锚点 pin」保留下来的当前轮 user 消息仍排在其引发的那些消息之前，因此会话重载后不会出现「用户消息跑到自己那一整轮回答之后」。存量历史若已错乱无法无损还原（原始轨迹不落盘），可用 `node scripts/session-order-check.mjs` 做只读诊断
 
 ### 自动晋升（`--serve` / WebUI）
 
