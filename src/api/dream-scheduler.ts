@@ -843,6 +843,8 @@ export class DreamScheduler {
       this.log(`[api] dream ${s.reason} ws=${ws} 跳过（${s.skippedBecause}）${tail}`);
       return;
     }
+    // 晋升/跳过/错误全为 0 表示本轮无事可做，不打日志避免刷屏
+    if (s.promoted === 0 && s.skipped === 0 && s.errors === 0) return;
     this.log(
       `[api] dream ${s.reason} ws=${ws} 窗口=${s.daysBack}d 晋升=${s.promoted} 跳过=${s.skipped} 错误=${s.errors} 用时=${(s.durationMs / 1000).toFixed(1)}s${tail}`,
     );
