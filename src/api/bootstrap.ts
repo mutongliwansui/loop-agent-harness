@@ -25,8 +25,18 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   console.log('[startup] 组装 HTTP API 服务...');
   const { configLoader } = await import('../config/index.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
+  const { McpMonitor, setActiveMcpMonitor } = await import('../config/mcp-monitor.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
   const { initAgentMemory } = await import('../runtime/init.js');
+
+  // MCP 后台监测器（2026-10-29）：启动不等待 MCP 连接，首轮在后台发起；
+  // 之后定期 ping 探活、掉线指数退避重连、配置变更热更新（新增/删除/修改自动生效）。
+  // 放在最前面是为了让连接与后续 runtime/服务组装并行。
+  const mcpMonitor = new McpMonitor(mcpManager, configLoader, {
+    log: (msg) => console.log(msg),
+  });
+  setActiveMcpMonitor(mcpMonitor);
+  mcpMonitor.start();
 
   const { config: cfg } = configLoader.load();
 
@@ -123,7 +133,7 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   console.log(`  鉴权:    ${api.token ? 'Bearer Token' : '仅本机（未配置 api.token）'}`);
   console.log(`  缺省空间: ${recentRoot}（最近使用；新会话未指定空间时落此处）`);
   console.log(`  端点:    /health · /status · /sessions · /uploads · /config · /tools · /models · /mcp · /skills · /memory`);
-  console.log(`  提示:    Ctrl+C 退出；配置变更需重启生效`);
+  console.log(`  提示:    Ctrl+C 退出；MCP 配置由后台监测器热更新，其他配置变更需重启生效`);
   console.log('');
 
   // serve 常驻：收到关停信号时先补一轮 Dreaming，再关服务、断开 MCP 后退出（Task-20261026-002 D5/D6）
@@ -145,6 +155,8 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
     console.log(`[api] 收到 ${sig}，正在整理记忆（Dreaming），最多等待 ${Math.round(budget / 1000)}s；再按一次 Ctrl+C 立即退出`);
     await dreamScheduler.runAllForShutdown(budget).catch(() => []);
     await server.close().catch(() => {});
+    mcpMonitor.stop();
+    setActiveMcpMonitor(undefined);
     await mcpManager.disconnectAll().catch(() => {});
     process.exit(0);
   };

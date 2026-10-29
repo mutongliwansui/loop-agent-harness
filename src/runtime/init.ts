@@ -27,8 +27,9 @@ export interface RuntimeContext {
  *
  * @param opts.noSetup 跳过初次启动引导（对应 `--no-setup`）
  * @param opts.workspaceRoot 技能扫描根（缺省为进程 cwd；CLI 单空间即启动目录，serve 侧由 runtime 传入）
+ * @param opts.deferMcp 跳过阻塞式 MCP 加载，交由后台 McpMonitor 连接（serve 模式用，2026-10-29）
  */
-export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: string } = {}): Promise<RuntimeContext> {
+export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: string; deferMcp?: boolean } = {}): Promise<RuntimeContext> {
   const startupT0 = Date.now();
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
   console.log('[startup] 初始化运行时...');
@@ -53,22 +54,28 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
   //    pruneStaleRuns 是同步的，用 stat mtime 粗筛，13374 个文件实测 <1s
   try { backgroundTasks.pruneStaleRuns(); } catch { /* ignore */ }
 
-  // 2. 加载 MCP（并发 + 进度日志；单个失败不再阻塞整体启动）
+  // 2. 加载 MCP
+  //    serve 模式（deferMcp）跳过阻塞加载：由 bootstrap 启动的 McpMonitor 在后台首轮连接，
+  //    并在之后定期探活、掉线重连、配置热更新（见 src/config/mcp-monitor.ts）
   const t2 = Date.now();
-  try {
-    const mcp = await mcpManager.loadFromConfig();
-    if (mcp.failures.length) {
-      console.log(`${C.yellow}  ├─ MCP 加载警告 (+${Date.now() - t2}ms):${C.reset}`);
-      for (const f of mcp.failures) console.log(`  │  ${C.red}✗${C.reset} ${f}`);
+  if (opts.deferMcp) {
+    console.log(`  ├─ MCP: 交由后台监测器连接（不阻塞启动）`);
+  } else {
+    try {
+      const mcp = await mcpManager.loadFromConfig();
+      if (mcp.failures.length) {
+        console.log(`${C.yellow}  ├─ MCP 加载警告 (+${Date.now() - t2}ms):${C.reset}`);
+        for (const f of mcp.failures) console.log(`  │  ${C.red}✗${C.reset} ${f}`);
+      }
+      if (mcp.successes.length) {
+        console.log(`${C.green}  ├─ MCP 加载成功 (+${Date.now() - t2}ms):${C.reset}`);
+        for (const s of mcp.successes) console.log(`  │  ✓ ${s}`);
+      } else if (!mcp.failures.length) {
+        console.log(`  ├─ MCP: 未配置 server (+${Date.now() - t2}ms)`);
+      }
+    } catch (e) {
+      console.error(`${C.yellow}  ├─ MCP 加载异常 (+${Date.now() - t2}ms，继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
     }
-    if (mcp.successes.length) {
-      console.log(`${C.green}  ├─ MCP 加载成功 (+${Date.now() - t2}ms):${C.reset}`);
-      for (const s of mcp.successes) console.log(`  │  ✓ ${s}`);
-    } else if (!mcp.failures.length) {
-      console.log(`  ├─ MCP: 未配置 server (+${Date.now() - t2}ms)`);
-    }
-  } catch (e) {
-    console.error(`${C.yellow}  ├─ MCP 加载异常 (+${Date.now() - t2}ms，继续启动): ${e instanceof Error ? e.message : String(e)}${C.reset}`);
   }
 
   // 3. 扫描 Skill

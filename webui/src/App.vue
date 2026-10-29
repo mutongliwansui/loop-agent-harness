@@ -166,6 +166,9 @@ onMounted(() => {
   // 仅显式 light/dark 才写 data-theme；'auto' 或未设置 → 交回系统 prefers-color-scheme
   if (saved === 'light' || saved === 'dark') setTheme(saved);
   document.addEventListener('pointerdown', onDocPointerDown);
+  // 侧栏是全局组件，数据加载不能依赖 ChatView 挂载：
+  // 否则停留在 #/mcp、#/models 等管理页（服务重启后刷新常停在上次路由）时列表恒为空
+  void loadSessions();
   offRunFinished = onRunFinished(() => void loadSessions());
   // 他页派生状态同步（Task-20261021-002-07）：只做「唤醒 + 对齐」，内容以服务端为准（方案 D8）
   offTab = onTab((m) => {

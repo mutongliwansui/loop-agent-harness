@@ -120,6 +120,40 @@ export class MCPClient {
     return this.client.listTools();
   }
 
+  /**
+   * 健康检查（监测器周期调用）：
+   * 1. 先发 MCP ping（最轻量）；
+   * 2. ping 失败/超时则用 listTools 兜底——部分第三方实现不响应 ping
+   *    （2026-10-29 实测 parallel-search 每轮 ping 都超时），
+   *    只看 ping 会把这类 server 误判为掉线，导致工具周期性消失又重连。
+   * 两者都失败才判定不健康。
+   * 每一步都有超时：探针不能挂死，否则监测器的 busy 标记永远不放。
+   */
+  async checkHealth(timeoutMs = 5000): Promise<boolean> {
+    if (!this.connected) return false;
+    if (await this.withinTimeout(() => this.client.ping(), timeoutMs)) return true;
+    return await this.withinTimeout(() => this.client.listTools(), timeoutMs);
+  }
+
+  /** 在超时内执行一次 SDK 请求；失败或超时返回 false（不抛错） */
+  private async withinTimeout(run: () => Promise<unknown>, timeoutMs: number): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        run(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`超时（${timeoutMs}ms）`)), timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** 调用某个工具 */
   async callTool(name: string, args: Record<string, unknown>) {
     if (!this.connected) {

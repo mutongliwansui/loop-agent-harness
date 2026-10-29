@@ -141,11 +141,24 @@ export class ToolRegistry {
       return registered;
     } catch (e) {
       // 连接或列出工具失败：清理已建立的连接，返回空数组
+      // 必须先摘掉 Map 里的条目：connect 成功后已登记，listTools 失败时若不摘除，
+      // listMCPServers 会把这条已断开的 client 当成「已连接」，监测器也会误判状态
+      this.mcpClients.delete(name);
       await client.disconnect().catch(() => {});
       throw new Error(
         `MCP server ${name} 连接失败: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+  }
+
+  /**
+   * 健康检查指定 MCP server（McpMonitor 定期调用）。
+   * 未连接直接返回 false——调用方据此走重连分支。
+   */
+  async healthCheckMCPServer(serverName: string): Promise<boolean> {
+    const client = this.mcpClients.get(serverName);
+    if (!client) return false;
+    return client.checkHealth();
   }
 
   /** 断开所有 MCP server 连接（进程退出时调用） */

@@ -28,7 +28,11 @@ async function main() {
   setCwdFallback(cwdFallbackValue());
 
   // 共享初始化：初次引导 → 配置 → 内置工具 → MCP → Skill
-  const { config } = await initRuntime({ noSetup: process.argv.includes('--no-setup') });
+  // serve 模式把 MCP 交给后台监测器（启动零等待），CLI 仍阻塞等待以保证首轮工具就绪
+  const { config } = await initRuntime({
+    noSetup: process.argv.includes('--no-setup'),
+    deferMcp: serveMode,
+  });
 
   if (serveMode) {
     // HTTP API 模式：起服务常驻，不进 REPL（内部自持记忆初始化与 SIGINT 关停）

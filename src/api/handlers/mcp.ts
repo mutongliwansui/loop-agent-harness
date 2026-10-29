@@ -9,6 +9,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { normalizeMcpTransportType } from '../../tools/mcp/client.js';
 import type { MCPServerConfig } from '../../tools/mcp/client.js';
 import { registry } from '../../tools/registry.js';
+import { getMcpMonitor } from '../../config/mcp-monitor.js';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
@@ -28,16 +29,25 @@ function toolCountFor(name: string): number {
   return registry.list().filter((t) => t.name.startsWith(prefix)).length;
 }
 
-/** GET /mcp/servers：合并配置全量 + 实时连接状态 */
+/** GET /mcp/servers：合并配置全量 + 实时连接状态（serve 模式附监测器运行态） */
 async function handleListServers(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
   const { config: cfg } = ctx.configLoader.load();
   const connected = new Set(ctx.mcpManager.listConnected());
-  const servers = Object.entries(cfg.tools.mcpServers).map(([name, s]) => ({
-    name,
-    transport: s.type,
-    status: connected.has(name) ? 'connected' : 'disconnected',
-    toolCount: toolCountFor(name),
-  }));
+  // 监测器可能不存在（CLI 模式或单测未启动 serve）：此时只返回连接的二态
+  const runtime = new Map((getMcpMonitor()?.snapshot() ?? []).map((s) => [s.name, s]));
+  const servers = Object.entries(cfg.tools.mcpServers).map(([name, s]) => {
+    const rt = runtime.get(name);
+    return {
+      name,
+      transport: s.type,
+      status: connected.has(name) ? 'connected' : 'disconnected',
+      toolCount: toolCountFor(name),
+      // connecting/failed 时 status 仍是 disconnected，这两个字段用于排障与前端提示
+      state: rt?.state ?? (connected.has(name) ? 'connected' : 'pending'),
+      ...(rt?.lastError ? { lastError: rt.lastError } : {}),
+      ...(rt?.nextRetryAt ? { nextRetryAt: rt.nextRetryAt } : {}),
+    };
+  });
   sendJson(res, 200, { servers });
 }
 

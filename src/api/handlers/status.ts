@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HandlerContext, Route } from '../router.js';
 import { sendJson } from '../http-utils.js';
 import { registry } from '../../tools/registry.js';
+import { getMcpMonitor } from '../../config/mcp-monitor.js';
 
 /** 从 baseUrl 提取 provider 主机名（如 https://api.deepseek.com/v1 → api.deepseek.com） */
 export function hostnameOf(baseUrl: string): string {
@@ -40,7 +41,12 @@ export async function handleStatus(ctx: HandlerContext, _req: IncomingMessage, r
       total: registry.list().length,
       disabled: cfg.tools.disabled.length,
     },
-    mcp: { connected: ctx.mcpManager.listConnected().length },
+    mcp: {
+      connected: ctx.mcpManager.listConnected().length,
+      // serve 模式才有监测器：configured=配置声明的总数，failed=当前处于重试退避的个数
+      configured: cfg.tools.mcpServers ? Object.keys(cfg.tools.mcpServers).length : 0,
+      failed: getMcpMonitor()?.snapshot().filter((s) => s.state === 'failed').length ?? 0,
+    },
     memory: { enabled: cfg.memory.enabled },
     uploads: { count: uploadDirs.filter((d) => d.isDirectory()).length },
   });
