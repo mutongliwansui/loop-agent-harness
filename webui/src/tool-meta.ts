@@ -452,6 +452,15 @@ export function isUploadsPath(raw: string): boolean {
   return raw.replaceAll('\\', '/').includes('/.loop-agent/uploads/');
 }
 
+/**
+ * 自有数据目录嗅探（20261028-007 D1）：归一分隔符后含 `/.loop-agent/` 段（uploads 为其子集，
+ * 分流时 uploads 优先）。覆盖记忆 / runs / skills / model-bench 等 `~/.loop-agent` 内路径；
+ * 后端 `/userdir/view` 强校验兜底。
+ */
+export function isUserDirPath(raw: string): boolean {
+  return raw.replaceAll('\\', '/').includes('/.loop-agent/');
+}
+
 /** Windows 盘符（含 UNC）判定 */
 function looksAbsolute(p: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(p) || /^\\\\/.test(p) || p.startsWith('/');
@@ -465,19 +474,22 @@ function isExternalResource(p: string): boolean {
 /**
  * 参数行是否渲染为可点 chip：
  * - 相对路径 → 视为 ws 内（工具语义即相对工作空间根），可点；
- * - uploads 绝对路径（~ 展开前的字面量或绝对形式）→ 可点（走 /uploads/view）；
- *   「~」开头的字面量：后端工具能解析（resolveToolPath 不展开 ~，视觉工具各自处理），
- *   前端不做 ~ 展开，仅当含 uploads 段时放行，实际可达性由后端校验兜底；
+ * - 自有数据目录（/.loop-agent/ 段，uploads 为其子集）→ 可点（uploads 走 /uploads/view，
+ *   其余走 /userdir/view，20261028-007 D1）；
+ *   「~」开头的字面量：后端工具能解析（resolveToolPath 不展开 ~，视觉工具各自处理；
+ *   view 端点按 homedir 展开），前端不做 ~ 展开，仅当含 /.loop-agent/ 段时放行，
+ *   实际可达性由后端校验兜底；
  * - ws 内绝对路径 → 可点（/fs/* 兼容绝对路径，且 activeWsPath 可得时前端已做内判定）；
- * - ws 外绝对路径（非 uploads）→ 不可点。
+ * - 其余 ws 外绝对路径（~/.claude 等外部应用目录、系统路径）→ 不可点。
  * wsRoot 为可选的当前工作空间绝对路径（归一分隔符比较，大小写不敏感——Windows 盘符惯例）。
  */
 export function isPathArgClickable(raw: string, wsRoot?: string): boolean {
   const p = raw.replaceAll('\\', '/');
   if (isExternalResource(p)) return false; // http(s)/data URI：无文件预览语义（D7）
-  if (p.startsWith('~')) return isUploadsPath(p);
+  if (p.startsWith('~')) return isUploadsPath(p) || isUserDirPath(p);
   if (!looksAbsolute(p)) return true; // 相对路径：工具语义即 ws 内
   if (isUploadsPath(p)) return true;
+  if (isUserDirPath(p)) return true; // 20261028-007：自有数据目录放行
   if (!wsRoot) return true; // 前端无 ws 根信息时不猜测，放行由后端校验兜底（误判最多 403 toast）
   const root = wsRoot.replaceAll('\\', '/').replace(/[\\/]+$/, '').toLowerCase();
   const abs = p.replace(/[\\/]+$/, '').toLowerCase();
@@ -490,10 +502,11 @@ export function pathArgDisabledReason(raw: string, wsRoot?: string): string {
   if (/^https?:\/\//i.test(p)) return '外部链接不支持预览';
   if (/^data:/i.test(p)) return '内联数据不支持预览';
   if (p.startsWith('~')) {
-    return isUploadsPath(p) ? '' : '文件在工作空间之外';
+    return isUploadsPath(p) || isUserDirPath(p) ? '' : '文件在工作空间之外';
   }
   if (!looksAbsolute(p)) return '';
   if (isUploadsPath(p)) return '';
+  if (isUserDirPath(p)) return '';
   if (!wsRoot) return '';
   const root = wsRoot.replaceAll('\\', '/').replace(/[\\/]+$/, '').toLowerCase();
   const abs = p.replace(/[\\/]+$/, '').toLowerCase();

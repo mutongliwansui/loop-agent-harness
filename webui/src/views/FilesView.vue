@@ -25,9 +25,9 @@ import {
   renameFsEntry,
   uploadToWorkspace,
 } from '../api/client.js';
-import { fetchRawUploads } from '../api/uploads-view.js';
+import { fetchRawUploads, fetchRawUserDir } from '../api/uploads-view.js';
 import { showToast } from '../toast.js';
-import { isUploadsPath } from '../tool-meta.js';
+import { isUploadsPath, isUserDirPath } from '../tool-meta.js';
 import DOMPurify from 'dompurify';
 import { highlightIn } from '../markdown.js';
 import { renderMermaidIn } from '../mermaid.js';
@@ -683,6 +683,7 @@ async function openFile(path: string, anchor = ''): Promise<void> {
  * 对话流工具卡片路径 chip 统一入口：自动展开面板，按类型分流——
  * - 目录（kind='dir'）→ gotoCrumb 定位（退出搜索态 + 展开目录链 + 滚动到行）；
  * - uploads 路径 → /uploads/view 受控端点（工作空间外，/fs/* 不可达）；
+ * - 其余自有数据目录路径（/.loop-agent/ 段）→ /userdir/view（20261028-007）；
  * - 其余 → openFile 既有链路（/fs/file | /fs/raw，含 404/403 错误态）。
  * kind 缺省时按 viewKindOf 推断目录形态：无扩展名末段视为目录。
  */
@@ -702,6 +703,10 @@ async function openPath(raw: string, kind?: 'file' | 'dir'): Promise<void> {
     await openUploads(p);
     return;
   }
+  if (isUserDirPath(p)) {
+    await openUserDir(p);
+    return;
+  }
   await openFile(p);
   // 不存在/越界等失败的 toast 兜底（D8）：预览区错误态之外补一条轻提示，不阻塞界面
   if (fileError.value) showToast('文件不存在或已被删除', 'error');
@@ -714,11 +719,12 @@ function looksLikeDirPath(p: string): boolean {
 }
 
 /**
- * uploads 文件预览（D5/D6）：图片等二进制走 disp=raw（blob 直显，复用 openBinary 的
+ * 受控视图预览共用体（20261028-006 D5/D6 + 20261028-007 D4）：uploads 与自有数据目录
+ * 两条受控链路参数化复用——图片等二进制走 disp=raw（blob 直显，复用 openBinary 的
  * objectURL 管理），文本类走 disp=file（响应与 /fs/file 同构，复用既有渲染分支）。
- * wsQuery() 不附加：uploads 根与工作空间无关。
+ * wsQuery() 不附加：两类 root 均与工作空间无关。
  */
-async function openUploads(p: string): Promise<void> {
+async function openControlled(p: string, base: 'uploads' | 'userdir'): Promise<void> {
   const k = viewKindOf(p);
   selected.value = p;
   activeTab.value = 'file';
@@ -728,10 +734,11 @@ async function openUploads(p: string): Promise<void> {
   fileError.value = '';
   releaseBinary();
   fileData.value = null;
+  const rawFn = base === 'uploads' ? fetchRawUploads : fetchRawUserDir;
   try {
     if (BINARY_KINDS.has(k)) {
-      // 复用 openBinary 的解析链，但用 /uploads/view 取字节（fetchRaw 固定打 /fs/raw）
-      const blob = await uploadsRaw(p);
+      // 复用 openBinary 的解析链，但用受控端点取字节（fetchRaw 固定打 /fs/raw）
+      const blob = await rawFn(p);
       if (seq !== openSeq) return;
       binData.value = blob;
       if (k === 'pdf') pdfUrl.value = URL.createObjectURL(blob);
@@ -759,7 +766,7 @@ async function openUploads(p: string): Promise<void> {
       }
     } else {
       fileData.value = await api<{ name: string; bytes: number; truncated: boolean; content: string }>(
-        `/uploads/view?path=${encodeURIComponent(p)}&disp=file`,
+        `/${base}/view?path=${encodeURIComponent(p)}&disp=file`,
       );
       if (seq !== openSeq) return;
       if (k === 'csv') parseDelimited(fileData.value.content, ',');
@@ -781,9 +788,14 @@ async function openUploads(p: string): Promise<void> {
   }
 }
 
-/** /uploads/view?disp=raw：uploads 文件原始字节（Bearer 注入同 fetchRaw） */
-function uploadsRaw(path: string): Promise<Blob> {
-  return fetchRawUploads(path);
+/** uploads 文件预览（20261028-006）：~/.loop-agent/uploads 内受控只读 */
+function openUploads(p: string): Promise<void> {
+  return openControlled(p, 'uploads');
+}
+
+/** 自有数据目录文件预览（20261028-007）：~/.loop-agent 内（uploads 之外）受控只读 */
+function openUserDir(p: string): Promise<void> {
+  return openControlled(p, 'userdir');
 }
 
 defineExpose({ openPath });

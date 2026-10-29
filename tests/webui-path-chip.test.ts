@@ -95,8 +95,17 @@ describe('isPathArgClickable：chip 可点判定', () => {
     expect(isPathArgClickable('C:\\Windows\\notepad.exe')).toBe(true);
   });
 
-  it('~ 开头但非 uploads 不可点', () => {
-    expect(isPathArgClickable('~/.loop-agent/skills/x/SKILL.md', WS)).toBe(false);
+  it('~ 开头但非自有目录不可点（外部应用目录，20261028-007 仍拒绝）', () => {
+    expect(isPathArgClickable('~/.claude/skills/x/SKILL.md', WS)).toBe(false);
+  });
+
+  it('自有数据目录路径可点（20261028-007：~ 字面量与绝对形式，uploads 之外）', () => {
+    // 记忆 L2（fileWrite 写记忆场景）
+    expect(isPathArgClickable('C:\\Users\\muton\\.loop-agent\\memory\\a43aa30f2ceec764\\2026-10-29.md', WS)).toBe(true);
+    // runs 日志（fileRead 后台任务日志场景）
+    expect(isPathArgClickable('~\\.loop-agent\\runs\\t1.log', WS)).toBe(true);
+    // 全局技能（activate_skill 引导读取场景）
+    expect(isPathArgClickable('~/.loop-agent/skills/task-driven-development/SKILL.md', WS)).toBe(true);
   });
 
   it('http(s) 与 data URI 不可点（D7 外部资源无文件预览语义）', () => {
@@ -116,12 +125,18 @@ describe('pathArgDisabledReason：不可点原因（D7 title 提示）', () => {
     expect(pathArgDisabledReason('C:\\Users\\muton\\.loop-agent\\uploads\\s1\\a.png', WS)).toBe('');
   });
 
+  it('自有数据目录路径可点 → 空串（20261028-007）', () => {
+    expect(pathArgDisabledReason('C:\\Users\\muton\\.loop-agent\\memory\\x\\y.md', WS)).toBe('');
+    expect(pathArgDisabledReason('~/.loop-agent/skills/s/SKILL.md', WS)).toBe('');
+    expect(pathArgDisabledReason('~/.claude/skills/s/SKILL.md', WS)).toBe('文件在工作空间之外');
+  });
+
   it('ws 外绝对路径 → 「文件在工作空间之外」', () => {
     expect(pathArgDisabledReason('C:\\Windows\\notepad.exe', WS)).toBe('文件在工作空间之外');
   });
 
-  it('~ 开头但非 uploads → 「文件在工作空间之外」', () => {
-    expect(pathArgDisabledReason('~/.loop-agent/skills/x/SKILL.md', WS)).toBe('文件在工作空间之外');
+  it('~ 开头但非自有目录 → 「文件在工作空间之外」（20261028-007 起外部目录仍拒绝）', () => {
+    expect(pathArgDisabledReason('~/.claude/skills/x/SKILL.md', WS)).toBe('文件在工作空间之外');
   });
 
   it('http(s)/data URI 注明不可预览原因（D7）', () => {

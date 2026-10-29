@@ -12,6 +12,7 @@ import { handleMessage } from './handlers/messages.js';
 import { handleStop } from './handlers/stop.js';
 import { handleAttachStream } from './handlers/stream.js';
 import { uploadRoutes } from './handlers/uploads.js';
+import { userdirRoutes } from './handlers/userdir.js';
 import { fsRoutes } from './handlers/fs.js';
 import { configRoutes } from './handlers/config.js';
 import { statusRoutes } from './handlers/status.js';
@@ -137,6 +138,7 @@ export function createRoutes(): Route[] {
     { method: 'DELETE', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleDeleteSession(ctx, res, p.id) },
     // 命令资源化（Task-20261016-002）：每组一工厂，D2 无参静态可组合
     ...uploadRoutes(),
+    ...userdirRoutes(), // 需求 20261028-007：/userdir/view 自有数据目录（~/.loop-agent）受控只读
     ...configRoutes(), // 注意：/config/path 静态段须注册在 /config/:key 之前（组内已保证）
     ...statusRoutes(),
     ...toolsRoutes(), // 注意：/tools/reload 静态段须注册在 /tools/:name 之前（组内已保证）
