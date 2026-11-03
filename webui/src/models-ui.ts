@@ -38,12 +38,19 @@ export const MODEL_ICON_PATHS: Record<ModelIconKey, string> = {
   caret: '<path d="M6 4l4 4-4 4"/>',
 };
 
-/** 完整 `<svg>` 串：供 `v-html` 渲染（尺寸由 CSS 控制） */
-export function modelIconSvg(key: ModelIconKey, strokeWidth = 1.6): string {
+/**
+ * 完整 `<svg>` 串：供 `v-html` 渲染。
+ *
+ * 必须显式带 width/height（20261029-004 样式事故修复）：SVG 若只有 viewBox 而无尺寸，
+ * 一旦宿主 CSS 选择器失配（例如 v-html 多出 `<span>` 中间层导致 `> svg` 不匹配），
+ * 浏览器会按默认 300×150 渲染，图标变成巨图并撑爆整行布局。
+ * 内联 width/height 作为安全默认值，CSS 仍可覆盖（presentation attribute 优先级低于 CSS）。
+ */
+export function modelIconSvg(key: ModelIconKey, strokeWidth = 1.6, size = 16): string {
   const d = MODEL_ICON_PATHS[key] ?? MODEL_ICON_PATHS.chip;
   return (
-    `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${strokeWidth}"` +
-    ` stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
+    `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor"` +
+    ` stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
   );
 }
 

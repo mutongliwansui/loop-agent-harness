@@ -198,6 +198,23 @@ describe('modelIconSvg', () => {
     expect(modelIconSvg('check', 2)).toContain('stroke-width="2"');
   });
 
+  // 回归：20261029-004 线上样式事故 —— SVG 只有 viewBox 而无声明的 width/height 时，
+  // 一旦宿主 CSS 选择器失配（v-html 的 <span> 中间层使 `.mv-filter > svg` 落空），
+  // 浏览器按默认 300×150 渲染，过滤图标把整行撑爆。必须内联默认尺寸兜住。
+  it('恒带内联 width/height 默认值（CSS 失配时不退化成 300×150）', () => {
+    for (const key of Object.keys(MODEL_ICON_PATHS) as (keyof typeof MODEL_ICON_PATHS)[]) {
+      const s = modelIconSvg(key);
+      expect(s, key).toContain('width="16"');
+      expect(s, key).toContain('height="16"');
+    }
+  });
+
+  it('内联尺寸可按第三参数覆盖（供需要大图标的场合）', () => {
+    const s = modelIconSvg('chip', 1.6, 26);
+    expect(s).toContain('width="26"');
+    expect(s).toContain('height="26"');
+  });
+
   it('未知 key 回落 chip 而不抛错', () => {
     const s = modelIconSvg('nope' as never);
     expect(s).toContain(MODEL_ICON_PATHS.chip);

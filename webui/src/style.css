@@ -1256,16 +1256,20 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
 /* 工具行：过滤 + 计数（D11） */
 .mv-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .mv-filter { position: relative; flex: 1; min-width: 210px; max-width: 380px; }
-.mv-filter > svg {
+/* 图标容器：v-html 会产生 <span><svg> 中间层，定位与尺寸必须落在 span 上，
+   不能写成 `.mv-filter > svg`（直接子选择器匹配不到，图标会退化成浏览器默认 300×150）。 */
+.mv-filter > span {
   position: absolute;
   left: 9px;
   top: 50%;
   transform: translateY(-50%);
+  display: block;
   width: 14px;
   height: 14px;
   color: var(--muted);
   pointer-events: none;
 }
+.mv-filter > span svg { display: block; width: 100%; height: 100%; }
 .mv-filter input { height: 32px; padding-left: 29px; font-size: 13px; width: 100%; }
 .mv-count { font-size: 12px; color: var(--muted); }
 .mv-count b { color: var(--text); font-weight: 600; }
