@@ -29,6 +29,8 @@ import {
 import { showToast } from '../toast.js';
 import { clipName } from '../mcp-tool-meta.js';
 import { metaRev } from '../mcp-tool-meta-loader.js';
+import { parseBackgroundResult } from '../background-task-card.js';
+import BackgroundTaskCard from './BackgroundTaskCard.vue';
 
 /** 卡片渲染所需的最小段形状（与 chat-stream 的 ToolSeg 结构兼容，避免耦合） */
 interface CardSeg {
@@ -270,6 +272,17 @@ function rowState(it: { seg: CardSeg }): string {
   if (s.aborted) return 'stop';
   return toolResultLooksFailed(s.result, s.tool) ? 'fail' : 'ok';
 }
+
+/* ===== 后台任务卡片分流（需求 20261104-005 D2/D3）===== */
+/** 结果 JSON 含合法 taskId → 结果区替换为 BackgroundTaskCard（仅单卡） */
+const backgroundInfo = computed(() =>
+  grouped.value ? undefined : parseBackgroundResult(resultRaw.value, headArgs.value),
+);
+/** 初始态交给卡片自行轮询收敛：先按运行中展示，避免「退出码未知」的假失败 */
+const backgroundInitial = computed(() => ({
+  status: 'running',
+  startedAt: backgroundInfo.value?.startedAt,
+}));
 </script>
 
 <template>
@@ -349,9 +362,17 @@ function rowState(it: { seg: CardSeg }): string {
         </div>
       </div>
 
-      <!-- 单卡：键值表 + 结果区 -->
+      <!-- 单卡：后台任务走卡片（D3 结果区替换）；普通工具走键值表 + 结果区 -->
       <template v-else>
-        <div v-if="rows.length" class="tkv">
+        <BackgroundTaskCard
+          v-if="backgroundInfo"
+          class="tcard-bg"
+          :task-id="backgroundInfo.taskId"
+          :command="backgroundInfo.command"
+          :initial="backgroundInitial"
+        />
+        <template v-else>
+          <div v-if="rows.length" class="tkv">
           <template v-for="(row, ri) in rows" :key="row.key">
             <span class="k">{{ row.zh }}</span>
             <button
@@ -384,6 +405,7 @@ function rowState(it: { seg: CardSeg }): string {
             {{ expandedResult ? '收起结果' : `展开全部 ${resultLineCount} 行` }}
           </button>
         </div>
+        </template>
       </template>
     </div>
   </div>
@@ -570,6 +592,9 @@ function rowState(it: { seg: CardSeg }): string {
 
 /* 正文：左侧让开状态条 */
 .tbody { padding: 2px 10px 10px 18px; }
+
+/* 后台任务卡片容器：沿用结果区底色，与普通工具视觉连续（20261104-005 D3） */
+.tcard-bg { padding: 7px 9px; border-radius: 8px; background: var(--code-bg); }
 
 /* 键值表：无边框两列，取代 .ptable 的全边框表格 */
 .tkv {

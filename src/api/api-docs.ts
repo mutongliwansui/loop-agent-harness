@@ -696,6 +696,32 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     example: 'curl /terminal/info',
   },
 
+  /* ================= 后台任务（需求 20261104-005） ================= */
+  'GET /background/:taskId': {
+    summary: '后台任务状态快照，供 WebUI 卡片轮询（运行中 2s、页面隐藏 15s）；优先读内存，未命中回落 runs 目录 .json。',
+    scope: 'read',
+    params: [{ name: 'taskId', in: 'path', type: 'string', required: true, desc: '后台任务 ID（bg_<hex8>_<秒级时间戳>）' }],
+    response: '{ taskId, command, status, exitCode, startedAt, finishedAt, durationMs, logSize, cursor }',
+    example: 'curl /background/bg_a1b2c3d4_1700000000',
+  },
+  'GET /background/:taskId/logs': {
+    summary: '读取后台任务日志尾部：默认头 2KB，tail=1 时返回最后 20 行 / 2KB；日志已清理时 cleaned=true。',
+    scope: 'read',
+    params: [
+      { name: 'taskId', in: 'path', type: 'string', required: true, desc: '后台任务 ID' },
+      { name: 'tail', in: 'query', type: 'string', required: false, desc: '传 1 只取尾部（最后 20 行 / 2KB）' },
+    ],
+    response: '{ taskId, tail, size, truncated, cleaned }',
+    example: 'curl "/background/bg_a1b2c3d4_1700000000/logs?tail=1"',
+  },
+  'POST /background/:taskId/stop': {
+    summary: '停止后台任务（杀进程树），幂等：已结束返回 alreadyStopped=true；与 commandStop 同口径。',
+    scope: 'write',
+    params: [{ name: 'taskId', in: 'path', type: 'string', required: true, desc: '后台任务 ID' }],
+    response: '{ taskId, stopped, alreadyStopped, status }',
+    example: 'curl -X POST /background/bg_a1b2c3d4_1700000000/stop',
+  },
+
   /* ================= 开发者 ================= */
   'GET /dev/api-docs': {
     summary: '本页数据源：反射路由表返回全部 API 端点结构，并叠加中文说明、分组与统计。',
@@ -736,8 +762,8 @@ export const API_DOC_GROUPS: readonly ApiDocGroup[] = [
   {
     key: 'tools',
     title: '工具',
-    desc: '内置与 MCP 工具的查询、启停与重载。',
-    prefixes: ['/tools'],
+    desc: '内置与 MCP 工具的查询、启停与重载，以及后台任务状态查询/停止。',
+    prefixes: ['/tools', '/background'],
   },
   {
     key: 'models',

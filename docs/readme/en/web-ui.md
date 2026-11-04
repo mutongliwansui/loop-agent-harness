@@ -126,6 +126,10 @@ When multiple tabs of the same browser are open, run state syncs automatically (
 
 Background-completion alerts are configured in the 🔔 panel above the composer, with two independent persisted toggles: **system notification** (fires only when the window is hidden or unfocused; same-session notifications replace each other to avoid spam; clicking one focuses the window and jumps to the session; permission is requested only when you tick the switch — if the browser denied it, re-enable from browser settings) and **chime** (a WebAudio synthesized two-tone sound, no permission needed). Foreground completion keeps the in-page toast. When accessed via LAN IP + http the browser provides no Notification API; the 🔔 panel shows a degradation notice, while the chime and in-page alerts keep working.
 
+### Background Task Card (requirement 20261104-005)
+
+When `commandRun` is called with `background:true`, the tool card's result area switches to a background task card: the header shows the full command plus a stop button (with confirmation), and the summary row shows a status pill, elapsed time, exit code and log size. The log is collapsed by default; expanding it fetches the last 20 lines / 2KB. Running tasks poll every 2s (15s while the page is hidden), and polling stops on a terminal status. After a server restart or when logs are removed by retention policy, the card degrades to a dim "record cleaned" state instead of erroring. Data comes from `GET /background/:id`, `GET /background/:id/logs?tail=1` and `POST /background/:id/stop`.
+
 ### Cross-Workspace Sessions
 
 The sidebar groups sessions by workspace (`GET /workspaces`): sessions from other workspaces have **exactly the same rights** as the current one — you can open them and keep chatting directly, run them in parallel with runs in the current workspace, and delete them normally. A workspace's "current" marker only means most-recently-used and imposes no sending restriction. Cross-workspace runs never interfere with each other; a 409 busy only occurs when you send concurrent messages to the **same session**.
