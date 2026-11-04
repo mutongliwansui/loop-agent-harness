@@ -4,7 +4,7 @@
 
 | 工具 | 名称 | 说明 | 参数 |
 |---|---|---|---|
-| 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr；长任务可 `background:true` 后台运行（立即返回 `taskId`，不受 30s 超时限制） | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认 30000ms，仅前台生效）, `background`（可选，默认 `false`） |
+| 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr；长任务可 `background:true` 后台运行（立即返回 `taskId`，不受 30s 超时限制）。前台输出头尾各保留 128KB（总上限可配），中间省略并标注字节数，不再因 maxBuffer 失败；结束标签统一为 `[exit=N]` / `[timeout=Nms]` / `[aborted]` / `[signal=…]` + `[duration=…]` | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认取 `tools.commandRun.timeoutMs`，仅前台生效）, `background`（可选，默认 `false`） |
 | ⏱️ **后台任务状态** | `commandStatus` | 查询后台命令任务状态（running/exited/killed/orphaned-*）、退出码、耗时与日志大小；不带 `taskId` 时返回最近 5 个任务摘要 | `taskId`（可选） |
 | 📜 **后台任务日志** | `commandLogs` | 增量读取后台任务日志：不传 `sinceOffset` 返回「上次读到处→尾部」并推进游标；单次上限 8KB；`tail:true` 只读最近 2KB 尾部 | `taskId`（必填）, `sinceOffset`（可选，字节偏移）, `tail`（可选） |
 | ⏹️ **后台任务停止** | `commandStop` | 终止后台任务：杀掉其进程树（Windows `taskkill /T /F`；POSIX 进程组）。幂等；会话停止不连带终止后台任务，必须显式调用 | `taskId`（必填） |

@@ -65,6 +65,50 @@ export interface ToolsConfig {
   mcpServers: Record<string, MCPServerConfig>;
   /** MCP 工具展示名与参数标签的中文化（需求 20261104-001，D13） */
   mcpTranslate: McpTranslateConfig;
+  /** 后台任务日志清理（需求 20261104-003） */
+  backgroundLog: BackgroundLogConfig;
+  /** 前台命令输出与默认超时（需求 20261104-006） */
+  commandRun: CommandRunConfig;
+  /** 后台任务完成通知（需求 20261104-004） */
+  backgroundNotify: BackgroundNotifyConfig;
+}
+
+/**
+ * 前台命令执行配置（需求 20261104-006 D7）
+ *
+ * - outputLimitKb：返回内容总上限，头尾各占一半，中间省略（默认 256KB）
+ * - timeoutMs：未传 timeout 参数时的默认超时（默认 30s，长任务请走 background）
+ */
+export interface CommandRunConfig {
+  outputLimitKb: number;
+  timeoutMs: number;
+}
+
+/**
+ * 后台任务完成通知配置（需求 20261104-004 D7）
+ *
+ * - enabled：关闭后不产生通知、不写 notifiedAt
+ * - tailLines / maxChars：注入日志尾部的行数与字符上限
+ */
+export interface BackgroundNotifyConfig {
+  enabled: boolean;
+  tailLines: number;
+  maxChars: number;
+}
+
+/**
+ * 后台任务日志清理配置（需求 20261104-003）
+ *
+ * 说明：只清理 `~/.loop-agent/runs/` 下的历史 `.json`/`.log`，
+ * 不截断正在写入的活日志（fd 偏移无法安全重置，见任务文档 D2）。
+ */
+export interface BackgroundLogConfig {
+  /** 是否启用启动期 + 每次后台启动前的清理（默认 true） */
+  enabled: boolean;
+  /** 已结束任务（`.json`+`.log`）保留天数（默认 7） */
+  retentionDays: number;
+  /** runs 目录日志总量上限（MB，默认 100，超出按 mtime 从旧删起） */
+  maxTotalMb: number;
 }
 
 /**
@@ -227,6 +271,20 @@ export const DEFAULT_CONFIG: AgentConfig = {
       mode: 'auto',
       timeoutMs: 20000,
       maxToolsPerBatch: 60,
+    },
+    backgroundLog: {
+      enabled: true,
+      retentionDays: 7,
+      maxTotalMb: 100,
+    },
+    commandRun: {
+      outputLimitKb: 256,
+      timeoutMs: 30000,
+    },
+    backgroundNotify: {
+      enabled: true,
+      tailLines: 20,
+      maxChars: 2000,
     },
   },
   agent: {

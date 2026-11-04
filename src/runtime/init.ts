@@ -8,7 +8,9 @@
 import { agent } from '../agent/react-agent.js';
 import { ensureBootstrap } from '../bootstrap/index.js';
 import { registerBuiltinTools, mcpManager } from '../tools/index.js';
-import { backgroundTasks } from '../tools/background-tasks.js';
+import { backgroundTasks, configureBackgroundLogPrune } from '../tools/background-tasks.js';
+import { configureCommandRunOutput } from '../tools/command-run-output.js';
+import { configureBackgroundNotify } from '../agent/background-notice.js';
 import { configLoader } from '../config/index.js';
 import { skillLoader } from '../skill/index.js';
 import { COLORS as C } from '../ui/colors.js';
@@ -50,9 +52,16 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
   // 1.1 后台任务：启动时**不阻塞**扫 runs 目录
   //    历史上这里 await sweepOrphans()，但 runs/ 目录若积几千个旧 JSON，
   //    同步 readFileSync + JSON.parse 在 Windows 上能卡 60s+（2026-10-28 观测 13374 个文件）
-  //    孤儿任务修补不是启动关键路径，且孤儿清理改由 pruneStaleRuns 定期处理
-  //    pruneStaleRuns 是同步的，用 stat mtime 粗筛，13374 个文件实测 <1s
-  try { backgroundTasks.pruneStaleRuns(); } catch { /* ignore */ }
+  //    孤儿任务修补不是启动关键路径，且孤儿清理改由 pruneRuns 定期处理
+  //    pruneRuns 同步执行，按 stat mtime 粗筛（13374 个文件实测 <1s）
+  //    需求 20261104-003：同时按天数/总量清理历史 .log（旧实现只删 .json，日志无限增长）
+  try {
+    configureBackgroundLogPrune(config.tools.backgroundLog);
+    // 需求 20261104-006 / 004：前台输出配额与后台完成通知配置（进程级单例，注入一次）
+    configureCommandRunOutput(config.tools.commandRun);
+    configureBackgroundNotify(config.tools.backgroundNotify);
+    backgroundTasks.pruneRuns();
+  } catch { /* ignore */ }
 
   // 2. 加载 MCP
   //    serve 模式（deferMcp）跳过阻塞加载：由 bootstrap 启动的 McpMonitor 在后台首轮连接，

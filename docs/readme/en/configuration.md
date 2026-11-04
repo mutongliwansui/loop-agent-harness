@@ -51,6 +51,20 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
       "mode": "auto",
       "timeoutMs": 20000,
       "maxToolsPerBatch": 60
+    },
+    "backgroundLog": {
+      "enabled": true,
+      "retentionDays": 7,
+      "maxTotalMb": 100
+    },
+    "commandRun": {
+      "outputLimitKb": 256,
+      "timeoutMs": 30000
+    },
+    "backgroundNotify": {
+      "enabled": true,
+      "tailLines": 20,
+      "maxChars": 2000
     }
   },
   "agent": {
@@ -133,6 +147,9 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `models` | `active` / `profiles` | Multi-model registry (Task-20261011-002): `profiles` maps aliases to model triplets (`name` / `baseUrl` / `apiKey`, optional `temperature`), `active` points to the current alias (empty string = not under multi-model management); `/model use <alias>` updates both `active` and the `model.*` snapshot | `active: ""`, `profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | Built-in tool toggles and MCP server config | all enabled |
 | `tools` | `mcpTranslate` | MCP tool display-name localization (requirement 20261104-001): `enabled` master switch; `mode` = `auto` (distill locally when the description is already Chinese, no LLM call) or `always` (always use the LLM); `timeoutMs` per-batch timeout; `maxToolsPerBatch` tools per batch | `{ enabled: true, mode: 'auto', timeoutMs: 20000, maxToolsPerBatch: 60 }` |
+| `tools` | `backgroundLog` | Background task log cleanup (requirement 20261104-003): `enabled` master switch (runs at startup and before each background launch); `retentionDays` retention for finished tasks' `.json`+`.log`; `maxTotalMb` total size cap for `~/.loop-agent/runs/`, oldest by mtime evicted first; live logs of running tasks are never truncated | `{ enabled: true, retentionDays: 7, maxTotalMb: 100 }` |
+| `tools` | `commandRun` | Foreground command execution (requirement 20261104-006): `outputLimitKb` total output cap returned to the model, split head/tail with the middle omitted and byte count annotated (no more maxBuffer failures); `timeoutMs` default timeout when `timeout` is not passed explicitly — use `background:true` for long tasks | `{ outputLimitKb: 256, timeoutMs: 30000 }` |
+| `tools` | `backgroundNotify` | Background task completion notice (requirement 20261104-004): after a task exits or is stopped, inject its summary and log tail into the originating session's next turn; `enabled` master switch; `tailLines`/`maxChars` bound the log tail | `{ enabled: true, tailLines: 20, maxChars: 2000 }` |
 | `agent` | `verbose` | Whether to output Thought/Action/Observation console logs | `true` |
 | `agent` | `debug` | Whether to enable file debug logging (see 📝 Debug Logging) | `false` |
 | `agent` | `systemPrompt` | Custom system prompt override | `null` |

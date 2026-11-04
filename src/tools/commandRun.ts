@@ -1,14 +1,20 @@
 // 本地命令执行工具：执行 shell 命令，返回 stdout+stderr
-// Task-20261021-002-01：接入取消信号（exec signal）+ Windows 进程树兜底终止
+// Task-20261021-002-01：接入取消信号 + Windows 进程树兜底终止
 // Task-20261022-002（需求 20261021-006）：新增 background 分支——spawn detached
 // 立即返回 taskId，stdout/stderr 重定向到 ~/.loop-agent/runs/{taskId}.log，不受 runner 超时约束（D5）
-import { exec, spawn } from 'node:child_process';
+// 需求 20261104-006：前台改 spawn + 头尾累积器，移除 maxBuffer 上限，修正 stderr 重复标签
+import { spawn } from 'node:child_process';
 import { openSync, closeSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 import { killProcessTree } from './process-tree.js';
 import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 import { backgroundTasks, newTaskId, runsDir } from './background-tasks.js';
+import {
+  OutputAccumulator,
+  commandRunOutputOptions,
+  outputQuotas,
+} from './command-run-output.js';
 
 export const commandRun: Tool = {
   name: 'commandRun',
@@ -43,35 +49,113 @@ export const commandRun: Tool = {
       return runInBackground(cmd, cwd, ctx);
     }
 
-    // ===== 前台路径：行为与现状完全一致 =====
-    const timeout = Number(args.timeout ?? 30000);
-
-    return new Promise((resolve) => {
-      const child = exec(
-        cmd,
-        { cwd, timeout, maxBuffer: 1024 * 1024, signal: ctx?.signal },
-        (err, stdout, stderr) => {
-          // abort 触发的 err（ExecException, killed=true）也走同一汇编，
-          // 该返回值会被 ToolRunner.raceAbort 的 reject 丢弃，无需特判
-          const parts: string[] = [];
-          if (stdout) parts.push(`[stdout]\n${stdout}`);
-          if (stderr) parts.push(`[stderr]\n[stderr]\n${stderr}`);
-          if (err) {
-            parts.push(`[exit=${err.code ?? '?'}] ${err.message}`);
-          }
-          resolve(parts.join('\n') || '(无输出)');
-        },
-      );
-      // Windows：exec 走 cmd.exe，signal 只能杀 shell 本身，孙进程会残留
-      // → 趁进程树完整时用 taskkill /T /F 兜底（先杀直接子进程会让后代孤儿化）
-      ctx?.signal?.addEventListener(
-        'abort',
-        () => { void killProcessTree(child.pid); },
-        { once: true },
-      );
-    });
+    // ===== 前台路径（需求 20261104-006）：spawn 流式捕获 + 头尾截断 =====
+    const outOpts = commandRunOutputOptions();
+    const timeout = Number(args.timeout ?? outOpts.timeoutMs);
+    return runInForeground(cmd, cwd, timeout, ctx);
   },
 };
+
+/**
+ * 前台执行（需求 20261104-006 D1/D3/D4/D8）：
+ * - spawn(shell) 持续消费 stdout/stderr，超限只丢弃中段（不再因 maxBuffer 失败）
+ * - 超时 / ctx.signal 取消都走 killProcessTree 树杀（Windows 防孙进程残留）
+ * - 输出标签稳定：`[stdout]` / `[stderr]` / `[exit=N]` / `[timeout=…]` / `[aborted]` / `[signal=…]`
+ */
+function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolContext): Promise<string> {
+  // 已取消：不启动进程，立即收敛（既有 abort 用例依赖「不悬挂」）
+  if (ctx?.signal?.aborted) return Promise.resolve('[aborted]');
+
+  const { headBytes, tailBytes } = outputQuotas(commandRunOutputOptions().outputLimitKb);
+  const out = new OutputAccumulator(headBytes, tailBytes);
+  const err = new OutputAccumulator(headBytes, tailBytes);
+
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let settled = false;
+    let timedOut = false;
+    let aborted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+
+    const finish = (code: number | null, signalName: string | null, spawnError?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      if (onAbort) ctx?.signal?.removeEventListener('abort', onAbort);
+
+      if (spawnError) {
+        resolve(`工具执行失败: 启动失败 (${spawnError})`);
+        return;
+      }
+
+      const stdoutText = out.render();
+      const stderrText = err.render();
+      const parts: string[] = [];
+      if (stdoutText.text) parts.push(`[stdout]\n${stdoutText.text}`);
+      if (stderrText.text) parts.push(`[stderr]\n${stderrText.text}`);
+
+      const durationMs = Date.now() - startedAt;
+      if (timedOut) parts.push(`[timeout=${timeout}ms]`);
+      else if (aborted) parts.push('[aborted]');
+      else if (signalName) parts.push(`[signal=${signalName}]`);
+      else if (code !== null && code !== 0) parts.push(`[exit=${code}]`);
+
+      if (parts.length > 0) {
+        // 非正常结束附耗时，便于排障；正常成功保持旧版观感（仅修正 stderr 标签）
+        if (timedOut || aborted || signalName || (code !== null && code !== 0)) {
+          parts.push(`[duration=${durationMs}ms]`);
+        }
+        resolve(parts.join('\n'));
+      } else {
+        resolve('(无输出，exit=0)');
+      }
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, {
+        shell: true,
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch (e) {
+      finish(null, null, e instanceof Error ? e.message : String(e));
+      return;
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => out.push(chunk));
+    child.stderr?.on('data', (chunk: Buffer) => err.push(chunk));
+
+    const kill = (): void => {
+      if (child.pid) void killProcessTree(child.pid);
+      // 树杀失败/事件延迟兜底：2s 后强制收敛，避免 Promise 悬挂
+      if (!forceTimer) {
+        forceTimer = setTimeout(() => finish(null, null), 2000);
+      }
+    };
+
+    timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeout);
+    timer.unref?.();
+
+    if (ctx?.signal) {
+      onAbort = (): void => {
+        aborted = true;
+        kill();
+      };
+      ctx.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    child.on('error', (e) => finish(null, null, e.message));
+    child.on('close', (code, signalName) => finish(code, signalName));
+  });
+}
 
 /**
  * 后台启动（D9）：spawn shell 子进程，stdout/stderr 追加写入任务日志文件
@@ -87,6 +171,8 @@ function runInBackground(cmd: string, cwd: string, ctx?: ToolContext): Promise<s
     const logPath = join(runsDir(), `${taskId}.log`);
     try {
       mkdirSync(runsDir(), { recursive: true });
+      // 需求 20261104-003：后台启动前做一次轻量清理，避免长驻服务日志只增不减
+      backgroundTasks.pruneRuns();
     } catch (e) {
       resolve(`工具执行失败: runs 目录不可写 (${e instanceof Error ? e.message : String(e)})`);
       return;
@@ -125,6 +211,8 @@ function runInBackground(cmd: string, cwd: string, ctx?: ToolContext): Promise<s
       cwd,
       logPath,
       startedAt: Date.now(),
+      // 需求 20261104-004 D5：归属会话，完成通知投递回原会话
+      sessionId: ctx?.sessionId,
     });
 
     // exit 回调：killed 状态先置时尊重 D8（finish 只对 running 生效）；

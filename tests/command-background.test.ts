@@ -168,8 +168,23 @@ describe('BackgroundTaskRegistry：持久化与 sweepOrphans（D6）', () => {
 // ===== spawn 链路（mock child_process） =====
 
 describe('commandRun background 分支：spawn 传参与返回（D5/D9/D10）', () => {
-  beforeEach(() => {
+  let runsDir: string;
+
+  beforeEach(async () => {
     mocks.spawn.mockReset();
+    // 日志与 .json 落到临时目录，避免污染 ~/.loop-agent/runs（沙箱下会 EPERM）
+    const { setRunsDirForTest } = await import('../src/tools/background-tasks.js');
+    runsDir = mkdtempSync(join(tmpdir(), 'lagent-bg-spawn-'));
+    setRunsDirForTest(runsDir);
+  });
+
+  afterEach(async () => {
+    const { setRunsDirForTest } = await import('../src/tools/background-tasks.js');
+    setRunsDirForTest(undefined);
+    // Windows 上刚写出的文件可能被杀软短暂占用，清理失败不应判用例失败
+    try {
+      rmSync(runsDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch { /* 留给系统临时目录清理 */ }
   });
 
   it('background:true → spawn(shell, detached=非win32, stdio ignore/log/log) 并秒回 taskId JSON', async () => {
@@ -194,7 +209,8 @@ describe('commandRun background 分支：spawn 传参与返回（D5/D9/D10）', 
     const parsed = JSON.parse(out) as { taskId: string; pid: number; logPath: string; hint: string };
     expect(parsed.taskId).toMatch(/^bg_[0-9a-f]{8}_\d{10}$/);
     expect(parsed.pid).toBe(4242);
-    expect(parsed.logPath).toContain('runs');
+    expect(parsed.logPath).toContain(parsed.taskId);
+    expect(parsed.logPath.endsWith('.log')).toBe(true);
     expect(parsed.hint).toContain('commandStatus');
   });
 
@@ -230,11 +246,32 @@ describe('commandRun background 分支：spawn 传参与返回（D5/D9/D10）', 
     expect(backgroundTasks.get(taskId)?.exitCode).toBe(0); // 不覆盖：finish 只对 running 生效
   });
 
-  it('前台路径（不传 background）走 exec 不走 spawn', async () => {
+  it('前台路径（不传 background）走 spawn 并流式收集输出（需求 20261104-006 D1）', async () => {
+    const { EventEmitter } = await import('node:events');
     const { commandRun } = await import('../src/tools/commandRun.js');
     mocks.spawn.mockClear();
-    const out = await commandRun.execute({ command: 'echo hi' }, { workspaceRoot: process.cwd() });
-    expect(mocks.spawn).not.toHaveBeenCalled();
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    mocks.spawn.mockImplementation(() => ({
+      pid: 100,
+      stdout,
+      stderr,
+      on: (ev: string, fn: (...args: unknown[]) => void) => { handlers.set(ev, fn); },
+    }));
+
+    const p = commandRun.execute({ command: 'echo hi' }, { workspaceRoot: process.cwd() });
+    stdout.emit('data', Buffer.from('hi\n'));
+    stderr.emit('data', Buffer.from('oops\n'));
+    handlers.get('close')?.(0, null);
+    const out = await p;
+
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    const [cmd, opts] = mocks.spawn.mock.calls[0] as [string, Record<string, unknown>];
+    expect(cmd).toBe('echo hi');
+    expect(opts.shell).toBe(true);
     expect(out).toContain('hi');
+    expect(out).toContain('[stderr]\noops');
+    expect(out).not.toContain('[stderr]\n[stderr]');
   });
 });

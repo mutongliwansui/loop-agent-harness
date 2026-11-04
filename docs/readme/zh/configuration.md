@@ -51,6 +51,20 @@
       "mode": "auto",
       "timeoutMs": 20000,
       "maxToolsPerBatch": 60
+    },
+    "backgroundLog": {
+      "enabled": true,
+      "retentionDays": 7,
+      "maxTotalMb": 100
+    },
+    "commandRun": {
+      "outputLimitKb": 256,
+      "timeoutMs": 30000
+    },
+    "backgroundNotify": {
+      "enabled": true,
+      "tailLines": 20,
+      "maxChars": 2000
     }
   },
   "agent": {
@@ -133,6 +147,9 @@
 | `models` | `active` / `profiles` | 多模型登记簿（Task-20261011-002）：`profiles` 以别名为键登记各模型三元组（`name` / `baseUrl` / `apiKey`，可选 `temperature`），`active` 指向当前激活别名（空串 = 未纳入多模型管理）；`/model use <别名>` 会同步更新 `active` 与 `model.*` 快照 | `active: ""`、`profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | 内置工具开关与 MCP server 配置 | 全部启用 |
 | `tools` | `mcpTranslate` | MCP 工具展示名中文化（需求 20261104-001）：`enabled` 总开关；`mode` 为 `auto`（描述已是中文则本地提炼，不调 LLM）或 `always`（一律走 LLM）；`timeoutMs` 单批超时；`maxToolsPerBatch` 单批工具数上限 | `{ enabled: true, mode: 'auto', timeoutMs: 20000, maxToolsPerBatch: 60 }` |
+| `tools` | `backgroundLog` | 后台任务日志清理（需求 20261104-003）：`enabled` 总开关（启动期与每次后台启动前各清理一次）；`retentionDays` 已结束任务 `.json`+`.log` 保留天数；`maxTotalMb` `~/.loop-agent/runs/` 日志总量上限，超出按 mtime 从旧删起；运行中的活日志不截断 | `{ enabled: true, retentionDays: 7, maxTotalMb: 100 }` |
+| `tools` | `commandRun` | 前台命令执行（需求 20261104-006）：`outputLimitKb` 返回内容总上限，头尾各占一半、中间省略并标注字节数（不再因 maxBuffer 失败）；`timeoutMs` 未显式传 `timeout` 时的默认超时，长任务请用 `background:true` | `{ outputLimitKb: 256, timeoutMs: 30000 }` |
+| `tools` | `backgroundNotify` | 后台任务完成通知（需求 20261104-004）：任务结束/被停止后，把完整提示与日志尾部注入原会话下一轮对话；`enabled` 总开关；`tailLines`/`maxChars` 日志尾部行数与字符上限 | `{ enabled: true, tailLines: 20, maxChars: 2000 }` |
 | `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
 | `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
 | `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |
