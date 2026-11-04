@@ -1,6 +1,6 @@
 # Task 19：L2 检索精度优化
 
-> **状态**：待实施
+> **状态**：✅ 已完成（2026-08-20，提交 `d300792`；P0/P1 方案 1/2a/2b/2c/3/5 均已落地）
 > **创建时间**：2026-08-16
 > **关联任务**：Task-14（memory-management）、Task-16（dreaming-cache-optimization）
 
