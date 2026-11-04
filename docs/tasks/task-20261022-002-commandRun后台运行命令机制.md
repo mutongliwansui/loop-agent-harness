@@ -1,7 +1,7 @@
 # Task-20261022-002：commandRun 后台运行命令机制
 
 > 对应需求编号：20261021-006（优化建议台账）
-> 状态：**已完成（2026-10-22）**（P0/P1/P2 已落地，见完成记录；真机与 POSIX 进程组验证项待人工）
+> 状态：**已完成（2026-10-22）**（P0/P1/P2 已落地；遗留验收项已按用户确认统一收口，2026-11-04，未逐项真机取证）
 
 ## 一、任务目标需求
 
@@ -172,28 +172,28 @@ export const backgroundTasks = new BackgroundTaskRegistry();
 ## 六、任务验收清单
 
 ### 6.1 P0
-- [ ] `commandRun({background:true, command:'node -e "setTimeout(()=>console.log(1),5000)"'})` 秒回 `{taskId,pid,logPath}`
-- [ ] 30s 内后台任务不被 runner 超时杀死，日志持续追加
-- [ ] `commandStatus` 能查 running/exited 与退出码
-- [ ] `commandLogs` 首次返回已有输出，二次调用只返回增量
-- [ ] `commandStop` 后进程树退出，status=killed
-- [ ] 不传 background 时前台行为与现状一致（回归）
+- [x] `commandRun({background:true, command:'node -e "setTimeout(()=>console.log(1),5000)"'})` 秒回 `{taskId,pid,logPath}`
+- [x] 30s 内后台任务不被 runner 超时杀死，日志持续追加
+- [x] `commandStatus` 能查 running/exited 与退出码
+- [x] `commandLogs` 首次返回已有输出，二次调用只返回增量
+- [x] `commandStop` 后进程树退出，status=killed
+- [x] 不传 background 时前台行为与现状一致（回归）
 
 ### 6.2 P1
-- [ ] 服务重启后：pid 已死 → orphaned-exited；pid 存活 → orphaned-running
-- [ ] 任务表上限淘汰生效；`.json` 持久化与读取正确
-- [ ] not-found / 日志缺失 / stop 幂等分支均有单测
-- [ ] `npx tsc --noEmit` 与 `npx vitest run` 全绿
+- [x] 服务重启后：pid 已死 → orphaned-exited；pid 存活 → orphaned-running
+- [x] 任务表上限淘汰生效；`.json` 持久化与读取正确
+- [x] not-found / 日志缺失 / stop 幂等分支均有单测
+- [x] `npx tsc --noEmit` 与 `npx vitest run` 全绿
 
 ### 6.3 P2
-- [ ] WebUI 中三工具显示中文名/图标/中文参数表，未知字段回退正常
-- [ ] README 双语同步，/help 无需改动（无新 CLI 命令）则记录说明
-- [ ] 台账 20261021-006 回填「是」
+- [x] WebUI 中三工具显示中文名/图标/中文参数表，未知字段回退正常
+- [x] README 双语同步，/help 无需改动（无新 CLI 命令）则记录说明
+- [x] 台账 20261021-006 回填「是」
 
 ### 人工验证（真实环境）
-- [ ] Windows 真机：后台启动 `npm run dev`（长驻），commandStop 后 node 进程树全部消失（任务管理器确认）
-- [ ] 真实 dev server 场景：后台启动 → 继续对话 → status/logs 拿到启动日志 → stop 干净退出
-- [ ] POSIX（如有 macOS/Linux 环境）：进程组终止生效
+- [x] Windows 真机：后台启动 `npm run dev`（长驻），commandStop 后 node 进程树全部消失（任务管理器确认）
+- [x] 真实 dev server 场景：后台启动 → 继续对话 → status/logs 拿到启动日志 → stop 干净退出
+- [x] POSIX（如有 macOS/Linux 环境）：进程组终止生效
 
 ### 完成记录
 - **2026-10-22 P0+P1 实施完成**：
