@@ -47,6 +47,11 @@ import type {
   ToolCall,
 } from '../types.js';
 import { AgentAbortedError } from '../types.js';
+import {
+  drainBackgroundNotices,
+  installBackgroundNoticeForwarder,
+  restoreBackgroundNotices,
+} from './background-notice.js';
 
 /** 适配器：将 LLMClient 包装为 ILLMClient（用于记忆模块） */
 export function createLLMAdapter(model: string, temperature: number): ILLMClient {
@@ -504,6 +509,17 @@ export class ReActAgent {
       transcript.push(m);
     };
 
+    // ===== 后台任务完成通知（需求 20261104-004 D1/D2）=====
+    // 监听只装一次；恢复补投只对显式会话（CLI 首轮未建会话时任务走无归属桶）
+    installBackgroundNoticeForwarder();
+    if (this._currentSessionId) {
+      try {
+        restoreBackgroundNotices(this._currentSessionId);
+      } catch (e) {
+        debug.log(`后台通知恢复失败（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     // 本轮迭代已流出的文本（Task-20261029-001 D4-B）：
     // 流式过程中被中断时 assistant 消息尚未入 messages，若不补一条，
     // 落盘会话只剩 user 消息，「已生成内容已保留」就落空了。每轮迭代开始重置。
@@ -750,6 +766,18 @@ export class ReActAgent {
           }
         }
 
+        // ===== 后台任务完成通知：每轮 LLM 调用前 drain 并追加到尾部（D1/D2）=====
+        // 只追加 user 消息，system/历史前缀逐字节不变，保证前缀缓存命中
+        try {
+          const notices = drainBackgroundNotices(this._currentSessionId ?? '');
+          for (const text of notices) {
+            pushMessage({ role: 'user', content: text });
+          }
+        } catch (e) {
+          // D6：通知注入失败不影响主回答
+          debug.log(`后台通知注入失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
         // ===== 记忆管理：Context Assembly（L3 + L2 + L1 组装） =====
         // 组装结果仅作为本次 LLM 调用的视图（llmMessages），不覆盖工作数组 messages——
         // 否则 L2 记忆前缀会随 result.messages 持久化（前端渲染出记忆内容）并残留到后续轮次
@@ -912,7 +940,12 @@ export class ReActAgent {
               // signal 注入（Task-20261021-002-02）：工具层 raceAbort 取消 + ctx 感知（commandRun 杀子进程树）
               // D5：abort 后在跑工具自然结束（结果被丢弃）才抛错，不留游离 Promise
               // D3：显式传入本实例空间根，工具层不再依赖隐式 process.cwd()
-              const result = await runner.run(c.tool, c.args, { signal: options.signal, workspaceRoot: wsRoot });
+              const result = await runner.run(c.tool, c.args, {
+                signal: options.signal,
+                workspaceRoot: wsRoot,
+                // 需求 20261104-004 D5：后台任务归属当前会话
+                sessionId: this._currentSessionId ?? undefined,
+              });
               void debug.toolCall(c.toolName, c.args ?? {}, result, Date.now() - toolStart);
               return result;
             } finally {

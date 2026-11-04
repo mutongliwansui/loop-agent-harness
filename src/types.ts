@@ -17,6 +17,11 @@ export interface ToolContext {
    * 工具解析相对路径时以此为准，不再依赖 process.cwd()。
    */
   workspaceRoot?: string;
+  /**
+   * 当前会话 ID（需求 20261104-004 D5）：由 runner 注入，后台任务据此把完成通知
+   * 投递回原会话；CLI 首轮未建会话时为空，其通知进入无归属桶。
+   */
+  sessionId?: string;
 }
 
 /**

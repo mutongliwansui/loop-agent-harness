@@ -14,6 +14,8 @@ export interface RunOptions {
    * agent 传入 → 缺省回落 ALS → 再回落 process.cwd()（CLI / 单测语义不变）。
    */
   workspaceRoot?: string;
+  /** 当前会话 ID（需求 20261104-004 D5）：透传给工具，后台任务归属由此确定 */
+  sessionId?: string;
 }
 
 interface ToolCallItem {
@@ -51,7 +53,7 @@ export class ToolRunner {
     try {
       // ctx 注入：工具可感知取消信号（如 commandRun 杀子进程树）与空间根（D3 三级取值）
       const workspaceRoot = options.workspaceRoot ?? currentWorkspaceRoot() ?? process.cwd();
-      const ctx: ToolContext = { signal, workspaceRoot };
+      const ctx: ToolContext = { signal, workspaceRoot, sessionId: options.sessionId };
       const exec$ = tool.execute(args, ctx);
       const raced = signal ? this.raceAbort(exec$, signal) : exec$;
       const result = await this.withTimeout(raced, timeout);
