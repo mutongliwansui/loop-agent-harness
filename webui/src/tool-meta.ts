@@ -7,6 +7,7 @@
 // - 图标为 16×16 线性 SVG（与 chart-box.ts 的 kind-ico 同一体系），故 icon 字段是 key 而非 emoji（D2）。
 //
 // 消费方：components/ToolCard.vue（卡片头部/键值表/结果区/分组）、chat-stream.ts（live.brief）、LiveStatus.vue（运行态文案）。
+import { mcpBrief, mcpIconFor, mcpMetaOf, mcpNameOf, mcpParamLabel } from './mcp-tool-meta.js';
 
 /** 图标 key：与 TOOL_ICON_PATHS 一一对应 */
 export type ToolIconKey =
@@ -328,10 +329,42 @@ export function toolMeta(tool: string): ToolMeta {
   return TOOL_META[tool] ?? FALLBACK_META;
 }
 
-/** 工具显示名：已知→「icon key + 中文名」，未知→「gear + 英文原名」（D10） */
-export function toolDisplay(tool: string): { icon: ToolIconKey; name: string; known: boolean } {
+/** MCP 工具附加信息（20261104-001）：来源 server 徽标与原文标题 */
+export interface McpDisplayInfo {
+  /** 来源 server 名（卡片徽标展示） */
+  server: string;
+  /** 规范原文 title（截断名的 title 属性用；可能为空） */
+  title: string;
+  /** 是否已解析出中文展示名（false 时为美化后的英文名） */
+  zh: boolean;
+}
+
+/**
+ * 工具显示名：已知→「icon key + 中文名」（D10）
+ * MCP 工具（有展示元信息）→「语义图标 + 中文名（或美化名）+ server 徽标」
+ * 其余未知工具→「gear + 英文原名」
+ */
+export function toolDisplay(tool: string): {
+  icon: ToolIconKey;
+  name: string;
+  known: boolean;
+  mcp?: McpDisplayInfo;
+} {
   const m = TOOL_META[tool];
-  return m ? { icon: m.icon, name: m.zh, known: true } : { icon: 'gear', name: tool, known: false };
+  if (m) return { icon: m.icon, name: m.zh, known: true };
+  const mp = mcpMetaOf(tool);
+  if (mp) {
+    const { name } = mcpNameOf(mp);
+    if (name) {
+      return {
+        icon: mcpIconFor(mp),
+        name,
+        known: false,
+        mcp: { server: mp.server, title: mp.title, zh: !!mp.zhName },
+      };
+    }
+  }
+  return { icon: 'gear', name: tool, known: false };
 }
 
 /** 紧凑 JSON：可解析则压缩为单行，再按 max 截断；不可解析则原样 trim 后截断 */
@@ -363,7 +396,7 @@ export function prettyJson(argsJson: string): string {
   }
 }
 
-/** 摘要短语：已知工具→brief(args)（空则回退紧凑 JSON）；未知工具/解析失败→紧凑 JSON（D2 回退） */
+/** 摘要短语：已知工具→brief(args)（空则回退紧凑 JSON）；MCP 工具→required 前 2 参数；未知/解析失败→紧凑 JSON（D2 回退） */
 export function toolSummary(tool: string, argsJson: string): string {
   const meta = TOOL_META[tool];
   const args = tryParseArgs(argsJson);
@@ -374,6 +407,11 @@ export function toolSummary(tool: string, argsJson: string): string {
     } catch {
       /* brief 内部异常不影响渲染，走回退 */
     }
+  }
+  // MCP 工具（未登记内置元信息但有后端展示元信息）：按必填参数拼语义摘要（20261104-001 D12）
+  if (!meta && args) {
+    const s = mcpBrief(mcpMetaOf(tool), argsJson);
+    if (s) return s;
   }
   return compactJson(argsJson);
 }
@@ -410,7 +448,9 @@ export function toolParamRows(tool: string, argsJson: string): ParamRow[] {
   }
   for (const [key, v] of Object.entries(args)) {
     if (meta && key in meta.params) continue;
-    rows.push({ key, zh: key, text: formatParamValue(v) });
+    // MCP 工具：参数标签用后端翻译/提炼的中文，缺项回退美化键名（20261104-001 D1）
+    const zh = meta ? key : mcpParamLabel(mcpMetaOf(tool), key);
+    rows.push({ key, zh, text: formatParamValue(v) });
   }
   return rows;
 }

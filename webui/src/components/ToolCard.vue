@@ -27,6 +27,8 @@ import {
   type ToolCardVM,
 } from '../tool-meta.js';
 import { showToast } from '../toast.js';
+import { clipName } from '../mcp-tool-meta.js';
+import { metaRev } from '../mcp-tool-meta-loader.js';
 
 /** 卡片渲染所需的最小段形状（与 chat-stream 的 ToolSeg 结构兼容，避免耦合） */
 interface CardSeg {
@@ -55,8 +57,26 @@ const items = computed(() => props.card.items);
 const grouped = computed(() => props.card.kind === 'group');
 const head = computed(() => items.value[0]);
 const headSeg = computed(() => head.value.seg);
-const display = computed(() => toolDisplay(props.card.tool));
-const iconSvg = computed(() => toolIconSvg(props.card.tool));
+const display = computed(() => {
+  // 20261104-001：toolDisplay 读的是模块级 MCP 元信息注册表（非响应式），必须显式依赖 metaRev，
+  // 否则「元信息比首帧晚到」时卡片会永久停在英文原名
+  void metaRev.value;
+  return toolDisplay(props.card.tool);
+});
+const iconSvg = computed(() => {
+  void metaRev.value;
+  return toolIconSvg(props.card.tool);
+});
+/** MCP 工具名超长截断（20261104-001 D12）；内置工具名原样 */
+const nameText = computed(() =>
+  display.value.mcp ? clipName(display.value.name) : display.value.name,
+);
+/** 截断名的悬停全名：优先规范 title，其次全名本身（仅 MCP 工具设置） */
+const nameTitle = computed(() => {
+  const m = display.value.mcp;
+  if (!m) return undefined;
+  return m.title || display.value.name;
+});
 
 /** 状态优先级：执行中 > 失败 > 已中断 > 完成（与原型 pill 语义一致） */
 const state = computed<'ok' | 'fail' | 'run' | 'stop'>(() => {
@@ -101,6 +121,7 @@ function summaryOf(it: { seg: CardSeg }): string {
  * - 中断单卡：用户停止，结果未返回；执行中：摘要 · 执行中…
  */
 const subtitle = computed(() => {
+  void metaRev.value; // 摘要走 MCP 元信息（mcpBrief），同上需显式依赖
   const c = props.card;
   if (grouped.value) return items.value.map(summaryOf).join(' · ');
   const seg = headSeg.value;
@@ -117,7 +138,10 @@ const subtitle = computed(() => {
 
 /* ===== 参数键值表 / 原始 JSON 浮层（D4） ===== */
 
-const rows = computed(() => (grouped.value ? [] : toolParamRows(props.card.tool, headSeg.value.args)));
+const rows = computed(() => {
+  void metaRev.value; // 参数中文标签走 MCP 元信息，同上需显式依赖
+  return grouped.value ? [] : toolParamRows(props.card.tool, headSeg.value.args);
+});
 const jsonText = computed(() => (grouped.value ? '' : prettyJson(headSeg.value.args)));
 const canJson = computed(() => !!jsonText.value);
 
@@ -263,7 +287,8 @@ function rowState(it: { seg: CardSeg }): string {
       <!-- eslint-disable-next-line vue/no-v-html — 图标为 tool-meta.ts 内置 SVG 常量，非用户输入 -->
       <span class="tcard-ico" v-html="iconSvg"></span>
       <span class="tcard-txt">
-        <span class="tcard-name" :class="{ raw: !display.known }">{{ display.name }}</span>
+        <span class="tcard-name" :class="{ raw: !display.known && !display.mcp }" :title="nameTitle">{{ nameText }}</span>
+        <span v-if="display.mcp" class="tsrc" :title="`来源 MCP server：${display.mcp.server}`">{{ display.mcp.server }}</span>
         <span v-if="grouped" class="ttimes">×{{ items.length }}</span>
         <span class="tcard-sub">{{ subtitle }}</span>
       </span>
@@ -420,6 +445,21 @@ function rowState(it: { seg: CardSeg }): string {
   letter-spacing: 0.01em;
 }
 .tcard-name.raw { font-family: ui-monospace, Consolas, monospace; font-size: 12px; font-weight: 500; }
+/* MCP 工具来源徽标（20261104-001 D12）：灰底小字，复用既有设计令牌，不引入新色值 */
+.tsrc {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 5px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: var(--line-soft);
+  font: 500 10.5px/1.4 ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  align-self: center;
+}
 .ttimes {
   flex: none;
   font: 500 11px/1 ui-monospace, Consolas, monospace;

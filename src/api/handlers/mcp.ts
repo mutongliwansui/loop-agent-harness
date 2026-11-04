@@ -181,8 +181,29 @@ async function handleTestServer(ctx: HandlerContext, res: ServerResponse, name: 
   }
 }
 
+/**
+ * GET /mcp/tool-meta：MCP 工具展示元信息（需求 20261104-001）
+ *
+ * 只服务 UI（ToolCard/LiveStatus 的中文名、参数标签、来源徽标），
+ * 与 toOpenAITools() 完全无关（D9）。无 server 连接时返回空表且不 404。
+ */
+async function handleToolMeta(_ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const tools = registry.mcpToolMeta();
+  const summary = {
+    total: tools.length,
+    titled: tools.filter((t) => t.nameSource === 'title').length,
+    cjk: tools.filter((t) => t.nameSource === 'cjk').length,
+    translated: tools.filter((t) => t.nameSource === 'translate').length,
+    named: tools.filter((t) => !!t.zhName).length,
+    pending: tools.filter((t) => t.translate === 'pending').length,
+    failed: tools.filter((t) => t.translate === 'failed').length,
+  };
+  sendJson(res, 200, { tools, summary });
+}
+
 export function mcpRoutes(): Route[] {
   return [
+    { method: 'GET', path: '/mcp/tool-meta', handler: (ctx, req, res) => handleToolMeta(ctx, req, res) },
     { method: 'GET', path: '/mcp/servers', handler: (ctx, _req, res) => handleListServers(ctx, _req, res) },
     { method: 'POST', path: '/mcp/reload', handler: (ctx, _req, res) => handleReloadServers(ctx, _req, res) },
     { method: 'GET', path: '/mcp/servers/:name', handler: (ctx, _req, res, p) => handleGetServer(ctx, res, p.name) },

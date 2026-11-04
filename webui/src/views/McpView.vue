@@ -3,10 +3,11 @@
 // 端点映射：GET /mcp/servers（合并配置 + 实时连接状态）· POST /mcp/servers（登记 + 自动连接；
 // 502 = 配置已落盘但连接失败「半态」）· GET /mcp/servers/:name（详情 + 工具清单）
 // · POST /mcp/servers/:name/test（临时连接探测）· POST /mcp/reload · DELETE /mcp/servers/:name?scope=
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { showToast } from '../toast';
 import { errText } from '../utils';
+import { loadMcpToolMeta, metaSummary, metaTools } from '../mcp-tool-meta-loader.js';
 import ConfirmButton from '../components/ConfirmButton.vue';
 import JsonViewer from '../components/JsonViewer.vue';
 import StatusBadge from '../components/StatusBadge.vue';
@@ -32,6 +33,14 @@ const regHeaders = ref('');
 const tests = ref<Record<string, TestResult>>({});
 const expanded = ref<string | null>(null);
 const detail = ref<ServerDetail | null>(null);
+
+/** 展示名翻译失败原因（D14：失败必须可观测，不静默回落） */
+const metaErrors = computed(() =>
+  metaTools.value
+    .filter((t) => t.translate === 'failed' && t.translateError)
+    .slice(0, 3)
+    .map((t) => `${t.tool}：${t.translateError}`),
+);
 
 function guard(e: unknown, fallback: string): void {
   if (!(e instanceof AuthError)) showToast(e instanceof ApiError ? e.message : `${fallback}: ${errText(e)}`, 'error');
@@ -71,6 +80,8 @@ async function refresh(): Promise<void> {
     ]);
     servers.value = list.servers;
     rawCfg.value = cfg.config.tools?.mcpServers ?? {};
+    // 连接状态变化后展示元信息也会变（断开即清理），顺带刷新（20261104-001 D14）
+    void loadMcpToolMeta(true);
   } catch (e) {
     guard(e, '加载 MCP 失败');
   } finally {
@@ -235,6 +246,28 @@ onMounted(refresh);
           <button @click="closeReg">取消</button>
           <span class="muted">连接失败返回 502：配置仍已落盘（半态），可稍后「测试」或「重载」。</span>
         </div>
+      </div>
+    </div>
+
+    <div v-if="metaSummary && metaSummary.total > 0" class="card">
+      <div class="card-h">
+        工具展示名中文化
+        <StatusBadge kind="dim">GET /mcp/tool-meta</StatusBadge>
+      </div>
+      <div class="card-b">
+        <div>
+          <span class="muted">已就绪</span>
+          <b class="mono" style="margin:0 6px">{{ metaSummary.named }}/{{ metaSummary.total }}</b>
+          <span class="muted">
+            （title {{ metaSummary.titled }} · 中文描述 {{ metaSummary.cjk }} · 翻译 {{ metaSummary.translated }} · 待译 {{ metaSummary.pending }} · 失败 {{ metaSummary.failed }}）
+          </span>
+        </div>
+        <div v-if="metaErrors.length" class="mono" style="margin-top:6px;font-size:12px;color:var(--danger)">
+          翻译失败：{{ metaErrors.join('；') }}
+        </div>
+        <p class="muted" style="margin:8px 0 0;font-size:12.5px">
+          展示名优先级：title → annotations.title → 中文描述本地提炼 → LLM 翻译 → 名字美化；关闭翻译见配置 <code>tools.mcpTranslate.enabled</code>。
+        </p>
       </div>
     </div>
 

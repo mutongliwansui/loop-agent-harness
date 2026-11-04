@@ -63,6 +63,25 @@ export interface ToolsConfig {
   enabled: string[];
   disabled: string[];
   mcpServers: Record<string, MCPServerConfig>;
+  /** MCP 工具展示名与参数标签的中文化（需求 20261104-001，D13） */
+  mcpTranslate: McpTranslateConfig;
+}
+
+/**
+ * MCP 展示名翻译配置（需求 20261104-001）
+ *
+ * 说明：只影响 UI 展示（ToolCard/LiveStatus 的中文名与参数标签），
+ * 绝不进入 `toOpenAITools()`，因此不会破坏模型前缀缓存（D9）。
+ */
+export interface McpTranslateConfig {
+  /** 是否启用 LLM 翻译兜底（默认 true；关闭后仅用 title/中文描述提炼/名字美化） */
+  enabled: boolean;
+  /** auto=描述已是中文则本地提炼、不调 LLM；always=一律走 LLM（默认 auto） */
+  mode: 'auto' | 'always';
+  /** 单次翻译调用超时（毫秒，默认 20000） */
+  timeoutMs: number;
+  /** 单批最多工具数（默认 60，超出切批串行） */
+  maxToolsPerBatch: number;
 }
 
 export interface AgentBehaviorConfig {
@@ -203,6 +222,12 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enabled: [],
     disabled: [],
     mcpServers: {},
+    mcpTranslate: {
+      enabled: true,
+      mode: 'auto',
+      timeoutMs: 20000,
+      maxToolsPerBatch: 60,
+    },
   },
   agent: {
     verbose: true,

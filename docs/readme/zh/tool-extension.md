@@ -103,3 +103,35 @@ await registry.registerMCPServer('my-server', {
 ```
 
 > **注意**：单个 MCP server 连接失败不影响其他 server 或内置工具（失败隔离）。
+
+### MCP 工具展示名中文化
+
+WebUI 对话流与运行态里的 MCP 工具卡片会显示中文名、语义图标、来源 server 徽标与中文参数标签，素材来自 MCP 协议的展示元信息，按下面的优先级解析（需求 20261104-001）：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | `tool.title` | MCP 规范 2025-06-18 引入的顶层 title |
+| 2 | `tool.annotations.title` | 自 2025-03-26 可用；本机多数 server 只提供该字段 |
+| 3 | 描述已是中文 | 本地按标点/长度提炼短名，**不调 LLM** |
+| 4 | LLM 翻译 | 后台异步批量翻译，结果按内容指纹缓存 |
+| 5 | 名字分词美化 | `shortestPath` → `Shortest Path`（末位兜底） |
+
+> **目标语言优先于字面优先级**：`title` / `annotations.title` 只在本身就是中文时直接采纳；
+> 若 title 是英文而描述是中文，则用中文描述提炼（比英文 title 更贴合中文界面）；
+> 若 title 是英文且描述也是英文，则仍走 LLM 翻译，翻译未就绪或失败时回落 title 原文展示（不丢信息）。
+
+参数标签同理：`inputSchema.properties[k].description` → CJK 提炼 / LLM 翻译 → 美化键名。
+
+```json
+{
+  "tools": {
+    "mcpTranslate": { "enabled": true, "mode": "auto", "timeoutMs": 20000, "maxToolsPerBatch": 60 }
+  }
+}
+```
+
+- `enabled: false`：完全不调 LLM，展示名回落为名字美化（功能不坏）。
+- `mode: 'always'`：中文描述也强制走 LLM（默认 `auto` 会跳过，省调用）。
+- 翻译在后台上进行，**不阻塞 server 注册与对话**；结果缓存在 `~/.loop-agent/mcp-meta.json`，server 改了描述会自动失效重译。
+- 展示元信息只服务 UI：不进 `Tool` 接口、不进 `toOpenAITools()`，模型侧工具列表与前缀缓存逐字节不变。
+- 查看状态：`GET /mcp/tool-meta`（WebUI 的 MCP 页也会显示「已就绪 N/M」与失败原因）。

@@ -23,6 +23,7 @@ import {
   type ToolCardVM,
   type ToolSegLike,
 } from '../webui/src/tool-meta.js';
+import { setMcpToolMeta } from '../webui/src/mcp-tool-meta.js';
 
 describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 emoji）', () => {
   it('已知工具返回中文映射', () => {
@@ -467,5 +468,68 @@ describe('groupToolSegs：连续 ≥3 次同工具合并（D5）', () => {
       { kind: 'seg', seg: { type: 'text', text: 'a' }, index: 0 },
       { kind: 'seg', seg: { type: 'text', text: 'b' }, index: 1 },
     ]);
+  });
+});
+
+/* ================= MCP 元信息缺省时行为不变（需求 20261104-001 §3.9 不变量 2） ================= */
+describe('MCP 元信息缺省 / 到位时的行为边界（20261104-001）', () => {
+  const MCP_TOOL = 'atlasGraphMcp__shortestPath';
+
+  it('未拉到元信息时：三函数输出与改动前完全一致（英文原名 + gear + 英文键 + 紧凑 JSON）', () => {
+    setMcpToolMeta([]);
+    expect(toolDisplay(MCP_TOOL)).toEqual({ icon: 'gear', name: MCP_TOOL, known: false });
+    expect(toolParamRows(MCP_TOOL, JSON.stringify({ graph: 'g1' }))).toEqual([
+      { key: 'graph', zh: 'graph', text: 'g1' },
+    ]);
+    expect(toolSummary(MCP_TOOL, JSON.stringify({ graph: 'g1' }))).toBe('{"graph":"g1"}');
+  });
+
+  it('元信息到位后：中文名 / 语义图标 / 中文参数标签 / 语义摘要', () => {
+    setMcpToolMeta([
+      {
+        fullName: MCP_TOOL,
+        server: 'atlasGraphMcp',
+        tool: 'shortestPath',
+        title: '',
+        description: '在指定的图实例下，查询两个节点之间的最短路径',
+        paramDesc: { graph: '图实例' },
+        required: ['graph'],
+        zhName: '查询两个节点之间',
+        zhParams: { graph: '图实例' },
+        nameSource: 'cjk',
+        translate: 'skipped',
+      },
+    ]);
+    const d = toolDisplay(MCP_TOOL);
+    expect(d.name).toBe('查询两个节点之间');
+    expect(d.icon).toBe('lines');
+    expect(d.known).toBe(false);
+    expect(d.mcp).toEqual({ server: 'atlasGraphMcp', title: '', zh: true });
+    expect(toolParamRows(MCP_TOOL, JSON.stringify({ graph: 'wzgs_zb' }))).toEqual([
+      { key: 'graph', zh: '图实例', text: 'wzgs_zb' },
+    ]);
+    expect(toolSummary(MCP_TOOL, JSON.stringify({ graph: 'wzgs_zb' }))).toBe('图实例=wzgs_zb');
+    // 复位，避免影响其它用例
+    setMcpToolMeta([]);
+  });
+
+  it('内置工具不受 MCP 注册表影响（逐字节不变）', () => {
+    setMcpToolMeta([
+      {
+        fullName: 'fileRead',
+        server: 'fileRead',
+        tool: 'fileRead',
+        title: '',
+        description: '',
+        paramDesc: {},
+        required: [],
+        zhName: '不该生效',
+        zhParams: {},
+        nameSource: 'translate',
+        translate: 'done',
+      },
+    ]);
+    expect(toolDisplay('fileRead')).toEqual({ icon: 'book', name: '读取文件', known: true });
+    setMcpToolMeta([]);
   });
 });

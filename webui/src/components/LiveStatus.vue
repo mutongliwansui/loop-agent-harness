@@ -4,6 +4,7 @@
 // Task-20261022-001：工具名映射为中文（tool-meta），运行态附带摘要短语（live.brief，chat-stream 预计算）。
 import { computed, onUnmounted, ref } from 'vue';
 import { toolDisplay } from '../tool-meta.js';
+import { metaRev } from '../mcp-tool-meta-loader.js';
 
 type LivePhase =
   | { kind: 'thinking'; iteration?: number; since: number }
@@ -32,6 +33,7 @@ function secs(ms: number): string {
 }
 
 const text = computed(() => {
+  void metaRev.value; // 20261104-001：MCP 元信息非响应式，需显式依赖才能显示中文名
   const l = props.live;
   if (!l) return '';
   if (l.kind === 'thinking') {

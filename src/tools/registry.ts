@@ -3,6 +3,9 @@ import type { Tool, OpenAIToolDef } from '../types.js';
 import { MCPClient } from './mcp/client.js';
 import { adaptMCPTool } from './mcp/adapter.js';
 import type { MCPServerConfig } from './mcp/client.js';
+import { collectMcpMeta, type McpRawTool, type McpToolMeta } from './mcp/meta.js';
+import { prepareServerMeta } from './mcp/translator.js';
+import { debug } from '../debug.js';
 
 /**
  * 规范化 JSON 对象：递归排序对象 keys，确保 JSON Schema 序列化结果确定性。
@@ -24,6 +27,11 @@ export class ToolRegistry {
   private tools = new Map<string, Tool>();
   /** MCP 客户端实例映射：serverName → MCPClient */
   private mcpClients = new Map<string, MCPClient>();
+  /**
+   * MCP 工具展示元信息侧表：fullName → McpToolMeta（需求 20261104-001，D9）。
+   * 只服务 UI（GET /mcp/tool-meta），**绝不进入 toOpenAITools()**，以保住模型前缀缓存。
+   */
+  private mcpMeta = new Map<string, McpToolMeta>();
 
   /**
    * 注册工具
@@ -73,6 +81,11 @@ export class ToolRegistry {
 
   /** 断开指定 MCP server 连接并移除工具 */
   async disconnectMCPServer(serverName: string): Promise<void> {
+    // 元信息随 server 断开一起清理（D15）：先清侧表，client 缺失也要清
+    for (const [key, m] of [...this.mcpMeta]) {
+      if (m.server === serverName) this.mcpMeta.delete(key);
+    }
+
     const client = this.mcpClients.get(serverName);
     if (!client) return;
 
@@ -112,11 +125,13 @@ export class ToolRegistry {
   /**
    * 注册一个 MCP server：连接 → 列出工具 → 适配并注册到 registry
    * 失败不抛错，返回失败信息，让其他 server 继续注册（失败隔离）
+   * @param opts.meta=false 时跳过展示元信息采集（临时连接场景，如测试连接/查看详情，D15）
    * @returns 注册成功的工具名数组
    */
   async registerMCPServer(
     name: string,
     config: MCPServerConfig,
+    opts: { meta?: boolean } = {},
   ): Promise<string[]> {
     // 已存在同名 server，直接跳过
     if (this.mcpClients.has(name)) {
@@ -138,6 +153,8 @@ export class ToolRegistry {
           registered.push(adapted.name);
         }
       }
+      // 展示元信息采集 + 后台翻译：全程旁路，不影响已注册的工具（D4/D9）
+      if (opts.meta !== false) this.startMetaCollection(name, tools as McpRawTool[]);
       return registered;
     } catch (e) {
       // 连接或列出工具失败：清理已建立的连接，返回空数组
@@ -168,11 +185,43 @@ export class ToolRegistry {
     );
     await Promise.all(tasks);
     this.mcpClients.clear();
+    this.mcpMeta.clear();
   }
 
   /** 列出所有已连接的 MCP server 名称 */
   listMCPServers(): string[] {
     return [...this.mcpClients.keys()];
+  }
+
+  /* ================= MCP 展示元信息侧表（需求 20261104-001） ================= */
+
+  /**
+   * 采集展示元信息并触发后台翻译（不 await、不阻塞注册与对话，D4）。
+   * 任何异常都被吞掉：展示元信息失败绝不能影响工具注册与对话主链路。
+   */
+  private startMetaCollection(serverName: string, tools: McpRawTool[]): void {
+    try {
+      const metas = collectMcpMeta(serverName, tools);
+      for (const m of metas) this.mcpMeta.set(m.fullName, m);
+      // prepareServerMeta 在第一个 await 前同步完成本地判定（title / 中文描述提炼），
+      // 因此端点能立刻看到这部分结果，仅 LLM 翻译部分在后台继续
+      void prepareServerMeta(metas).catch((e: unknown) => {
+        debug.log(
+          `[mcp-meta] ${serverName} 元信息处理失败: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    } catch (e) {
+      debug.log(
+        `[mcp-meta] ${serverName} 元信息采集失败: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /** 展示元信息快照（按 fullName 排序，保证响应确定性；返回副本防外部改动） */
+  mcpToolMeta(): McpToolMeta[] {
+    return [...this.mcpMeta.values()]
+      .sort((a, b) => a.fullName.localeCompare(b.fullName))
+      .map((m) => ({ ...m, zhParams: { ...m.zhParams }, paramDesc: { ...m.paramDesc } }));
   }
 }
 

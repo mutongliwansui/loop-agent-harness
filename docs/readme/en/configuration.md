@@ -45,6 +45,12 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
       }
+    },
+    "mcpTranslate": {
+      "enabled": true,
+      "mode": "auto",
+      "timeoutMs": 20000,
+      "maxToolsPerBatch": 60
     }
   },
   "agent": {
@@ -126,6 +132,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `model` | `name` / `baseUrl` / `apiKey` / `temperature` | LLM model config (the effective snapshot, the runtime's single read point) | `gpt-4o-mini`, etc. |
 | `models` | `active` / `profiles` | Multi-model registry (Task-20261011-002): `profiles` maps aliases to model triplets (`name` / `baseUrl` / `apiKey`, optional `temperature`), `active` points to the current alias (empty string = not under multi-model management); `/model use <alias>` updates both `active` and the `model.*` snapshot | `active: ""`, `profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | Built-in tool toggles and MCP server config | all enabled |
+| `tools` | `mcpTranslate` | MCP tool display-name localization (requirement 20261104-001): `enabled` master switch; `mode` = `auto` (distill locally when the description is already Chinese, no LLM call) or `always` (always use the LLM); `timeoutMs` per-batch timeout; `maxToolsPerBatch` tools per batch | `{ enabled: true, mode: 'auto', timeoutMs: 20000, maxToolsPerBatch: 60 }` |
 | `agent` | `verbose` | Whether to output Thought/Action/Observation console logs | `true` |
 | `agent` | `debug` | Whether to enable file debug logging (see 📝 Debug Logging) | `false` |
 | `agent` | `systemPrompt` | Custom system prompt override | `null` |

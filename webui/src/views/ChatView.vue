@@ -62,10 +62,13 @@ import ToolCard from '../components/ToolCard.vue';
 import { nextTextareaHeight } from '../autogrow.js';
 import { createFollowState, type FollowState } from '../scroll-follow.js';
 import { buildPickerRows, resolvePill, type ModelProfileRow, type PickerRow } from '../model-picker.js';
+import { metaRev } from '../mcp-tool-meta-loader.js';
 
 /* ===== 工具调用卡片（Task-20261024-001：方案 B 卡片内聚式，渲染与样式在 ToolCard.vue）===== */
 /** segments → 顺序渲染项：连续 ≥3 次同工具合并成组（D5），文本段原样透传 */
 function renderItems(m: ChatMsg): RenderItem<Segment>[] {
+  // 20261104-001：读取 metaRev 以建立渲染依赖——元信息异步到位后卡片需要重算中文名/图标/参数标签
+  void metaRev.value;
   return groupToolSegs(m.segments);
 }
 /** tool 分支的 items 恒为 ToolSeg（groupToolSegs 只在 type==='tool' 的段上产出），此处仅对齐类型 */

@@ -133,7 +133,8 @@ export class MCPManager {
   /** 测试连接指定 MCP server（仅连接+listTools 后立即断开，不注册） */
   async testServer(name: string, cfg: MCPServerConfig): Promise<{ ok: boolean; message: string }> {
     try {
-      const tools = await registry.registerMCPServer(name, withExplicitCwd(cfg));
+      // meta:false —— 临时连接不采集展示元信息、不触发翻译（需求 20261104-001，D15）
+      const tools = await registry.registerMCPServer(name, withExplicitCwd(cfg), { meta: false });
       await registry.disconnectMCPServer(name);
       return { ok: true, message: `连接成功（${tools.length} 个工具）` };
     } catch (e) {
@@ -153,7 +154,8 @@ export class MCPManager {
     const connected = registry.listMCPServers().includes(name);
     try {
       if (!connected) {
-        await registry.registerMCPServer(name, withExplicitCwd(cfg));
+        // meta:false —— 临时连接只为拉工具清单，不采集元信息、不触发翻译（D15）
+        await registry.registerMCPServer(name, withExplicitCwd(cfg), { meta: false });
       }
       const prefix = `${name}__`;
       const tools = registry

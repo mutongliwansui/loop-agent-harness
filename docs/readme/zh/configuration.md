@@ -45,6 +45,12 @@
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
       }
+    },
+    "mcpTranslate": {
+      "enabled": true,
+      "mode": "auto",
+      "timeoutMs": 20000,
+      "maxToolsPerBatch": 60
     }
   },
   "agent": {
@@ -126,6 +132,7 @@
 | `model` | `name` / `baseUrl` / `apiKey` / `temperature` | LLM 模型配置（当前生效快照，运行时唯一读取点） | `gpt-4o-mini` 等 |
 | `models` | `active` / `profiles` | 多模型登记簿（Task-20261011-002）：`profiles` 以别名为键登记各模型三元组（`name` / `baseUrl` / `apiKey`，可选 `temperature`），`active` 指向当前激活别名（空串 = 未纳入多模型管理）；`/model use <别名>` 会同步更新 `active` 与 `model.*` 快照 | `active: ""`、`profiles: {}` |
 | `tools` | `enabled` / `disabled` / `mcpServers` | 内置工具开关与 MCP server 配置 | 全部启用 |
+| `tools` | `mcpTranslate` | MCP 工具展示名中文化（需求 20261104-001）：`enabled` 总开关；`mode` 为 `auto`（描述已是中文则本地提炼，不调 LLM）或 `always`（一律走 LLM）；`timeoutMs` 单批超时；`maxToolsPerBatch` 单批工具数上限 | `{ enabled: true, mode: 'auto', timeoutMs: 20000, maxToolsPerBatch: 60 }` |
 | `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
 | `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
 | `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |
