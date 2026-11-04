@@ -4,6 +4,7 @@
 // - 非 2xx → 解析 {error:{code,message}} 抛 ApiError
 
 import { ref } from 'vue';
+import type { ApiDocsPayload } from '../api-docs-ui';
 
 export class AuthError extends Error {
   constructor() {
@@ -209,8 +210,7 @@ function dispositionName(cd: string): string {
   return plain?.[1] ?? '';
 }
 
-/** 下载文件或目录 zip：返回 Blob 与建议文件名（Bearer 走请求头，故不能直接用 <a href>） */
-export async function downloadFsEntry(path: string, ws?: string): Promise<{ blob: Blob; name: string }> {
+/** 下载文件或目录 zip：返回 Blob 与建议文件名（Bearer 走请求头，故不能直接用 <a href>） */export async function downloadFsEntry(path: string, ws?: string): Promise<{ blob: Blob; name: string }> {
   const res = await fetch(`/fs/download?path=${encodeURIComponent(path)}${wsParam(ws)}`, {
     headers: authHeaders(),
   });
@@ -218,4 +218,14 @@ export async function downloadFsEntry(path: string, ws?: string): Promise<{ blob
   const fallback = (path.split('/').pop() || 'download').replace(/\/+$/, '');
   const name = dispositionName(res.headers.get('content-disposition') ?? '') || fallback;
   return { blob: await res.blob(), name };
+}
+
+/* ================= 开发者中心（需求 20261104-002） ================= */
+
+/**
+ * 反射式 API 文档：后端从路由表反射出端点全集，叠加中文说明与分组后返回。
+ * 页面统计口径以返回的 stats 为准（total / documented），不在前端自行计数。
+ */
+export async function fetchApiDocs(): Promise<ApiDocsPayload> {
+  return await api<ApiDocsPayload>('/dev/api-docs');
 }

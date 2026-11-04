@@ -1525,3 +1525,254 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
   .mv-filter { max-width: none; }
   .mv-meta .clamp { max-width: 160px; }
 }
+
+/* ================= 开发者中心（需求 20261104-002） =================
+   模块：API 接口文档 / 鉴权与通用约定 / SSE 事件。
+   颜色全部复用既有令牌（--ok / --term-blue / --warn / --term-magenta / --danger / --muted），
+   不新增色值；method 徽标用 currentColor 描边 + 透明底，五色在亮暗主题下都能区分。 */
+
+.dev-ticon svg { width: 15px; height: 15px; flex: none; }
+
+/* 统计条：共 N 个端点 · 已登记 M · 服务地址 */
+.dev-stat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.dev-stat b { color: var(--text); font-weight: 600; }
+.dev-stat .dev-dot { color: var(--line-strong); }
+.dev-stat .dev-todo { color: var(--warn); }
+.dev-origin {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border-radius: 5px;
+  padding: 1px 6px;
+  color: var(--text-2);
+}
+
+/* 搜索与筛选 */
+.dev-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.dev-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.dev-search:focus { outline: none; border-color: var(--brand); }
+.dev-sel {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.dev-shown { font-size: 12px; color: var(--muted); }
+
+/* 空态 / 错误态 */
+.dev-empty,
+.dev-err { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.dev-err { color: var(--danger); }
+
+/* 端点列表 */
+.dev-list { padding-top: 6px; padding-bottom: 6px; }
+.dev-item { border-top: 1px solid var(--line-soft); }
+.dev-item:first-child { border-top: none; }
+.dev-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dev-row:hover { background: var(--hover); }
+.dev-row:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+/* 方法徽标：五色由 class 决定（GET 绿 / POST 蓝 / PUT 橙 / PATCH 紫 / DELETE 红） */
+.mth {
+  flex: none;
+  min-width: 52px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid currentColor;
+  background: transparent;
+}
+.mth-get { color: var(--ok); }
+.mth-post { color: var(--term-blue); }
+.mth-put { color: var(--warn); }
+.mth-patch { color: var(--term-magenta); }
+.mth-del { color: var(--danger); }
+.mth-other { color: var(--muted); }
+
+/* 路径：`:param` 段单独高亮 */
+.dev-path {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+.dev-path .param { color: var(--brand); font-weight: 600; }
+
+.dev-sum {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-item.open .dev-sum { white-space: normal; }
+.dev-sum.todo { color: var(--warn); font-style: italic; }
+
+.dev-tag {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--warn);
+  background: var(--warn-weak);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+
+.dev-caret {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transform: rotate(90deg);
+  transition: transform .16s ease;
+}
+.dev-caret svg { width: 14px; height: 14px; display: block; }
+.dev-item.open .dev-caret { transform: rotate(180deg); }
+
+/* 展开详情 */
+.dev-detail { padding: 2px 6px 14px 6px; }
+.dev-sec { margin-top: 10px; }
+.dev-sec-t {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.dev-copy {
+  margin-left: auto;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.dev-copy:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
+
+.dev-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+}
+
+.dev-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.dev-note {
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: var(--warn-weak);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 表格（参数 / 错误码 / 事件清单） */
+.dev-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dev-tbl th,
+.dev-tbl td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+  word-break: break-word;
+}
+.dev-tbl th { color: var(--muted); font-weight: 600; font-size: 12px; background: var(--bar-bg); }
+.dev-tbl tr:last-child td { border-bottom: none; }
+.dev-tbl code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* 键值行（当前鉴权状态） */
+.dev-kv {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 6px 12px;
+  font-size: 12.5px;
+  padding: 4px 0;
+}
+.dev-kv .dev-k { color: var(--muted); }
+.dev-kv .dev-v { color: var(--text-2); word-break: break-word; }
+.dev-kv code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.dev-ul { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.95; color: var(--text-2); }
+.dev-ul code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* 窄屏 ≤720px：行卡换行堆叠，键值单列，避免横向溢出 */
+@media (max-width: 720px) {
+  .dev-row { flex-wrap: wrap; }
+  .dev-path { flex: 1 1 100%; }
+  .dev-sum { flex: 1 1 100%; white-space: normal; }
+  .dev-kv { grid-template-columns: 1fr; gap: 2px; }
+  .dev-kv .dev-k { font-weight: 600; color: var(--text-2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dev-caret { transition: none; }
+}

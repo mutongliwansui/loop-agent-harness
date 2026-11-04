@@ -216,6 +216,14 @@ HTTP API 服务已启动
 |------|------|------|
 | GET | `/doctor` | 逐项检查 `{ok, checks: [{name, ok, level, detail}]}` |
 
+**dev（自描述文档，需求 20261104-002）**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/dev/api-docs` | 接口文档全量 `{version, groups: [{key, title, desc, items}], stats: {total, documented, undocumented}}`（**运行时反射 `createRoutes()`** 得到端点全集，叠加 `src/api/api-docs.ts` 元数据；`documented:false` 表示该端点尚未登记中文说明，同时列进 `stats.undocumented`） |
+
+`/dev/api-docs` 与其它端点同一套鉴权（无 token 时仅本机可访问；配置 `api.token` 后须带 `Authorization: Bearer`），且**不经任何磁盘文件**：SEA 单文件分发下也无需 `docs/` 目录。WebUI 的「开发者中心」（`#/dev`）即消费此端点渲染分组列表、参数表与 curl 示例。
+
 错误统一为 `{error: {code, message}}`：400 参数错误 / 401 未鉴权 / 403 非本机 / 404 不存在 / 405 方法不支持 / 409 冲突（会话忙 / 激活模型拒删 / 记忆未启用）/ 413 请求体超 2MB / 500 内部错误 / 502 上游连接失败（MCP）。
 
 语义约定：

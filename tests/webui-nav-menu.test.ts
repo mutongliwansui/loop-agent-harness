@@ -2,10 +2,11 @@
  * 侧边栏底部「设置与管理」菜单重设计回归测试（需求 20261028-002）
  *
  * 固化三组不变量：
- * 1. 数据结构：7 个管理项分三组（运行 / 扩展 / 数据与排查），路径与本项目 hash 路由逐一对应；
- *    面板行渲染全称（单列宽度足够），MCP 项的 short「MCP」只用于入口徽标（62px 限制）；
- *    图标全部为 16×16 线性 SVG inner path，且 gear / wrench / puzzle 与 tool-meta.ts 的
- *    TOOL_ICON_PATHS 逐字节一致（防漂移）。
+ * 1. 数据结构：8 个管理项分三组（运行 / 扩展 / 数据与排查），路径与本项目 hash 路由逐一对应；
+ *    面板行渲染全称（单列宽度足够），MCP 项的 short「MCP」与开发者中心的 short「开发」只用于入口徽标
+ *    （62px 限制）；图标全部为 16×16 线性 SVG inner path，且 gear / wrench / puzzle 与 tool-meta.ts
+ *    的 TOOL_ICON_PATHS 逐字节一致（防漂移）。第 8 项「开发者中心」（需求 20261104-002）追加在
+ *    「扩展」组末尾。
  * 2. 外观三态：auto → 删除 data-theme（跟随系统），light / dark 显式覆盖。
  * 3. 样式契约：入口 36px、面板是向上浮层（absolute + bottom: calc(100% + 4px)）、面板项单列竖排
  *    （2026-10-28 由双列改单列）、窄屏下入口仍可见且面板改 fixed 向右弹出（修 P7：旧实现把
@@ -78,10 +79,10 @@ function bodyOf(rules: { selectors: string[]; body: string }[], selector: string
 const rules = cssRules(css);
 
 describe('nav-menu：分组结构（D3 / D4 / D5）', () => {
-  it('三组、7 项，分组名与顺序固定', () => {
+  it('三组、8 项，分组名与顺序固定（第 8 项开发者中心见需求 20261104-002）', () => {
     expect(ADMIN_GROUPS.map((g) => g.cap)).toEqual(['运行', '扩展', '数据与排查']);
-    expect(ADMIN_GROUPS.map((g) => g.items.length)).toEqual([3, 2, 2]);
-    expect(ADMIN_ITEMS).toHaveLength(7);
+    expect(ADMIN_GROUPS.map((g) => g.items.length)).toEqual([3, 3, 2]);
+    expect(ADMIN_ITEMS).toHaveLength(8);
   });
 
   it('路径与本项目 hash 路由逐一对应，且与旧 adminItems 顺序一致', () => {
@@ -91,16 +92,22 @@ describe('nav-menu：分组结构（D3 / D4 / D5）', () => {
       '#/tools',
       '#/mcp',
       '#/skills',
+      // 20261104-002 D7：开发者中心追加在「扩展」组末尾（不新增第 4 组）
+      '#/dev',
       '#/memory',
       '#/doctor',
     ]);
   });
 
-  it('MCP 项：全称「MCP 服务器」，short MCP 仅供入口徽标，其余项 short = label', () => {
+  it('MCP / 开发者中心：全称与短标签不同，其余项 short = label', () => {
     const mcp = ADMIN_ITEMS.find((i) => i.path === '#/mcp')!;
     expect(mcp.label).toBe('MCP 服务器');
     expect(mcp.short).toBe('MCP');
-    for (const it of ADMIN_ITEMS.filter((i) => i.path !== '#/mcp')) {
+    const dev = ADMIN_ITEMS.find((i) => i.path === '#/dev')!;
+    expect(dev.label).toBe('开发者中心');
+    expect(dev.short).toBe('开发');
+    expect(dev.icon).toBe('code');
+    for (const it of ADMIN_ITEMS.filter((i) => i.path !== '#/mcp' && i.path !== '#/dev')) {
       expect(it.short).toBe(it.label);
     }
     // short 只用于入口徽标（max-width 62px），需 ≤4 字单行可容

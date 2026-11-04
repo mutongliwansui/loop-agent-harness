@@ -13,9 +13,10 @@ import McpView from './views/McpView.vue';
 import SkillsView from './views/SkillsView.vue';
 import MemoryView from './views/MemoryView.vue';
 import DoctorView from './views/DoctorView.vue';
+import DevView from './views/DevView.vue';
 
 /**
- * 底部「设置与管理」7 项（原型-20261018-001 建立；20261028-002 重设计）。
+ * 底部「设置与管理」8 项（原型-20261018-001 建立；20261028-002 重设计；20261104-002 增开发者中心）。
  * 数据源迁到 nav-menu.ts（分组 + SVG 图标 key + 短标签），此处保留同名导出以兼容旧引用。
  */
 export type NavItem = AdminItem;
@@ -57,7 +58,7 @@ export const hashQuery = ref(new URLSearchParams(parseHash(location.hash).query)
 
 window.addEventListener('hashchange', syncFromHash);
 
-/** 路由表：8 项全量（P0 聊天 + P1 管理台 7 视图）；按路径段匹配，query 不参与 */
+/** 路由表：9 项全量（P0 聊天 + P1/P2 管理台 8 视图）；按路径段匹配，query 不参与 */
 const routes: Record<string, Component> = {
   '#/chat': ChatView,
   '#/config': ConfigView,
@@ -67,6 +68,8 @@ const routes: Record<string, Component> = {
   '#/skills': SkillsView,
   '#/memory': MemoryView,
   '#/doctor': DoctorView,
+  // 需求 20261104-002：开发者中心（多模块 tabs，首模块为 API 接口文档）
+  '#/dev': DevView,
 };
 
 export const currentView = computed<Component>(() => routes[currentPath.value] ?? ChatView);

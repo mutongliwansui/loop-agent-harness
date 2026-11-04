@@ -13,6 +13,7 @@ export type NavIconKey =
   | 'puzzle' // 技能
   | 'stack' // 记忆
   | 'pulse' // 诊断
+  | 'code' // 开发者中心
   | 'sliders' // 入口
   | 'caret'; // 面板展开指示
 
@@ -35,6 +36,8 @@ export const NAV_ICON_PATHS: Record<NavIconKey, string> = {
     '<path d="M8 2.4 13 5 8 7.6 3 5z"/><path d="M3 8.2 8 10.8 13 8.2"/><path d="M3 11.2 8 13.8 13 11.2"/>',
   // 心律波形（诊断）
   pulse: '<path d="M1.8 8h2.5l1.5-3.6L8.5 12l1.5-4h4.2"/>',
+  // 尖括号（开发者中心：代码 / 接口语义；需求 20261104-002 D8）
+  code: '<path d="M5.8 5.2 3 8l2.8 2.8M10.2 5.2 13 8l-2.8 2.8"/>',
   // 双滑杆（入口：设置与管理）
   sliders:
     '<path d="M3 5.2h10M3 10.8h10"/><circle cx="6" cy="5.2" r="1.7"/><circle cx="10.4" cy="10.8" r="1.7"/>',
@@ -80,6 +83,8 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
       // 面板行显示全称「MCP 服务器」；short 仅用于入口徽标（max-width 62px，故取 MCP）
       { path: '#/mcp', label: 'MCP 服务器', short: 'MCP', icon: 'link' },
       { path: '#/skills', label: '技能', short: '技能', icon: 'puzzle' },
+      // 需求 20261104-002：面向二次开发者的入口，追加在「扩展」组末尾（D7：不新增第 4 组，避免浮层再涨高）
+      { path: '#/dev', label: '开发者中心', short: '开发', icon: 'code' },
     ],
   },
   {

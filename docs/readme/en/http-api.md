@@ -217,6 +217,14 @@ Fields added by requirement `20261026-003` (legacy fields are kept for one relea
 |--------|------|-------------|
 | GET | `/doctor` | Per-item checks `{ok, checks: [{name, ok, level, detail}]}` |
 
+**dev (self-describing docs, requirement 20261104-002)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/dev/api-docs` | Full API documentation `{version, groups: [{key, title, desc, items}], stats: {total, documented, undocumented}}` (**runtime reflection over `createRoutes()`** gives the complete endpoint set, merged with metadata from `src/api/api-docs.ts`; `documented:false` means the endpoint has no Chinese description yet and is listed in `stats.undocumented`) |
+
+`/dev/api-docs` shares the same auth policy as every other endpoint (loopback-only when no token; `Authorization: Bearer` required once `api.token` is set) and reads **no files from disk**: it works under the single-file SEA distribution where `docs/` does not exist. The WebUI "Developer Center" (`#/dev`) consumes this endpoint to render grouped lists, parameter tables and curl examples.
+
 Errors are uniform `{error: {code, message}}`: 400 bad request / 401 unauthorized / 403 non-loopback / 404 not found / 405 method not allowed / 409 conflict (session busy / active model rejected / memory disabled) / 413 body over 2MB / 500 internal / 502 upstream connect failure (MCP).
 
 Semantic conventions:
