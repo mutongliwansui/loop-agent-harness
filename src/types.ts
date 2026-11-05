@@ -102,6 +102,20 @@ export type ChatMessage =
   | ({ role: 'assistant'; content: string | null; tool_calls?: ToolCall[] } & SessionMessageFlags)
   | ({ role: 'tool'; tool_call_id: string; content: string } & SessionMessageFlags);
 
+/** 后台任务完成通知的文本边界（需求 20261105-001 D9：仅展示，不进入 LLM 历史前缀） */
+export const BACKGROUND_NOTICE_OPEN = '<background_task_notification>';
+export const BACKGROUND_NOTICE_CLOSE = '</background_task_notification>';
+
+/**
+ * 判断一段消息文本是否为后台任务完成通知。
+ * 容忍旧版本遗留的 L2 记忆注入前缀（旧实现把通知当普通 user 消息，可能被记忆前缀包裹）。
+ */
+export function isBackgroundNoticeContent(content: string | null | undefined): boolean {
+  if (typeof content !== 'string') return false;
+  const t = content.trim();
+  return t.endsWith(BACKGROUND_NOTICE_CLOSE) && t.includes(BACKGROUND_NOTICE_OPEN);
+}
+
 /**
  * LLM 调用返回的 Token 使用情况（含缓存命中统计）
  *

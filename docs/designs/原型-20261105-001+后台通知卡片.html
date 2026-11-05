@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 20261105-001 · 后台任务完成通知卡片</title>
+<style>
+  /* ===== 与 webui/src/style.css 令牌同名（节选） ===== */
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --line-soft: #eef0f3; --line-strong: #d3d8de;
+    --text: #22252a; --muted: #6b7280;
+    --brand: #0e9f6e; --brand-weak: #e6f6ef;
+    --ok: #059669; --ok-weak: #d1fae5;
+    --warn: #b45309; --warn-weak: #fef3c7;
+    --danger: #dc2626; --danger-weak: #fdecec;
+    --code-bg: #f1f3f5; --hover: rgba(17,24,39,.055);
+    --radius-card: 12px; --radius-ctl: 7px;
+    --shadow-card: 0 1px 2px rgba(16,24,40,.04), 0 10px 28px -18px rgba(16,24,40,.2);
+    --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  }
+  [data-theme="dark"] {
+    --bg: #0f1115; --panel: #171a20; --line: #262b33; --line-soft: #20242c; --line-strong: #333a44;
+    --text: #e5e7eb; --muted: #9aa1ab;
+    --brand: #22b57f; --brand-weak: rgba(34,181,127,.14);
+    --ok: #34d399; --ok-weak: rgba(52,211,153,.13);
+    --warn: #d97706; --warn-weak: rgba(217,119,6,.15);
+    --danger: #f87171; --danger-weak: rgba(248,113,113,.13);
+    --code-bg: #1d2129; --hover: rgba(255,255,255,.06);
+    --shadow-card: 0 1px 2px rgba(0,0,0,.3), 0 10px 28px -18px rgba(0,0,0,.6);
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+
+  /* ===== 原型框架 ===== */
+  .topbar { position: sticky; top: 0; z-index: 9; display: flex; gap: 8px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .topbar h1 { font-size: 14px; font-weight: 600; flex: 1; }
+  .topbar button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-ctl); background: var(--panel); color: var(--text); cursor: pointer; }
+  .topbar button:hover { background: var(--hover); }
+  .stage { max-width: 840px; margin: 0 auto; padding: 20px; }
+  .stage.narrow { max-width: 400px; }
+  .cap { font-size: 12px; color: var(--muted); margin: 22px 4px 8px; }
+  .cap b { color: var(--text); }
+
+  /* ===== 对话流既有元素（对照用，简化版） ===== */
+  .msg { margin: 10px 0; display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .bubble { max-width: 75%; background: var(--brand-weak); border: 1px solid var(--brand); border-radius: 12px 12px 4px 12px; padding: 8px 12px; white-space: pre-wrap; word-break: break-word; }
+  .toolcard { border: 1px solid var(--line); border-left: 3px solid var(--brand); border-radius: var(--radius-card); background: var(--panel); box-shadow: var(--shadow-card); padding: 8px 12px; max-width: 640px; }
+  .toolcard .tc-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .toolcard .tc-head .name { font-weight: 600; }
+  .toolcard .tc-head .brief { color: var(--muted); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .pill { flex: none; font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 999px; border: 1px solid; }
+  .pill.ok { color: var(--ok); background: var(--ok-weak); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); background: var(--warn-weak); border-color: var(--warn); }
+  .pill.danger { color: var(--danger); background: var(--danger-weak); border-color: var(--danger); }
+  .pill.dim { color: var(--muted); background: transparent; border-color: var(--line-strong); }
+
+  /* ===== 现状（before）：通知裸文本气泡 ===== */
+  .raw-bubble { max-width: 88%; background: var(--brand-weak); border: 1px solid var(--brand); border-radius: 12px 12px 4px 12px; padding: 8px 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+
+  /* ===== 本次原型主角：后台通知卡片（BackgroundNoticeCard） ===== */
+  .msg.notice { justify-content: stretch; }
+  .bnc { width: 100%; max-width: 640px; border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: var(--radius-card); background: var(--panel); box-shadow: var(--shadow-card); padding: 8px 12px; }
+  .bnc.warn { border-left-color: var(--warn); }
+  .bnc.danger { border-left-color: var(--danger); }
+  .bnc.dim { border-left-color: var(--line-strong); }
+  .bnc-head { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+  .bnc-ico { flex: none; width: 15px; height: 15px; color: var(--muted); }
+  .bnc-tag { color: var(--muted); font-size: 12px; }
+  .bnc-dur { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .bnc-cmd { margin-top: 4px; font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bnc-log-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--brand); background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+  .bnc-log-toggle:hover { text-decoration: underline; }
+  .bnc-log-toggle .caret { transition: transform .15s; }
+  .bnc-log-toggle.open .caret { transform: rotate(90deg); }
+  .bnc-log { display: none; margin-top: 6px; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 8px; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+  .bnc-log.show { display: block; }
+  @media (max-width: 720px) {
+    .bnc-dur { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>原型 20261105-001 · 后台任务完成通知卡片（D5 层级 / D6 布局）</h1>
+  <button id="themeBtn">🌙 暗色</button>
+  <button id="widthBtn">📱 窄屏</button>
+</div>
+
+<div class="stage" id="stage">
+
+  <p class="cap"><b>对照 · 现状</b>：通知以 user 气泡裸文本展示（伪 XML + ANSI 乱码），即本次要消灭的形态</p>
+  <div class="msg user">
+    <div class="raw-bubble">&lt;background_task_notification&gt;
+taskId: bg_b2c77fd5_1793812232
+command: npm test -- --reporter=verbose 2&gt;&amp;1
+status: exited (exitCode=1)
+duration: 198.8s
+logTail:
+□[31m□□□□□□□[39m□[1m□[41m Failed Tests 1 □[49m□[22m□[31m□□□□□□[39m
+□[41m□[1m FAIL □[22m□[49m tests/api-stop-endpoint.test.ts□[2m …
+&lt;/background_task_notification&gt;</div>
+  </div>
+
+  <p class="cap"><b>方案 · 之后</b>：同一上下文中的通知卡片（成功 / 失败 / 已停止 三态）</p>
+
+  <div class="msg user"><div class="bubble">结果怎么样？</div></div>
+
+  <!-- ① 成功 -->
+  <div class="msg notice">
+    <div class="bnc">
+      <div class="bnc-head">
+        <svg class="bnc-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2a4.5 4.5 0 0 0-4.5 4.5v2.6L2 12h12l-1.5-2.9V6.5A4.5 4.5 0 0 0 8 2Z"/><path d="M6.4 14a1.7 1.7 0 0 0 3.2 0"/></svg>
+        <span class="bnc-tag">后台任务</span>
+        <span class="pill ok">已完成</span>
+        <span class="bnc-dur">⏱ 03:19</span>
+      </div>
+      <div class="bnc-cmd" title="npm run build">npm run build</div>
+      <button class="bnc-log-toggle"><span class="caret">▸</span>查看日志尾部（20 行）</button>
+      <pre class="bnc-log">vite v7.2.7 building for production...
+transforming...
+✓ 386 modules transformed.
+dist/index.html                   0.46 kB │ gzip:  0.30 kB
+dist/assets/index-CQ3w1kJd.css  125.40 kB │ gzip: 21.63 kB
+dist/assets/index-Df2a9sQm.js   988.12 kB │ gzip: 262.44 kB
+✓ built in 11.42s</pre>
+    </div>
+  </div>
+
+  <!-- ② 失败（日志已剥离 ANSI，默认折叠，点击展开） -->
+  <div class="msg notice">
+    <div class="bnc danger">
+      <div class="bnc-head">
+        <svg class="bnc-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2a4.5 4.5 0 0 0-4.5 4.5v2.6L2 12h12l-1.5-2.9V6.5A4.5 4.5 0 0 0 8 2Z"/><path d="M6.4 14a1.7 1.7 0 0 0 3.2 0"/></svg>
+        <span class="bnc-tag">后台任务</span>
+        <span class="pill danger">失败（退出码 1）</span>
+        <span class="bnc-dur">⏱ 03:18</span>
+      </div>
+      <div class="bnc-cmd" title="npm test -- --reporter=verbose 2>&amp;1">npm test -- --reporter=verbose 2&gt;&amp;1</div>
+      <button class="bnc-log-toggle"><span class="caret">▸</span>查看日志尾部（20 行）</button>
+      <pre class="bnc-log"> FAIL  tests/api-stop-endpoint.test.ts &gt; POST /sessions/:id/stop &gt; 6.2.6 停止后落盘
+Error: waitFor 超时
+ ❯ waitFor tests/api-stop-endpoint.test.ts:66:11
+ ❯ tests/api-stop-endpoint.test.ts:236:5
+
+ Test Files  1 failed | 70 passed (71)
+      Tests  1 failed | 970 passed (971)</pre>
+    </div>
+  </div>
+
+  <!-- ③ 已停止（无日志） -->
+  <div class="msg notice">
+    <div class="bnc warn">
+      <div class="bnc-head">
+        <svg class="bnc-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2a4.5 4.5 0 0 0-4.5 4.5v2.6L2 12h12l-1.5-2.9V6.5A4.5 4.5 0 0 0 8 2Z"/><path d="M6.4 14a1.7 1.7 0 0 0 3.2 0"/></svg>
+        <span class="bnc-tag">后台任务</span>
+        <span class="pill warn">已停止</span>
+        <span class="bnc-dur">⏱ 00:42</span>
+      </div>
+      <div class="bnc-cmd" title="ping -t 8.8.8.8">ping -t 8.8.8.8</div>
+    </div>
+  </div>
+
+  <div class="msg" style="justify-content:flex-start"><div class="toolcard" style="border-left-color:var(--line-strong)">
+    <div class="tc-head"><span class="name">助手回复</span></div>
+    <div style="font-size:13px;margin-top:4px">构建任务已完成；测试任务有 1 个用例失败（api-stop-endpoint 6.2.6 waitFor 超时），需要我展开看日志吗？</div>
+  </div></div>
+
+  <p class="cap">注：卡片为系统通知样式（左竖条 + 面板底），不占用户气泡位；日志默认折叠，展开限高 220px 内滚动；全部颜色走 style.css 令牌，暗色/窄屏自适应。</p>
+</div>
+
+<script>
+  const html = document.documentElement;
+  document.getElementById('themeBtn').onclick = (e) => {
+    const dark = html.dataset.theme !== 'dark';
+    html.dataset.theme = dark ? 'dark' : 'light';
+    e.target.textContent = dark ? '☀️ 亮色' : '🌙 暗色';
+  };
+  document.getElementById('widthBtn').onclick = (e) => {
+    const st = document.getElementById('stage');
+    st.classList.toggle('narrow');
+    e.target.textContent = st.classList.contains('narrow') ? '🖥 宽屏' : '📱 窄屏';
+  };
+  document.querySelectorAll('.bnc-log-toggle').forEach((btn) => {
+    btn.onclick = () => {
+      const log = btn.nextElementSibling;
+      const open = log.classList.toggle('show');
+      btn.classList.toggle('open', open);
+      btn.lastChild.textContent = open
+        ? btn.lastChild.textContent.replace('查看', '收起')
+        : btn.lastChild.textContent.replace('收起', '查看');
+    };
+  });
+</script>
+</body>
+</html>

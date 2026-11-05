@@ -59,6 +59,8 @@ import {
 } from '../chat-stream.js';
 import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js';
 import ToolCard from '../components/ToolCard.vue';
+import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
+import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
 import { nextTextareaHeight } from '../autogrow.js';
 import { createFollowState, type FollowState } from '../scroll-follow.js';
 import { buildPickerRows, resolvePill, type ModelProfileRow, type PickerRow } from '../model-picker.js';
@@ -92,6 +94,18 @@ interface UploadChip {
 
 // 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
 const messages = computed(() => messagesOf(activeId.value));
+/** 20261105-001 D3：user 消息整体为后台通知块 → 系统通知卡片（按 id 预解析，模板只查表） */
+const noticeMap = computed(() => {
+  const map = new Map<number, BackgroundNoticeInfo>();
+  for (const m of messages.value) {
+    if (m.role !== 'user') continue;
+    const seg = m.segments.length === 1 ? m.segments[0] : undefined;
+    if (seg?.type !== 'text') continue;
+    const info = parseBackgroundNotice(seg.text);
+    if (info) map.set(m.id, info);
+  }
+  return map;
+});
 const stream = computed(() => (activeId.value ? stateOf(activeId.value) : null));
 const draft = ref('');
 const streaming = computed(() => (activeId.value ? isRunning(activeId.value) : false));
@@ -914,7 +928,10 @@ onUnmounted(() => {
             <div v-if="!activeId && messages.length === 0" class="chat-empty">
               选择左侧会话，或点击「＋ 新建对话」开始
             </div>
-            <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+            <div v-for="m in messages" :key="m.id" class="msg" :class="[m.role, { notice: noticeMap.has(m.id) }]">
+              <!-- 20261105-001：后台任务完成通知渲染为系统卡片，不占用户气泡 -->
+              <BackgroundNoticeCard v-if="noticeMap.get(m.id)" :info="noticeMap.get(m.id)!" />
+              <template v-else>
               <div v-if="m.role === 'assistant'" class="m-head">
                 <div class="ava">L</div><span class="m-role">Loop Agent</span>
               </div>
@@ -961,6 +978,7 @@ onUnmounted(() => {
                 <div v-if="m.aborted" class="aborted-note">⏹ 已被用户停止，以上为已生成的部分输出</div>
                 <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
               </div>
+              </template>
             </div>
           </div>
           <!-- 时间线尾注记（task-06）：重启后的中断/停止说明，前端态灰条，不进消息数组 -->
@@ -1407,6 +1425,8 @@ onUnmounted(() => {
   color: var(--brand-on);
 }
 .msg.user { display: flex; justify-content: flex-end; }
+/* 20261105-001：通知卡片独占行（系统样式，不右对齐） */
+.msg.user.notice { justify-content: flex-start; }
 .msg.user .bubble {
   max-width: 76%;
   padding: 9px 14px;

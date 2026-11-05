@@ -12,6 +12,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import type { ChatMessage } from '../types.js';
+import { isBackgroundNoticeContent } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
 import { isSummaryMessage } from '../memory/summary-message.js';
@@ -611,6 +612,9 @@ export class SessionStore {
     for (const m of data.messages ?? []) {
       if (m.role === 'system') continue;
       if (m.is_compact === true) continue;
+      // 需求 20261105-001 D9：后台任务完成通知仅用于界面展示，不进入 LLM 历史前缀
+      // （含旧版本已落盘的、被 L2 记忆前缀包裹的遗留通知）
+      if (m.role === 'user' && isBackgroundNoticeContent(m.content)) continue;
       result.push(m);
     }
     return result;

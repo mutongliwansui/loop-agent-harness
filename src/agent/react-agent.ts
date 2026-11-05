@@ -46,7 +46,7 @@ import type {
   LLMUsage,
   ToolCall,
 } from '../types.js';
-import { AgentAbortedError } from '../types.js';
+import { AgentAbortedError, isBackgroundNoticeContent } from '../types.js';
 import {
   drainBackgroundNotices,
   installBackgroundNoticeForwarder,
@@ -766,11 +766,14 @@ export class ReActAgent {
           }
         }
 
-        // ===== 后台任务完成通知：每轮 LLM 调用前 drain 并追加到尾部（D1/D2）=====
-        // 只追加 user 消息，system/历史前缀逐字节不变，保证前缀缓存命中
+        // ===== 后台任务完成通知：每轮 LLM 调用前 drain（D1/D2）=====
+        // 需求 20261105-001 D9：通知只用于展示与「投递的那一轮」，不作为普通历史消息
+        // 进入后续请求的前缀（旧实现 pushMessage 后会被后续每轮/每轮次重复带上）。
+        let freshNotices: string[] = [];
         try {
-          const notices = drainBackgroundNotices(this._currentSessionId ?? '');
-          for (const text of notices) {
+          freshNotices = drainBackgroundNotices(this._currentSessionId ?? '');
+          for (const text of freshNotices) {
+            // 仍落进 messages/transcript：前端据此渲染通知卡片，且不参与 LLM 历史视图
             pushMessage({ role: 'user', content: text });
           }
         } catch (e) {
@@ -781,12 +784,14 @@ export class ReActAgent {
         // ===== 记忆管理：Context Assembly（L3 + L2 + L1 组装） =====
         // 组装结果仅作为本次 LLM 调用的视图（llmMessages），不覆盖工作数组 messages——
         // 否则 L2 记忆前缀会随 result.messages 持久化（前端渲染出记忆内容）并残留到后续轮次
-        let llmMessages = messages;
+        // D9：历史视图剔除通知消息——避免 (a) 通知进入后续迭代的提示前缀，
+        // (b) 记忆注入把通知误当作「最后一条 user 消息」（旧实现会把记忆前缀挂到通知上）
+        let llmMessages: ChatMessage[] = messages.filter((m) => !isBackgroundNoticeContent(m.content));
         if (this._contextAssembler && this._memoryEnabled) {
           try {
             llmMessages = await this._contextAssembler.assemble(
               userInput,
-              messages,
+              llmMessages,
               skills,
               {
                 searchTopK: cfg.memory.episodic.searchTopK,
@@ -810,6 +815,15 @@ export class ReActAgent {
         // 注意：记忆注入只作用于本次 LLM 调用的视图 llmMessages，不回写 messages/transcript。
         // 回写会让同一条 user 消息在不同迭代/快照间 content 反复变化（原始 ↔ 注入前缀），
         // 破坏落盘时的锚点/去重匹配，并在归档区留下原始与注入两份副本。
+
+        // D9：新到的通知仅作为本轮请求的尾部消息投递一次（不写入历史视图）。
+        // 下一轮 drain 结果为空，通知不会再出现在提示前缀里。
+        if (freshNotices.length > 0) {
+          llmMessages = [
+            ...llmMessages,
+            ...freshNotices.map((text) => ({ role: 'user' as const, content: text })),
+          ];
+        }
 
         // 1. 流式调用 LLM，累积完整响应
         // C2：LLM 调用前——abort 后不再发起空转请求

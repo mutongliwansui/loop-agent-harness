@@ -5,6 +5,7 @@
 // 去重真源：runs/<taskId>.json 的 notifiedAt（D3），内存队列只是加速。
 import { closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { BACKGROUND_NOTICE_CLOSE, BACKGROUND_NOTICE_OPEN } from '../types.js';
 import { debug } from '../debug.js';
 import {
   backgroundTasks,
@@ -39,6 +40,23 @@ export function configureBackgroundNotify(opts: Partial<BackgroundNotifyOptions>
 
 export function backgroundNotifyOptions(): BackgroundNotifyOptions {
   return { ...options };
+}
+
+// 20261105-001 D2：剥离 ANSI 转义序列（CSI 颜色/光标、OSC 标题/超链接、字符集选择、单字符序列），
+// 避免彩色输出污染注入文本（模型 token）与界面渲染（ESC 显示为 □ 乱码）
+const ANSI_RE = /\x1B(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|\([0-9A-B]|[@-_])/g;
+
+/** 净化日志文本：剥离 ANSI；行内 \r 覆写（进度条）取最终态（20261105-001 D1/D2） */
+export function sanitizeLogText(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(ANSI_RE, '')
+    .split('\n')
+    .map((line) => {
+      const i = line.lastIndexOf('\r');
+      return i >= 0 ? line.slice(i + 1) : line;
+    })
+    .join('\n');
 }
 
 /** 按会话分桶的待投递队列；'' 为无归属桶（CLI 首轮尚未建会话） */
@@ -85,23 +103,26 @@ function renderNotice(task: BackgroundTask, logTail: string): string {
     const finishedAt = task.finishedAt ?? Date.now();
     const durationSec = Math.max(0, (finishedAt - startedAt) / 1000).toFixed(1);
 
-    let tail = logTail.trimEnd();
+    let tail = sanitizeLogText(logTail).trimEnd();
     if (!tail) tail = '(无输出 / 日志已清理)';
     const lines = tail.split('\n');
     if (lines.length > tailLines) tail = lines.slice(-tailLines).join('\n');
     if (tail.length > maxChars) tail = `…${tail.slice(-maxChars)}`;
 
     return [
-      '<background_task_notification>',
+      BACKGROUND_NOTICE_OPEN,
       `taskId: ${task.taskId}`,
       `command: ${task.command}`,
       `status: ${statusLine(task)}`,
       `duration: ${durationSec}s`,
       'logTail:',
       tail,
-      '</background_task_notification>',
+      BACKGROUND_NOTICE_CLOSE,
     ].join('\n');
 }
+
+/** 通知文本边界（渲染与识别共用，定义见 types.ts，避免字符串漂移） */
+export { BACKGROUND_NOTICE_CLOSE, BACKGROUND_NOTICE_OPEN, isBackgroundNoticeContent } from '../types.js';
 
 function enqueueFromTask(task: BackgroundTask): void {
   if (!options.enabled) return;

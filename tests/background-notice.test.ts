@@ -9,6 +9,7 @@ import {
   installBackgroundNoticeForwarder,
   resetBackgroundNoticesForTest,
   restoreBackgroundNotices,
+  sanitizeLogText,
 } from '../src/agent/background-notice.js';
 import {
   backgroundTasks,
@@ -209,6 +210,42 @@ describe('后台任务完成通知', () => {
     });
     backgroundTasks.finish('bg_88888888_1700000030', 0);
     expect(drainBackgroundNotices('s1')).toHaveLength(0);
+  });
+
+  it('20261105-001：注入文本剥离 ANSI（CSI/OSC/字符集），正文保留', () => {
+    const logPath = join(dir, 'bg_aaaa0001.log');
+    // 首行为引导行：readLogTail 既有语义会丢弃首行残片（004），断言针对其后两行
+    writeFileSync(
+      logPath,
+      'preamble\n\x1b[31m\x1b[1m FAIL \x1b[22m\x1b[39m tests/x.test.ts\n\x1b]0;npm test\x07\x1b(0normal line\n',
+    );
+    backgroundTasks.start({
+      taskId: 'bg_aaaa0001_1700000050',
+      pid: 1,
+      command: 'npm test',
+      cwd: dir,
+      logPath,
+      startedAt: Date.now(),
+      sessionId: 's1',
+    });
+    backgroundTasks.finish('bg_aaaa0001_1700000050', 1);
+    const texts = drainBackgroundNotices('s1');
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).not.toContain('\x1b');
+    expect(texts[0]).not.toContain('[31m');
+    expect(texts[0]).toContain('FAIL');
+    expect(texts[0]).toContain('tests/x.test.ts');
+    expect(texts[0]).toContain('normal line');
+    // 标签结构不变（D8）
+    expect(texts[0]).toContain('<background_task_notification>');
+    expect(texts[0]).toContain('status: exited (exitCode=1)');
+  });
+
+  it('20261105-001：sanitizeLogText 收敛 \\r 行内覆写为最终态', () => {
+    expect(sanitizeLogText('progress 10%\rprogress 90%\ndone\n')).toBe('progress 90%\ndone\n');
+    expect(sanitizeLogText('a\nb\rc\n')).toBe('a\nc\n');
+    expect(sanitizeLogText('')).toBe('');
+    expect(sanitizeLogText('\x1b[32mok\x1b[39m')).toBe('ok');
   });
 
   it('日志缺失时降级为「日志已清理」，不影响通知', () => {
