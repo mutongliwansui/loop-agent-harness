@@ -57,7 +57,7 @@ import {
   sendMessage,
   retryMessage,
   contextOf,
-  turnTokensOf,
+  type TurnTokenStats,
   refreshContext,
   reloadHistory,
   abortRun,
@@ -182,20 +182,17 @@ function placeCtxPop(e: MouseEvent | FocusEvent): void {
 }
 const manualCompacting = ref(false);
 
-/** 本轮 token 累计（需求 20261106-006）：本会话跑过一轮才有值，纯历史会话不显示 chip */
-const turnTokens = computed(() => (activeId.value ? turnTokensOf(activeId.value) : undefined));
-const tokTotalText = computed(() =>
-  turnTokens.value ? fmtTokens(turnTokens.value.totalTokens) : '',
-);
+/** Token chip 展示值（需求 20261106-006）：每条回答用自身的落盘统计 / 流式镜像 */
+function tokTotalOf(t: TurnTokenStats): string {
+  return fmtTokens(t.totalTokens);
+}
 /** 平均缓存命中率：优先后端汇总值；否则用累计命中 ÷ 累计输入推算；均无数据 → N/A */
-const cacheRateText = computed(() => {
-  const t = turnTokens.value;
-  if (!t) return 'N/A';
-  const rate = t.avgCacheHitRate ?? (t.promptTokens > 0 && t.cacheHitTokens > 0
-    ? t.cacheHitTokens / t.promptTokens
-    : undefined);
+function cacheRateOf(t: TurnTokenStats): string {
+  const rate =
+    t.avgCacheHitRate ??
+    (t.promptTokens > 0 && t.cacheHitTokens > 0 ? t.cacheHitTokens / t.promptTokens : undefined);
   return rate != null ? `${(rate * 100).toFixed(1)}%` : 'N/A';
-});
+}
 /** Token 统计浮层坐标（与 ctx-pop 同 fixed 方案，规避滚动区裁切） */
 const tokPopPos = ref<{ right: number; bottom: number } | null>(null);
 function placeTokPop(e: MouseEvent | FocusEvent): void {
@@ -1256,7 +1253,7 @@ onUnmounted(() => {
                 </button>
                 <span class="gen-hint">由 AI 生成</span>
                 <div
-                  v-if="m.id === lastAssistantId && turnTokens"
+                  v-if="m.turnTokens"
                   class="tok-wrap"
                   @mouseenter="placeTokPop"
                   @focusin="placeTokPop"
@@ -1273,7 +1270,7 @@ onUnmounted(() => {
                     >
                       <path d="M7 4v9M4 10l3 3 3-3M13 16V7M10 10l3-3 3 3" />
                     </svg>
-                    <span class="tok-total">{{ tokTotalText }}</span>
+                    <span class="tok-total">{{ tokTotalOf(m.turnTokens) }}</span>
                   </button>
                   <div
                     class="tok-pop"
@@ -1289,19 +1286,19 @@ onUnmounted(() => {
                     <div class="cp-rows">
                       <div class="cp-row">
                         <span>总输入</span>
-                        <span>{{ fmtTokens(turnTokens.promptTokens) }}</span>
+                        <span>{{ fmtTokens(m.turnTokens.promptTokens) }}</span>
                       </div>
                       <div class="cp-row">
                         <span>总输出</span>
-                        <span>{{ fmtTokens(turnTokens.completionTokens) }}</span>
+                        <span>{{ fmtTokens(m.turnTokens.completionTokens) }}</span>
                       </div>
                       <div class="cp-row">
                         <span>总 Token</span>
-                        <span>{{ tokTotalText }}</span>
+                        <span>{{ tokTotalOf(m.turnTokens) }}</span>
                       </div>
                       <div class="cp-row">
                         <span>平均缓存命中率</span>
-                        <span>{{ cacheRateText }}</span>
+                        <span>{{ cacheRateOf(m.turnTokens) }}</span>
                       </div>
                     </div>
                     <div class="cp-note">口径：多轮迭代累计；命中率 = 命中缓存输入 ÷ 总输入</div>
@@ -2518,10 +2515,15 @@ onUnmounted(() => {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-/* Token 统计 chip（需求 20261106-006）：仅最后一条回答，位于百分比环左侧 */
+/* Token 统计 chip（需求 20261106-006）：每条回答都显示，贴近百分比环右侧对齐 */
 .tok-wrap {
   position: relative;
   flex: none;
+  margin-left: auto;
+}
+/* tok 与环同时存在时紧贴环（环自身的 margin-left:auto 让位，避免双 auto 均分空隙） */
+.tok-wrap + .ctx-wrap {
+  margin-left: 0;
 }
 .tok-chip {
   display: inline-flex;

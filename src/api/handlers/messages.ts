@@ -5,7 +5,7 @@ import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendError, sendJson } from '../http-utils.js';
 import { createSseForwarder, sseFrame } from '../sse.js';
-import type { AgentOptions, LLMStats } from '../../types.js';
+import type { AgentOptions, ChatMessage, LLMStats, LLMStatsSummary, TurnUsage } from '../../types.js';
 import { AgentAbortedError } from '../../types.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
@@ -154,8 +154,16 @@ export async function runMessageTurn(
   };
 
   // 上下文用量采集（需求 20261106-005 P0）：llm_stats 到达时把真实 prompt_tokens
-  // 写入内存 entry.lastContext（不落盘），供 GET /sessions/:id/context 与前端百分比环使用
+  // 写入内存 entry.lastContext（不落盘），供 GET /sessions/:id/context 与前端百分比环使用。
+  // 需求 20261106-006：同时累计迭代 token / 接收 llm_stats_summary，run 结束后挂到本轮最终
+  // assistant 消息的 usage 字段随会话落盘（WebUI 每条回答的 Token chip 数据源）。
   const statsRecorder = {
+    /** 本轮权威累计（run 结束时由 llm_stats_summary 提供；中断时可能缺失） */
+    summary: undefined as LLMStatsSummary | undefined,
+    /** 逐迭代累加（summary 缺失时的兜底） */
+    accPrompt: 0,
+    accCompletion: 0,
+    accCacheHit: 0,
     onLLMStats: (stats: LLMStats): void => {
       entry.lastContext = {
         contextTokens: stats.contextTokens,
@@ -164,6 +172,12 @@ export async function runMessageTurn(
         source: 'stats',
         at: Date.now(),
       };
+      statsRecorder.accPrompt += stats.promptTokens;
+      statsRecorder.accCompletion += stats.completionTokens;
+      statsRecorder.accCacheHit += stats.cacheHitTokens ?? 0;
+    },
+    onLLMStatsSummary: (summary: LLMStatsSummary): void => {
+      statsRecorder.summary = summary;
     },
   };
 
@@ -210,6 +224,8 @@ export async function runMessageTurn(
         // 用 store 归一化后的会话消息作为 entry.history（摘要占位已转写为总结消息、压缩标记一致）。
         // 同时剔除 is_compact=true 的已折叠历史：与 ensureEntry 的 getRestoreMessages 恢复视图对齐，
         // 避免折叠历史重新进入 LLM 上下文并导致每轮重复触发压缩
+        // 需求 20261106-006：本轮 token 统计挂到最终 assistant 消息，随会话落盘
+        attachTurnUsage(result.messages, buildTurnUsage(statsRecorder));
         const stored = await store.updateSession(id, result.messages, message, {
           transcript: result.transcript,
         });
@@ -267,6 +283,8 @@ export async function runMessageTurn(
       if ((e as { aborted?: boolean }).aborted === true && e instanceof AgentAbortedError) {
         const partial = e.partial;
         const sealed = sealPendingToolCalls(partial.messages);
+        // 需求 20261106-006：中断轮也尽量落累计 token（无 summary 时用逐迭代累加兜底）
+        attachTurnUsage(sealed, buildTurnUsage(statsRecorder));
         const abortedWarnings: string[] = [];
         let stored = sealed;
         try {
@@ -352,4 +370,51 @@ export async function runMessageTurn(
   })();
 
   await entry.inFlight;
+}
+
+/**
+ * 需求 20261106-006：从本轮统计生成可落盘的 TurnUsage。
+ * 优先 llm_stats_summary 权威累计；缺失（中断/厂商无 summary）时用逐迭代累加兜底；
+ * 本轮一次 LLM 调用都没发生（如首问即中断）返回 undefined，不写 usage。
+ */
+function buildTurnUsage(recorder: {
+  summary?: LLMStatsSummary;
+  accPrompt: number;
+  accCompletion: number;
+  accCacheHit: number;
+}): TurnUsage | undefined {
+  if (recorder.summary) {
+    return {
+      promptTokens: recorder.summary.totalPrompt,
+      completionTokens: recorder.summary.totalCompletion,
+      totalTokens: recorder.summary.totalTokens,
+      cacheHitTokens: recorder.summary.totalCacheHit,
+      avgCacheHitRate: recorder.summary.avgCacheHitRate,
+    };
+  }
+  if (recorder.accPrompt > 0 || recorder.accCompletion > 0) {
+    return {
+      promptTokens: recorder.accPrompt,
+      completionTokens: recorder.accCompletion,
+      totalTokens: recorder.accPrompt + recorder.accCompletion,
+      cacheHitTokens: recorder.accCacheHit,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * 需求 20261106-006：把本轮 usage 挂到最后一条「有正文」的 assistant 消息上
+ * （与 WebUI 展示的回答 bundle 对应；纯 tool_calls 的中间 assistant 不挂）。
+ * 原地修改，调用方随后交给 store.updateSession 落盘。
+ */
+function attachTurnUsage(messages: ChatMessage[], usage: TurnUsage | undefined): void {
+  if (!usage) return;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'assistant' && m.content) {
+      m.usage = usage;
+      return;
+    }
+  }
 }

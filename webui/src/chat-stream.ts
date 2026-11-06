@@ -56,6 +56,8 @@ export interface ApiHistoryMsg {
   is_compact?: boolean;
   /** 展示内容；缺省或为空时取 content（content 为 LLM 可见原文，可能含记忆注入前缀） */
   show_content?: string;
+  /** 本轮 token 统计（需求 20261106-006）：随会话落盘，仅每轮最终 assistant 消息携带 */
+  usage?: TurnTokenStats;
 }
 export interface ChatMsg {
   id: number;
@@ -66,6 +68,8 @@ export interface ChatMsg {
    * 仅历史加载时有值，流式新增为 undefined；重试以此为锚点。
    */
   seq?: number;
+  /** 本轮 token 统计（需求 20261106-006）：历史来自落盘 usage，流式中由 llm_stats 实时镜像 */
+  turnTokens?: TurnTokenStats;
   files?: string[]; // 该消息附带的上传文件名（仅用户消息展示）
   streaming?: boolean;
   compacting?: boolean; // 压缩中 loading（compaction_start 置 true，compaction 结束事件置 false）
@@ -94,7 +98,8 @@ export interface TurnTokenStats {
   cacheHitTokens: number;
   /** 后端汇总给出的平均命中率（优先于前端推算；厂商无缓存字段为 undefined） */
   avgCacheHitRate?: number;
-  at: number;
+  /** 采集时间（历史会话落盘数据无此字段） */
+  at?: number;
 }
 
 export interface SessionStreamState {
@@ -263,15 +268,24 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
   const out: ChatMsg[] = [];
   let pending: Segment[] = [];
   let pendingSeq: number | undefined;
+  // 需求 20261106-006：bundle 内任何 assistant 携带落盘 usage 时挂到展示消息上（每轮最终 assistant）
+  let pendingUsage: TurnTokenStats | undefined;
   // 恢复视图下标：system 与已折叠归档不计数，其余（含压缩总结）计入后端 entry.history
   let viewIdx = 0;
   const toolSegById = new Map<string, ToolSeg>();
   const flush = (): void => {
     if (pending.length > 0) {
-      out.push({ id: nextMsgId(), role: 'assistant', segments: pending, seq: pendingSeq });
+      out.push({
+        id: nextMsgId(),
+        role: 'assistant',
+        segments: pending,
+        seq: pendingSeq,
+        turnTokens: pendingUsage,
+      });
     }
     pending = [];
     pendingSeq = undefined;
+    pendingUsage = undefined;
   };
   for (const m of list) {
     if (m.role === 'system' || m.is_compact === true) continue;
@@ -285,6 +299,7 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
       out.push({ id: nextMsgId(), role: 'user', segments: [{ type: 'text', text }], seq: historyIdx });
     } else if (m.role === 'assistant') {
       if (m.content) pending.push({ type: 'text', text: m.content });
+      if (m.usage) pendingUsage = m.usage;
       // 同轮多条 assistant（工具调用链）共用首条的下标，重试锚点即该轮回答
       if (pendingSeq === undefined) pendingSeq = historyIdx;
       for (const tc of m.tool_calls ?? []) {
@@ -622,6 +637,8 @@ function applyEvent(id: string, ev: SseEvent): void {
         avgCacheHitRate: base?.avgCacheHitRate,
         at: Date.now(),
       };
+      // 镜像到当前回答：Token chip 随流式实时刷新（需求 20261106-006）
+      currentAssistant(st).turnTokens = st.turnTokens;
       break;
     }
     case 'llm_stats_summary': {
@@ -641,6 +658,8 @@ function applyEvent(id: string, ev: SseEvent): void {
         avgCacheHitRate: typeof s.avgCacheHitRate === 'number' ? s.avgCacheHitRate : undefined,
         at: Date.now(),
       };
+      // 权威累计落到本轮回答上：刷新/重进会话后由落盘 usage 恢复展示
+      currentAssistant(st).turnTokens = st.turnTokens;
       break;
     }
     case 'compaction_start': {

@@ -66,6 +66,24 @@ export interface ToolCall {
 }
 
 /**
+ * 单轮（一次 run）token 统计（需求 20261106-006）：
+ * 挂在每轮最终 assistant 消息上随会话落盘，供 WebUI 每条回答的 Token chip 展示；
+ * 仅存盘/展示语义，调用 LLM 前由 normalizeMessages 与其他存盘标记一并剥离。
+ */
+export interface TurnUsage {
+  /** 累计输入 token */
+  promptTokens: number;
+  /** 累计输出 token */
+  completionTokens: number;
+  /** 累计总 token */
+  totalTokens: number;
+  /** 命中缓存的输入 token 合计（0=无缓存数据） */
+  cacheHitTokens: number;
+  /** 平均缓存命中率（prompt_cache_hit ÷ prompt_tokens；厂商无缓存字段为 undefined） */
+  avgCacheHitRate?: number;
+}
+
+/**
  * 会话持久化标记（仅存盘语义，调用 LLM 前由 LLMClient.normalizeMessages 统一剥离）
  */
 export interface SessionMessageFlags {
@@ -81,6 +99,8 @@ export interface SessionMessageFlags {
    * 旧数据缺省时由 isSummaryMessage 回退到「role=user 且 is_show=false」。
    */
   kind?: 'summary';
+  /** 本轮 token 统计（需求 20261106-006）：仅每轮最终 assistant 消息携带；不进入 LLM 请求 */
+  usage?: TurnUsage;
 }
 
 /**
