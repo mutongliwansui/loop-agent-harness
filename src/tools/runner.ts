@@ -3,6 +3,13 @@
 import type { Tool, ToolContext } from '../types.js';
 import { AgentAbortedError } from '../types.js';
 import { currentWorkspaceRoot } from '../runtime/workspace-context.js';
+import { governOneShot } from './output-governor.js';
+
+/**
+ * 内部已实现超限落盘治理的工具：runner 层不再重复治理，
+ * 否则会二次落盘 + 出现两份「完整输出已保存」提示。
+ */
+const INTERNALLY_GOVERNED_TOOLS = new Set(['commandRun', 'fileRead', 'grep']);
 
 export interface RunOptions {
   /** 超时毫秒数，默认 30000 */
@@ -58,11 +65,25 @@ export class ToolRunner {
       const raced = signal ? this.raceAbort(exec$, signal) : exec$;
       const result = await this.withTimeout(raced, timeout);
       // 结果归一化为字符串
-      if (typeof result === 'string') return result;
+      let text: string;
+      if (typeof result === 'string') {
+        text = result;
+      } else {
+        try {
+          text = JSON.stringify(result);
+        } catch {
+          text = String(result);
+        }
+      }
+      // 兜底治理（需求 20261106-001 D7）：MCP 等未内置超限逻辑的一次性工具，
+      // 超大结果整体进上下文会挤爆窗口——超阈值时完整内容落临时文件 + 只回传截断片段与路径。
+      // commandRun/fileRead/grep 已在工具内治理，跳过以免二次落盘。
+      if (INTERNALLY_GOVERNED_TOOLS.has(tool.name)) return text;
       try {
-        return JSON.stringify(result);
+        const governed = await governOneShot(text, tool.name, args, options.sessionId);
+        return governed.text;
       } catch {
-        return String(result);
+        return text; // 治理失败不影响主流程
       }
     } catch (e) {
       // 取消冒泡：ToolRunner"异常不抛出"契约的唯一例外（见方法注释）

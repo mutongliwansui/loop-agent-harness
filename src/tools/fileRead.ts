@@ -1,5 +1,6 @@
 // 文件读取工具：支持全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
 // 20261106-001：超限完整输出落临时文件 + 告知路径（方案 B：文件内治理，边扫描边写）
+import { createReadStream } from 'node:fs';
 import { open, stat, type FileHandle } from 'node:fs/promises';
 import type { Tool, ToolContext } from '../types.js';
 import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
@@ -7,7 +8,6 @@ import {
   TmpFileWriter,
   buildFullOutputNotice,
   summarizeParam,
-  outputGovernorOptions,
 } from './output-governor.js';
 
 /** 全文读取默认行数上限（超出只返回前 N 行并附截断提示） */
@@ -163,12 +163,13 @@ async function readFull(
 
   // 需求 20261106-001：超限治理（边扫描边完整落临时文件）
   // 只有当文件 size 明显可能触发截断时才创建 TmpFileWriter，避免小输出走落盘逻辑
-  const gov = outputGovernorOptions();
   const willProbablyTruncate = size > byteCap || size > DEFAULT_MAX_LINES * 200;
   let tmpWriter: TmpFileWriter | null = null;
-  if (willProbablyTruncate && ctx?.sessionId) {
+  // 需求 20261106-001：不再要求 ctx.sessionId —— buildTmpFilePath 支持 nosess_ 目录，
+  // 无会话场景（CLI 首轮 / 单测）同样应保证「完整内容落盘」，否则大文件截断后无处可查
+  if (willProbablyTruncate) {
     tmpWriter = new TmpFileWriter({
-      sessionId: ctx.sessionId,
+      sessionId: ctx?.sessionId,
       toolName: 'fileRead',
       paramDigest: summarizeParam({ path }, 'fileRead'),
       thresholds: { triggerMultiplier: 1 }, // fileRead 已知完整 size，直接按 preserveKb 触发落盘
@@ -177,9 +178,6 @@ async function readFull(
 
   // 扫描到文件末尾（提前停止时总行数不准，这里不提前停）
   const scan = await scanLines(fh, size, encoding, (line) => {
-    // 每行都喂给 TmpFileWriter（小输出时它自己判断不落盘）
-    if (tmpWriter) tmpWriter.onChunk(Buffer.from(line + '\n', encoding));
-
     if (byteCut || lineCut) return;
     if (shown.length >= DEFAULT_MAX_LINES) {
       lineCut = true;
@@ -197,7 +195,23 @@ async function readFull(
   });
 
   // finalize TmpFileWriter
-  const fullInfo = tmpWriter ? await tmpWriter.finalize() : undefined;
+  // 需求 20261106-001：改为**流式复制原始字节**，而不是逐行重建后回写。
+  // 逐行重建（line + '\n'）会规范化行尾（CRLF→LF）、给无换行结尾的文件补 '\n'、
+  // 并按 MAX_LINE_CHARS 截断超长行，导致落盘文件与原文件字节数不一致
+  // （实测 780000 字节文件落成 780001 字节）。直接复制字节才能保证「完整原始内容」。
+  let fullInfo: Awaited<ReturnType<TmpFileWriter['finalize']>> | undefined;
+  if (tmpWriter) {
+    const w = tmpWriter;
+    await new Promise<void>((resolve) => {
+      const rs = createReadStream(path, { highWaterMark: CHUNK_BYTES });
+      rs.on('data', (chunk: Buffer | string) => {
+        w.onChunk(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding));
+      });
+      rs.on('end', () => resolve());
+      rs.on('error', () => resolve()); // 复制失败不阻塞主流程（提示会因 fullInfo 缺失而省略）
+    });
+    fullInfo = await w.finalize();
+  }
 
   const body = lineNumbers ? withLineNumbers(shown, 1) : shown.join('\n');
   if (!byteCut && !lineCut && !lineClipped) {
@@ -213,16 +227,21 @@ async function readFull(
   if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
   notes.push('继续读取请用 startLine/endLine 或 offset/limit 分段，或先用 grep 定位关键行。');
 
-  // 需求 20261106-001：完整输出已落临时文件，追加结构化路径提示
+  // 需求 20261106-001：完整内容已落临时文件，追加结构化路径提示
+  // bytes 取文件真实大小（旧实现报的是"收到的字节数"，与文件实际不符）
   if (fullInfo) {
     const nextStart = shown.length + 1;
     const suggestion =
-      `建议: 完整输出已保存，可用 fileRead 的 startLine/endLine 分段读取，` +
+      `建议: 该文件是原始内容全文，可用 fileRead 的 startLine/endLine 分段读取，` +
       `如 startLine: ${nextStart}, endLine: ${Math.min(nextStart + 200, scan.totalLines)}`;
     notes.push(buildFullOutputNotice({
       path: fullInfo.path,
       bytes: fullInfo.bytes,
-      lines: scan.totalLines,
+      lines: fullInfo.lines, // 文件实际换行数（与文件大小同源），不再用 scan.totalLines
+      complete: fullInfo.complete,
+      incompleteReason: fullInfo.errorMessage
+        ? `写入错误: ${fullInfo.errorMessage}`
+        : `背压丢弃 ${fullInfo.contentBytes - fullInfo.bytes} 字节`,
       suggestion,
     }));
   }

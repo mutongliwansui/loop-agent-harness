@@ -69,6 +69,8 @@ export interface ToolsConfig {
   backgroundLog: BackgroundLogConfig;
   /** 前台命令输出与默认超时（需求 20261104-006） */
   commandRun: CommandRunConfig;
+  /** 工具输出超限治理：完整结果落临时文件 + 清理策略（需求 20261106-001） */
+  outputGovernor: OutputGovernorConfig;
   /** 后台任务完成通知（需求 20261104-004） */
   backgroundNotify: BackgroundNotifyConfig;
 }
@@ -82,6 +84,26 @@ export interface ToolsConfig {
 export interface CommandRunConfig {
   outputLimitKb: number;
   timeoutMs: number;
+}
+
+/**
+ * 工具输出超限治理配置（需求 20261106-001）
+ *
+ * 职责分工：`commandRun.outputLimitKb` 管「进上下文多少」，
+ * 这里管「完整结果落临时文件的触发条件与清理」。
+ *
+ * - preserveKb：落盘触发基数（KB）；也是 governOneShot 的一次性工具字节上限
+ * - preserveLines：grep 等按行截断的默认保留行数
+ * - triggerMultiplier：流式工具累计字节 > preserveKb × 本值 时创建临时文件
+ *   （默认 2 ⇒ 128KB 以内的小输出完全不落盘，零磁盘开销）
+ * - tmpTtlDays / tmpMaxTotalMb：~/.loop-agent/tmp 下临时文件的天数与总量上限
+ */
+export interface OutputGovernorConfig {
+  preserveKb: number;
+  preserveLines: number;
+  triggerMultiplier: number;
+  tmpTtlDays: number;
+  tmpMaxTotalMb: number;
 }
 
 /**
@@ -280,6 +302,13 @@ export const DEFAULT_CONFIG: AgentConfig = {
     commandRun: {
       outputLimitKb: 256,
       timeoutMs: 30000,
+    },
+    outputGovernor: {
+      preserveKb: 64,
+      preserveLines: 200,
+      triggerMultiplier: 2,
+      tmpTtlDays: 7,
+      tmpMaxTotalMb: 200,
     },
     backgroundNotify: {
       enabled: true,

@@ -10,6 +10,7 @@ import { ensureBootstrap } from '../bootstrap/index.js';
 import { registerBuiltinTools, mcpManager } from '../tools/index.js';
 import { backgroundTasks, configureBackgroundLogPrune } from '../tools/background-tasks.js';
 import { configureCommandRunOutput } from '../tools/command-run-output.js';
+import { configureOutputGovernor } from '../tools/output-governor.js';
 import { configureBackgroundNotify } from '../agent/background-notice.js';
 import { configLoader } from '../config/index.js';
 import { skillLoader } from '../skill/index.js';
@@ -55,13 +56,16 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
   //    孤儿任务修补不是启动关键路径，且孤儿清理改由 pruneRuns 定期处理
   //    pruneRuns 同步执行，按 stat mtime 粗筛（13374 个文件实测 <1s）
   //    需求 20261104-003：同时按天数/总量清理历史 .log（旧实现只删 .json，日志无限增长）
-  try {
-    configureBackgroundLogPrune(config.tools.backgroundLog);
-    // 需求 20261104-006 / 004：前台输出配额与后台完成通知配置（进程级单例，注入一次）
-    configureCommandRunOutput(config.tools.commandRun);
-    configureBackgroundNotify(config.tools.backgroundNotify);
-    backgroundTasks.pruneRuns();
-  } catch { /* ignore */ }
+  // 各项配置注入互相独立：单条失败不应连带跳过后续项（旧写法整个 try 块共用 catch，
+  // 一个配置异常会静默吞掉其后的 notify / pruneRuns）。
+  try { configureBackgroundLogPrune(config.tools.backgroundLog); } catch { /* ignore */ }
+  // 需求 20261104-006 / 004：前台输出配额与后台完成通知配置（进程级单例，注入一次）
+  try { configureCommandRunOutput(config.tools.commandRun); } catch { /* ignore */ }
+  // 需求 20261106-001：超限治理阈值（此前 configureOutputGovernor 定义了却从未被调用，
+  // 导致 preserveKb/triggerMultiplier 等永远是硬编码默认值，用户无法通过配置调整）
+  try { configureOutputGovernor(config.tools.outputGovernor); } catch { /* ignore */ }
+  try { configureBackgroundNotify(config.tools.backgroundNotify); } catch { /* ignore */ }
+  try { backgroundTasks.pruneRuns(); } catch { /* ignore */ }
 
   // 2. 加载 MCP
   //    serve 模式（deferMcp）跳过阻塞加载：由 bootstrap 启动的 McpMonitor 在后台首轮连接，

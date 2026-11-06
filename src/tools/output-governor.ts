@@ -50,13 +50,17 @@ const DEFAULT: PreserveThresholds = {
 let thresholds: PreserveThresholds = { ...DEFAULT };
 
 /** 注入治理阈值（runtime init 调用；单测/未注入场景使用默认值） */
-export function configureOutputGovernor(opts: Partial<PreserveThresholds>): void {
+export function configureOutputGovernor(opts: Partial<PreserveThresholds> | undefined): void {
+  // 容错：旧配置文件 / 精简测试配置可能没有 outputGovernor 段。
+  // 若这里抛 TypeError，init.ts 的 try/catch 会连带跳过其后的
+  // configureBackgroundNotify 与 pruneRuns（同一 try 块），造成难以定位的副作用。
+  const o = opts ?? {};
   thresholds = {
-    preserveKb: Math.max(1, opts.preserveKb ?? thresholds.preserveKb),
-    preserveLines: Math.max(1, opts.preserveLines ?? thresholds.preserveLines),
-    triggerMultiplier: Math.max(1, opts.triggerMultiplier ?? thresholds.triggerMultiplier),
-    tmpTtlDays: Math.max(0, opts.tmpTtlDays ?? thresholds.tmpTtlDays),
-    tmpMaxTotalMb: Math.max(0, opts.tmpMaxTotalMb ?? thresholds.tmpMaxTotalMb),
+    preserveKb: Math.max(1, o.preserveKb ?? thresholds.preserveKb),
+    preserveLines: Math.max(1, o.preserveLines ?? thresholds.preserveLines),
+    triggerMultiplier: Math.max(1, o.triggerMultiplier ?? thresholds.triggerMultiplier),
+    tmpTtlDays: Math.max(0, o.tmpTtlDays ?? thresholds.tmpTtlDays),
+    tmpMaxTotalMb: Math.max(0, o.tmpMaxTotalMb ?? thresholds.tmpMaxTotalMb),
   };
 }
 
@@ -152,40 +156,104 @@ const NOTICE_BOUNDARY = '\n── 完整输出已保存 ──\n';
 
 export interface FullOutputNotice {
   path: string;
+  /** 文件真实字节数（statSync 口径，不是命令输出总量） */
   bytes: number;
   lines?: number;
   /** 建议的再读提示（如 "建议: 用 fileRead 的 startLine/endLine 分段读取，如 startLine: 1000, endLine: 1500"） */
   suggestion: string;
+  /** false 表示落盘不完整（背压丢弃 / 写入出错），提示里会显式声明，避免 LLM 把它当完整输出 */
+  complete?: boolean;
+  /** 不完整原因（complete=false 时展示） */
+  incompleteReason?: string;
 }
 
-/** 拼接完整的 observation 末尾提示 */
+/**
+ * 拼接完整的 observation 末尾提示。
+ *
+ * 语义契约（需求 20261106-001）：`bytes`/`lines` 必须是**文件真实值**，
+ * 且完整时与命令原始输出一致——历史上这里报的是"收到的全部字节"，
+ * 而文件只有后半段，导致提示说谎。
+ */
 export function buildFullOutputNotice(notice: FullOutputNotice): string {
   const lines: string[] = [];
   lines.push(`路径: ${notice.path}`);
-  lines.push(`总大小: ${formatSize(notice.bytes)}`);
-  if (notice.lines != null) lines.push(`总行数: ${notice.lines}`);
+  lines.push(`文件大小: ${formatSize(notice.bytes)}`);
+  if (notice.lines != null) lines.push(`文件行数: ${notice.lines}`);
+  if (notice.complete === false) {
+    lines.push(`完整性: ⚠ 不完整（${notice.incompleteReason ?? '写入过程有丢弃'}），不可当作完整原始输出`);
+  } else {
+    lines.push('完整性: 完整（该文件即工具原始输出全文）');
+  }
   lines.push(notice.suggestion);
   return `${NOTICE_BOUNDARY}${lines.join('\n')}\n`;
 }
 
 /* ========================================================================
- * TmpFileWriter（commandRun 流式专用）
+ * TmpFileWriter（流式完整落盘）
  * ======================================================================== */
 
+/** WriteStream 内部排队上限：超过说明磁盘跟不上，继续 write 会把内存吃满 */
+const MAX_STREAM_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/** 统计 Buffer 中换行符个数（行数计量口径：\n 计数，末尾无换行时少 1） */
+function countNewlines(buf: Buffer): number {
+  let n = 0;
+  for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) n++;
+  return n;
+}
+
+/** 落盘结果（bytes/lines 为文件真实值；contentXxx 为工具实际输出量） */
+export interface TmpFileInfo {
+  path: string;
+  /** 真正写入文件的字节数 */
+  bytes: number;
+  /** 真正写入文件的换行符个数 */
+  lines: number;
+  /** 工具实际输出的字节数（无丢弃时 === bytes） */
+  contentBytes: number;
+  /** 工具实际输出的换行符个数 */
+  contentLines: number;
+  /** true = 文件即工具原始输出全文（无背压丢弃、无写入错误） */
+  complete: boolean;
+  /** 写入过程中的错误信息（complete=false 时可能有值） */
+  errorMessage?: string;
+}
+
 /**
- * 流式完整输出临时文件写入器（commandRun 前台分两路时用）：
- * - 累计字节首次 > preserveKb * 1024 * triggerMultiplier 时才真正创建 WriteStream
- * - 未超阈值的 chunk 直接丢弃：零磁盘 I/O、零 WriteStream 惰性打开
- * - 首次落盘前已丢弃的 chunk 无法补回（已知取舍：小输出根本不落盘；超阈值时 commandRun 头尾截断已保住命令开头）
+ * 流式完整输出临时文件写入器（commandRun / fileRead 共用）。
+ *
+ * 需求 20261106-001 修复（原实现 4 个缺陷）：
+ *
+ * 1. **头部回填（核心）**：旧实现在累计未达触发阈值前直接 `return` 丢弃 chunk，
+ *    导致落盘文件只剩"越过阈值之后"的部分——10 万行命令输出 500KB，
+ *    文件只有 368.9KB，缺开头 128KB，却对外宣称"完整输出已保存"。
+ *    现改为：未达阈值前 chunk 先进**有界内存缓冲**（上限 = 触发阈值），
+ *    越过阈值时把缓冲整体回填后再直写后续 chunk，文件与命令输出字节级一致。
+ *    小输出（< 阈值）依旧不创建文件，保留零磁盘开销语义。
+ * 2. **错误不杀进程**：WriteStream 必须挂 `error` 监听器，否则磁盘满 / 权限变更等
+ *    异步错误会变成未捕获异常直接终止进程（外层 try/catch 只能抓同步 throw）。
+ * 3. **背压保护**：`write()` 返回 false 后数据在流内部队列堆积，超 `MAX_STREAM_BUFFER_BYTES`
+ *    即丢弃并计入 droppedBytes（complete=false，如实声明不完整），不做静默截断。
+ * 4. **准确计量**：writtenBytes/writtenLines（文件真实值）与 contentBytes/contentLines
+ *    （工具真实输出量）分离，让提示能报「文件大小」而非「收到的字节数」。
  */
 export class TmpFileWriter {
   private writer: WriteStream | null = null;
-  private totalBytes = 0;
+  /** 触发阈值前的暂存（越过阈值时整体回填，保证文件包含工具输出开头） */
+  private pending: Buffer[] = [];
+  private pendingBytes = 0;
+  /** 工具真实输出量（不含任何内部标记） */
+  private contentBytes = 0;
+  private contentLines = 0;
+  /** 真正写入文件的量 */
+  private writtenBytes = 0;
+  private writtenLines = 0;
+  /** 因背压上限丢弃的字节（>0 ⇒ 文件不完整） */
+  private droppedBytes = 0;
   private finalized = false;
-  private flushPromise: Promise<void> | null = null;
-  private lineCount = 0;
   private path: string | null = null;
   private enabled = true;
+  private errorMessage: string | undefined;
 
   constructor(private readonly config: {
     sessionId: string | undefined;
@@ -194,66 +262,128 @@ export class TmpFileWriter {
     thresholds?: Partial<PreserveThresholds>;
   }) {}
 
+  /** 触发落盘的累计字节阈值（preserveKb × triggerMultiplier） */
+  private triggerBytes(): number {
+    const effective = { ...thresholds, ...(this.config.thresholds ?? {}) };
+    return Math.max(1024, effective.preserveKb * 1024 * effective.triggerMultiplier);
+  }
+
   /** 每次收到流式 chunk 时调用；幂等——finalize 之后不再做事 */
   onChunk(chunk: Buffer): void {
     if (!this.enabled || this.finalized || !chunk || chunk.length === 0) return;
 
-    this.totalBytes += chunk.length;
-    const effective = { ...thresholds, ...(this.config.thresholds ?? {}) };
+    this.contentBytes += chunk.length;
+    this.contentLines += countNewlines(chunk);
 
-    // 未达触发阈值：丢弃（零开销）
-    if (this.writer === null && this.totalBytes < effective.preserveKb * 1024 * effective.triggerMultiplier) {
+    // 已打开文件：直写
+    if (this.writer) {
+      this.writeChunk(chunk);
       return;
     }
 
-    // 首次越过阈值：创建 WriteStream（在此之前 chunk 已被丢弃，无法补回）
-    if (this.writer === null) {
-      const path = buildTmpFilePath(this.config.sessionId, this.config.toolName, this.config.paramDigest);
-      try {
-        mkdirSync(dirname(path), { recursive: true });
-        this.writer = createWriteStream(path, { flags: 'w' });
-        this.path = path;
-        // 统计换行数以支持总行数提示
-        this.writer.on('data', () => {}); // 空监听防 backpressure？不，WriteStream 不会对 pipe 背压
-        // 用 'drain' 或等 finish 事件，但 finalize 需要同步等待
-      } catch (e) {
-        debug.log(`TmpFileWriter 创建失败: ${e instanceof Error ? e.message : String(e)}`);
+    // 尚未打开：先暂存（不再丢弃，否则文件缺头）
+    this.pending.push(chunk);
+    this.pendingBytes += chunk.length;
+    if (this.pendingBytes < this.triggerBytes()) return;
+
+    // 越过阈值：创建文件并回填全部暂存内容
+    if (!this.openWriter()) return;
+    const buffered = this.pending;
+    this.pending = [];
+    this.pendingBytes = 0;
+    for (const buf of buffered) this.writeChunk(buf);
+  }
+
+  /** 惰性创建 WriteStream；失败则禁用（降级为「仅上下文可见」） */
+  private openWriter(): boolean {
+    if (this.writer) return true;
+    const path = buildTmpFilePath(this.config.sessionId, this.config.toolName, this.config.paramDigest);
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      const ws = createWriteStream(path, { flags: 'w' });
+      // 关键：无 error 监听器时异步写入错误会冒泡为未捕获异常，直接杀进程
+      ws.on('error', (e: Error) => {
+        this.errorMessage = e.message;
         this.enabled = false;
-        return;
-      }
+        debug.log(`TmpFileWriter 写入错误 ${path}: ${e.message}`);
+      });
+      this.writer = ws;
+      this.path = path;
+      return true;
+    } catch (e) {
+      this.errorMessage = e instanceof Error ? e.message : String(e);
+      this.enabled = false;
+      this.pending = [];
+      this.pendingBytes = 0;
+      debug.log(`TmpFileWriter 创建失败: ${this.errorMessage}`);
+      return false;
     }
+  }
 
-    // 统计 \n（临时快速估算：Buffer 里 \n 出现次数）
-    let idx = 0;
-    for (let i = 0; i < chunk.length; i++) {
-      if (chunk[i] === 0x0a) this.lineCount++;
-      idx++;
+  /** 写入一个 chunk（含背压保护与计量） */
+  private writeChunk(chunk: Buffer): void {
+    if (!this.enabled || !this.writer) return;
+    // 背压：内部队列已超上限说明磁盘跟不上，丢弃并计数（不静默）
+    if (this.writer.writableLength > MAX_STREAM_BUFFER_BYTES) {
+      this.droppedBytes += chunk.length;
+      return;
     }
-
     try {
       this.writer.write(chunk);
+      this.writtenBytes += chunk.length;
+      this.writtenLines += countNewlines(chunk);
     } catch (e) {
-      debug.log(`TmpFileWriter 写入失败: ${e instanceof Error ? e.message : String(e)}`);
+      this.errorMessage = e instanceof Error ? e.message : String(e);
       this.enabled = false;
     }
   }
 
-  /** 关闭 WriteStream 并等待 drain，返回完整信息；未触发落盘返回 undefined */
-  async finalize(): Promise<{ path: string; bytes: number; lines: number } | undefined> {
-    if (this.finalized) {
-      if (this.flushPromise) await this.flushPromise;
-      return this.path ? { path: this.path, bytes: this.totalBytes, lines: this.lineCount } : undefined;
-    }
+  /** 关闭 WriteStream 并等待落盘完成；从未落盘（小输出）返回 undefined */
+  async finalize(): Promise<TmpFileInfo | undefined> {
+    if (this.finalized) return this.result();
     this.finalized = true;
 
-    if (this.writer === null) return undefined;
+    // 全程未越阈值：不落盘（小输出零磁盘开销），暂存直接释放
+    if (!this.writer) {
+      this.pending = [];
+      this.pendingBytes = 0;
+      return undefined;
+    }
 
-    return new Promise((resolve) => {
-      if (!this.writer) { resolve(undefined); return; }
-      this.writer.end(() => {
-        resolve({ path: this.path!, bytes: this.totalBytes, lines: this.lineCount });
-      });
+    const ws = this.writer;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      ws.once('close', finish);
+      ws.once('error', finish);
+      try {
+        ws.end(finish);
+      } catch {
+        finish();
+      }
+      // 兜底：3s 未关闭也返回，不让工具输出被 I/O 拖死
+      const timer = setTimeout(finish, 3000);
+      timer.unref?.();
     });
+
+    return this.result();
+  }
+
+  private result(): TmpFileInfo | undefined {
+    if (!this.path) return undefined;
+    return {
+      path: this.path,
+      bytes: this.writtenBytes,
+      lines: this.writtenLines,
+      contentBytes: this.contentBytes,
+      contentLines: this.contentLines,
+      complete: this.droppedBytes === 0 && this.errorMessage === undefined,
+      errorMessage: this.errorMessage,
+    };
   }
 
   /** 禁用（创建失败后） */
@@ -426,8 +556,11 @@ export async function governOneShot(
     debug.log(`governOneShot 落盘失败 ${path}: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // 截断策略：按字符截断（简单）；复杂截断由具体工具内部治理
-  const cutText = result.slice(0, byteCap);
+  // 截断策略：按字节截断（byteCap 是字节口径；旧实现用 result.slice(0, byteCap)
+  // 按字符切，中文场景会截出 3 倍于上限的内容），并丢弃截断处的半个多字节字符
+  const buf = Buffer.from(result, 'utf-8');
+  let cutText = buf.subarray(0, byteCap).toString('utf-8');
+  if (cutText.endsWith('\uFFFD')) cutText = cutText.slice(0, -1);
   const lines = result.split('\n').length;
 
   let text = cutText;
@@ -435,7 +568,13 @@ export async function governOneShot(
     const suggestion = toolName === 'grep' || toolName === 'fileSearch'
       ? `建议: 缩小搜索范围或先用 grep 定位关键行`
       : `建议: 用 fileRead 的 startLine/endLine 分段读取`;
-    text += buildFullOutputNotice({ path, bytes: len, lines, suggestion });
+    text += buildFullOutputNotice({
+      path,
+      bytes: len,
+      lines,
+      complete: true, // writeFileSync 一次性写全量，成功即完整
+      suggestion,
+    });
   } else {
     text += `\n\n[完整输出保存失败: 输出已截断为前 ${byteCap} 字节，落盘遇到错误]`;
   }

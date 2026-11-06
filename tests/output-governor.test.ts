@@ -113,10 +113,32 @@ describe('buildFullOutputNotice', () => {
     });
     expect(text).toContain('── 完整输出已保存 ──');
     expect(text).toContain('路径:');
-    expect(text).toContain('总大小:');
-    expect(text).toContain('总行数:');
+    expect(text).toContain('文件大小:');
+    expect(text).toContain('文件行数:');
     expect(text).toContain('建议:');
     expect(text).toContain('/tmp/sess_x/commandRun-foo-123.txt');
+  });
+
+  it('complete 未指定/true 时声明「完整」', () => {
+    const text = buildFullOutputNotice({
+      path: '/tmp/a.txt', bytes: 10, lines: 1, suggestion: '建议: x',
+    });
+    expect(text).toContain('完整性: 完整');
+    expect(text).not.toContain('⚠');
+  });
+
+  it('complete=false 时显式声明不完整并给出原因（不得谎称完整）', () => {
+    const text = buildFullOutputNotice({
+      path: '/tmp/a.txt',
+      bytes: 10,
+      lines: 1,
+      suggestion: '建议: x',
+      complete: false,
+      incompleteReason: '背压丢弃 500 字节',
+    });
+    expect(text).toContain('完整性: ⚠ 不完整');
+    expect(text).toContain('背压丢弃 500 字节');
+    expect(text).not.toContain('完整性: 完整');
   });
 });
 
@@ -143,7 +165,7 @@ describe('TmpFileWriter 流式治理', () => {
     }
   });
 
-  it('累计超过阈值时创建 WriteStream，finalize 返回完整信息', async () => {
+  it('累计超过阈值时创建 WriteStream，且**回填**触发前的暂存内容（文件完整）', async () => {
     const w = new TmpFileWriter({
       sessionId: 'sess_big',
       toolName: 'commandRun',
@@ -151,18 +173,60 @@ describe('TmpFileWriter 流式治理', () => {
       thresholds: { preserveKb: 1, triggerMultiplier: 1 },
     });
     const chunk = Buffer.alloc(600, 'x');
-    w.onChunk(chunk);  // 600B < 1KB，还没触发（已知取舍：落盘前已丢弃的 chunk 无法补回）
-    w.onChunk(chunk);  // 1200B 累计 > 1KB，触发创建 WriteStream
+    w.onChunk(chunk);  // 600B < 1KB：进暂存缓冲（旧实现会直接丢弃）
+    w.onChunk(chunk);  // 1200B 累计 > 1KB：创建 WriteStream 并回填前一块
     const info = await w.finalize();
     expect(info).toBeDefined();
-    // 已知取舍：WriteStream 创建前已跳过第一个 chunk（600B），只有第二个 chunk（600B）进文件
-    expect(info!.bytes).toBe(1200);  // totalBytes 统计是累计值（包括已跳过的）
+    // 关键断言（需求 20261106-002）：文件字节数 === 工具真实输出量，不再缺头
+    expect(info!.bytes).toBe(1200);
+    expect(info!.contentBytes).toBe(1200);
+    expect(info!.complete).toBe(true);
     expect(info!.path).toContain('sess_big');
     expect(info!.path).toContain('commandRun-cmd');
 
-    // 文件内容只包含触发 WriteStream 之后的 chunk（已知取舍：首次落盘前已丢弃的 chunk 不补回）
+    // 文件内容包含触发阈值前的第一块（回填生效）
     const content = readFileSync(info!.path, 'utf-8');
-    expect(content.length).toBe(600);
+    expect(content.length).toBe(1200);
+  });
+
+  it('多块流式输出：落盘行数与字节数完整等于真实输出（10 万行回归）', async () => {
+    const w = new TmpFileWriter({
+      sessionId: 'sess_bulk',
+      toolName: 'commandRun',
+      paramDigest: 'bulk',
+      thresholds: { preserveKb: 64, triggerMultiplier: 2 }, // 128KB 才落盘
+    });
+    const totalLines = 100_000;
+    // 每块 1000 行 × 5 字节 = 5000B，共 100 块 = 500000B（远超 128KB 阈值）
+    const block = Buffer.from('year\n'.repeat(1000), 'utf-8');
+    expect(block.length).toBe(5000);
+    for (let i = 0; i < 100; i++) w.onChunk(block);
+
+    const info = await w.finalize();
+    expect(info).toBeDefined();
+    expect(info!.contentBytes).toBe(500_000);
+    expect(info!.bytes).toBe(500_000);      // 旧实现这里是 500000-131072=368928
+    expect(info!.lines).toBe(totalLines);
+    expect(info!.complete).toBe(true);
+
+    const content = readFileSync(info!.path, 'utf-8');
+    expect(content.length).toBe(500_000);
+    expect(content.split('\n').filter((l) => l === 'year').length).toBe(totalLines);
+  });
+
+  it('小输出（未达阈值）零落盘：不创建任何文件', async () => {
+    const w = new TmpFileWriter({
+      sessionId: 'sess_tiny',
+      toolName: 'commandRun',
+      paramDigest: 'tiny',
+      thresholds: { preserveKb: 64, triggerMultiplier: 2 },
+    });
+    w.onChunk(Buffer.from('hello\n', 'utf-8'));
+    const info = await w.finalize();
+    expect(info).toBeUndefined();
+    if (existsSync(join(testRoot, 'sess_tiny'))) {
+      expect(require('node:fs').readdirSync(join(testRoot, 'sess_tiny')).length).toBe(0);
+    }
   });
 
   it('写入失败时禁用，finalize 返回 undefined', async () => {

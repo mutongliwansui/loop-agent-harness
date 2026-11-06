@@ -5,6 +5,8 @@
 // 需求 20261104-006：前台改 spawn + 头尾累积器，移除 maxBuffer 上限，修正 stderr 重复标签
 // 需求 20261106-001：前台 stdout/stderr 分两路消费——
 //   一路 OutputAccumulator（头尾截断进上下文），一路 TmpFileWriter（完整流式写临时文件，超限才创建，小输出零磁盘开销）
+// 需求 20261106-001：修复落盘文件缺头（未达阈值前的 chunk 被丢弃）——改为有界缓冲回填；
+//   并把 stdout/stderr 拆成两个临时文件，提示中的大小/行数取文件真实值
 import { spawn } from 'node:child_process';
 import { openSync, closeSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,6 +24,7 @@ import {
   buildFullOutputNotice,
   summarizeParam,
   pruneTmp,
+  type TmpFileInfo,
 } from './output-governor.js';
 
 export const commandRun: Tool = {
@@ -87,13 +90,13 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
   const out = new OutputAccumulator(headBytes, tailBytes);
   const err = new OutputAccumulator(headBytes, tailBytes);
 
-  // 需求 20261106-001：超限治理器（小输出零磁盘开销，累计超阈值才创建 WriteStream）
+  // 需求 20261106-001：超限治理——stdout/stderr 各自独立落盘。
+  // 分两个文件的好处：① 文件字节数可精确对应单流真实输出，便于校验完整性；
+  // ② 保留流归属，不会像旧实现那样把两个流混写进同一文件、丢弃 [stdout]/[stderr] 结构。
   const digest = summarizeParam({ command: cmd }, 'commandRun');
-  const tmpWriter = new TmpFileWriter({
-    sessionId: ctx?.sessionId,
-    toolName: 'commandRun',
-    paramDigest: digest,
-  });
+  const ctxSession = ctx?.sessionId;
+  const outWriter = new TmpFileWriter({ sessionId: ctxSession, toolName: 'commandRun', paramDigest: `${digest}-stdout` });
+  const errWriter = new TmpFileWriter({ sessionId: ctxSession, toolName: 'commandRun', paramDigest: `${digest}-stderr` });
 
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -111,10 +114,11 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
       if (forceTimer) clearTimeout(forceTimer);
       if (onAbort) ctx?.signal?.removeEventListener('abort', onAbort);
 
-      // 需求 20261106-001：等待 TmpFileWriter drain + close
-      let fullInfo: Awaited<ReturnType<typeof tmpWriter.finalize>> | undefined;
+      // 需求 20261106-001：等待两条流的 TmpFileWriter 落盘收尾
+      let outInfo: TmpFileInfo | undefined;
+      let errInfo: TmpFileInfo | undefined;
       try {
-        fullInfo = await tmpWriter.finalize();
+        [outInfo, errInfo] = await Promise.all([outWriter.finalize(), errWriter.finalize()]);
       } catch { /* 临时文件关闭异常不阻塞主输出 */ }
 
       if (spawnError) {
@@ -138,14 +142,21 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
         parts.push(`[duration=${durationMs}ms]`);
       }
 
-      // 需求 20261106-001：如果完整输出已落临时文件，追加结构化提示
-      if (fullInfo) {
-        const suggestion = '建议: 完整输出已保存，可按需用 fileRead 的 startLine/endLine 分段读取，如 startLine: 1, endLine: 2000；或先用 grep 定位关键内容';
+      // 需求 20261106-001：完整输出已落临时文件 → 追加结构化提示
+      // 字节/行数取「文件真实值」而非「命令输出总量」，避免提示与实际文件不符
+      for (const [streamName, info] of [['stdout', outInfo], ['stderr', errInfo]] as const) {
+        if (!info) continue;
         parts.push(buildFullOutputNotice({
-          path: fullInfo.path,
-          bytes: fullInfo.bytes,
-          lines: fullInfo.lines,
-          suggestion,
+          path: info.path,
+          bytes: info.bytes,
+          lines: info.lines,
+          complete: info.complete,
+          incompleteReason: info.errorMessage
+            ? `写入错误: ${info.errorMessage}`
+            : `背压丢弃 ${info.contentBytes - info.bytes} 字节`,
+          suggestion:
+            `建议: 该文件是 [${streamName}] 的完整原始输出，可用 fileRead 的 startLine/endLine 分段读取`
+            + '（如 startLine: 1, endLine: 2000），或先用 grep 定位关键内容',
         }));
       }
 
@@ -169,11 +180,11 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
     // 第一个 pipe 会消费 buffer，第二个拿不到；用两个 on('data') 分支）
     child.stdout?.on('data', (chunk: Buffer) => {
       out.push(chunk);
-      tmpWriter.onChunk(chunk);
+      outWriter.onChunk(chunk);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       err.push(chunk);
-      tmpWriter.onChunk(chunk);
+      errWriter.onChunk(chunk);
     });
 
     const kill = (): void => {
