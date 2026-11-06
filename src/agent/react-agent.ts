@@ -26,6 +26,7 @@ import {
   CuratedMemory,
   ContextAssembler,
   repairMessageSequence,
+  auditToolSequence,
   ToolMemoryCallback,
   PromotionGate,
   DreamingPipeline,
@@ -813,6 +814,17 @@ export class ReActAgent {
             ...llmMessages,
             ...freshNotices.map((text) => ({ role: 'user' as const, content: text })),
           ];
+        }
+
+        // 兜底审计（一次线性扫描，只读）：tool_calls 必须紧跟其全部 tool 响应，否则上游直接 400。
+        // 正常路径经 repairMessageSequence 后应为空；非空说明修复逻辑或上游 id 复用又造成了序列损坏，
+        // 留痕便于从日志直接定位（不影响本次调用，避免审计本身打断对话）。
+        const sequenceIssues = auditToolSequence(llmMessages);
+        if (sequenceIssues.length > 0) {
+          debug.log(
+            `⚠ LLM 请求消息序列非法（可能触发 400）: ${sequenceIssues.slice(0, 5).join('；')}` +
+              `${sequenceIssues.length > 5 ? ` 等共 ${sequenceIssues.length} 处` : ''}`,
+          );
         }
 
         // 1. 流式调用 LLM，累积完整响应

@@ -20,81 +20,105 @@ const BUILTIN_STOPWORDS = new Set([
   'got it', 'gotcha', 'sure', 'nice', 'great',
 ]);
 
+/** 修复/封口时为「确实拿不到结果」的 tool_call 补的合成 tool 消息内容 */
+export const SYNTHETIC_TOOL_RESULT_TEXT = '（该工具调用未返回结果，已由消息序列修复补齐）';
+
 /**
- * 消息序列验证与修复
+ * 消息序列验证与修复（按顺序配对，不依赖 tool_call_id 全局唯一）
  *
- * 问题：当消息被持久化/恢复时，去重逻辑可能导致 assistant(tool_calls) 消息被错误移除，
- * 但其对应的 tool 消息仍然存在，造成 "tool must be response to preceding tool_calls" 错误。
+ * 问题：assistant(tool_calls) 必须「紧邻」其全部 tool 响应，否则上游直接 400
+ * （An assistant message with 'tool_calls' must be followed by tool messages ...）。
  *
- * 修复策略：
- * 1. 扫描消息序列，收集所有 assistant(tool_calls) 中的 tool_call_id
- * 2. 对每条 tool 消息，检查其 tool_call_id 是否存在于前置 assistant 的 tool_calls 中
- * 3. 若 tool 的 tool_call_id 在任何前置 assistant 中找不到 → 移除该 tool 消息（孤立 tool）
- * 4. 若 assistant(tool_calls) 的所有 tool_call_id 都已被对应 tool 消息消费 → 保留
+ * 旧实现用全局 `tool_call_id → assistant 索引` 映射判断合法 tool，隐含假设 id 全局唯一。
+ * 但上游/响应缓存会复用同一个 id（同会话多次重试「继续」时同一段轨迹的 id 完全相同），
+ * 后出现的 assistant 会覆盖映射，导致较早那一组的 tool 被判为孤儿删掉，而该 assistant
+ * 的 tool_calls 因 id 仍被后面的 tool 响应「兜住」而保留 → 产出的正是报错里的非法序列。
+ *
+ * 修复策略（一次线性扫描）：
+ * 1. 维护「当前待响应的 assistant」，只有紧邻其后的 tool 才归属它，按 id 逐个消费；
+ * 2. 不属于当前待响应 assistant 的 tool（顺序错乱/纯孤儿）→ 丢弃；
+ * 3. 一组配对结束时仍有未被响应的 tool_call → 在该位置补合成 tool 消息（补而非删，
+ *    与 sealPendingToolCalls 的 D3 口径一致），保持 assistant 的 tool_calls 不被裁掉。
  */
 export function repairMessageSequence(messages: ChatMessage[]): ChatMessage[] {
   if (messages.length === 0) return messages;
 
-  // 收集每个 assistant(tool_calls) 中的 tool_call_id，以及它们在数组中的位置
-  const toolCallMap = new Map<string, number>(); // tool_call_id → assistant 消息的索引
+  const result: ChatMessage[] = [];
+  let pending: Set<string> | null = null;
+  let changed = false;
 
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-      for (const tc of msg.tool_calls) {
-        toolCallMap.set(tc.id, i);
-      }
+  // 收尾当前待响应的 assistant：仍未被响应的 tool_call 原地补合成 tool 消息
+  const closePending = (): void => {
+    if (!pending) return;
+    for (const id of pending) {
+      changed = true;
+      result.push({ role: 'tool', tool_call_id: id, content: SYNTHETIC_TOOL_RESULT_TEXT });
     }
-  }
+    pending = null;
+  };
 
-  // 检查每条 tool 消息，看其 tool_call_id 是否在前置 assistant 中存在
-  const validIndices = new Set<number>();
-  const orphanToolIndices: number[] = [];
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === 'tool') {
-      const toolId = msg.tool_call_id;
-      const assistantIdx = toolCallMap.get(toolId);
-      if (assistantIdx !== undefined && assistantIdx < i) {
-        // 找到对应的 assistant，且在 tool 之前 → 合法
-        validIndices.add(i);
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      closePending();
+      pending = new Set(m.tool_calls.map((tc) => tc.id));
+      result.push(m);
+    } else if (m.role === 'tool') {
+      if (pending && pending.has(m.tool_call_id)) {
+        pending.delete(m.tool_call_id);
+        result.push(m);
+        // 该组已全部响应：后续同 id 的 tool 不再归属它（避免跨轮次同名 id 串组）
+        if (pending.size === 0) pending = null;
       } else {
-        // 孤立的 tool 消息，对应的 assistant 不存在或在 tool 之后
-        orphanToolIndices.push(i);
+        // 无紧邻的待响应 assistant → 孤立/顺序错乱的 tool，丢弃
+        changed = true;
       }
     } else {
-      // 非 tool 消息直接保留
-      validIndices.add(i);
+      closePending();
+      result.push(m);
     }
   }
+  closePending();
 
-  // 过滤掉孤立的 tool 消息
-  let result = messages;
-  if (orphanToolIndices.length > 0) {
-    result = messages.filter((_, i) => validIndices.has(i));
-  }
+  return changed ? result : messages;
+}
 
-  // 清理 assistant 中已无对应 tool 消息的 tool_calls（含部分孤立场景）
-  const validToolCallIds = new Set(
-    result
-      .filter((m) => m.role === 'tool')
-      .map((m) => (m as { tool_call_id: string }).tool_call_id),
-  );
+/**
+ * 审计 tool_calls / tool 配对是否符合上游协议（只读、一次线性扫描）。
+ * 返回问题描述（空数组 = 合法）；供发起 LLM 请求前留痕，便于定位 400。
+ */
+export function auditToolSequence(messages: ChatMessage[]): string[] {
+  const issues: string[] = [];
+  let pending: Set<string> | null = null;
+  let pendingAt = -1;
 
-  let changed = false;
-  const finalResult = result.map((msg) => {
-    if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-      const remainingCalls = msg.tool_calls.filter((tc) => validToolCallIds.has(tc.id));
-      if (remainingCalls.length < msg.tool_calls.length) {
-        changed = true;
-        return { ...msg, tool_calls: remainingCalls };
+  const closePending = (endAt: number): void => {
+    if (pending && pending.size > 0) {
+      issues.push(
+        `#${pendingAt} assistant(tool_calls) 有 ${pending.size} 个 id 缺少紧邻 tool 响应（截至 #${endAt}）`,
+      );
+    }
+    pending = null;
+  };
+
+  messages.forEach((m, i) => {
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      closePending(i);
+      pending = new Set(m.tool_calls.map((tc) => tc.id));
+      pendingAt = i;
+    } else if (m.role === 'tool') {
+      if (pending && pending.has(m.tool_call_id)) {
+        pending.delete(m.tool_call_id);
+        if (pending.size === 0) pending = null;
+      } else {
+        issues.push(`#${i} tool(${m.tool_call_id}) 没有紧邻的 tool_calls 响应对象`);
       }
+    } else {
+      closePending(i);
     }
-    return msg;
   });
+  closePending(messages.length);
 
-  return changed || orphanToolIndices.length > 0 ? finalResult : messages;
+  return issues;
 }
 
 export class ContextAssembler {

@@ -7,7 +7,7 @@ export {
 } from './working.js';
 export { EpisodicMemory } from './episodic.js';
 export { CuratedMemory } from './curated.js';
-export { ContextAssembler, repairMessageSequence } from './context.js';
+export { ContextAssembler, repairMessageSequence, auditToolSequence } from './context.js';
 export { ToolMemoryCallback } from './callback.js';
 export { PromotionGate } from './gate.js';
 export {

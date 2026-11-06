@@ -83,4 +83,17 @@ describe('sealPendingToolCalls（Task-20261021-002-03 D3）', () => {
     expect(sealed.length).toBe(8);
     expect((sealed[7] as { tool_call_id?: string }).tool_call_id).toBe('a3');
   });
+
+  it('合成 tool 必须紧邻 assistant：后续还有消息时补在其 tool 区之后（不追加到末尾）', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'q1' },
+      assistantWithCalls(['a1', 'a2']),
+      toolMsg('a1'),
+      { role: 'user', content: 'q2' },
+    ];
+    const sealed = sealPendingToolCalls(messages);
+    expect(sealed.length).toBe(5);
+    expect((sealed[3] as { tool_call_id?: string }).tool_call_id).toBe('a2');
+    expect(sealed[4]).toEqual({ role: 'user', content: 'q2' });
+  });
 });
