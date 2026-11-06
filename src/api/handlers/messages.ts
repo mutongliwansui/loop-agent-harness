@@ -5,7 +5,7 @@ import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendError, sendJson } from '../http-utils.js';
 import { createSseForwarder, sseFrame } from '../sse.js';
-import type { AgentOptions } from '../../types.js';
+import type { AgentOptions, LLMStats } from '../../types.js';
 import { AgentAbortedError } from '../../types.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
@@ -18,13 +18,30 @@ export async function handleMessage(
   res: ServerResponse,
   id: string,
 ): Promise<void> {
-  const { deps, log } = ctx;
   const body = await readJsonBody(req);
   const message = body.message;
   if (typeof message !== 'string' || !message.trim()) {
     throw new ApiHttpError('bad_request', 'message 必须为非空字符串');
   }
   const stream = body.stream !== false; // 默认 true
+  const modelAliasRaw = typeof body.modelAlias === 'string' ? body.modelAlias.trim() : '';
+  await runMessageTurn(ctx, res, id, message, stream, modelAliasRaw);
+}
+
+/**
+ * 启动一轮对话并通过 SSE/JSON 返回结果（需求 20261106-005 P1：重试复用此公共段）。
+ *
+ * 调用方负责：会话存在性、`inFlight` 互斥、重试时的历史截断。
+ */
+export async function runMessageTurn(
+  ctx: HandlerContext,
+  res: ServerResponse,
+  id: string,
+  message: string,
+  stream: boolean,
+  modelAliasRaw: string,
+): Promise<void> {
+  const { deps, log } = ctx;
 
   // Task-20261021-010-04（D10/D17）：按 sessionId 定位归属 runtime，
   // 在该空间的 sessions/store/runAgent 内完成读历史、互斥与执行——
@@ -81,7 +98,6 @@ export async function handleMessage(
   // ===== 会话级模型覆盖（task-20261025-002 D4/D11）=====
   // 只作用于本次 run，绝不写盘改全局激活（不用 PUT /model）；
   // 有值但不存在/无 key 时明确报错，不静默回落——静默回落会让人「以为换了其实没换」。
-  const modelAliasRaw = typeof body.modelAlias === 'string' ? body.modelAlias.trim() : '';
   if (modelAliasRaw) {
     const { config: cfg } = ctx.configLoader.load();
     const profile = cfg.models.profiles[modelAliasRaw];
@@ -137,6 +153,20 @@ export async function handleMessage(
     }
   };
 
+  // 上下文用量采集（需求 20261106-005 P0）：llm_stats 到达时把真实 prompt_tokens
+  // 写入内存 entry.lastContext（不落盘），供 GET /sessions/:id/context 与前端百分比环使用
+  const statsRecorder = {
+    onLLMStats: (stats: LLMStats): void => {
+      entry.lastContext = {
+        contextTokens: stats.contextTokens,
+        maxTokens: stats.contextMaxTokens,
+        threshold: stats.contextThreshold,
+        source: 'stats',
+        at: Date.now(),
+      };
+    },
+  };
+
   if (stream) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -161,7 +191,11 @@ export async function handleMessage(
         const seq = ctx.runs.publish(id, event, data);
         if (seq > 0) void writeJournal(store, id, { lastSeq: seq });
       }),
+      statsRecorder,
     ];
+  } else {
+    // 非流式也要采集用量（不发布 SSE，仅记录）
+    runOptions.events = [statsRecorder];
   }
 
   entry.inFlight = (async () => {

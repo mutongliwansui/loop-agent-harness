@@ -114,6 +114,34 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [{ name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' }],
     example: 'curl -X POST /sessions/<id>/stop',
   },
+  'GET /sessions/:id/context': {
+    summary: '上下文用量（真实 llm_stats 优先，历史会话回退本地估算并标记 source=estimate）。',
+    scope: 'read',
+    params: [{ name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' }],
+    response: '{ contextTokens, maxTokens, threshold, percent, source: "stats" | "estimate", updatedAt? }',
+    example: 'curl /sessions/<id>/context',
+  },
+  'POST /sessions/:id/compact': {
+    summary: '空闲时强制 L1 压缩（运行中 409）；无可丢弃消息返回 ok=false reason=nothing_to_compact，不调 LLM。',
+    scope: 'write',
+    params: [{ name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' }],
+    response:
+      '{ ok, reason?, fallback?, beforeTokens?, afterTokens?, droppedCount?, keptMessages?, contextTokens?, maxTokens?, threshold? }',
+    example: 'curl -X POST /sessions/<id>/compact',
+  },
+  'POST /sessions/:id/retry': {
+    summary: '替换式重试：seq 指向助手回答，后端向前找该轮用户文本，截断其后全部消息后重新生成（SSE）。',
+    scope: 'write',
+    stream: true,
+    params: [
+      { name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' },
+      { name: 'seq', in: 'body', type: 'number', required: true, desc: '目标助手回答在会话恢复视图中的下标' },
+      { name: 'modelAlias', in: 'body', type: 'string', desc: '本轮模型别名（缺省跟随会话/全局）' },
+    ],
+    body: '{ "seq": 1, "modelAlias?": "deepseek-chat" }',
+    response: 'SSE：event: <type> + data: <JSON>（与 POST /sessions/:id/messages 同格式）',
+    example: 'curl -N -X POST /sessions/<id>/retry -H "Content-Type: application/json" -d \'{"seq":1}\'',
+  },
   'PUT /sessions/:id/model': {
     summary: '设置会话级模型别名（只写会话元数据，不改变全局激活模型）。',
     scope: 'write',

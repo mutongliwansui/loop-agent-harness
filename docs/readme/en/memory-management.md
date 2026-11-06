@@ -152,3 +152,11 @@ Companion endpoints:
 - **`GET /memory/episodic` / `GET /memory/curated` accept `?ws=<id or absolute path>`**: read memory for a specific workspace (routed through WorkspaceRuntime with canonical checks; unknown workspace → 404); omitted falls back to the **default workspace (most recently used)** — no longer bound to the startup directory as of req. 20261027-004.
 - **`GET /memory/dream/history?scope=all|ws`**: with `all`, aggregates `.dreaming-runs.json` of all workspaces via file scan (no loaded runtime required), each row annotated with `workspaceId/workspaceName/workspacePath`; `ws` (default) = the default workspace's (most recently used) single file.
 - **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**: clearing follows the selected scope; with `all`, records in every workspace are cleared (files kept, contents emptied, idempotent).
+
+### Manual compaction and context usage (20261106-005)
+
+Automatic compaction still runs only inside a run when the threshold is crossed; these endpoints support explicit actions on an idle session and do not change the automatic policy:
+
+- **`GET /sessions/:id/context`** returns `{contextTokens, maxTokens, threshold, percent, source}`. When real `llm_stats` exist the latest `prompt_tokens` is used (`source=stats`); historical sessions fall back to a local message estimate (`source=estimate`). Usage is in-memory only and never persisted.
+- **`POST /sessions/:id/compact`** forces one L1 compaction while idle (409 if a run is in flight). With nothing to drop it returns `{ok:false, reason:'nothing_to_compact'}` and **does not call the LLM**; on success it reuses the compaction archiving pipeline and writes dropped messages to L2 (`tag=compaction`).
+- **`POST /sessions/:id/retry {seq}`** is a replace-style retry. `seq` targets an assistant answer in the restored session view; the backend finds the user text of that turn, truncates everything after it (overwriting storage) and regenerates. Retrying a middle turn deletes later exchanges, so the WebUI asks for confirmation first.

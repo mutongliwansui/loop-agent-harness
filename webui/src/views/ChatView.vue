@@ -15,7 +15,7 @@
 //          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { api, AuthError, ApiError, uploadRaw } from '../api/client.js';
+import { api, AuthError, ApiError, uploadRaw, compactSession } from '../api/client.js';
 import {
   capPasteFiles,
   collectPasteFiles,
@@ -48,6 +48,10 @@ import {
   ensureLoaded,
   initEmpty,
   sendMessage,
+  retryMessage,
+  contextOf,
+  refreshContext,
+  reloadHistory,
   abortRun,
   setActiveSession,
   setChatViewMounted,
@@ -59,6 +63,7 @@ import {
 } from '../chat-stream.js';
 import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js';
 import ToolCard from '../components/ToolCard.vue';
+import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
 import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
 import { nextTextareaHeight } from '../autogrow.js';
@@ -109,6 +114,191 @@ const noticeMap = computed(() => {
 const stream = computed(() => (activeId.value ? stateOf(activeId.value) : null));
 const draft = ref('');
 const streaming = computed(() => (activeId.value ? isRunning(activeId.value) : false));
+
+/* ===== 消息操作栏：复制 / 重试 / 上下文用量 / 手动压缩（需求 20261106-005） ===== */
+const context = computed(() => (activeId.value ? contextOf(activeId.value) : undefined));
+/** 环半径 9 的周长（viewBox 24 内的 SVG 圆环） */
+const RING_C = 2 * Math.PI * 9;
+const pctText = computed(() =>
+  context.value ? `${Math.round(context.value.percent)}%` : '—',
+);
+const ringDash = computed(() => {
+  const p = Math.min(100, Math.max(0, context.value?.percent ?? 0));
+  return `${(RING_C * p) / 100} ${RING_C}`;
+});
+/** 三档配色（D8）：<60 常态、60–85 琥珀、≥85 红 */
+const ctxLevel = computed(() => {
+  const p = context.value?.percent ?? 0;
+  if (p >= 85) return 'danger';
+  if (p >= 60) return 'warn';
+  return 'ok';
+});
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}K` : String(n);
+}
+/** 最后一条助手消息：只有它显示百分比环，避免长会话重复出现 */
+const lastAssistantId = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m.role === 'assistant') return m.id;
+  }
+  return -1;
+});
+const manualCompacting = ref(false);
+
+/* ---- 通用二次确认框（D11/D13） ---- */
+const confirmOpen = ref(false);
+const confirmTitle = ref('');
+const confirmMessage = ref('');
+const confirmText = ref('确定');
+const confirmDanger = ref(false);
+const confirmBusy = ref(false);
+let confirmAction: (() => void | Promise<void>) | null = null;
+
+function openConfirm(o: {
+  title: string;
+  message: string;
+  confirmText?: string;
+  danger?: boolean;
+  onConfirm: () => void | Promise<void>;
+}): void {
+  confirmTitle.value = o.title;
+  confirmMessage.value = o.message;
+  confirmText.value = o.confirmText ?? '确定';
+  confirmDanger.value = o.danger ?? false;
+  confirmAction = o.onConfirm;
+  confirmOpen.value = true;
+}
+function closeConfirm(): void {
+  if (confirmBusy.value) return; // 执行中不允许关闭
+  confirmOpen.value = false;
+  confirmAction = null;
+}
+async function onConfirm(): Promise<void> {
+  const action = confirmAction;
+  if (!action || confirmBusy.value) return;
+  confirmBusy.value = true;
+  try {
+    await action();
+  } finally {
+    confirmBusy.value = false;
+    confirmOpen.value = false;
+    confirmAction = null;
+  }
+}
+
+/** 该条回答的纯文本（保留 Markdown 原文，不含工具卡片；D7） */
+function answerText(m: ChatMsg): string {
+  return m.segments
+    .filter((s): s is { type: 'text'; text: string } => s.type === 'text')
+    .map((s) => s.text)
+    .join('\n\n')
+    .trim();
+}
+
+async function copyAnswer(m: ChatMsg): Promise<void> {
+  const text = answerText(m);
+  if (!text) {
+    showToast('该回答没有可复制的文本', 'error');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('已复制到剪贴板');
+  } catch {
+    // 非安全上下文/权限被拒：退化为临时 textarea + execCommand
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      showToast('已复制到剪贴板');
+    } catch {
+      showToast('复制失败，请手动选择文本', 'error');
+    } finally {
+      ta.remove();
+    }
+  }
+}
+
+/** 重试入口（D13）：中间轮次先确认（会删除其后对话），最后一条直接执行 */
+function askRetry(m: ChatMsg): void {
+  if (m.seq === undefined) return;
+  const idx = messages.value.findIndex((x) => x.id === m.id);
+  const later = messages.value.length - 1 - idx;
+  if (later > 0) {
+    openConfirm({
+      title: '重试这条回答？',
+      message: `将删除这条回答及其后的 ${later} 条消息，并重新生成该轮回答；该操作不可撤销。`,
+      confirmText: '重试',
+      danger: true,
+      onConfirm: () => doRetry(m),
+    });
+    return;
+  }
+  void doRetry(m);
+}
+
+async function doRetry(m: ChatMsg): Promise<void> {
+  const id = activeId.value;
+  if (!id || m.seq === undefined) return;
+  forceScrollBottom();
+  await retryMessage(id, {
+    seq: m.seq,
+    modelAlias: modelAlias.value || undefined,
+  });
+  scrollBottom();
+  void postRenderMsgs();
+  void loadSessions();
+  void refreshContext(id);
+}
+
+/** 手动压缩入口（D11）：必须二次确认（破坏性操作） */
+function askCompact(): void {
+  const id = activeId.value;
+  if (!id || streaming.value || manualCompacting.value) return;
+  const c = context.value;
+  const used = c ? `当前已用 ${fmtTokens(c.contextTokens)} / ${fmtTokens(c.maxTokens)} tokens。` : '';
+  openConfirm({
+    title: '压缩对话历史',
+    message: `${used}压缩会丢弃较老的历史消息（写入长期记忆，可通过检索召回），并保留最近若干轮对话。是否继续？`,
+    confirmText: '压缩',
+    danger: true,
+    onConfirm: doCompact,
+  });
+}
+
+async function doCompact(): Promise<void> {
+  const id = activeId.value;
+  if (!id) return;
+  manualCompacting.value = true;
+  try {
+    const r = await compactSession(id);
+    if (r.ok) {
+      showToast(
+        `已压缩：${fmtTokens(r.beforeTokens ?? 0)} → ${fmtTokens(r.afterTokens ?? 0)} tokens（丢弃 ${r.droppedCount ?? 0} 条）`,
+      );
+      await reloadHistory(id);
+    } else if (r.reason === 'nothing_to_compact') {
+      showToast('暂无可压缩的历史（最近若干轮会保留）');
+    } else if (r.reason === 'memory_disabled') {
+      showToast('记忆功能未开启，无法压缩', 'error');
+    } else if (r.fallback === 'archive') {
+      showToast('摘要提取失败，已降级为存档压缩');
+    } else {
+      showToast('摘要提取失败，已保留全部历史', 'error');
+    }
+  } catch (e) {
+    showToast(e instanceof Error ? e.message : String(e), 'error');
+  } finally {
+    manualCompacting.value = false;
+    void refreshContext(id);
+    void loadSessions();
+  }
+}
 
 /* ===== 会话级模型选择（task-20261025-002 D4/D8/D9）=====
  * 只影响本会话后续消息，不改全局激活（不发 PUT /model）。
@@ -978,6 +1168,90 @@ onUnmounted(() => {
                 <div v-if="m.aborted" class="aborted-note">⏹ 已被用户停止，以上为已生成的部分输出</div>
                 <div v-if="m.meta" class="meta-line">{{ m.meta }}</div>
               </div>
+              <!-- 消息操作栏（需求 20261106-005）：每条回答下方复制/重试；百分比环只在最后一条显示 -->
+              <div v-if="m.role === 'assistant' && !streaming" class="msg-actions">
+                <button class="act" title="复制这条回答" @click="copyAnswer(m)">
+                  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                    <rect x="5.2" y="5.2" width="7.4" height="8.6" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+                    <path d="M10.6 5.2V3.6a1.2 1.2 0 0 0-1.2-1.2H4.2A1.2 1.2 0 0 0 3 3.6v7.2a1.2 1.2 0 0 0 1.2 1.2h1" fill="none" stroke="currentColor" stroke-width="1.3" />
+                  </svg>
+                  <span>复制</span>
+                </button>
+                <button
+                  class="act"
+                  :disabled="m.seq === undefined"
+                  :title="m.seq === undefined ? '该回答缺少锚点，暂不可重试' : '重新生成这条回答（其后对话将被替换）'"
+                  @click="askRetry(m)"
+                >
+                  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                    <path
+                      d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7M13.2 2.6v3.2h-3.2"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  <span>重试</span>
+                </button>
+                <span class="gen-hint">由 AI 生成</span>
+                <div v-if="m.id === lastAssistantId" class="ctx-wrap">
+                  <button
+                    class="ctx-ring"
+                    :class="ctxLevel"
+                    :disabled="!context"
+                    :title="context ? '上下文使用率（悬浮查看详情）' : '暂无上下文用量数据'"
+                  >
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" fill="none" stroke="var(--line)" stroke-width="2.6" />
+                      <circle
+                        cx="12"
+                        cy="12"
+                        r="9"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.6"
+                        stroke-linecap="round"
+                        :stroke-dasharray="ringDash"
+                        transform="rotate(-90 12 12)"
+                      />
+                    </svg>
+                    <span class="ctx-pct">{{ pctText }}</span>
+                  </button>
+                  <div class="ctx-pop" role="dialog" aria-label="上下文使用率">
+                    <div class="cp-title">上下文使用率</div>
+                    <div class="cp-main">
+                      <b>{{ pctText }}</b>
+                      <span v-if="context">of {{ fmtTokens(context.maxTokens) }}</span>
+                    </div>
+                    <div v-if="context" class="cp-rows">
+                      <div class="cp-row">
+                        <span>已用</span>
+                        <span>{{ fmtTokens(context.contextTokens) }}</span>
+                      </div>
+                      <div class="cp-row">
+                        <span>压缩阈值</span>
+                        <span>{{ fmtTokens(context.threshold) }}</span>
+                      </div>
+                      <div class="cp-row">
+                        <span>数据来源</span>
+                        <span :class="{ est: context.source === 'estimate' }">
+                          {{ context.source === 'stats' ? '真实统计' : '本地估算' }}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      class="cp-compact"
+                      :disabled="manualCompacting || streaming || !context"
+                      @click="askCompact"
+                    >
+                      <span v-if="manualCompacting" class="cp-spin"></span>
+                      {{ manualCompacting ? '正在压缩…' : '压缩' }}
+                    </button>
+                    <div class="cp-arrow"></div>
+                  </div>
+                </div>
+              </div>
               </template>
             </div>
           </div>
@@ -1179,6 +1453,18 @@ onUnmounted(() => {
 
     <!-- ===== 工作空间文件浏览器（对话右侧，v-model 控制展开） ===== -->
     <FilesView ref="filesRef" v-model:open="filesOpen" :ws-path="activeWsPath" />
+
+    <!-- 通用二次确认框（需求 20261106-005 D11/D13：压缩/中间轮次重试） -->
+    <ConfirmDialog
+      :open="confirmOpen"
+      :title="confirmTitle"
+      :message="confirmMessage"
+      :confirm-text="confirmText"
+      :danger="confirmDanger"
+      :busy="confirmBusy"
+      @cancel="closeConfirm"
+      @confirm="onConfirm"
+    />
 
     <!-- ===== 新建会话弹窗（已知工作空间 + 服务端目录浏览器） ===== -->
     <div v-if="newPopOpen" class="np-mask" @click.self="closeNewPop">
@@ -2035,4 +2321,147 @@ onUnmounted(() => {
 .dir-item:hover { background: var(--brand-weak); }
 .dir-item + .dir-item { border-top: 1px solid var(--line); }
 .dir-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0; }
+
+/* ===== 消息操作栏（需求 20261106-005）：复制 / 重试 / 由 AI 生成 / 上下文百分比环 ===== */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 8px;
+  /* 窄屏不换行：操作栏横向滚动，避免挤压气泡 */
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+}
+.msg-actions::-webkit-scrollbar { display: none; }
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 3px 7px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 18px;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.act:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--brand);
+  background: var(--brand-weak);
+}
+.act:disabled { cursor: not-allowed; opacity: 0.3; }
+.gen-hint {
+  flex: none;
+  margin-left: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.ctx-wrap {
+  position: relative;
+  margin-left: auto;
+  flex: none;
+}
+.ctx-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px 2px 2px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+}
+/* 三档配色（D8）：环用 currentColor，百分比文字保持中性灰 */
+.ctx-ring.ok { color: var(--brand); }
+.ctx-ring.warn { color: var(--warn); }
+.ctx-ring.danger { color: var(--danger); }
+.ctx-ring:disabled { opacity: 0.5; cursor: default; }
+.ctx-pct {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ctx-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: 200px;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
+  pointer-events: none;
+}
+.ctx-wrap:hover .ctx-pop,
+.ctx-wrap:focus-within .ctx-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
+}
+.cp-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.cp-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.cp-main b { font-size: 18px; font-weight: 600; color: var(--fg, inherit); }
+.cp-rows { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+.cp-row { display: flex; justify-content: space-between; gap: 10px; }
+.cp-row .est { color: var(--warn); }
+.cp-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 9px;
+  padding: 5px 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg, inherit);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cp-compact:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.cp-compact:disabled { opacity: 0.5; cursor: not-allowed; }
+.cp-spin {
+  width: 11px;
+  height: 11px;
+  border: 1.6px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: cl-rotate 0.8s linear infinite;
+}
+.cp-arrow {
+  position: absolute;
+  right: 14px;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  transform: rotate(45deg);
+}
 </style>

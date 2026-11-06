@@ -6,7 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
-import { handleCreateSession, handleDeleteSession, handleGetSession, handleListDirs, handleListSessions, handleListWorkspaces } from './handlers/sessions.js';
+import { handleCompactSession, handleCreateSession, handleDeleteSession, handleGetSession, handleGetSessionContext, handleListDirs, handleListSessions, handleListWorkspaces, handleRetrySession } from './handlers/sessions.js';
 import { handleSetSessionModelAlias } from './handlers/session-model.js';
 import { handleMessage } from './handlers/messages.js';
 import { handleStop } from './handlers/stop.js';
@@ -134,6 +134,10 @@ export function createRoutes(): Route[] {
     { method: 'GET', path: '/sessions/:id/stream', handler: (ctx, req, res, p) => handleAttachStream(ctx, req, res, p.id) },
     // 停止当前 run（Task-20261021-002-03）：404/204/202 三态，立即返回不等 run（D1/D2）
     { method: 'POST', path: '/sessions/:id/stop', handler: (ctx, req, res, p) => handleStop(ctx, req, res, p.id) },
+    // 需求 20261106-005：上下文用量 / 手动压缩 / 替换式重试（3 段静态尾段，先于 2 段 /sessions/:id）
+    { method: 'GET', path: '/sessions/:id/context', handler: (ctx, _req, res, p) => handleGetSessionContext(ctx, res, p.id) },
+    { method: 'POST', path: '/sessions/:id/compact', handler: (ctx, _req, res, p) => handleCompactSession(ctx, res, p.id) },
+    { method: 'POST', path: '/sessions/:id/retry', handler: (ctx, req, res, p) => handleRetrySession(ctx, req, res, p.id) },
   // 会话级模型选择（task-20261025-002 D7）：只写元数据，不改全局激活
   { method: 'PUT', path: '/sessions/:id/model', handler: (ctx, req, res, p) => handleSetSessionModelAlias(ctx, req, res, p.id) },
     { method: 'GET', path: '/sessions/:id', handler: (ctx, _req, res, p) => handleGetSession(ctx, res, p.id) },

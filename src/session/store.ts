@@ -581,6 +581,39 @@ export class SessionStore {
   }
 
   /**
+   * 用 messages 覆盖会话消息数组（需求 20261106-005 D14：仅用于「重试」截断）。
+   *
+   * 与 updateSession 的区别：
+   * - **不做**增量合并 / 压缩轨迹重建——重试是人为删除尾部消息，走合并逻辑会被当成
+   *   「新消息」重新追加，已删内容又回到磁盘；
+   * - 调用方传入的就是要落盘的完整数组（可含 system 与 is_compact 归档前缀），原样写入。
+   *
+   * 同步更新 messageCount / updatedAt；截断后若已无用户消息，标题重置为空。
+   */
+  async rewriteMessages(id: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
+    const startedAt = Date.now();
+    const data = await this.readSession(id);
+    data.messages = messages;
+    data.updatedAt = new Date().toISOString();
+    await this.writeSession(data);
+
+    const updates: Partial<Pick<SessionMeta, 'title' | 'messageCount' | 'updatedAt'>> = {
+      messageCount: data.messages.length,
+      updatedAt: data.updatedAt,
+    };
+    const hasUser = data.messages.some(
+      (m) => m.role === 'user' && !isSummaryMessage(m) && m.is_show !== false,
+    );
+    if (!hasUser) updates.title = '';
+    await this.updateIndex(id, updates);
+    debug.log(
+      `[rewriteMessages ${id}] 覆盖写入 ${data.messages.length} 条（重试截断）` +
+        ` 写入=${Date.now() - startedAt}ms`,
+    );
+    return data.messages;
+  }
+
+  /**
    * 加载会话（仅支持新结构：单一 messages 数组 + per-message 标记）
    */
   async loadSession(id: string): Promise<SessionData> {

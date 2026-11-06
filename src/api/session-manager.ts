@@ -16,10 +16,26 @@ export interface SessionMetaLike {
   messageCount: number;
 }
 
+/**
+ * 会话上下文用量（需求 20261106-005 P0）：
+ * source='stats' 时来自 SSE llm_stats 的真实 prompt_tokens（仅内存，不落盘）；
+ * source='estimate' 由历史消息本地估算（历史会话/未运行过的会话）。
+ */
+export interface SessionContextUsage {
+  contextTokens: number;
+  maxTokens: number;
+  threshold: number;
+  source: 'stats' | 'estimate';
+  /** 采集时间戳（毫秒） */
+  at: number;
+}
+
 /** 内存中的会话条目：不含 system 的历史缓存 + 会话级互斥锁 */
 export interface SessionEntry {
   history: ChatMessage[];
   inFlight: Promise<void> | null;
+  /** 最近一次 run 的上下文用量（内存态；重启/缓存 miss 后由估算兜底） */
+  lastContext?: SessionContextUsage;
 }
 
 function delay(ms: number): Promise<void> {

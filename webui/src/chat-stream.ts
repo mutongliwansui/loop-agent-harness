@@ -10,7 +10,7 @@
 //     再用 GET /sessions/:id/stream?cursor=0 全量回放重建，避免内容重复。
 
 import { computed, reactive } from 'vue';
-import { api, apiStatus, AuthError } from './api/client.js';
+import { api, apiStatus, AuthError, fetchSessionContext, type SessionContextUsage } from './api/client.js';
 import { sseFetch, sseGet, type SseEvent } from './api/sse.js';
 import { showToast } from './toast.js';
 import { postTab } from './tab-sync.js';
@@ -52,6 +52,8 @@ export interface ApiHistoryMsg {
   tool_call_id?: string;
   /** 是否在会话界面展示（system 与压缩总结消息为 false；缺省视为展示） */
   is_show?: boolean;
+  /** 是否已被压缩折叠（归档消息，不进入恢复视图） */
+  is_compact?: boolean;
   /** 展示内容；缺省或为空时取 content（content 为 LLM 可见原文，可能含记忆注入前缀） */
   show_content?: string;
 }
@@ -59,6 +61,11 @@ export interface ChatMsg {
   id: number;
   role: 'user' | 'assistant';
   segments: Segment[]; // 按序渲染形成 思考→命令→思考→命令→总结 的完整过程
+  /**
+   * 该消息在「会话恢复视图」（后端 entry.history）中的下标（需求 20261106-005 D12）：
+   * 仅历史加载时有值，流式新增为 undefined；重试以此为锚点。
+   */
+  seq?: number;
   files?: string[]; // 该消息附带的上传文件名（仅用户消息展示）
   streaming?: boolean;
   compacting?: boolean; // 压缩中 loading（compaction_start 置 true，compaction 结束事件置 false）
@@ -96,6 +103,8 @@ export interface SessionStreamState {
   note?: string;
   /** 本轮 run 起始时间戳（task-07：finishRun 计算耗时供通知/广播展示；无记录为 undefined） */
   runStartedAt?: number;
+  /** 上下文用量（需求 20261106-005）：llm_stats 实时刷新，历史加载/压缩后由 GET /context 兜底 */
+  context?: SessionContextUsage;
 }
 
 const EMPTY_MESSAGES: ChatMsg[] = [];
@@ -169,6 +178,25 @@ export function isUnread(id: string): boolean {
   return states.get(id)?.unread === true;
 }
 
+/** 会话上下文用量（未加载/请求失败为 undefined）；需求 20261106-005 */
+export function contextOf(id: string | null): SessionContextUsage | undefined {
+  if (!id) return undefined;
+  return states.get(id)?.context;
+}
+
+/**
+ * 拉取一次上下文用量（GET /sessions/:id/context）。
+ * 失败静默（展示态数据，不应打断会话加载/压缩流程）；调用方需要错误时自行捕获。
+ */
+export async function refreshContext(id: string): Promise<void> {
+  try {
+    const ctx = await fetchSessionContext(id);
+    stateOf(id).context = ctx;
+  } catch {
+    // 静默：上下文展示失败不影响主流程
+  }
+}
+
 export function markRead(id: string): void {
   const st = states.get(id);
   const wasUnread = st?.unread === true;
@@ -207,21 +235,31 @@ export function onRunFinished(cb: (id: string) => void): () => void {
 function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
   const out: ChatMsg[] = [];
   let pending: Segment[] = [];
+  let pendingSeq: number | undefined;
+  // 恢复视图下标：system 与已折叠归档不计数，其余（含压缩总结）计入后端 entry.history
+  let viewIdx = 0;
   const toolSegById = new Map<string, ToolSeg>();
   const flush = (): void => {
-    if (pending.length > 0) out.push({ id: nextMsgId(), role: 'assistant', segments: pending });
+    if (pending.length > 0) {
+      out.push({ id: nextMsgId(), role: 'assistant', segments: pending, seq: pendingSeq });
+    }
     pending = [];
+    pendingSeq = undefined;
   };
   for (const m of list) {
-    // 不展示的消息：system 与压缩总结消息（is_show=false）
+    if (m.role === 'system' || m.is_compact === true) continue;
+    const historyIdx = viewIdx++;
+    // 不展示的消息：压缩总结消息（is_show=false）仍计入恢复视图下标
     if (m.is_show === false) continue;
     if (m.role === 'user') {
       flush();
       // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原
       const text = m.show_content || m.content || '';
-      out.push({ id: nextMsgId(), role: 'user', segments: [{ type: 'text', text }] });
+      out.push({ id: nextMsgId(), role: 'user', segments: [{ type: 'text', text }], seq: historyIdx });
     } else if (m.role === 'assistant') {
       if (m.content) pending.push({ type: 'text', text: m.content });
+      // 同轮多条 assistant（工具调用链）共用首条的下标，重试锚点即该轮回答
+      if (pendingSeq === undefined) pendingSeq = historyIdx;
       for (const tc of m.tool_calls ?? []) {
         let args = tc.function.arguments;
         try {
@@ -270,6 +308,8 @@ async function fetchDetail(id: string, st: SessionStreamState): Promise<void> {
   st.status = running ? 'running' : 'idle';
   st.runId = r.run?.runId;
   if (running) void attach(id);
+  // 上下文用量兜底（需求 20261106-005）：历史会话无 llm_stats → 后端估算并标记 source='estimate'
+  void refreshContext(id);
   // 刷新后灰条恢复（6.2.2）：历史消息不含中断标记（task-03 D4 中断标记不落盘），
   // 但 run 终态在服务端有 60s 保留期——刚停止后刷新页面时 run.status 仍为 'aborted'，
   // 末尾助手消息即为被停止的那轮部分输出，补标灰条与「已停止 ·」标注。
@@ -517,6 +557,26 @@ function applyEvent(id: string, ev: SseEvent): void {
       notifyActivity(id);
       break;
     }
+    case 'llm_stats': {
+      // 真实用量（需求 20261106-005 P0）：每次迭代刷新百分比环与浮层明细
+      const raw = (d.stats ?? {}) as {
+        contextTokens?: number;
+        contextMaxTokens?: number;
+        contextThreshold?: number;
+      };
+      const maxTokens = Number(raw.contextMaxTokens ?? 0);
+      const contextTokens = Number(raw.contextTokens ?? 0);
+      st.context = {
+        contextTokens,
+        maxTokens,
+        threshold: Number(raw.contextThreshold ?? 0),
+        percent: maxTokens > 0
+          ? Math.min(100, Math.round((contextTokens / maxTokens) * 1000) / 10)
+          : 0,
+        source: 'stats',
+      };
+      break;
+    }
     case 'compaction_start': {
       // 压缩开始（flush 提取期间有一次额外 LLM 调用，主输出会暂停）：显示压缩 loading
       const asst = currentAssistant(st);
@@ -629,6 +689,13 @@ async function resync(id: string): Promise<void> {
   }
 }
 
+/**
+ * 会话历史被服务端改写（手动压缩 / 重试截断）后重建本地时间线（需求 20261106-005）。
+ */
+export async function reloadHistory(id: string): Promise<void> {
+  await resync(id);
+}
+
 /* ================= 完成后与磁盘对齐 ================= */
 
 function segmentKey(s: Segment): string {
@@ -687,7 +754,14 @@ async function reconcile(id: string, markAborted = false): Promise<void> {
     if (st.status === 'running' || st.lastSeq !== seqAt) return;
     const disk = rebuildChatMsgs(r.messages);
     keepLocalUserBubbles(disk, st.messages);
-    if (sameTimeline(disk, st.messages)) return;
+    if (sameTimeline(disk, st.messages)) {
+      // 内容一致时保留本地时间线，但补写 seq（重试锚点依赖下标，需求 20261106-005 D12）
+      for (let i = 0; i < st.messages.length && i < disk.length; i++) {
+        st.messages[i].seq = disk[i].seq;
+      }
+      void refreshContext(id);
+      return;
+    }
     const prevAsst = markAborted ? st.messages[st.messages.length - 1] : undefined;
     st.messages.splice(0, st.messages.length, ...disk);
     if (markAborted && prevAsst?.aborted === true) {
@@ -700,6 +774,7 @@ async function reconcile(id: string, markAborted = false): Promise<void> {
     }
     // 内容被磁盘结果替换：通知视图重做高亮/mermaid 与滚动
     for (const cb of finishHandlers) cb(id);
+    void refreshContext(id);
   } catch {
     // 静默：对齐失败时保留流式结果
   }
@@ -744,6 +819,67 @@ export type SendOutcome = 'done' | 'aborted' | 'failed' | 'detached';
  * 中途断线（已收到事件）返回 detached，保留内容并自动 attach 续传。
  */
 export async function sendMessage(id: string, opts: SendOptions): Promise<SendOutcome> {
+  return runTurn(id, opts, {
+    path: `/sessions/${encodeURIComponent(id)}/messages`,
+    body: { message: opts.message, stream: opts.stream, modelAlias: opts.modelAlias },
+  });
+}
+
+export interface RetryOptions {
+  /** 目标助手回答在恢复视图中的下标（ChatMsg.seq） */
+  seq: number;
+  modelAlias?: string;
+}
+
+/**
+ * 替换式重试（需求 20261106-005 D2/D13/3.7）：
+ * 先用 seq 定位目标回答，向本地时间线截断该轮（含用户气泡），再以 SSE 让服务端重新生成。
+ * 服务端在建立流之前已完成存储截断；本端失败时回拉历史避免「本地已删、磁盘还在」。
+ */
+export async function retryMessage(id: string, opts: RetryOptions): Promise<SendOutcome> {
+  const st = stateOf(id);
+  const idx = st.messages.findIndex((m) => m.role === 'assistant' && m.seq === opts.seq);
+  if (idx < 0) {
+    showToast('目标回答已变化，请刷新会话后重试', 'error');
+    return 'failed';
+  }
+  let userIdx = -1;
+  for (let i = idx - 1; i >= 0; i--) {
+    if (st.messages[i].role === 'user') {
+      userIdx = i;
+      break;
+    }
+  }
+  if (userIdx < 0) {
+    showToast('未找到该轮的用户消息，无法重试', 'error');
+    return 'failed';
+  }
+  const userMsg = st.messages[userIdx];
+  const text = userMsg.segments
+    .filter((s): s is TextSeg => s.type === 'text')
+    .map((s) => s.text)
+    .join('');
+  const files = userMsg.files ?? [];
+  // 截断该轮及之后（含用户气泡），随后由 runTurn 重新压入用户气泡与助手占位
+  st.messages.splice(userIdx);
+  const outcome = await runTurn(
+    id,
+    { message: text, text, files, stream: true, modelAlias: opts.modelAlias },
+    {
+      path: `/sessions/${encodeURIComponent(id)}/retry`,
+      body: { seq: opts.seq, modelAlias: opts.modelAlias },
+      retry: true,
+    },
+  );
+  return outcome;
+}
+
+/** 时间线驱动的公共实现：sendMessage / retryMessage 共用（端点与请求体由调用方给出） */
+async function runTurn(
+  id: string,
+  opts: SendOptions,
+  req: { path: string; body: Record<string, unknown>; retry?: boolean },
+): Promise<SendOutcome> {
   const st = stateOf(id);
   const baseLen = st.messages.length;
   const userMsg: ChatMsg = {
@@ -777,12 +913,7 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
 
   try {
     if (opts.stream) {
-      await sseFetch(
-        `/sessions/${encodeURIComponent(id)}/messages`,
-        { message: opts.message, stream: true, modelAlias: opts.modelAlias },
-        (ev) => onEvent(id, ev),
-        ctrl.signal,
-      );
+      await sseFetch(req.path, req.body, (ev) => onEvent(id, ev), ctrl.signal);
       asst.streaming = false;
       asst.live = null;
       return 'done';
@@ -793,9 +924,9 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
       durationMs: number;
       warnings?: string[];
       aborted?: boolean; // 用户取消（task-03 D7：非流式 200 + {aborted:true,partial:true}）
-    }>(`/sessions/${encodeURIComponent(id)}/messages`, {
+    }>(req.path, {
       method: 'POST',
-      json: { message: opts.message, stream: false, modelAlias: opts.modelAlias },
+      json: { ...req.body, stream: false },
     });
     // 非流式被用户取消（task-03 D7：200 + {aborted:true}）：部分输出已落盘但响应无增量可渲染，
     // 回滚乐观气泡避免「空泡」困惑（方案 D6），下次进入会话由历史渲染呈现
@@ -840,6 +971,8 @@ export async function sendMessage(id: string, opts: SendOptions): Promise<SendOu
       const msg = (e as { code?: string }).code === 'busy' ? '正在处理上一条消息，请稍后再试' : errText(e);
       showToast(msg, 'error');
     }
+    // 重试在发起前已截断本地时间线：请求被拒（400/409）时回拉磁盘，避免本地与存储不一致
+    if (req.retry) void resync(id);
     return 'failed';
   } finally {
     if (st.controller === ctrl) st.controller = null;

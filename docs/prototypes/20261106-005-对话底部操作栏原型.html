@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>对话底部操作栏 · 原型（20261106-005）</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#fff; --text:#1f2329; --sub:#8a9099; --line:#e6e8eb;
+    --accent:#3b82f6; --warn:#d97706; --danger:#dc2626;
+    --ring:#9aa1a9; --shadow:0 8px 24px rgba(20,24,31,.12);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .page{max-width:860px;margin:0 auto;padding:28px 24px 64px}
+  .hint{color:var(--sub);font-size:12px;margin:0 0 18px}
+  .states{display:flex;gap:8px;margin-bottom:18px}
+  .states button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 12px;
+    color:var(--sub);cursor:pointer;font-size:12px}
+  .states button.on{border-color:var(--accent);color:var(--accent);background:#eff6ff}
+  .chat{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px 28px}
+  .msg{margin-bottom:22px}
+  .msg.user{display:flex;justify-content:flex-end}
+  .bubble{max-width:78%;background:#f2f4f7;border-radius:12px;padding:10px 14px;color:#3a4048}
+  .m-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .ava{width:22px;height:22px;border-radius:6px;background:#111;color:#fff;font-size:12px;
+    display:grid;place-items:center;font-weight:600}
+  .m-role{font-size:13px;font-weight:600}
+  .body{color:#2b3038;font-size:14.5px}
+  .body p{margin:0 0 10px}
+  .body code{background:#f4f5f7;border-radius:4px;padding:1px 5px;font-size:12.5px}
+
+  /* ===== 操作栏（每条 assistant 都有） ===== */
+  .msg-actions{display:flex;align-items:center;gap:2px;margin-top:12px;color:var(--ring)}
+  .act{width:28px;height:28px;border:none;background:transparent;border-radius:8px;color:var(--ring);
+    display:grid;place-items:center;cursor:pointer;transition:background .15s,color .15s}
+  .act:hover{background:#f2f4f7;color:#4b5159}
+  .act:active{transform:scale(.95)}
+  .act svg{width:15px;height:15px}
+  .sep{color:var(--line);margin:0 5px}
+  .gen-hint{color:var(--sub);font-size:12px}
+  .spacer{flex:1}
+  .note-inline{color:var(--sub);font-size:11.5px;margin-left:4px}
+
+  /* 百分比环（仅最后一条回答） */
+  .ctx-wrap{position:relative}
+  .ctx-ring{display:flex;align-items:center;gap:6px;border:none;background:transparent;
+    cursor:pointer;padding:3px 6px;border-radius:8px;color:var(--sub);font-size:12.5px}
+  .ctx-ring:hover,.ctx-ring:focus-visible{background:#f2f4f7;outline:none}
+  .ring{width:16px;height:16px}
+  .ring circle{fill:none;stroke-width:3}
+  .ring .track{stroke:#e8eaed}
+  .ring .bar{stroke:var(--ring);stroke-linecap:butt;transition:stroke-dashoffset .5s ease,stroke .3s}
+  .pct-text{font-variant-numeric:tabular-nums;min-width:34px;text-align:left}
+  .lv-low .ring .bar{stroke:var(--ring)} .lv-low .pct-text{color:var(--ring)}
+  .lv-mid .ring .bar{stroke:var(--warn)} .lv-mid .pct-text{color:var(--warn)}
+  .lv-high .ring .bar{stroke:var(--danger)} .lv-high .pct-text{color:var(--danger)}
+
+  /* 浮层 */
+  .ctx-pop{position:absolute;right:0;bottom:calc(100% + 10px);width:236px;background:#fff;
+    border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:12px 14px;
+    opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .16s,transform .16s;z-index:10}
+  .ctx-pop::after{content:"";position:absolute;right:16px;bottom:-6px;width:10px;height:10px;
+    background:#fff;border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+    transform:rotate(45deg)}
+  .ctx-wrap:hover .ctx-pop,.ctx-wrap:focus-within .ctx-pop{opacity:1;transform:none;pointer-events:auto}
+  .pop-title{font-size:12.5px;color:var(--sub);margin-bottom:6px}
+  .pop-main{font-size:14px;color:#2b3038;font-weight:600;margin-bottom:4px}
+  .pop-sub{font-size:11.5px;color:var(--sub);line-height:1.5;margin-bottom:10px}
+  .pop-sub .tag{display:inline-block;margin-left:4px;padding:0 5px;border-radius:4px;
+    background:#f2f4f7;color:#8a9099;font-size:10.5px}
+  .compact{width:100%;border:1px solid #d9dde2;background:#f7f8fa;color:#2b3038;border-radius:8px;
+    padding:7px 0;font-size:13px;cursor:pointer;transition:background .15s,border-color .15s}
+  .compact:hover:not(:disabled){background:#eff1f4;border-color:#c8cdd3}
+  .compact:disabled{color:#b6bbc2;cursor:not-allowed;background:#fafbfc}
+
+  .compact-loading{display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--sub);font-size:12.5px}
+  .cl-spin{width:13px;height:13px;border:2px solid #e3e6ea;border-top-color:#9aa1a9;border-radius:50%;
+    animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ===== 确认框 ===== */
+  .mask{position:fixed;inset:0;background:rgba(20,24,31,.32);display:none;place-items:center;z-index:100}
+  .mask.show{display:grid}
+  .dialog{width:min(400px,calc(100vw - 32px));background:#fff;border-radius:14px;box-shadow:var(--shadow);
+    padding:20px 22px;transform:translateY(6px);animation:pop .18s ease forwards}
+  @keyframes pop{to{transform:none}}
+  .dg-title{font-size:15px;font-weight:600;margin-bottom:8px}
+  .dg-desc{font-size:13px;color:#5b626b;line-height:1.65;margin-bottom:18px;white-space:pre-line}
+  .dg-actions{display:flex;justify-content:flex-end;gap:10px}
+  .dg-btn{border-radius:8px;padding:7px 16px;font-size:13px;cursor:pointer;border:1px solid var(--line);
+    background:#fff;color:#3a4048}
+  .dg-btn:hover{background:#f7f8fa}
+  .dg-btn.primary{background:#1f2329;border-color:#1f2329;color:#fff}
+  .dg-btn.primary:hover{background:#2b3038}
+  .dg-btn.danger{background:#fff;border-color:#f0b4b4;color:var(--danger)}
+  .dg-btn.danger:hover{background:#fef2f2}
+
+  .toast{position:fixed;left:50%;bottom:32px;transform:translate(-50%,16px);background:#1f2329;color:#fff;
+    padding:9px 16px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:200}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  .legend{margin-top:20px;border-top:1px dashed var(--line);padding-top:14px;color:var(--sub);font-size:12px}
+  .legend b{color:#2b3038;font-weight:600}
+  @media (max-width:480px){
+    .page{padding:16px 12px 48px}
+    .chat{padding:18px 14px}
+    .gen-hint,.sep,.note-inline{display:none}
+    .ctx-pop{width:min(236px,80vw)}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <p class="hint">原型 20261106-005 · 交互示意，非最终像素稿。每条回答下都有操作栏，百分比环只在最后一条；重试中间回答、压缩均会弹确认框。</p>
+
+  <div class="states">
+    <button class="on" data-state="mid">63%（琥珀）</button>
+    <button data-state="low">24%（常态）</button>
+    <button data-state="high">88%（警示）</button>
+  </div>
+
+  <div class="chat" id="chat">
+    <div class="msg user"><div class="bubble">帮我看下 migration 目录里有哪些脚本。</div></div>
+
+    <!-- 中间回答：有操作栏，无百分比环 -->
+    <div class="msg assistant">
+      <div class="m-head"><div class="ava">L</div><span class="m-role">Loop Agent</span></div>
+      <div class="body">
+        <p>目录下有 3 个脚本：<code>001_init.sql</code>、<code>002_add_index.sql</code>、<code>003_backfill.ts</code>。</p>
+      </div>
+      <div class="msg-actions">
+        <button class="act act-copy" title="复制" aria-label="复制回答">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>
+          </svg>
+        </button>
+        <button class="act act-retry mid" title="重试" aria-label="重试">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M4.5 8a6 6 0 1 1 1.2 6.3"/><path d="M4 3v5h5"/>
+          </svg>
+        </button>
+        <span class="sep">|</span>
+        <span class="gen-hint">由 AI 生成</span>
+        <span class="note-inline">重试会删除该回答之后的对话</span>
+        <span class="spacer"></span>
+      </div>
+    </div>
+
+    <div class="msg user"><div class="bubble">帮我把 003 的回滚路径再检查一遍，重点看待重入性。</div></div>
+
+    <!-- 最后一条回答：有操作栏 + 百分比环 -->
+    <div class="msg assistant">
+      <div class="m-head"><div class="ava">L</div><span class="m-role">Loop Agent</span></div>
+      <div class="body">
+        <p>已检查 <code>003_backfill.ts</code>，回滚路径有三处需要修正：</p>
+        <p>1. 回滚失败时没有恢复 <code>applied_at</code> 标记，重跑会重复执行；<br>2. 事务边界把 DDL 包在内，部分数据库不支持；<br>3. 没有校验回滚前后的行数一致性。</p>
+        <p>建议先把回滚拆成可重入的小步骤，再加一步行数快照校验。</p>
+      </div>
+
+      <div class="msg-actions">
+        <button class="act act-copy" title="复制" aria-label="复制回答">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="7" y="7" width="9" height="9" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>
+          </svg>
+        </button>
+        <button class="act act-retry last" title="重试" aria-label="重试">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M4.5 8a6 6 0 1 1 1.2 6.3"/><path d="M4 3v5h5"/>
+          </svg>
+        </button>
+        <span class="sep">|</span>
+        <span class="gen-hint">由 AI 生成</span>
+        <span class="spacer"></span>
+
+        <div class="ctx-wrap" id="ctxWrap">
+          <button class="ctx-ring" id="ctxRing" aria-label="上下文使用率">
+            <svg class="ring" viewBox="0 0 20 20" aria-hidden="true">
+              <circle class="track" cx="10" cy="10" r="7.5"/>
+              <circle class="bar" id="ringBar" cx="10" cy="10" r="7.5"
+                stroke-dasharray="47.12" stroke-dashoffset="17.43"/>
+            </svg>
+            <span class="pct-text" id="pctText">63%</span>
+          </button>
+          <div class="ctx-pop" id="ctxPop" role="dialog" aria-label="上下文使用详情">
+            <div class="pop-title">上下文使用率</div>
+            <div class="pop-main"><span id="popPct">63%</span> of <span id="popMax">200K</span></div>
+            <div class="pop-sub">已用 <span id="popUsed">126K</span> · 压缩阈值 <span id="popThr">160K</span><span class="tag" id="popTag" hidden>估算</span></div>
+            <button class="compact" id="compactBtn">压缩</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="compact-loading" id="cload" hidden><span class="cl-spin"></span>正在压缩对话历史…</div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>交互说明</b><br>
+    · 每条 assistant 回答下方：复制、重试；百分比环仅在最后一条（会话级指标不重复展示）。<br>
+    · 重试 = 替换旧回答：最后一条直接重新生成；中间条先确认「将删除其后 N 条消息」。<br>
+    · 复制：该条回答纯文本（保留 Markdown，不含工具卡片）。<br>
+    · 百分比环：&lt;60 常态灰、60–85 琥珀、≥85 红；悬浮/键盘聚焦展开浮层。<br>
+    · 压缩：点击先弹确认框（说明丢弃条数与 L2 可召回），确认后 loading、按钮禁用，完成后百分比下降。
+  </div>
+</div>
+
+<!-- 通用确认框 -->
+<div class="mask" id="mask">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dgTitle">
+    <div class="dg-title" id="dgTitle">确认操作</div>
+    <div class="dg-desc" id="dgDesc"></div>
+    <div class="dg-actions">
+      <button class="dg-btn" id="dgCancel">取消</button>
+      <button class="dg-btn primary" id="dgOk">确认</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+  const R = 7.5, C = 2 * Math.PI * R;
+  const ringBar = document.getElementById('ringBar');
+  const pctText = document.getElementById('pctText');
+  const popPct = document.getElementById('popPct');
+  const popMax = document.getElementById('popMax');
+  const popUsed = document.getElementById('popUsed');
+  const popThr = document.getElementById('popThr');
+  const wrap = document.getElementById('ctxWrap');
+  const compactBtn = document.getElementById('compactBtn');
+  const cload = document.getElementById('cload');
+  const toastEl = document.getElementById('toast');
+  const mask = document.getElementById('mask');
+  const dgTitle = document.getElementById('dgTitle');
+  const dgDesc = document.getElementById('dgDesc');
+  const dgOk = document.getElementById('dgOk');
+  const dgCancel = document.getElementById('dgCancel');
+
+  const MAX = 200000, THR = 160000;
+  let tokens = 126000;
+  let compacting = false;
+  let toastTimer = 0;
+  let pendingConfirm = null;
+
+  const k = (n) => (n >= 1000 ? (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'K' : String(n));
+
+  function toast(text, ms = 1800) {
+    toastEl.textContent = text;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
+  }
+
+  function confirmDialog({ title, desc, okText = '确认', danger = true, onOk }) {
+    dgTitle.textContent = title;
+    dgDesc.textContent = desc;
+    dgOk.textContent = okText;
+    dgOk.className = 'dg-btn ' + (danger ? 'danger' : 'primary');
+    pendingConfirm = onOk;
+    mask.classList.add('show');
+  }
+  function closeDialog() {
+    mask.classList.remove('show');
+    pendingConfirm = null;
+  }
+  dgOk.addEventListener('click', () => {
+    const fn = pendingConfirm;
+    closeDialog();
+    if (fn) fn();
+  });
+  dgCancel.addEventListener('click', closeDialog);
+  mask.addEventListener('click', (e) => { if (e.target === mask) closeDialog(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && mask.classList.contains('show')) closeDialog(); });
+
+  function render() {
+    const pct = MAX > 0 ? (tokens / MAX) * 100 : 0;
+    pctText.textContent = Math.round(pct) + '%';
+    popPct.textContent = pct.toFixed(1).replace(/\.0$/, '') + '%';
+    popMax.textContent = k(MAX);
+    popUsed.textContent = k(tokens);
+    popThr.textContent = k(THR);
+    ringBar.style.strokeDashoffset = String(C * (1 - Math.min(pct, 100) / 100));
+    wrap.classList.remove('lv-low', 'lv-mid', 'lv-high');
+    wrap.classList.add(pct >= 85 ? 'lv-high' : pct >= 60 ? 'lv-mid' : 'lv-low');
+    compactBtn.disabled = compacting;
+    compactBtn.textContent = compacting ? '压缩中…' : '压缩';
+    cload.hidden = !compacting;
+  }
+
+  document.querySelectorAll('.states button').forEach((b) => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.states button').forEach((x) => x.classList.remove('on'));
+      b.classList.add('on');
+      tokens = { low: 48000, mid: 126000, high: 176000 }[b.dataset.state];
+      render();
+    });
+  });
+
+  document.querySelectorAll('.act-copy').forEach((b) => {
+    b.addEventListener('click', () => toast('已复制该条回答（原型示意）'));
+  });
+
+  // 最后一条：直接重新生成
+  document.querySelector('.act-retry.last').addEventListener('click', () => {
+    toast('正在重新生成该条回答（旧回答将被替换）', 2200);
+  });
+
+  // 中间条：确认后删除其后对话并重新生成
+  document.querySelector('.act-retry.mid').addEventListener('click', () => {
+    confirmDialog({
+      title: '重试将删除后续对话',
+      desc: '该回答之后还有 1 轮对话（2 条消息），重试会删除它们，并从这一轮的用户提问重新生成。\n此操作不可撤销。',
+      okText: '删除并重试',
+      onOk: () => toast('已删除 2 条消息并从该轮重新生成（原型示意）', 2400),
+    });
+  });
+
+  compactBtn.addEventListener('click', () => {
+    if (compacting) return;
+    confirmDialog({
+      title: '确认压缩历史',
+      desc: '将丢弃 12 条较早的消息（写入 L2 情景记忆，可在后续检索中召回），保留最近 6 轮对话。\n压缩会消耗一次模型调用，期间无法发送新消息。',
+      okText: '压缩',
+      onOk: () => {
+        compacting = true;
+        render();
+        const before = tokens;
+        setTimeout(() => {
+          compacting = false;
+          tokens = Math.round(before * 0.38);
+          render();
+          toast('已压缩：丢弃 12 条消息，' + k(before) + ' → ' + k(tokens) + ' tokens', 2600);
+        }, 1600);
+      },
+    });
+  });
+
+  render();
+</script>
+</body>
+</html>

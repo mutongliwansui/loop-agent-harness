@@ -229,3 +229,41 @@ function dispositionName(cd: string): string {
 export async function fetchApiDocs(): Promise<ApiDocsPayload> {
   return await api<ApiDocsPayload>('/dev/api-docs');
 }
+
+/* ================= 会话上下文用量与手动压缩（需求 20261106-005） ================= */
+
+/** 上下文用量（GET /sessions/:id/context）：真实统计优先，历史会话为估算 */
+export interface SessionContextUsage {
+  contextTokens: number;
+  maxTokens: number;
+  threshold: number;
+  /** 0–100，1 位小数 */
+  percent: number;
+  source: 'stats' | 'estimate';
+  /** source='stats' 的采集时间（ISO） */
+  updatedAt?: string;
+}
+
+export async function fetchSessionContext(id: string): Promise<SessionContextUsage> {
+  return await api<SessionContextUsage>(`/sessions/${encodeURIComponent(id)}/context`);
+}
+
+/** 手动压缩结果（POST /sessions/:id/compact）；ok=false 也是 200，用 reason 区分原因 */
+export interface CompactSessionResult {
+  ok: boolean;
+  reason?: 'memory_disabled' | 'nothing_to_compact' | 'flush_failed';
+  fallback?: 'skip' | 'archive';
+  beforeTokens?: number;
+  afterTokens?: number;
+  droppedCount?: number;
+  keptMessages?: number;
+  contextTokens?: number;
+  maxTokens?: number;
+  threshold?: number;
+}
+
+export async function compactSession(id: string): Promise<CompactSessionResult> {
+  return await api<CompactSessionResult>(`/sessions/${encodeURIComponent(id)}/compact`, {
+    method: 'POST',
+  });
+}

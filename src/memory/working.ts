@@ -79,8 +79,11 @@ function pickRecentTurns(
   return { turns, droppedCount: messages.length - keptCount };
 }
 
-/** 估算消息 token（简化版：字符数 / 4，与 WorkingMemory.estimateTokens 同口径） */
-function estimateMessageTokens(messages: ChatMessage[]): number {
+/**
+ * 估算消息 token（简化版：字符数 / 4，与 WorkingMemory.estimateTokens 同口径）。
+ * 需求 20261106-005：API 层对历史会话做估算兜底时复用同一口径。
+ */
+export function estimateMessageTokens(messages: ChatMessage[]): number {
   return messages.reduce((acc, m) => acc + Math.ceil((m.content ?? '').length / 4), 0);
 }
 

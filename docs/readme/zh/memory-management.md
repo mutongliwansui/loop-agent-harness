@@ -152,3 +152,11 @@ WebUI「记忆」页按数据维度重组为四个标签页（`#/memory?tab=<key
 - **`GET /memory/episodic` / `GET /memory/curated` 支持 `?ws=<id 或绝对路径>`**：按空间直读记忆（走 WorkspaceRuntime 路由，canonical 校验，未知空间 404）；缺省回落**缺省空间（最近使用）**——需求 20261027-004 起不再绑定启动目录。
 - **`GET /memory/dream/history?scope=all|ws`**：`all` 时文件扫描聚合全部空间的 `.dreaming-runs.json`（不要求空间已装载），每条附 `workspaceId/workspaceName/workspacePath`；`ws`（缺省）= 缺省空间（最近使用）单文件读取。
 - **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**：清空跟随筛选范围；`all` 时遍历清空各空间记录（文件保留、内容清空，保持幂等）。
+
+### 手动压缩与上下文用量（20261106-005）
+
+自动压缩仍只在 run 内按阈值触发；以下端点面向「空闲会话的主动操作」，不改变自动压缩策略：
+
+- **`GET /sessions/:id/context`**：返回 `{contextTokens, maxTokens, threshold, percent, source}`。有真实 `llm_stats` 时用最近一次 `prompt_tokens`（`source=stats`），历史会话按消息本地估算（`source=estimate`）；用量仅在内存，不落盘。
+- **`POST /sessions/:id/compact`**：空闲时强制一次 L1 压缩（运行中 409）。无可丢弃消息返回 `{ok:false, reason:'nothing_to_compact'}` 且**不调用 LLM**；成功后复用压缩轮次的归档重建，被丢弃消息写入 L2（`tag=compaction`）。
+- **`POST /sessions/:id/retry {seq}`**：替换式重试。`seq` 指向会话恢复视图中的助手回答，后端向前找该轮用户原文、截断其后全部消息（存储覆盖写入）并重新生成；中间轮次会删除后续对话，WebUI 要求二次确认。

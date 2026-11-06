@@ -19,6 +19,7 @@ import type { MemoryKit } from '../api/memory-kit.js';
 import type { SessionData } from '../session/types.js';
 import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
 import { isSummaryMessage } from '../memory/summary-message.js';
+import { estimateMessageTokens } from '../memory/working.js';
 import type { CuratedFileKey } from '../memory/types.js';
 import {
   WorkingMemory,
@@ -73,6 +74,40 @@ export function createLLMAdapter(model: string, temperature: number): ILLMClient
       return { content: finalContent ?? (acc || null) };
     },
   };
+}
+
+/** 手动压缩（需求 20261106-005 P1）的调用参数 */
+export interface CompactNowOptions {
+  /** 会话 ID（写入 L2 情景记忆时携带，保持与自动压缩同口径） */
+  sessionId?: string;
+  /**
+   * 固定开销估算（system/工具 schema/L2 注入等）。
+   * 池化实例可能刚创建（无最近 run），缺省回落到实例的 `_promptOverheadTokens`（通常为 0）。
+   */
+  promptOverheadTokens?: number;
+  /** 压缩前强制落盘（由 API 层提供 store）；被丢弃的消息仍需在会话文件中可追溯 */
+  onBeforeCompact?: (snapshot: {
+    messages: ChatMessage[];
+    transcript: ChatMessage[];
+  }) => Promise<void>;
+}
+
+/** 手动压缩结果（HTTP 层直接透出，除 messages/transcript） */
+export interface CompactNowResult {
+  ok: boolean;
+  reason?: 'memory_disabled' | 'nothing_to_compact' | 'flush_failed';
+  fallback?: 'skip' | 'archive';
+  beforeTokens?: number;
+  afterTokens?: number;
+  droppedCount?: number;
+  keptMessages?: number;
+  contextTokens?: number;
+  maxTokens?: number;
+  threshold?: number;
+  /** 压缩后的内存视图（含摘要占位），供调用方落盘；ok=false 时不返回 */
+  messages?: ChatMessage[];
+  /** 压缩前的完整轨迹（不含 system 与旧摘要），供 updateSession 重建归档区 */
+  transcript?: ChatMessage[];
 }
 
 export class ReActAgent {
@@ -205,6 +240,137 @@ export class ReActAgent {
     const contextTokens =
       this._lastContextTokens ?? this._workingMemory?.estimateTokens(messages) ?? 0;
     return { contextTokens, maxTokens, threshold };
+  }
+
+  /**
+   * 手动压缩（需求 20261106-005 P1）：空闲时强制执行一次 L1 压缩。
+   *
+   * 与 run 内自动压缩同口径（阈值/切轮规则/flushFailure 语义都不变），差异只在：
+   * - 消息由调用方传入（池化实例可能刚创建、`_chatHistory` 为空，不能依赖实例状态）；
+   * - 无消息可丢弃时不调 LLM（`nothing_to_compact`），避免空转烧 token；
+   * - 压缩前通过 `onBeforeCompact` 强制落盘，被丢弃消息仍可在会话文件中追溯。
+   *
+   * 返回 `messages` / `transcript` 由调用方落盘（API 层复用 `updateSession` 重建归档区）。
+   */
+  async compactNow(
+    messages: ChatMessage[],
+    opts: CompactNowOptions = {},
+  ): Promise<CompactNowResult> {
+    const { config: cfg } = this._configLoader.load();
+    const wmConfig = cfg.memory.working;
+    const maxTokens = wmConfig.maxTokens;
+    const threshold = Math.round(maxTokens * wmConfig.compactionThreshold);
+    const base = { maxTokens, threshold };
+    const overhead = Math.max(
+      0,
+      opts.promptOverheadTokens ?? this._promptOverheadTokens,
+    );
+
+    if (!this._workingMemory) {
+      const contextTokens = estimateMessageTokens(messages) + overhead;
+      return { ok: false, reason: 'memory_disabled', contextTokens, ...base };
+    }
+
+    const wm = this._workingMemory;
+    const beforeTokens = wm.estimateTokens(messages);
+    // 固定开销口径与自动压缩一致：消息预算 = 阈值 - 固定开销，下限 0.2×阈值
+    const messageBudget = Math.max(
+      Math.floor(threshold * 0.2),
+      threshold - overhead,
+    );
+    const plan = wm.planCompaction(messages, { messageTokensBudget: messageBudget });
+    if (plan.droppedCount === 0) {
+      debug.log('[L1 compactNow] 无可丢弃消息，跳过（不调用 LLM）');
+      return {
+        ok: false,
+        reason: 'nothing_to_compact',
+        beforeTokens,
+        droppedCount: 0,
+        keptMessages: messages.length,
+        contextTokens: beforeTokens + overhead,
+        ...base,
+      };
+    }
+
+    const transcript = messages.filter(
+      (m) => m.role !== 'system' && !isSummaryMessage(m),
+    );
+    let compacted: ChatMessage[] | null = null;
+    let fallback: 'skip' | 'archive' | undefined;
+
+    try {
+      // 压缩会物理删除消息：先把当前完整轨迹强制落盘（由调用方写入会话文件）
+      await opts.onBeforeCompact?.({ messages: [...messages], transcript });
+      const llmAdapter = createLLMAdapter(cfg.model.name, cfg.model.temperature);
+      const extracted = await wm.preCompactionFlush(messages, llmAdapter, plan);
+      if (extracted && this._episodicMemory) {
+        await this._episodicMemory.appendToday(extracted, {
+          sessionId: opts.sessionId,
+          scope: 'session',
+          tag: 'compaction',
+        });
+        compacted = wm.compact(messages, extracted, plan);
+      } else if (wm.getConfig().flushFailure === 'archive' && this._episodicMemory) {
+        const rawContent = plan.droppable
+          .map((m) => `${m.role}: ${m.content ?? ''}`)
+          .join('\n');
+        await this._episodicMemory.appendToday(rawContent, {
+          sessionId: opts.sessionId,
+          scope: 'session',
+          tag: 'compaction_fallback',
+        });
+        compacted = wm.compact(messages, rawContent, plan);
+        fallback = 'archive';
+      }
+    } catch (e) {
+      // 手动压缩无 abort 信号；任何异常都按 flushFailure 的保守语义处理（不阻塞用户）
+      debug.log(
+        `[L1 compactNow] 压缩失败: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      const fb = wm.getConfig().flushFailure === 'archive' ? 'archive' : 'skip';
+      return {
+        ok: false,
+        reason: 'flush_failed',
+        fallback: fb,
+        beforeTokens,
+        droppedCount: plan.droppedCount,
+        keptMessages: messages.length,
+        contextTokens: beforeTokens + overhead,
+        ...base,
+      };
+    }
+
+    if (!compacted) {
+      debug.log('[L1 compactNow] flush 未提取到内容，按 flushFailure=skip 保留全部历史');
+      return {
+        ok: false,
+        reason: 'flush_failed',
+        fallback: 'skip',
+        beforeTokens,
+        droppedCount: plan.droppedCount,
+        keptMessages: messages.length,
+        contextTokens: beforeTokens + overhead,
+        ...base,
+      };
+    }
+
+    const afterTokens = wm.estimateTokens(compacted);
+    this._lastContextTokens = afterTokens + overhead;
+    debug.log(
+      `[L1 compactNow] 压缩完成：${beforeTokens} → ${afterTokens} tokens，丢弃 ${plan.droppedCount} 条，保留 ${compacted.length} 条`,
+    );
+    return {
+      ok: true,
+      fallback,
+      beforeTokens,
+      afterTokens,
+      droppedCount: plan.droppedCount,
+      keptMessages: compacted.length,
+      contextTokens: afterTokens + overhead,
+      messages: compacted,
+      transcript,
+      ...base,
+    };
   }
 
   /**

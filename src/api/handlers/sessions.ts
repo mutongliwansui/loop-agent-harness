@@ -28,8 +28,13 @@ import { markWorkspaceUsed } from '../recent-workspace.js';
 import { locateSession } from '../session-locator.js';
 import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
 import { SessionStore } from '../../session/index.js';
+import type { SessionManager } from '../session-manager.js';
 import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
 import { readJournal, dropJournal } from '../run-journal.js';
+import { estimateMessageTokens } from '../../memory/working.js';
+import { isBackgroundNoticeContent, type ChatMessage } from '../../types.js';
+import { ReActAgent, type CompactNowResult } from '../../agent/react-agent.js';
+import { runMessageTurn } from './messages.js';
 
 /** 枚举本机盘符（Windows；返回 'C:\' 形式，非 Windows 返回空） */
 async function listDrives(): Promise<string[]> {
@@ -265,4 +270,227 @@ export async function handleDeleteSession(ctx: HandlerContext, res: ServerRespon
   await dropJournal(store, id);
   ctx.log(`[api] 会话已删除: ${id}`);
   sendJson(res, 200, { deleted: true });
+}
+
+/**
+ * 定位会话所属的 store / sessions / runtime（需求 20261106-005 P1）：
+ * registry 形态走 session-locator；嵌入形态退回 deps.sessionStore + 全扫归属校验。
+ */
+function resolveSessionScope(
+  ctx: HandlerContext,
+  id: string,
+): Promise<{ store: SessionStore; sessions: SessionManager; rt: WorkspaceRuntime | null }> {
+  return (async () => {
+    if (ctx.registry) {
+      const rt = await locateSession(ctx.registry, id);
+      return { store: rt.store, sessions: rt.sessions, rt };
+    }
+    const store = ctx.deps.sessionStore;
+    const owner = (await store.listAllWorkspaces()).find((w) =>
+      w.sessions.some((s) => s.id === id),
+    );
+    if (!owner) throw new ApiHttpError('not_found', `会话不存在: ${id}`);
+    return { store, sessions: ctx.sessions, rt: null };
+  })();
+}
+
+/**
+ * GET /sessions/:id/context：上下文用量（需求 20261106-005 P0）
+ *
+ * 真实统计（最近一次 llm_stats 的 prompt_tokens）优先；历史会话/未运行过时按
+ * `entry.history` 本地估算并标记 source='estimate'（与前端浮层的「估算」标注对应）。
+ */
+export async function handleGetSessionContext(
+  ctx: HandlerContext,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  const { sessions } = await resolveSessionScope(ctx, id);
+  const entry = await sessions.ensureEntry(id);
+  const cfg = ctx.deps.getConfig();
+  const wm = cfg.memory.working;
+  const cached = entry.lastContext;
+
+  let contextTokens: number;
+  let maxTokens: number;
+  let threshold: number;
+  let source: 'stats' | 'estimate';
+  let updatedAt: string | undefined;
+
+  if (cached?.source === 'stats' && cached.contextTokens > 0) {
+    contextTokens = cached.contextTokens;
+    maxTokens = cached.maxTokens > 0 ? cached.maxTokens : wm.maxTokens;
+    threshold = cached.threshold > 0
+      ? cached.threshold
+      : Math.round(maxTokens * wm.compactionThreshold);
+    source = 'stats';
+    updatedAt = new Date(cached.at).toISOString();
+  } else {
+    contextTokens = estimateMessageTokens(entry.history);
+    maxTokens = wm.maxTokens;
+    threshold = Math.round(maxTokens * wm.compactionThreshold);
+    source = 'estimate';
+  }
+
+  // 展示态百分比：0–100 且保留 1 位小数；maxTokens<=0 时不除零
+  const percent = maxTokens > 0
+    ? Math.min(100, Math.round((contextTokens / maxTokens) * 1000) / 10)
+    : 0;
+
+  sendJson(res, 200, { contextTokens, maxTokens, threshold, percent, source, updatedAt });
+}
+
+/**
+ * POST /sessions/:id/compact：空闲时强制 L1 压缩（需求 20261106-005 P1）
+ *
+ * - 运行中 → 409（压缩与 run 禁止并发）；
+ * - 无可丢弃消息 → 200 `{ok:false,reason:'nothing_to_compact'}`（不调用 LLM）；
+ * - 成功 → 复用 `updateSession` 的压缩轨迹重建，把丢弃消息归档进会话文件。
+ */
+export async function handleCompactSession(
+  ctx: HandlerContext,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  const { store, sessions, rt } = await resolveSessionScope(ctx, id);
+  const entry = await sessions.ensureEntry(id);
+  if (entry.inFlight) {
+    throw new ApiHttpError('conflict', `会话 ${id} 正在生成，无法压缩`);
+  }
+
+  // 固定开销：真实统计存在时用「prompt_tokens - 消息估算」近似 system/工具 schema 开销
+  const overhead = entry.lastContext?.source === 'stats'
+    ? Math.max(0, entry.lastContext.contextTokens - estimateMessageTokens(entry.history))
+    : 0;
+
+  const onBeforeCompact = async (snap: {
+    messages: ChatMessage[];
+    transcript: ChatMessage[];
+  }): Promise<void> => {
+    // 压缩会物理删除消息：先把当前完整轨迹强制落盘，保证被丢弃内容可追溯
+    await store.updateSession(id, snap.messages, undefined, { transcript: snap.transcript });
+  };
+
+  let result: CompactNowResult;
+  if (rt) {
+    result = await rt.pool.withAgent(id, (a) =>
+      a.compactNow(entry.history, {
+        sessionId: id,
+        promptOverheadTokens: overhead,
+        onBeforeCompact,
+      }),
+    );
+  } else {
+    // 嵌入形态（无 registry/池）：临时构造 agent 执行同一逻辑
+    const agent = new ReActAgent(ctx.configLoader);
+    agent.setSessionStore(store);
+    agent.setCurrentSessionId(id);
+    agent.setWorkspaceRoot(store.path);
+    try {
+      await agent.attachMemory(await ctx.createMemoryKit(), store.path);
+      result = await agent.compactNow(entry.history, {
+        sessionId: id,
+        promptOverheadTokens: overhead,
+        onBeforeCompact,
+      });
+    } finally {
+      agent.dispose();
+    }
+  }
+
+  if (result.ok && result.messages) {
+    // 复用压缩轮次的重建逻辑：旧轨迹归档(is_compact=true) + 新总结消息 + 保留区
+    const stored = await store.updateSession(id, result.messages, undefined, {
+      transcript: result.transcript,
+    });
+    entry.history = stored.filter((m) => m.role !== 'system' && m.is_compact !== true);
+    entry.lastContext = undefined; // 压缩后用量重算
+  }
+
+  // messages/transcript 仅用于落盘，不对外暴露
+  const { messages: _messages, transcript: _transcript, ...payload } = result;
+  ctx.log(
+    `[api] 会话 ${id} 手动压缩: ok=${payload.ok}` +
+      `${payload.reason ? ` reason=${payload.reason}` : ''}` +
+      `${payload.ok ? ` ${payload.beforeTokens}→${payload.afterTokens} tokens（丢弃 ${payload.droppedCount} 条）` : ''}`,
+  );
+  sendJson(res, 200, payload);
+}
+
+/**
+ * POST /sessions/:id/retry：替换式重试（需求 20261106-005 P1/D2/D12）
+ *
+ * body `{ seq, modelAlias? }`，`seq` 必须是会话恢复视图（`entry.history`）中 assistant 的下标。
+ * 后端向前找最近的 user 消息作为重发文本，截断该轮及之后的全部消息（存储同步覆盖写入），
+ * 然后复用 `runMessageTurn` 以 SSE 流返回新一轮回答。
+ */
+export async function handleRetrySession(
+  ctx: HandlerContext,
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  const seqRaw = body.seq;
+  if (typeof seqRaw !== 'number' || !Number.isInteger(seqRaw) || seqRaw < 0) {
+    throw new ApiHttpError('bad_request', 'seq 必须为非负整数');
+  }
+  const seq = seqRaw;
+  const modelAliasRaw = typeof body.modelAlias === 'string' ? body.modelAlias.trim() : '';
+
+  const { store, sessions } = await resolveSessionScope(ctx, id);
+  const entry = await sessions.ensureEntry(id);
+  if (entry.inFlight) {
+    throw new ApiHttpError('conflict', `会话 ${id} 正在生成，无法重试`);
+  }
+
+  const target = entry.history[seq];
+  if (!target || target.role !== 'assistant') {
+    throw new ApiHttpError('bad_request', 'seq 必须指向一条助手回答');
+  }
+  // 向前找最近的「真实用户消息」作为重试锚点（跳过压缩总结等不可见消息）
+  let userIdx = -1;
+  for (let i = seq; i >= 0; i--) {
+    const m = entry.history[i];
+    if (m.role === 'user' && m.is_show !== false && !(m.kind === 'summary')) {
+      userIdx = i;
+      break;
+    }
+  }
+  if (userIdx < 0) {
+    throw new ApiHttpError('bad_request', '未找到该轮的用户消息，无法重试');
+  }
+  const userMsg = entry.history[userIdx];
+  // show_content 为展示原文，content 为 LLM 可见原文（含上传附件的 contextNote）
+  const text = (userMsg.show_content ?? userMsg.content ?? '').trim();
+  if (!text) throw new ApiHttpError('bad_request', '该轮用户消息为空，无法重试');
+
+  // ===== 存储截断（视图下标 → 存储下标）=====
+  const data = await store.loadSession(id);
+  const stored = data.messages ?? [];
+  const visible = stored
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => m.role !== 'system' && m.is_compact !== true);
+  // entry.history 缓存 miss 时来自 getRestoreMessages（剔除后台通知）；命中时含通知。
+  // 以长度对齐选择映射口径，避免通知造成下标偏移。
+  const stable = visible.filter(
+    ({ m }) => !(m.role === 'user' && isBackgroundNoticeContent(m.content)),
+  );
+  const rows = stable.length === entry.history.length ? stable : visible;
+  const row = rows[userIdx];
+  if (!row || row.m.role !== 'user') {
+    throw new ApiHttpError(
+      'bad_request',
+      '会话历史已变化，请刷新后重试（无法定位该轮用户消息在存储中的位置）',
+    );
+  }
+
+  await store.rewriteMessages(id, stored.slice(0, row.i));
+  entry.history = entry.history.slice(0, userIdx);
+  entry.lastContext = undefined;
+  ctx.log(
+    `[api] 会话 ${id} 重试: seq=${seq} 截断至存储第 ${row.i} 条（视图第 ${userIdx} 条）`,
+  );
+
+  await runMessageTurn(ctx, res, id, text, true, modelAliasRaw);
 }

@@ -40,7 +40,7 @@ const hasCjk = (s: string): boolean => /[\u4e00-\u9fa5]/.test(s);
 describe('api-docs：反射全集（D1）', () => {
   it('stats.total 等于 createRoutes() 实际条数', () => {
     expect(payload.stats.total).toBe(routes.length);
-    expect(payload.stats.total).toBe(82);
+    expect(payload.stats.total).toBe(85);
   });
 
   it('路由表无重复的 METHOD + path（重复会导致文档条目被覆盖）', () => {
