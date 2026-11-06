@@ -32,8 +32,7 @@ describe('ToolMemoryCallback', () => {
   });
 
   it('2.3 工具结果写入 L2：带 sessionId 和 scope=session 标签', async () => {
-    callback.setSessionId('sess_abc');
-    await callback.log('fileRead', { path: 'a.txt' }, '文件内容：华锐报价 12.5 元');
+    await callback.log('fileRead', { path: 'a.txt' }, '文件内容：华锐报价 12.5 元', 'sess_abc');
 
     const day = new Date().toISOString().split('T')[0];
     const content = await episodic.readDay(day);
@@ -47,23 +46,17 @@ describe('ToolMemoryCallback', () => {
     expect(content).toContain('[tag: tool]');
   });
 
-  it('2.3b 无 sessionId 时仍写入（无 session/scope 标签）', async () => {
-    callback.setSessionId(null);
+  it('2.3b 无 sessionId 时拒绝写入（不产出裸条目）', async () => {
     await callback.log('grep', { pattern: 'x' }, '匹配 3 行');
 
     const day = new Date().toISOString().split('T')[0];
     const content = await episodic.readDay(day);
-    // 定位本条记录（grep 条目）
-    const grepEntry = content.split('## ').find((s) => s.includes('[tool:grep]')) ?? '';
-    expect(grepEntry).toContain('[tool:grep]');
-    // 本条记录不带 sessionId/scope 标签
-    expect(grepEntry).not.toContain('[sessionId:');
-    expect(grepEntry).not.toContain('[scope:');
+    // 本条记录不被写入
+    expect(content).not.toContain('[tool:grep]');
   });
 
   it('2.3c logError 记录工具错误', async () => {
-    callback.setSessionId('sess_err');
-    await callback.logError('fileRead', '文件不存在');
+    await callback.logError('fileRead', '文件不存在', 'sess_err');
 
     const day = new Date().toISOString().split('T')[0];
     const content = await episodic.readDay(day);
@@ -83,9 +76,8 @@ describe('ToolMemoryCallback', () => {
   });
 
   it('2.3e 长输出截断到 200 字符', async () => {
-    callback.setSessionId('sess_long');
     const longOutput = 'z'.repeat(500);
-    await callback.log('commandRun', {}, longOutput);
+    await callback.log('commandRun', {}, longOutput, 'sess_long');
 
     const day = new Date().toISOString().split('T')[0];
     const content = await episodic.readDay(day);
@@ -100,7 +92,6 @@ describe('ToolMemoryCallback', () => {
 
     const blocked = new EpisodicMemory(join(MEMORY_DIR, 'blocked'));
     const failing = new ToolMemoryCallback(blocked);
-    failing.setSessionId('sess_fail');
-    await expect(failing.log('fileRead', {}, 'data')).resolves.toBeUndefined();
+    await expect(failing.log('fileRead', {}, 'data', 'sess_fail')).resolves.toBeUndefined();
   });
 });

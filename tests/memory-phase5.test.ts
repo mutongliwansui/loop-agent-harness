@@ -106,8 +106,8 @@ describe('Phase 5 配置与降级（5.1/5.2/5.8）', () => {
     expect(epi.isVectorReady()).toBe(false);
     // FTS 索引仍正常
     expect(epi.isIndexReady()).toBe(true);
-    await epi.appendToday('记录：华锐报价 12.5 元');
-    const results = await epi.search('华锐', 5);
+    await epi.appendToday('记录：华锐报价 12.5 元', { scope: 'global' });
+    const results = await epi.search('华锐', 5, { scope: 'all' });
     expect(results.length).toBe(1);
     epi.closeIndex();
   });
@@ -126,7 +126,7 @@ describe('Phase 5 配置与降级（5.1/5.2/5.8）', () => {
     const epi = new EpisodicMemory(dir, makeConfig({ endpoint: 'http://127.0.0.1:1/v1/embeddings', timeoutMs: 1000 }));
     await epi.init();
     // 表可打开（网络只在调用时），首次 search 触发构建失败 → 降级
-    const results = await epi.search('华锐', 5);
+    const results = await epi.search('华锐', 5, { scope: 'all' });
     expect(results.length).toBe(1);
     expect(results[0].content).toContain('12.5');
     // 构建失败后向量索引标记不可用
@@ -141,9 +141,9 @@ describe('Phase 5 配置与降级（5.1/5.2/5.8）', () => {
     );
     await epi.init();
     // append 内部 addEntry 网络失败 → markBroken，但文件已写入
-    await epi.appendToday('降级测试：华锐报价 100 元');
+    await epi.appendToday('降级测试：华锐报价 100 元', { scope: 'global' });
     expect(epi.isVectorReady()).toBe(false);
-    const results = await epi.search('华锐', 5);
+    const results = await epi.search('华锐', 5, { scope: 'all' });
     expect(results.length).toBe(1); // 走文件检索
     epi.closeIndex();
   });
@@ -155,10 +155,10 @@ describe('Phase 5 配置与降级（5.1/5.2/5.8）', () => {
       const epi = new EpisodicMemory(dir, makeConfig({ endpoint: url, dimension: 8 }));
       await epi.init();
       // mock 返回 4 维，配置期望 8 维 → embed 抛错 → markBroken
-      await epi.appendToday('维度测试：华锐报价');
+      await epi.appendToday('维度测试：华锐报价', { scope: 'global' });
       expect(epi.isVectorReady()).toBe(false);
       // 降级后 FTS 检索仍正常
-      const results = await epi.search('华锐', 5);
+      const results = await epi.search('华锐', 5, { scope: 'all' });
       expect(results.length).toBe(1);
       epi.closeIndex();
     } finally {
@@ -212,7 +212,7 @@ describe('混合检索（5.3/5.4/5.5/5.6/5.7）', () => {
     await epi.appendToday('B 供应商在华东区域的报价谈判', { scope: 'global' });
     await epi.appendToday('C 完全无关的天气记录', { scope: 'global' });
 
-    const results = await epi.search('华锐', 5);
+    const results = await epi.search('华锐', 5, { scope: 'all' });
     // BM25 召回 A
     expect(results.some((r) => r.content.includes('华锐报价'))).toBe(true);
     // 向量语义召回 B（无共同关键词，纯 BM25 不可能命中）
@@ -255,7 +255,7 @@ describe('混合检索（5.3/5.4/5.5/5.6/5.7）', () => {
     expect(epi.isVectorReady()).toBe(true);
 
     // 重建后可语义检索（供应商与"华锐相关"语义召回）
-    const results = await epi.search('华锐', 5);
+    const results = await epi.search('华锐', 5, { scope: 'all' });
     expect(results.some((r) => r.content.includes('财报'))).toBe(true);
     epi.closeIndex();
   });

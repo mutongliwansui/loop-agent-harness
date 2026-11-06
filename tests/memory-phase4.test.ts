@@ -115,6 +115,28 @@ describe('MemoryIndex FTS5（4.1/4.2/4.3）', () => {
     epi.closeIndex();
   });
 
+  it('4.2b fail-closed：无 scope 的历史裸条目对上下文不可见，管理检索可见', async () => {
+    const dir = join(BASE_DIR, 'episodic-bare');
+    mkdirSync(dir, { recursive: true });
+    // 绕过 append 直接写旧格式裸条目（无 scope / sessionId 标记）
+    writeFileSync(
+      join(dir, '2026-09-01.md'),
+      '## [2026-09-01T00:00:00.000Z]\n- 旧裸条目：华锐报价 12.5 元',
+      'utf-8',
+    );
+    const epi = new EpisodicMemory(dir);
+    await epi.init();
+
+    // 带 sessionId 的上下文检索 → 不可见
+    expect(await epi.search('华锐', 5, { sessionId: 'sess_A' })).toHaveLength(0);
+    // 双缺失 → 不可见
+    expect(await epi.search('华锐', 5)).toHaveLength(0);
+    // 管理检索（scope:'all'）→ 可见
+    expect(await epi.search('华锐', 5, { scope: 'all' })).toHaveLength(1);
+
+    epi.closeIndex();
+  });
+
   it('4.3 索引重建：损坏后可从 Markdown 重建', async () => {
     const rebuildDir = join(BASE_DIR, 'rebuild');
     mkdirSync(rebuildDir, { recursive: true });
@@ -152,7 +174,7 @@ describe('MemoryIndex FTS5（4.1/4.2/4.3）', () => {
     const epiCount = await epi.rebuildIndex();
     expect(epiCount).toBe(2);
     expect(epi.isIndexReady()).toBe(true);
-    const epiSearch = await epi.search('TypeScript', 5);
+    const epiSearch = await epi.search('TypeScript', 5, { scope: 'all' });
     expect(epiSearch.length).toBe(1);
     epi.closeIndex();
   });
@@ -177,7 +199,7 @@ describe('降级策略（4.4/4.5/4.6）', () => {
     await curated.init();
     const assembler = new ContextAssembler(curated, epi);
 
-    await epi.appendToday('测试数据：华锐报价 12.5 元');
+    await epi.appendToday('测试数据：华锐报价 12.5 元', { scope: 'global' });
     // searchTimeoutMs=1 → 超时返回空（不阻塞）
     const messages = await assembler.assemble('华锐', [{ role: 'user', content: '查询' }], [], {
       searchTimeoutMs: 1,
@@ -193,7 +215,7 @@ describe('降级策略（4.4/4.5/4.6）', () => {
     writeFileSync(join(base, 'blocked'), 'file', 'utf-8');
     const epi = new EpisodicMemory(join(base, 'blocked'));
     // append 内部 init 会尝试 mkdir（失败），append 应抛错 → 由调用方 try/catch
-    await expect(epi.append('2026-08-16', '数据', { sessionId: 's' })).rejects.toThrow();
+    await expect(epi.append('2026-08-16', '数据', { sessionId: 's', scope: 'session' })).rejects.toThrow();
   });
 
   it('4.5b 索引不可用时写入/检索降级为文件模式', async () => {
@@ -209,9 +231,9 @@ describe('降级策略（4.4/4.5/4.6）', () => {
     expect(epi.isIndexReady()).toBe(false);
 
     // 写入仍工作（文件优先）
-    await epi.appendToday('降级测试：华锐报价 100 元');
-    // 文件检索仍可用
-    const results = await epi.search('华锐', 5);
+    await epi.appendToday('降级测试：华锐报价 100 元', { scope: 'global' });
+    // 文件检索仍可用（管理检索显式全量）
+    const results = await epi.search('华锐', 5, { scope: 'all' });
     expect(results.length).toBe(1);
   });
 

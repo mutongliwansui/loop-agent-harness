@@ -148,10 +148,6 @@ export class ReActAgent {
     this._currentSessionId = null;
     this._lastContextTokens = null;
     this._promptOverheadTokens = 0;
-    // 同步清理记忆回调的 sessionId
-    if (this._memoryCallback) {
-      this._memoryCallback.setSessionId(null);
-    }
   }
 
   /**
@@ -162,11 +158,6 @@ export class ReActAgent {
    */
   restoreSession(data: SessionData, systemPrompt: string): void {
     this._currentSessionId = data.id;
-
-    // 同步设置记忆回调的 sessionId
-    if (this._memoryCallback) {
-      this._memoryCallback.setSessionId(data.id);
-    }
 
     // 统一恢复视图：system（当前配置重建） + 所有 is_compact!==true 的消息。
     // 被压缩折叠进摘要的历史（is_compact=true）不进入上下文；摘要本身是一条
@@ -348,7 +339,6 @@ export class ReActAgent {
     this._dreamingPipeline = kit.dream;
     this._contextAssembler = new ContextAssembler(kit.curated, kit.episodic);
     this._memoryCallback = new ToolMemoryCallback(kit.episodic);
-    this._memoryCallback.setSessionId(this._currentSessionId);
 
     debug.log(`记忆系统已注入（共享 kit）: workspace=${workspaceId(cwd)}`);
   }
@@ -465,6 +455,11 @@ export class ReActAgent {
     // 空间根（D3）：显式注入优先，CLI/单测回落启动目录（行为不变）
     const wsRoot = this.workspaceRoot;
 
+    // ===== 会话身份真源（task-20261106-002 D1/D2）=====
+    // run 级入参优先（API 多会话并发），缺省回落实例字段（CLI /session load 等兼容路径）。
+    // 本 run 内所有记忆读写、工具 ctx、后台通知一律使用该局部值，不再散读实例字段。
+    const sessionId = options.sessionId ?? this._currentSessionId ?? null;
+
     // 自定义 system prompt 覆盖（技能扫描与提示词环境信息均按空间根，不再依赖进程 cwd）
     const skills = cfg.skill.enabled ? skillLoader.scan(wsRoot) : [];
     const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills, wsRoot, cfg.vision.enabled);
@@ -512,9 +507,9 @@ export class ReActAgent {
     // ===== 后台任务完成通知（需求 20261104-004 D1/D2）=====
     // 监听只装一次；恢复补投只对显式会话（CLI 首轮未建会话时任务走无归属桶）
     installBackgroundNoticeForwarder();
-    if (this._currentSessionId) {
+    if (sessionId) {
       try {
-        restoreBackgroundNotices(this._currentSessionId);
+        restoreBackgroundNotices(sessionId);
       } catch (e) {
         debug.log(`后台通知恢复失败（不阻塞主流程）: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -525,7 +520,7 @@ export class ReActAgent {
     // 落盘会话只剩 user 消息，「已生成内容已保留」就落空了。每轮迭代开始重置。
     const streamedText = { value: '' };
 
-    debug.session(messages.length, openaiTools.length, this._currentSessionId);
+    debug.session(messages.length, openaiTools.length, sessionId);
 
     // ===== 节流快照：进程崩溃时保留已产生的消息 =====
     // 每 3 次迭代或每隔 30s 落盘一次（压缩前强制落盘），避免一整轮 run 只在结束时写一次。
@@ -574,11 +569,6 @@ export class ReActAgent {
         snapshotInFlight = false;
       }
     };
-
-    // ===== 设置记忆回调的 sessionId =====
-    if (this._memoryCallback && this._currentSessionId) {
-      this._memoryCallback.setSessionId(this._currentSessionId);
-    }
 
     let result: AgentResult | null = null;
     const safeEvents = events as Required<AgentEvents>;
@@ -667,7 +657,7 @@ export class ReActAgent {
                   // 压缩笔记属会话内上下文语义：scope 改为 session，
                   // 避免跨会话可见，也避免与 L1 摘要占位形成「同一份信息双通道注入」
                   await this._episodicMemory.appendToday(extracted, {
-                    sessionId: this._currentSessionId ?? undefined,
+                    sessionId: sessionId ?? undefined,
                     scope: 'session',
                     tag: 'compaction',
                   });
@@ -698,7 +688,7 @@ export class ReActAgent {
                     .map((m) => `${m.role}: ${m.content ?? ''}`)
                     .join('\n');
                   await this._episodicMemory.appendToday(rawContent, {
-                    sessionId: this._currentSessionId ?? undefined,
+                    sessionId: sessionId ?? undefined,
                     scope: 'session',
                     tag: 'compaction_fallback',
                   });
@@ -771,7 +761,7 @@ export class ReActAgent {
         // 进入后续请求的前缀（旧实现 pushMessage 后会被后续每轮/每轮次重复带上）。
         let freshNotices: string[] = [];
         try {
-          freshNotices = drainBackgroundNotices(this._currentSessionId ?? '');
+          freshNotices = drainBackgroundNotices(sessionId ?? '');
           for (const text of freshNotices) {
             // 仍落进 messages/transcript：前端据此渲染通知卡片，且不参与 LLM 历史视图
             pushMessage({ role: 'user', content: text });
@@ -796,7 +786,7 @@ export class ReActAgent {
               {
                 searchTopK: cfg.memory.episodic.searchTopK,
                 searchTimeoutMs: cfg.memory.episodic.searchTimeoutMs,
-                sessionId: this._currentSessionId ?? undefined,
+                sessionId: sessionId ?? undefined,
                 searchMinScore: cfg.memory.episodic.searchMinScore,
                 queryEnhanceRounds: cfg.memory.episodic.queryEnhanceRounds,
                 shortQueryMinLength: cfg.memory.episodic.shortQueryMinLength,
@@ -900,7 +890,7 @@ export class ReActAgent {
             try {
               const summary = `用户: ${userInput}\n结果: ${answer.slice(0, 200)}`;
               await this._episodicMemory.appendToday(summary, {
-                sessionId: this._currentSessionId ?? undefined,
+                sessionId: sessionId ?? undefined,
                 scope: 'session',
                 tag: 'final_answer',
               });
@@ -958,7 +948,7 @@ export class ReActAgent {
                 signal: options.signal,
                 workspaceRoot: wsRoot,
                 // 需求 20261104-004 D5：后台任务归属当前会话
-                sessionId: this._currentSessionId ?? undefined,
+                sessionId: sessionId ?? undefined,
               });
               void debug.toolCall(c.toolName, c.args ?? {}, result, Date.now() - toolStart);
               return result;
@@ -990,7 +980,7 @@ export class ReActAgent {
 
           // ===== 记忆管理：工具结果写入 L2 =====
           if (this._memoryCallback) {
-            void this._memoryCallback.log(c.toolName, c.args ?? {}, observation);
+            void this._memoryCallback.log(c.toolName, c.args ?? {}, observation, sessionId ?? undefined);
           }
         }
 

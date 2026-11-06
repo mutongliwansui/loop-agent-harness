@@ -139,8 +139,7 @@ describe('Phase 2.4 压缩质量验证', () => {
 
   it('2.3 工具结果自动记录到 L2（与 flush 内容共存）', async () => {
     const callback = new ToolMemoryCallback(episodic);
-    callback.setSessionId('sess_flush');
-    await callback.log('commandRun', { cmd: 'quote' }, '华锐报价 12.5 元/股');
+    await callback.log('commandRun', { cmd: 'quote' }, '华锐报价 12.5 元/股', 'sess_flush');
 
     const day = new Date().toISOString().split('T')[0];
     const content = await episodic.readDay(day);

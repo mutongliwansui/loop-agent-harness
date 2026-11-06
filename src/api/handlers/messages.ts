@@ -70,6 +70,8 @@ export async function handleMessage(
   // D5：空历史 → resetHistory（忽略 agent 实例残留 _chatHistory）；非空 → 显式 messages
   const historyBefore = entry.history;
   const runOptions: AgentOptions = {
+    // A（task-20261106-002 D1）：本次 run 的会话身份真源，贯穿记忆读写与工具 ctx
+    sessionId: id,
     verbose: false,
     ...(historyBefore.length === 0
       ? { resetHistory: true }

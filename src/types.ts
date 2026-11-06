@@ -292,6 +292,12 @@ export interface AgentOptions {
   verbose?: boolean;
   /** 事件监听器数组（参考 langchain callbacks 设计），每个钩子按顺序调用 */
   events?: AgentEvents[];
+  /**
+   * 本次 run 所属会话 ID（多会话并发的身份真源，task-20261106-002）。
+   * 传入后 run 内所有 L2 记忆读写、工具 ctx、后台任务/通知归属均以此为准；
+   * 缺省时回落实例的 _currentSessionId（CLI 兼容路径）。
+   */
+  sessionId?: string;
   /** 传入之前的消息历史（用于多轮对话），若同时指定 resetHistory=false，则会继续在此基础上追加 */
   messages?: ChatMessage[];
   /** true=清空历史重新开始（覆盖 messages 参数），默认 false */

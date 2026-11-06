@@ -5,6 +5,7 @@
 import { mkdir, appendFile, readFile, readdir, access, writeFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
+import { debug } from '../debug.js';
 import { MemoryIndex } from './fts.js';
 import type { IndexedEntry } from './fts.js';
 import { VectorMemory } from './vector.js';
@@ -69,15 +70,18 @@ function applyRecency(baseScore: number, day: string, halfLifeDays?: number): nu
   return baseScore * recencyFactor;
 }
 
-/** 记忆条目的作用域 */
+/** 存储用作用域（写入 Markdown 头） */
 export type MemoryScope = 'session' | 'global';
+
+/** 检索用作用域（'all' 不做过滤，仅管理检索显式使用） */
+export type SearchScope = MemoryScope | 'all';
 
 /** 追加写入时的选项 */
 export interface AppendOptions {
-  /** 会话 ID（用于隔离） */
+  /** 会话 ID（scope='session' 时必填，缺失则拒绝写入） */
   sessionId?: string;
-  /** 作用域：session=仅当前会话可见, global=所有会话可见 */
-  scope?: MemoryScope;
+  /** 作用域：session=仅当前会话可见, global=所有会话可见（必填） */
+  scope: MemoryScope;
   /** 类别标签 */
   tag?: string;
 }
@@ -86,8 +90,8 @@ export interface AppendOptions {
 export interface SearchOptions {
   /** 当前会话 ID（用于过滤 session 级条目） */
   sessionId?: string;
-  /** 作用域过滤：只返回指定 scope 的条目 */
-  scope?: MemoryScope;
+  /** 作用域过滤：'all' 不做过滤（仅 /memory search 等管理入口） */
+  scope?: SearchScope;
   /** Task-19：时间衰减半衰期（天，0=禁用），越新的记忆分数越高 */
   recencyHalfLifeDays?: number;
 }
@@ -107,6 +111,8 @@ export class EpisodicMemory {
   private vectorConfig?: VectorSearchConfig;
   /** 向量索引是否已完成全量构建（避免重复重建） */
   private vectorBuilt = false;
+  /** 双缺失检索告警只记一次，避免每次检索刷屏 */
+  private warnedMissingScope = false;
 
   constructor(memoryDir: string, vectorConfig?: VectorSearchConfig) {
     this.memoryDir = memoryDir;
@@ -204,7 +210,18 @@ export class EpisodicMemory {
    * ```
    * 同时同步更新 FTS 索引。
    */
-  async append(day: string, content: string, options: AppendOptions = {}): Promise<void> {
+  async append(day: string, content: string, options: AppendOptions): Promise<void> {
+    // 写入契约（D3）：scope 必填，session 级条目必须有 sessionId。
+    // 缺失时拒绝写入——历史上正是「无 scope 裸条目 + 检索后门」导致跨会话泄漏；
+    // best-effort 语义：不抛错，不中断主流程。
+    if (!options?.scope) {
+      debug.log('[memory] 拒绝写入：缺少 scope（AppendOptions.scope 必填）');
+      return;
+    }
+    if (options.scope === 'session' && !options.sessionId) {
+      debug.log('[memory] 拒绝写入 session 级条目：缺少 sessionId');
+      return;
+    }
     await this.init();
     const filepath = join(this.memoryDir, `${day}.md`);
     const timestamp = new Date().toISOString();
@@ -229,7 +246,7 @@ export class EpisodicMemory {
   }
 
   /** 快捷方法：写今天 */
-  async appendToday(content: string, options: AppendOptions = {}): Promise<void> {
+  async appendToday(content: string, options: AppendOptions): Promise<void> {
     const day = new Date().toISOString().split('T')[0];
     await this.append(day, content, options);
   }
@@ -413,9 +430,11 @@ export class EpisodicMemory {
   }
 
   /**
-   * 判断条目是否对当前请求可见
-   * - scope 过滤
-   * - sessionId 过滤
+   * 判断条目是否对当前请求可见（fail-closed）
+   * - scope:'all' → 全部可见（仅管理检索显式使用）
+   * - 显式 scope → 只返回该 scope；session 级还要求 sessionId 相同
+   * - 仅 sessionId → global + 自己的 session 级；无 scope 的历史裸条目不可见
+   * - 双缺失 → 一律不可见（D6，避免漏传参数时重新 fail-open）
    */
   private isSectionVisible(header: string, options: SearchOptions): boolean {
     // 解析 header 中的元数据
@@ -431,29 +450,35 @@ export class EpisodicMemory {
       return false;
     }
 
-    // 1. 如果指定了 scope 过滤
+    // 1. 管理检索：显式放开全部（含历史无 scope 裸条目）
+    if (options.scope === 'all') return true;
+
+    // 2. 显式作用域过滤
     if (options.scope) {
-      return entryScope === options.scope;
+      if (entryScope !== options.scope) return false;
+      if (options.scope === 'global') return true;
+      // scope='session'：必须属于同一会话（无 sessionId 的旧条目也不可见）
+      return !!options.sessionId && entrySessionId === options.sessionId;
     }
 
-    // 2. 如果指定了 sessionId，应用默认可见性规则
+    // 3. 仅指定 sessionId（上下文检索的兜底轮）
     if (options.sessionId) {
       // global 条目 → 所有会话可见
       if (entryScope === 'global') return true;
-
       // session 条目 → 仅创建它的会话可见
       if (entryScope === 'session') {
-        // Task-17：无 sessionId 的旧条目（会话早期写入）→ 视为可见，避免成为数据黑洞
-        if (!entrySessionId) return true;
-        return entrySessionId === options.sessionId;
+        return !!entrySessionId && entrySessionId === options.sessionId;
       }
-
-      // 无 scope 标记的旧条目 → 默认可见（向后兼容）
-      if (!entryScope) return true;
+      // 无 scope 标记的历史裸条目 → fail-closed（历史数据已确认可舍弃）
+      return false;
     }
 
-    // 3. 无过滤条件 → 全部可见
-    return true;
+    // 4. 双缺失 → fail-closed（D6）
+    if (!this.warnedMissingScope) {
+      this.warnedMissingScope = true;
+      debug.log('[memory] 检索缺少 sessionId 与 scope，已按 fail-closed 返回空结果');
+    }
+    return false;
   }
 
   /** 列出所有可用的日期文件（按日期降序） */

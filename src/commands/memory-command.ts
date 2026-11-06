@@ -219,7 +219,8 @@ export const memoryCommand: CommandHandler = {
         return;
       }
       const query = args.join(' ');
-      const results = await epiMemory.search(query, 5);
+      // 管理检索：显式全量（不受会话隔离限制，含历史裸条目）
+      const results = await epiMemory.search(query, 5, { scope: 'all' });
       out.blank();
       out.log(`${COLORS.bold}搜索结果 "${query}" (${results.length} 条):${COLORS.reset}`);
       if (results.length === 0) {

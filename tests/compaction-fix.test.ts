@@ -272,6 +272,8 @@ describe('Task-17 压缩信息丢失修复', () => {
     const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
+    // 会话身份（task-20261106-002）：session 级 L2 写入必须有 sessionId
+    agent.setCurrentSessionId('sess_t2');
 
     const compactionEvents: CompactionInfo[] = [];
     const longHistory = buildLongHistory();
@@ -332,6 +334,8 @@ describe('Task-17 压缩信息丢失修复', () => {
     const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
+    // 会话身份（task-20261106-002）：session 级 L2 写入必须有 sessionId
+    agent.setCurrentSessionId('sess_t4');
 
     const compactionEvents: CompactionInfo[] = [];
     const longHistory = buildLongHistory();
@@ -353,19 +357,22 @@ describe('Task-17 压缩信息丢失修复', () => {
     expect(result.messages.length).toBeLessThan(longHistory.length + 2);
   });
 
-  it('5. 检索可见性（8.4）：无 sessionId 的 session 条目在带 sessionId 检索时可见', async () => {
+  it('5. 写入契约（8.4 反转）：session 级条目缺 sessionId 时拒绝写入', async () => {
     const dir = join(BASE, 't5');
     const epi = new EpisodicMemory(dir);
     await epi.init();
 
-    // 无 sessionId 的旧条目（会话早期写入）
+    // 缺 sessionId 的 session 级条目 → 拒绝写入（不产出裸条目）
     await epi.appendToday('用户: 我会打篮球\n结果: 已记录', { scope: 'session', tag: 'final_answer' });
     // 带 sessionId 的其它会话条目（应保持隔离）
     await epi.appendToday('机密信息：华锐报价 12.5 元', { sessionId: 'sess_b', scope: 'session', tag: 'final_answer' });
 
+    // 被拒绝的条目未落盘
+    const day = new Date().toISOString().split('T')[0];
+    expect(await epi.readDay(day)).not.toContain('我会打篮球');
+
     const res1 = await epi.search('我会打篮球', 5, { sessionId: 'sess_a' });
-    expect(res1.length).toBe(1);
-    expect(res1[0].content).toContain('我会打篮球');
+    expect(res1.length).toBe(0);
 
     // 其它会话条目仍被隔离
     const res2 = await epi.search('华锐报价', 5, { sessionId: 'sess_a' });
@@ -383,8 +390,8 @@ describe('Task-17 压缩信息丢失修复', () => {
     const epi = new EpisodicMemory(dir);
     await epi.init();
 
-    await epi.appendToday('用户: 我会打篮球\n结果: 好的，已记录', { scope: 'session', tag: 'final_answer' });
-    await epi.appendToday('今天天气不错', { scope: 'session', tag: 'final_answer' });
+    await epi.appendToday('用户: 我会打篮球\n结果: 好的，已记录', { sessionId: 'sess_x', scope: 'session', tag: 'final_answer' });
+    await epi.appendToday('今天天气不错', { sessionId: 'sess_x', scope: 'session', tag: 'final_answer' });
 
     const res = await epi.search('我会打篮球吗？', 5, { sessionId: 'sess_x' });
     expect(res.length).toBe(1);
@@ -446,6 +453,8 @@ describe('Task-17 压缩信息丢失修复', () => {
     const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
+    // 会话身份（task-20261106-002）：session 级 L2 写入必须有 sessionId
+    agent.setCurrentSessionId('sess_t8');
 
     const compactionEvents: CompactionInfo[] = [];
     // 单轮形态：40 个 assistant/tool 迭代，整段历史没有 user；

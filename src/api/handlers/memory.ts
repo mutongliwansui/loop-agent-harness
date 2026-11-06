@@ -178,7 +178,8 @@ async function handleMemorySearch(ctx: HandlerContext, req: IncomingMessage, res
   const q = (url.searchParams.get('q') ?? '').trim();
   if (!q) throw new ApiHttpError('bad_request', '缺少必填查询参数 q');
   const topK = queryInt(url, 'limit', 5, 50);
-  const results = await kit.episodic.search(q, topK);
+  // 管理检索：显式全量（不受会话隔离限制，含历史裸条目）
+  const results = await kit.episodic.search(q, topK, { scope: 'all' });
   sendJson(res, 200, { results: results.map((r) => ({ ...r, layer: 'episodic' })) });
 }
 
