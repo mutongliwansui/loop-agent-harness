@@ -1,8 +1,15 @@
 // 内容检索工具：模仿 grep，支持正则、忽略大小写、递归搜索目录
+// 20261106-001：超限完整输出落临时文件 + 告知路径（方案 B：文件内治理）
 import { readFile, stat, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import {
+  buildFullOutputNotice,
+  summarizeParam,
+  buildTmpFilePath,
+} from './output-governor.js';
 
 /** 跳过这些目录，避免递归过深或读取依赖 */
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
@@ -43,14 +50,12 @@ export const grep: Tool = {
     const matches: string[] = [];
 
     async function searchFile(filePath: string): Promise<void> {
-      if (matches.length >= maxResults) return;
       try {
         const content = await readFile(filePath, 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (regex.test(lines[i])) {
             matches.push(`${filePath}:${i + 1}: ${lines[i]}`);
-            if (matches.length >= maxResults) return;
           }
         }
       } catch {
@@ -59,11 +64,10 @@ export const grep: Tool = {
     }
 
     async function searchDir(dirPath: string, depth = 0): Promise<void> {
-      // 防止过深递归
-      if (depth > 5 || matches.length >= maxResults) return;
+      // 防止过深递归（保持硬限制，不随 matches.length 放宽）
+      if (depth > 5) return;
       const entries = await readdir(dirPath, { withFileTypes: true });
       for (const entry of entries) {
-        if (matches.length >= maxResults) return;
         // 跳过敏感目录
         if (SKIP_DIRS.has(entry.name)) continue;
         const full = join(dirPath, entry.name);
@@ -85,7 +89,31 @@ export const grep: Tool = {
     if (matches.length === 0) {
       return `未在 ${path} 中找到匹配 /${pattern}/ 的内容`;
     }
-    const truncated = matches.length >= maxResults ? '（已达上限）' : '';
-    return `找到 ${matches.length} 处匹配${truncated}:\n${matches.join('\n')}`;
+
+    // 20261106-001：超限治理
+    if (matches.length > maxResults) {
+      const head = matches.slice(0, maxResults);
+      const totalText = matches.join('\n');
+      const bytes = Buffer.byteLength(totalText, 'utf-8');
+      let pathHint = '';
+      try {
+        const fullPath = buildTmpFilePath(ctx?.sessionId, 'grep', summarizeParam(args, 'grep'));
+        mkdirSync(dirname(fullPath), { recursive: true });
+        writeFileSync(fullPath, totalText, 'utf-8');
+        const suggestion = `建议: 完整匹配已保存，可按需用 fileRead 分段读取或再次用 grep 加更精确的正则缩小范围`;
+        pathHint = buildFullOutputNotice({
+          path: fullPath,
+          bytes,
+          lines: matches.length,
+          suggestion,
+        });
+      } catch {
+        // 落盘失败：降级为截断提示
+      }
+      const suffix = pathHint || `\n\n[完整匹配 ${matches.length} 条因超限未返回，请缩小搜索范围或用 grep 加更精确正则]`;
+      return `找到 ${matches.length} 处匹配（已达上限 ${maxResults}）:\n${head.join('\n')}${suffix}`;
+    }
+
+    return `找到 ${matches.length} 处匹配:\n${matches.join('\n')}`;
   },
 };

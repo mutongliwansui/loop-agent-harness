@@ -1,7 +1,14 @@
 // 文件读取工具：支持全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
+// 20261106-001：超限完整输出落临时文件 + 告知路径（方案 B：文件内治理，边扫描边写）
 import { open, stat, type FileHandle } from 'node:fs/promises';
 import type { Tool, ToolContext } from '../types.js';
 import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
+import {
+  TmpFileWriter,
+  buildFullOutputNotice,
+  summarizeParam,
+  outputGovernorOptions,
+} from './output-governor.js';
 
 /** 全文读取默认行数上限（超出只返回前 N 行并附截断提示） */
 const DEFAULT_MAX_LINES = 2000;
@@ -102,7 +109,7 @@ export const fileRead: Tool = {
       await assertTextFile(fh, path, st.size);
       return explicit
         ? await readRange(fh, path, st.size, encoding, lineNumbers, start, end, maxBytes)
-        : await readFull(fh, path, st.size, encoding, lineNumbers, maxBytes);
+        : await readFull(fh, path, st.size, encoding, lineNumbers, maxBytes, ctx);
     } finally {
       await fh.close();
     }
@@ -125,6 +132,11 @@ async function assertTextFile(fh: FileHandle, path: string, size: number): Promi
 /**
  * 全文读取：默认只返回前 2000 行 / 256KB，超出时末尾追加截断提示。
  * 文件超过硬上限（16MB）直接拒绝，要求显式分段，避免大文件整体进入上下文。
+ *
+ * 20261106-001 新增：超限完整输出落临时文件 + 告知路径。
+ * 边扫描边同时做两件事：截断片段进 shown 数组（进上下文）、
+ * 完整原始内容（所有行）流式写临时文件（TmpFileWriter 自身按阈值判断是否真正创建 WriteStream，
+ * 小输出零磁盘开销）。
  */
 async function readFull(
   fh: FileHandle,
@@ -133,6 +145,7 @@ async function readFull(
   encoding: BufferEncoding,
   lineNumbers: boolean,
   maxBytes: number | null,
+  ctx?: ToolContext,
 ): Promise<string> {
   if (size > MAX_FULL_READ_BYTES) {
     throw new Error(
@@ -148,8 +161,25 @@ async function readFull(
   let lineCut = false;
   let lineClipped = false;
 
+  // 需求 20261106-001：超限治理（边扫描边完整落临时文件）
+  // 只有当文件 size 明显可能触发截断时才创建 TmpFileWriter，避免小输出走落盘逻辑
+  const gov = outputGovernorOptions();
+  const willProbablyTruncate = size > byteCap || size > DEFAULT_MAX_LINES * 200;
+  let tmpWriter: TmpFileWriter | null = null;
+  if (willProbablyTruncate && ctx?.sessionId) {
+    tmpWriter = new TmpFileWriter({
+      sessionId: ctx.sessionId,
+      toolName: 'fileRead',
+      paramDigest: summarizeParam({ path }, 'fileRead'),
+      thresholds: { triggerMultiplier: 1 }, // fileRead 已知完整 size，直接按 preserveKb 触发落盘
+    });
+  }
+
   // 扫描到文件末尾（提前停止时总行数不准，这里不提前停）
   const scan = await scanLines(fh, size, encoding, (line) => {
+    // 每行都喂给 TmpFileWriter（小输出时它自己判断不落盘）
+    if (tmpWriter) tmpWriter.onChunk(Buffer.from(line + '\n', encoding));
+
     if (byteCut || lineCut) return;
     if (shown.length >= DEFAULT_MAX_LINES) {
       lineCut = true;
@@ -166,8 +196,15 @@ async function readFull(
     shown.push(text);
   });
 
+  // finalize TmpFileWriter
+  const fullInfo = tmpWriter ? await tmpWriter.finalize() : undefined;
+
   const body = lineNumbers ? withLineNumbers(shown, 1) : shown.join('\n');
-  if (!byteCut && !lineCut && !lineClipped) return body;
+  if (!byteCut && !lineCut && !lineClipped) {
+    // 没超限：如果 tmpWriter 没真正创建 WriteStream，就原样返回 body（零磁盘开销）
+    // 如果 tmpWriter 创建了但其实没截断（size 预判超阈值但实际没超），fullInfo 会是 undefined
+    return body;
+  }
 
   const notes = [
     `[已截断] 文件 ${path} 共 ${scan.totalLines} 行、${fmtSize(size)}，本次返回前 ${shown.length} 行。`,
@@ -175,6 +212,21 @@ async function readFull(
   if (byteCut) notes.push(`内容已达到 ${fmtSize(byteCap)} 字节上限（可用 maxBytes 调整）。`);
   if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
   notes.push('继续读取请用 startLine/endLine 或 offset/limit 分段，或先用 grep 定位关键行。');
+
+  // 需求 20261106-001：完整输出已落临时文件，追加结构化路径提示
+  if (fullInfo) {
+    const nextStart = shown.length + 1;
+    const suggestion =
+      `建议: 完整输出已保存，可用 fileRead 的 startLine/endLine 分段读取，` +
+      `如 startLine: ${nextStart}, endLine: ${Math.min(nextStart + 200, scan.totalLines)}`;
+    notes.push(buildFullOutputNotice({
+      path: fullInfo.path,
+      bytes: fullInfo.bytes,
+      lines: scan.totalLines,
+      suggestion,
+    }));
+  }
+
   return `${body}\n\n${notes.join('\n')}`;
 }
 

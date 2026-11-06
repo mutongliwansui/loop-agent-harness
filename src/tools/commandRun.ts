@@ -3,6 +3,8 @@
 // Task-20261022-002（需求 20261021-006）：新增 background 分支——spawn detached
 // 立即返回 taskId，stdout/stderr 重定向到 ~/.loop-agent/runs/{taskId}.log，不受 runner 超时约束（D5）
 // 需求 20261104-006：前台改 spawn + 头尾累积器，移除 maxBuffer 上限，修正 stderr 重复标签
+// 需求 20261106-001：前台 stdout/stderr 分两路消费——
+//   一路 OutputAccumulator（头尾截断进上下文），一路 TmpFileWriter（完整流式写临时文件，超限才创建，小输出零磁盘开销）
 import { spawn } from 'node:child_process';
 import { openSync, closeSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,6 +17,12 @@ import {
   commandRunOutputOptions,
   outputQuotas,
 } from './command-run-output.js';
+import {
+  TmpFileWriter,
+  buildFullOutputNotice,
+  summarizeParam,
+  pruneTmp,
+} from './output-governor.js';
 
 export const commandRun: Tool = {
   name: 'commandRun',
@@ -49,18 +57,27 @@ export const commandRun: Tool = {
       return runInBackground(cmd, cwd, ctx);
     }
 
-    // ===== 前台路径（需求 20261104-006）：spawn 流式捕获 + 头尾截断 =====
+    // ===== 前台路径（需求 20261104-006 / 20261106-001）：
+    // spawn 流式捕获 + 头尾截断 + 超限完整输出落临时文件
     const outOpts = commandRunOutputOptions();
     const timeout = Number(args.timeout ?? outOpts.timeoutMs);
+    // 需求 20261106-001：启动前先清理过期临时文件（与 backgroundTasks.pruneRuns 同口径）
+    try { pruneTmp(); } catch { /* ignore */ }
     return runInForeground(cmd, cwd, timeout, ctx);
   },
 };
 
 /**
- * 前台执行（需求 20261104-006 D1/D3/D4/D8）：
+ * 前台执行（需求 20261104-006 D1/D3/D4/D8 + 20261106-001 D1/D2/D3/D5）：
  * - spawn(shell) 持续消费 stdout/stderr，超限只丢弃中段（不再因 maxBuffer 失败）
  * - 超时 / ctx.signal 取消都走 killProcessTree 树杀（Windows 防孙进程残留）
  * - 输出标签稳定：`[stdout]` / `[stderr]` / `[exit=N]` / `[timeout=…]` / `[aborted]` / `[signal=…]`
+ *
+ * 20261106-001 新增：
+ * - stdout/stderr 分两路消费：一路 OutputAccumulator（头尾截断进上下文），
+ *   一路 TmpFileWriter（完整流式写临时文件，累计达 triggerMultiplier × preserveKb 才创建 WriteStream，
+ *   小输出零磁盘 I/O）
+ * - finalize 后若完整文件存在，在 observation 末尾追加结构化路径提示供 LLM 按需分段再读
  */
 function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolContext): Promise<string> {
   // 已取消：不启动进程，立即收敛（既有 abort 用例依赖「不悬挂」）
@@ -69,6 +86,14 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
   const { headBytes, tailBytes } = outputQuotas(commandRunOutputOptions().outputLimitKb);
   const out = new OutputAccumulator(headBytes, tailBytes);
   const err = new OutputAccumulator(headBytes, tailBytes);
+
+  // 需求 20261106-001：超限治理器（小输出零磁盘开销，累计超阈值才创建 WriteStream）
+  const digest = summarizeParam({ command: cmd }, 'commandRun');
+  const tmpWriter = new TmpFileWriter({
+    sessionId: ctx?.sessionId,
+    toolName: 'commandRun',
+    paramDigest: digest,
+  });
 
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -79,12 +104,18 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
 
-    const finish = (code: number | null, signalName: string | null, spawnError?: string): void => {
+    const finish = async (code: number | null, signalName: string | null, spawnError?: string): Promise<void> => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       if (forceTimer) clearTimeout(forceTimer);
       if (onAbort) ctx?.signal?.removeEventListener('abort', onAbort);
+
+      // 需求 20261106-001：等待 TmpFileWriter drain + close
+      let fullInfo: Awaited<ReturnType<typeof tmpWriter.finalize>> | undefined;
+      try {
+        fullInfo = await tmpWriter.finalize();
+      } catch { /* 临时文件关闭异常不阻塞主输出 */ }
 
       if (spawnError) {
         resolve(`工具执行失败: 启动失败 (${spawnError})`);
@@ -103,15 +134,22 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
       else if (signalName) parts.push(`[signal=${signalName}]`);
       else if (code !== null && code !== 0) parts.push(`[exit=${code}]`);
 
-      if (parts.length > 0) {
-        // 非正常结束附耗时，便于排障；正常成功保持旧版观感（仅修正 stderr 标签）
-        if (timedOut || aborted || signalName || (code !== null && code !== 0)) {
-          parts.push(`[duration=${durationMs}ms]`);
-        }
-        resolve(parts.join('\n'));
-      } else {
-        resolve('(无输出，exit=0)');
+      if (timedOut || aborted || signalName || (code !== null && code !== 0)) {
+        parts.push(`[duration=${durationMs}ms]`);
       }
+
+      // 需求 20261106-001：如果完整输出已落临时文件，追加结构化提示
+      if (fullInfo) {
+        const suggestion = '建议: 完整输出已保存，可按需用 fileRead 的 startLine/endLine 分段读取，如 startLine: 1, endLine: 2000；或先用 grep 定位关键内容';
+        parts.push(buildFullOutputNotice({
+          path: fullInfo.path,
+          bytes: fullInfo.bytes,
+          lines: fullInfo.lines,
+          suggestion,
+        }));
+      }
+
+      resolve(parts.length > 0 ? parts.join('\n') : '(无输出，exit=0)');
     };
 
     let child: ReturnType<typeof spawn>;
@@ -123,18 +161,26 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
         windowsHide: true,
       });
     } catch (e) {
-      finish(null, null, e instanceof Error ? e.message : String(e));
+      void finish(null, null, e instanceof Error ? e.message : String(e));
       return;
     }
 
-    child.stdout?.on('data', (chunk: Buffer) => out.push(chunk));
-    child.stderr?.on('data', (chunk: Buffer) => err.push(chunk));
+    // 需求 20261106-001：分两路并行消费（不能先 pipe 到累积器再 pipe 到文件，
+    // 第一个 pipe 会消费 buffer，第二个拿不到；用两个 on('data') 分支）
+    child.stdout?.on('data', (chunk: Buffer) => {
+      out.push(chunk);
+      tmpWriter.onChunk(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      err.push(chunk);
+      tmpWriter.onChunk(chunk);
+    });
 
     const kill = (): void => {
       if (child.pid) void killProcessTree(child.pid);
       // 树杀失败/事件延迟兜底：2s 后强制收敛，避免 Promise 悬挂
       if (!forceTimer) {
-        forceTimer = setTimeout(() => finish(null, null), 2000);
+        forceTimer = setTimeout(() => void finish(null, null), 2000);
       }
     };
 
@@ -152,8 +198,8 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
       ctx.signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    child.on('error', (e) => finish(null, null, e.message));
-    child.on('close', (code, signalName) => finish(code, signalName));
+    child.on('error', (e) => void finish(null, null, e.message));
+    child.on('close', (code, signalName) => void finish(code, signalName));
   });
 }
 
