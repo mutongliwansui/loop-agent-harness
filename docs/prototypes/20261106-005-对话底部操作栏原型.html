@@ -80,6 +80,25 @@
     animation:spin .8s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
 
+  /* Token 统计 chip（仅最后一条回答，位于环左侧） */
+  .tok-wrap{position:relative}
+  .tok-chip{display:flex;align-items:center;gap:5px;border:none;background:transparent;
+    cursor:pointer;padding:3px 6px;border-radius:8px;color:var(--sub);font-size:12.5px}
+  .tok-chip:hover,.tok-chip:focus-visible{background:#f2f4f7;outline:none}
+  .tok-chip svg{width:14px;height:14px;color:var(--ring)}
+  .tok-total{font-variant-numeric:tabular-nums}
+  .tok-pop{position:absolute;right:0;bottom:calc(100% + 10px);width:236px;background:#fff;
+    border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:12px 14px;
+    opacity:0;transform:translateY(4px);pointer-events:none;transition:opacity .16s,transform .16s;z-index:10}
+  .tok-pop::after{content:"";position:absolute;right:14px;bottom:-6px;width:10px;height:10px;
+    background:#fff;border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+    transform:rotate(45deg)}
+  .tok-wrap:hover .tok-pop,.tok-wrap:focus-within .tok-pop{opacity:1;transform:none;pointer-events:auto}
+  .tok-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;
+    padding:3px 0;color:#5b626b}
+  .tok-row b{font-variant-numeric:tabular-nums;font-weight:600;color:#2b3038}
+  .tok-note{font-size:11px;color:var(--sub);margin-top:8px;line-height:1.5}
+
   /* ===== 确认框 ===== */
   .mask{position:fixed;inset:0;background:rgba(20,24,31,.32);display:none;place-items:center;z-index:100}
   .mask.show{display:grid}
@@ -174,6 +193,23 @@
         <span class="gen-hint">由 AI 生成</span>
         <span class="spacer"></span>
 
+        <div class="tok-wrap">
+          <button class="tok-chip" aria-label="本轮 token 统计">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <path d="M7 4v9M4 10l3 3 3-3M13 16V7M10 10l3-3 3 3"/>
+            </svg>
+            <span class="tok-total" id="tokTotal">122.6K</span>
+          </button>
+          <div class="tok-pop" role="dialog" aria-label="本轮 token 统计详情">
+            <div class="pop-title">本轮 Token 统计</div>
+            <div class="tok-row"><span>总输入</span><b id="tokIn">121.0K</b></div>
+            <div class="tok-row"><span>总输出</span><b id="tokOut">1.6K</b></div>
+            <div class="tok-row"><span>总 Token</span><b id="tokSum">122.6K</b></div>
+            <div class="tok-row"><span>平均缓存命中率</span><b id="tokCache">78.4%</b></div>
+            <div class="tok-note">口径：多轮迭代累计；命中率 = 命中缓存输入 ÷ 总输入</div>
+          </div>
+        </div>
+
         <div class="ctx-wrap" id="ctxWrap">
           <button class="ctx-ring" id="ctxRing" aria-label="上下文使用率">
             <svg class="ring" viewBox="0 0 20 20" aria-hidden="true">
@@ -198,9 +234,11 @@
 
   <div class="legend">
     <b>交互说明</b><br>
-    · 每条 assistant 回答下方：复制、重试；百分比环仅在最后一条（会话级指标不重复展示）。<br>
+    · 每条 assistant 回答下方：复制、重试；Token 统计与百分比环仅在最后一条（会话级/轮级指标不重复展示）。<br>
     · 重试 = 替换旧回答：最后一条直接重新生成；中间条先确认「将删除其后 N 条消息」。<br>
     · 复制：该条回答纯文本（保留 Markdown，不含工具卡片）。<br>
+    · Token chip：常驻显示本轮总 token（多轮迭代累计）；悬浮/键盘聚焦展开浮层——总输入 / 总输出 / 总 Token / 平均缓存命中率；本轮未跑过（纯历史会话）不显示 chip。<br>
+    · 数据来源：流式中由 <code>llm_stats</code> 实时刷新（当前迭代值）；run 结束由 <code>llm_stats_summary</code> 覆盖为整轮累计；缓存命中率口径 = prompt_cache_hit ÷ prompt_tokens，厂商不返回缓存字段时显示 N/A。<br>
     · 百分比环：&lt;60 常态灰、60–85 琥珀、≥85 红；悬浮/键盘聚焦展开浮层。<br>
     · 压缩：点击先弹确认框（说明丢弃条数与 L2 可召回），确认后 loading、按钮禁用，完成后百分比下降。
   </div>
@@ -242,6 +280,19 @@
   let compacting = false;
   let toastTimer = 0;
   let pendingConfirm = null;
+
+  // 各状态下的本轮 token 统计（示意数据）
+  const STATE_TOKENS = {
+    low:  { in: 47000,  out: 900,  cache: 0.81 },
+    mid:  { in: 121000, out: 1600, cache: 0.784 },
+    high: { in: 174000, out: 2300, cache: 0.62 },
+  };
+  let curState = 'mid';
+  const tokTotal = document.getElementById('tokTotal');
+  const tokIn = document.getElementById('tokIn');
+  const tokOut = document.getElementById('tokOut');
+  const tokSum = document.getElementById('tokSum');
+  const tokCache = document.getElementById('tokCache');
 
   const k = (n) => (n >= 1000 ? (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'K' : String(n));
 
@@ -286,12 +337,20 @@
     compactBtn.disabled = compacting;
     compactBtn.textContent = compacting ? '压缩中…' : '压缩';
     cload.hidden = !compacting;
+
+    const t = STATE_TOKENS[curState];
+    tokIn.textContent = k(t.in);
+    tokOut.textContent = k(t.out);
+    tokSum.textContent = k(t.in + t.out);
+    tokTotal.textContent = k(t.in + t.out);
+    tokCache.textContent = t.cache != null ? (t.cache * 100).toFixed(1) + '%' : 'N/A';
   }
 
   document.querySelectorAll('.states button').forEach((b) => {
     b.addEventListener('click', () => {
       document.querySelectorAll('.states button').forEach((x) => x.classList.remove('on'));
       b.classList.add('on');
+      curState = b.dataset.state;
       tokens = { low: 48000, mid: 126000, high: 176000 }[b.dataset.state];
       render();
     });

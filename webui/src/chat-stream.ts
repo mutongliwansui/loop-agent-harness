@@ -78,6 +78,25 @@ export interface ChatMsg {
   lastEventAt?: number; // 最近一次收到 SSE 事件的时间（长时间无事件时提示仍在响应）
 }
 
+/**
+ * 本轮 run 的 token 累计（需求 20261106-006）：
+ * 流式中由 llm_stats 逐迭代累加（iteration===1 时清零重计）；
+ * run 结束由 llm_stats_summary 一次性覆盖为权威累计值。
+ */
+export interface TurnTokenStats {
+  /** 累计输入 token */
+  promptTokens: number;
+  /** 累计输出 token */
+  completionTokens: number;
+  /** 累计总 token */
+  totalTokens: number;
+  /** 命中缓存的输入 token 合计（命中率分母为 promptTokens；0=无缓存数据） */
+  cacheHitTokens: number;
+  /** 后端汇总给出的平均命中率（优先于前端推算；厂商无缓存字段为 undefined） */
+  avgCacheHitRate?: number;
+  at: number;
+}
+
 export interface SessionStreamState {
   messages: ChatMsg[];
   status: 'idle' | 'running';
@@ -105,6 +124,8 @@ export interface SessionStreamState {
   runStartedAt?: number;
   /** 上下文用量（需求 20261106-005）：llm_stats 实时刷新，历史加载/压缩后由 GET /context 兜底 */
   context?: SessionContextUsage;
+  /** 本轮 token 累计（需求 20261106-006）：llm_stats 逐迭代累加，llm_stats_summary 覆盖 */
+  turnTokens?: TurnTokenStats;
 }
 
 const EMPTY_MESSAGES: ChatMsg[] = [];
@@ -182,6 +203,12 @@ export function isUnread(id: string): boolean {
 export function contextOf(id: string | null): SessionContextUsage | undefined {
   if (!id) return undefined;
   return states.get(id)?.context;
+}
+
+/** 本轮 token 累计（未跑过为 undefined，对应「纯历史会话不显示 chip」）；需求 20261106-006 */
+export function turnTokensOf(id: string | null): TurnTokenStats | undefined {
+  if (!id) return undefined;
+  return states.get(id)?.turnTokens;
 }
 
 /**
@@ -560,9 +587,13 @@ function applyEvent(id: string, ev: SseEvent): void {
     case 'llm_stats': {
       // 真实用量（需求 20261106-005 P0）：每次迭代刷新百分比环与浮层明细
       const raw = (d.stats ?? {}) as {
+        iteration?: number;
         contextTokens?: number;
         contextMaxTokens?: number;
         contextThreshold?: number;
+        promptTokens?: number;
+        completionTokens?: number;
+        cacheHitTokens?: number;
       };
       const maxTokens = Number(raw.contextMaxTokens ?? 0);
       const contextTokens = Number(raw.contextTokens ?? 0);
@@ -576,6 +607,39 @@ function applyEvent(id: string, ev: SseEvent): void {
         // 保留窗口只在 GET /context 返回；实时事件沿用已知值（未知时按默认 3 轮）
         keepRecentTurns: st.context?.keepRecentTurns ?? 3,
         source: 'stats',
+      };
+      // 本轮 token 累计（需求 20261106-006）：iteration===1 视为新一轮，清零后累加；
+      // run 结束的 llm_stats_summary 会用权威累计值覆盖这里的临时值
+      const iteration = Number(raw.iteration ?? 0);
+      const base = iteration <= 1 ? undefined : st.turnTokens;
+      const p = Number(raw.promptTokens ?? 0);
+      const c = Number(raw.completionTokens ?? 0);
+      st.turnTokens = {
+        promptTokens: (base?.promptTokens ?? 0) + p,
+        completionTokens: (base?.completionTokens ?? 0) + c,
+        totalTokens: (base?.totalTokens ?? 0) + p + c,
+        cacheHitTokens: (base?.cacheHitTokens ?? 0) + Number(raw.cacheHitTokens ?? 0),
+        avgCacheHitRate: base?.avgCacheHitRate,
+        at: Date.now(),
+      };
+      break;
+    }
+    case 'llm_stats_summary': {
+      // 本轮权威累计（需求 20261106-006）：覆盖流式中的逐迭代累加值
+      const s = (d.summary ?? {}) as {
+        totalPrompt?: number;
+        totalCompletion?: number;
+        totalTokens?: number;
+        totalCacheHit?: number;
+        avgCacheHitRate?: number;
+      };
+      st.turnTokens = {
+        promptTokens: Number(s.totalPrompt ?? 0),
+        completionTokens: Number(s.totalCompletion ?? 0),
+        totalTokens: Number(s.totalTokens ?? 0),
+        cacheHitTokens: Number(s.totalCacheHit ?? 0),
+        avgCacheHitRate: typeof s.avgCacheHitRate === 'number' ? s.avgCacheHitRate : undefined,
+        at: Date.now(),
       };
       break;
     }

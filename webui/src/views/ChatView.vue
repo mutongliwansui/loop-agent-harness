@@ -57,6 +57,7 @@ import {
   sendMessage,
   retryMessage,
   contextOf,
+  turnTokensOf,
   refreshContext,
   reloadHistory,
   abortRun,
@@ -153,11 +154,13 @@ const turnCount = computed(() => messages.value.filter((m) => m.role === 'user')
 const compactable = computed(() => {
   const c = context.value;
   if (!c) return false;
-  const keep = c.keepRecentTurns > 0 ? c.keepRecentTurns : 3;
+  const keep = c.keepRecentTurns && c.keepRecentTurns > 0 ? c.keepRecentTurns : 3;
   return turnCount.value > keep || c.contextTokens >= c.threshold;
 });
 function fmtCtxCompactHint(c: SessionContextUsage): string {
-  return `当前 ${turnCount.value} 轮对话均在保留窗口内（最近 ${c.keepRecentTurns} 轮不参与压缩），暂无可压缩的历史`;
+  // 旧版服务端 /context 不带 keepRecentTurns，按默认 3 轮兜底
+  const keep = c.keepRecentTurns && c.keepRecentTurns > 0 ? c.keepRecentTurns : 3;
+  return `当前 ${turnCount.value} 轮对话均在保留窗口内（最近 ${keep} 轮不参与压缩），暂无可压缩的历史`;
 }
 /** 最后一条助手消息：只有它显示百分比环，避免长会话重复出现 */
 const lastAssistantId = computed(() => {
@@ -178,6 +181,30 @@ function placeCtxPop(e: MouseEvent | FocusEvent): void {
   };
 }
 const manualCompacting = ref(false);
+
+/** 本轮 token 累计（需求 20261106-006）：本会话跑过一轮才有值，纯历史会话不显示 chip */
+const turnTokens = computed(() => (activeId.value ? turnTokensOf(activeId.value) : undefined));
+const tokTotalText = computed(() =>
+  turnTokens.value ? fmtTokens(turnTokens.value.totalTokens) : '',
+);
+/** 平均缓存命中率：优先后端汇总值；否则用累计命中 ÷ 累计输入推算；均无数据 → N/A */
+const cacheRateText = computed(() => {
+  const t = turnTokens.value;
+  if (!t) return 'N/A';
+  const rate = t.avgCacheHitRate ?? (t.promptTokens > 0 && t.cacheHitTokens > 0
+    ? t.cacheHitTokens / t.promptTokens
+    : undefined);
+  return rate != null ? `${(rate * 100).toFixed(1)}%` : 'N/A';
+});
+/** Token 统计浮层坐标（与 ctx-pop 同 fixed 方案，规避滚动区裁切） */
+const tokPopPos = ref<{ right: number; bottom: number } | null>(null);
+function placeTokPop(e: MouseEvent | FocusEvent): void {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  tokPopPos.value = {
+    right: Math.max(8, Math.round(window.innerWidth - r.right)),
+    bottom: Math.max(8, Math.round(window.innerHeight - r.top + 8)),
+  };
+}
 
 /* ---- 通用二次确认框（D11/D13） ---- */
 const confirmOpen = ref(false);
@@ -1228,6 +1255,59 @@ onUnmounted(() => {
                   <span>重试</span>
                 </button>
                 <span class="gen-hint">由 AI 生成</span>
+                <div
+                  v-if="m.id === lastAssistantId && turnTokens"
+                  class="tok-wrap"
+                  @mouseenter="placeTokPop"
+                  @focusin="placeTokPop"
+                >
+                  <button class="tok-chip" title="本轮 token 统计（悬浮查看详情）">
+                    <svg
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M7 4v9M4 10l3 3 3-3M13 16V7M10 10l3-3 3 3" />
+                    </svg>
+                    <span class="tok-total">{{ tokTotalText }}</span>
+                  </button>
+                  <div
+                    class="tok-pop"
+                    role="dialog"
+                    aria-label="本轮 token 统计"
+                    :style="
+                      tokPopPos
+                        ? { right: `${tokPopPos.right}px`, bottom: `${tokPopPos.bottom}px` }
+                        : undefined
+                    "
+                  >
+                    <div class="cp-title">本轮 Token 统计</div>
+                    <div class="cp-rows">
+                      <div class="cp-row">
+                        <span>总输入</span>
+                        <span>{{ fmtTokens(turnTokens.promptTokens) }}</span>
+                      </div>
+                      <div class="cp-row">
+                        <span>总输出</span>
+                        <span>{{ fmtTokens(turnTokens.completionTokens) }}</span>
+                      </div>
+                      <div class="cp-row">
+                        <span>总 Token</span>
+                        <span>{{ tokTotalText }}</span>
+                      </div>
+                      <div class="cp-row">
+                        <span>平均缓存命中率</span>
+                        <span>{{ cacheRateText }}</span>
+                      </div>
+                    </div>
+                    <div class="cp-note">口径：多轮迭代累计；命中率 = 命中缓存输入 ÷ 总输入</div>
+                    <div class="cp-arrow"></div>
+                  </div>
+                </div>
                 <div
                   v-if="m.id === lastAssistantId"
                   class="ctx-wrap"
@@ -2437,6 +2517,62 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+/* Token 统计 chip（需求 20261106-006）：仅最后一条回答，位于百分比环左侧 */
+.tok-wrap {
+  position: relative;
+  flex: none;
+}
+.tok-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+}
+.tok-chip:hover { background: var(--hover); }
+.tok-chip svg { width: 13px; height: 13px; }
+.tok-total {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.tok-pop {
+  /* fixed：同 ctx-pop，规避消息滚动区裁切（坐标由 placeTokPop 实时写入） */
+  position: fixed;
+  right: 12px;
+  bottom: 80px;
+  z-index: 30;
+  width: 200px;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
+  pointer-events: none;
+}
+/* 悬停桥：同 ctx-pop */
+.tok-pop::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -10px;
+  height: 10px;
+}
+.tok-wrap:hover .tok-pop,
+.tok-wrap:focus-within .tok-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  pointer-events: auto;
 }
 .ctx-pop {
   /* fixed：消息滚动区会裁切内部绝对定位浮层，改为视口定位（坐标由 placeCtxPop 实时写入） */
