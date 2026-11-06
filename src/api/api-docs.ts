@@ -118,7 +118,8 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     summary: '上下文用量（真实 llm_stats 优先，历史会话回退本地估算并标记 source=estimate）。',
     scope: 'read',
     params: [{ name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' }],
-    response: '{ contextTokens, maxTokens, threshold, percent, source: "stats" | "estimate", updatedAt? }',
+    response:
+      '{ contextTokens, maxTokens, threshold, percent, keepRecentTurns, source: "stats" | "estimate", updatedAt? }',
     example: 'curl /sessions/<id>/context',
   },
   'POST /sessions/:id/compact': {

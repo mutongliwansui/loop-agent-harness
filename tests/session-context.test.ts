@@ -25,6 +25,7 @@ type ContextBody = {
   maxTokens: number;
   threshold: number;
   percent: number;
+  keepRecentTurns: number;
   source: 'stats' | 'estimate';
   updatedAt?: string;
 };
@@ -125,6 +126,7 @@ describe('GET /sessions/:id/context', () => {
     expect(body.threshold).toBe(
       Math.round(config.memory.working.maxTokens * config.memory.working.compactionThreshold),
     );
+    expect(body.keepRecentTurns).toBe(config.memory.working.keepRecentTurns);
     // 前后各约 4000 字符 ≈ 1000 token
     expect(body.contextTokens).toBeGreaterThan(1500);
     expect(body.percent).toBeGreaterThan(0);

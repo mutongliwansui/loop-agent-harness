@@ -15,7 +15,14 @@
 //          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { api, AuthError, ApiError, uploadRaw, compactSession } from '../api/client.js';
+import {
+  api,
+  AuthError,
+  ApiError,
+  uploadRaw,
+  compactSession,
+  type SessionContextUsage,
+} from '../api/client.js';
 import {
   capPasteFiles,
   collectPasteFiles,
@@ -136,6 +143,22 @@ const ctxLevel = computed(() => {
 function fmtTokens(n: number): string {
   return n >= 1000 ? `${Math.round(n / 1000)}K` : String(n);
 }
+/**
+ * 可压缩性预判（与后端 planCompaction 同口径）：
+ * - 轮次 ≤ 保留窗口时按轮切分丢不出任何消息；
+ * - 仅当总占用已越过压缩阈值（= 消息 token 越过「阈值 − 固定开销」预算）才走单轮截尾。
+ * 两者都不满足 → 后端必然返回 nothing_to_compact，按钮直接置灰并给出说明。
+ */
+const turnCount = computed(() => messages.value.filter((m) => m.role === 'user').length);
+const compactable = computed(() => {
+  const c = context.value;
+  if (!c) return false;
+  const keep = c.keepRecentTurns > 0 ? c.keepRecentTurns : 3;
+  return turnCount.value > keep || c.contextTokens >= c.threshold;
+});
+function fmtCtxCompactHint(c: SessionContextUsage): string {
+  return `当前 ${turnCount.value} 轮对话均在保留窗口内（最近 ${c.keepRecentTurns} 轮不参与压缩），暂无可压缩的历史`;
+}
 /** 最后一条助手消息：只有它显示百分比环，避免长会话重复出现 */
 const lastAssistantId = computed(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -144,6 +167,16 @@ const lastAssistantId = computed(() => {
   }
   return -1;
 });
+/** 用量浮层的视口坐标：消息滚动区（.msgs 有 overflow-y:auto）会裁切绝对定位浮层，
+    故改为 fixed 定位，悬停/聚焦百分比环时按环的视口位置实时换算 */
+const ctxPopPos = ref<{ right: number; bottom: number } | null>(null);
+function placeCtxPop(e: MouseEvent | FocusEvent): void {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  ctxPopPos.value = {
+    right: Math.max(8, Math.round(window.innerWidth - r.right)),
+    bottom: Math.max(8, Math.round(window.innerHeight - r.top + 8)),
+  };
+}
 const manualCompacting = ref(false);
 
 /* ---- 通用二次确认框（D11/D13） ---- */
@@ -1195,7 +1228,12 @@ onUnmounted(() => {
                   <span>重试</span>
                 </button>
                 <span class="gen-hint">由 AI 生成</span>
-                <div v-if="m.id === lastAssistantId" class="ctx-wrap">
+                <div
+                  v-if="m.id === lastAssistantId"
+                  class="ctx-wrap"
+                  @mouseenter="placeCtxPop"
+                  @focusin="placeCtxPop"
+                >
                   <button
                     class="ctx-ring"
                     :class="ctxLevel"
@@ -1218,7 +1256,16 @@ onUnmounted(() => {
                     </svg>
                     <span class="ctx-pct">{{ pctText }}</span>
                   </button>
-                  <div class="ctx-pop" role="dialog" aria-label="上下文使用率">
+                  <div
+                    class="ctx-pop"
+                    role="dialog"
+                    aria-label="上下文使用率"
+                    :style="
+                      ctxPopPos
+                        ? { right: `${ctxPopPos.right}px`, bottom: `${ctxPopPos.bottom}px` }
+                        : undefined
+                    "
+                  >
                     <div class="cp-title">上下文使用率</div>
                     <div class="cp-main">
                       <b>{{ pctText }}</b>
@@ -1240,9 +1287,13 @@ onUnmounted(() => {
                         </span>
                       </div>
                     </div>
+                    <div v-if="context && !compactable" class="cp-note">
+                      {{ fmtCtxCompactHint(context) }}
+                    </div>
                     <button
                       class="cp-compact"
-                      :disabled="manualCompacting || streaming || !context"
+                      :disabled="manualCompacting || streaming || !context || !compactable"
+                      :title="context && !compactable ? fmtCtxCompactHint(context) : undefined"
                       @click="askCompact"
                     >
                       <span v-if="manualCompacting" class="cp-spin"></span>
@@ -2328,12 +2379,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 2px;
   margin-top: 8px;
-  /* 窄屏不换行：操作栏横向滚动，避免挤压气泡 */
-  overflow-x: auto;
-  overflow-y: visible;
-  scrollbar-width: none;
+  /* 窄屏不换行（默认 nowrap）。不能用 overflow 开横向滚动：
+     overflow-x:auto 会把 overflow-y 的 visible 计算成 auto，
+     整条操作栏变成裁切盒，向上展开的 .ctx-pop 会被整块裁掉 */
+  flex-wrap: nowrap;
 }
-.msg-actions::-webkit-scrollbar { display: none; }
 .act {
   display: inline-flex;
   align-items: center;
@@ -2389,9 +2439,10 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 .ctx-pop {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
+  /* fixed：消息滚动区会裁切内部绝对定位浮层，改为视口定位（坐标由 placeCtxPop 实时写入） */
+  position: fixed;
+  right: 12px;
+  bottom: 80px;
   z-index: 30;
   width: 200px;
   padding: 10px 12px 11px;
@@ -2404,6 +2455,16 @@ onUnmounted(() => {
   transform: translateY(4px);
   transition: opacity 0.14s ease, transform 0.14s ease, visibility 0.14s;
   pointer-events: none;
+}
+/* 悬停桥：浮层与环之间有 8px 间距，补一块透明区域，
+   鼠标从环移向浮层时不会因经过空隙触发 hover 丢失而闪退 */
+.ctx-pop::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -10px;
+  height: 10px;
 }
 .ctx-wrap:hover .ctx-pop,
 .ctx-wrap:focus-within .ctx-pop {
@@ -2425,6 +2486,12 @@ onUnmounted(() => {
 .cp-rows { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
 .cp-row { display: flex; justify-content: space-between; gap: 10px; }
 .cp-row .est { color: var(--warn); }
+.cp-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
 .cp-compact {
   display: flex;
   align-items: center;

@@ -239,6 +239,8 @@ export interface SessionContextUsage {
   threshold: number;
   /** 0–100，1 位小数 */
   percent: number;
+  /** 压缩保留窗口（最近 N 轮不压缩），前端据此预判是否还有可压缩历史 */
+  keepRecentTurns: number;
   source: 'stats' | 'estimate';
   /** source='stats' 的采集时间（ISO） */
   updatedAt?: string;

@@ -337,7 +337,16 @@ export async function handleGetSessionContext(
     ? Math.min(100, Math.round((contextTokens / maxTokens) * 1000) / 10)
     : 0;
 
-  sendJson(res, 200, { contextTokens, maxTokens, threshold, percent, source, updatedAt });
+  sendJson(res, 200, {
+    contextTokens,
+    maxTokens,
+    threshold,
+    percent,
+    source,
+    updatedAt,
+    // 前端预判「是否还有可压缩历史」：保留窗口之外的轮次才可被丢弃（需求 20261106-005）
+    keepRecentTurns: wm.keepRecentTurns,
+  });
 }
 
 /**

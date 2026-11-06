@@ -573,6 +573,8 @@ function applyEvent(id: string, ev: SseEvent): void {
         percent: maxTokens > 0
           ? Math.min(100, Math.round((contextTokens / maxTokens) * 1000) / 10)
           : 0,
+        // 保留窗口只在 GET /context 返回；实时事件沿用已知值（未知时按默认 3 轮）
+        keepRecentTurns: st.context?.keepRecentTurns ?? 3,
         source: 'stats',
       };
       break;
