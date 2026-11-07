@@ -886,8 +886,13 @@ export class ReActAgent {
             subAgentRegistry.pushCliNotice(notice);
           }
         })();
+        // C1b（需求 20261107-010）：提交提示带上「怎么才能看到结果」的引导——
+        // CLI 无空闲事件循环，完成通知默认在下一次回车时打印；WebUI 由结果卡片自动写回
+        const hint = consoleMode
+          ? '（完成通知会在下次回车时打印；/verbose 可实时接收）'
+          : '（完成后结果会自动写回会话，无需等待）';
         return {
-          answer: `⏳ 已提交后台子任务 ${taskId}：${task}`,
+          answer: `⏳ 已提交后台子任务 ${taskId}：${task}${hint}`,
           iterations: 0,
           taskId,
           background: true,

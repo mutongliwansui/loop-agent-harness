@@ -365,6 +365,30 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
     rl.close();
   };
 
+  // ===== P3（需求 20261107-008 C1）：verbose 下的空闲定时 drain =====
+  // 后台子任务完成通知原先只在下一次输入前打印（20261107-002 D13），用户不输入就永远看不到，
+  // 正是「完成不可感知」的另一半。verbose 模式启用 1s 空闲轮询：
+  // 清掉当前输入行 → 打印通知 → 重绘提示符（rl.prompt(true) 保留光标与已输入内容）。
+  // 非 verbose / 非 TTY 保持原行为，避免无谓的终端重绘打扰。
+  let noticeTimer: ReturnType<typeof setInterval> | null = null;
+  const stopNoticeDrain = (): void => {
+    if (noticeTimer) clearInterval(noticeTimer);
+    noticeTimer = null;
+  };
+  if (cfg.agent.verbose && process.stdout.isTTY === true) {
+    noticeTimer = setInterval(() => {
+      // 忙碌（run 进行中）与 y/N 确认中不重绘：那些阶段终端由 spinner / question 掌管
+      if (rlClosed || running || confirming) return;
+      const notices = subAgentRegistry.drainCliNotices();
+      if (notices.length === 0) return;
+      process.stdout.write('\r\x1b[K'); // 回到行首并清到行尾，抹掉正在输入的提示符+草稿
+      for (const n of notices) console.log(`${C.gray}${n}${C.reset}`);
+      if (!rlClosed) rl.prompt(true); // 重绘提示符与草稿
+    }, 1000);
+    // 不阻止进程退出（空闲 drain 只是增强，不应成为退出阻塞项）
+    noticeTimer.unref?.();
+  }
+
   // 12. REPL 主循环
   safePrompt();
 
@@ -574,6 +598,7 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
 
   rl.on('close', async () => {
     rlClosed = true;
+    stopNoticeDrain(); // 空闲 drain 定时器随 readline 一起停（P3）
     // 会话结束：自动触发 Dreaming（等待完成后再退出）
     const { config: exitCfg } = configLoader.load();
     if (exitCfg.memory.enabled && exitCfg.memory.dreaming.enabled && exitCfg.memory.dreaming.onExit) {
