@@ -132,6 +132,16 @@ When `commandRun` is called with `background:true`, the tool card's result area 
 
 The completion notice injected when a background task finishes (requirement 20261104-004) renders in the chat flow as a system notice card (requirement 20261105-001): a status pill (completed / failed / stopped), the command, elapsed time, and a collapsed-by-default log tail — instead of the raw user-bubble text. ANSI escape sequences are stripped and `\r` overwrites collapsed before injection; older persisted notices containing ANSI are cleaned by the frontend parser as a fallback. The notice is display-only and delivered once: it never becomes part of the prompt prefix of later requests (legacy persisted notices are likewise excluded when restoring history).
 
+### Background Sub-Agents (delegate background) Stay Visible (requirements 20261107-008/009)
+
+A sub-agent started with `delegate(background: true)` outlives the main run by far (the SSE stream closes as soon as the main run is done), so this flow is driven by **polling snapshots, not the event stream**:
+
+- **Persistent indicator**: a `● background sub-agents running N` pill sits above the composer; expanding it lists tasks (status pill / taskId / task summary / elapsed / iterations). It only renders while something is running, ticks the elapsed time locally once per second, and hides itself once everything converges.
+- **Restored on load**: session load, a leftover `running` card in history, an incoming `subagent_result` event, or a successful reconcile each trigger one `GET /sessions/:id/subagents` and start 2s polling — **a page refresh or a missed SSE event never loses the task**; once nothing is running, polling stops and the timeline is rebuilt from persisted history.
+- **Visible progress**: the running trace is flushed to the "running" card incrementally (throttled to 8s), so `GET /sessions/:id/subagents` returns real `iterations`/`elapsedMs` while running and the card shows "running… · 12s elapsed · 3 iterations"; a page refresh still shows the iterations and tool calls that already happened.
+- **Completion notice**: on a running → terminal transition a toast appears once per task (taskId, status, elapsed, iterations) — **only when you are viewing that session**; other sessions fall back to unread markers instead of interrupting.
+- **Nothing swallowed**: a rebuild requested while another rebuild is in flight is queued and re-run instead of being silently dropped, so two tasks finishing back to back both surface their result cards.
+
 ### Cross-Workspace Sessions
 
 The sidebar groups sessions by workspace (`GET /workspaces`): sessions from other workspaces have **exactly the same rights** as the current one — you can open them and keep chatting directly, run them in parallel with runs in the current workspace, and delete them normally. A workspace's "current" marker only means most-recently-used and imposes no sending restriction. Cross-workspace runs never interfere with each other; a 409 busy only occurs when you send concurrent messages to the **same session**.
