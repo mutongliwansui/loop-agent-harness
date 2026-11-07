@@ -169,15 +169,37 @@ export function drainBackgroundNotices(sessionId: string): string[] {
     queues.delete(bucket);
     for (const notice of list) {
       texts.push(notice.text);
-      queued.delete(notice.taskId);
-      try {
-        backgroundTasks.markNotified(notice.taskId);
-      } catch (e) {
-        debug.log(`通知去重标记失败 ${notice.taskId}: ${e instanceof Error ? e.message : String(e)}`);
+      // 去重标记（需求 20261107-007 S3）：notifiedAt 落盘失败会导致进程重启后
+      // restoreBackgroundNotices 把同一通知再补投一次（历史重复段的来源之一）。
+      // 先重试两次；仍失败则**保留 queued 标记**——本进程内不会再入队，最多付出
+      // 「跨重启重复一次」的代价，而不是每次都重复。
+      if (markNotifiedWithRetry(notice.taskId)) {
+        queued.delete(notice.taskId);
+      } else {
+        debug.log(
+          `通知去重标记最终失败 ${notice.taskId}：本进程保留内存去重，重启后可能重复补投一次`,
+        );
       }
     }
   }
   return texts;
+}
+
+/** notifiedAt 落盘（带重试）：返回是否成功 */
+function markNotifiedWithRetry(taskId: string, attempts = 3): boolean {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      backgroundTasks.markNotified(taskId);
+      return true;
+    } catch (e) {
+      if (i === attempts - 1) {
+        debug.log(
+          `通知去重标记失败 ${taskId}（第 ${i + 1} 次）: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+  return false;
 }
 
 /**

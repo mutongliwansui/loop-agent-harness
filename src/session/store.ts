@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   writeFile,
+  copyFile,
   rename,
   access,
   readdir,
@@ -30,6 +31,30 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * 原子替换（rename）带退避重试。
+ *
+ * Windows 上「rename 覆盖一个正被并发 rename/打开的目标」会抛 EPERM/EBUSY/EACCES，
+ * 直接失败就等于这一轮的会话数据没落盘（调用方看到异常，历史停在旧版本）；
+ * 短暂退避后重试通常即成功。
+ */
+async function renameWithRetry(from: string, to: string, attempts = 5): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      const retryable = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+      if (retryable && i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 10 * (i + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 /** 生成工作空间 ID（路径 SHA-256 前 16 位） */
 export function workspaceId(cwd: string): string {
   return createHash('sha256').update(cwd).digest('hex').slice(0, 16);
@@ -39,6 +64,115 @@ export function workspaceId(cwd: string): string {
 function formatDate(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+/**
+ * 原子写临时文件序号：仅靠 pid+毫秒在并发落盘时会撞名，
+ * 两个 writeFile 交错截断会把旧 payload 尾段留在新 JSON 后面（文件被撕裂）。
+ */
+let tmpWriteSeq = 0;
+
+/**
+ * 解析明文会话 JSON。容忍尾部残留脏字节：命中「Unexpected non-whitespace character after JSON」时
+ * 按有效前缀读取，避免历史撕裂文件导致会话完全打不开；前缀也非法则抛原始错误。
+ *
+ * 返回 `degraded=true` 表示发生了「前缀容错读取」（需求 20261107-007 S1）：
+ * 读出的可能是**旧快照**而非完整历史，调用方不得把它当可信基线（写回前需备份原始文件）。
+ */
+function parseSessionJson(
+  raw: string,
+  file: string,
+): { data: SessionData; degraded: boolean } {
+  try {
+    return { data: JSON.parse(raw) as SessionData, degraded: false };
+  } catch (e) {
+    const pos = Number(/position (\d+)/.exec((e as Error).message)?.[1]);
+    if (Number.isFinite(pos) && pos > 0) {
+      try {
+        const data = JSON.parse(raw.slice(0, pos)) as SessionData;
+        debug.log(
+          `[session] ${file} 尾部有 ${raw.length - pos} 字节残留，已按有效前缀读取（历史可能不完整）`,
+        );
+        return { data, degraded: true };
+      } catch {
+        /* 前缀也非法：保留原始错误 */
+      }
+    }
+    throw e;
+  }
+}
+
+/** 进程内消息 ID 序号（配合时间戳与随机段，保证同进程内不撞） */
+let msgIdSeq = 0;
+
+/** 生成新消息 ID（需求 20261107-007 S2） */
+function newMsgId(): string {
+  msgIdSeq = (msgIdSeq + 1) % 1679616; // 36^4，循环后仍靠时间戳与随机段区分
+  const rand = Math.floor(Math.random() * 1296).toString(36).padStart(2, '0');
+  return `msg_${Date.now().toString(36)}_${msgIdSeq.toString(36)}${rand}`;
+}
+
+/**
+ * 旧数据（无 msgId）的确定性 ID：同一文件多次读取必须得到同一 ID，否则去重/替换全部失效。
+ * 用「下标 + 角色 + tool_call_id + 内容」做哈希，不下发到 LLM。
+ */
+function legacyMsgId(index: number, m: ChatMessage): string {
+  const content = typeof m.content === 'string' ? m.content : '';
+  const extra = m.role === 'tool' ? m.tool_call_id : '';
+  const h = createHash('sha256')
+    .update(`${index}|${m.role}|${extra}|${content}`)
+    .digest('hex')
+    .slice(0, 10);
+  return `msg_l${h}`;
+}
+
+/**
+ * 补齐旧数据缺失的消息 ID 并消解同文件内冲突（需求 20261107-007 S2）。
+ * 冲突场景：旧文件里已有「重复段」（历史 bug 留下的副本）时，内容哈希可能相同，
+ * 这里给后续副本追加 `_n` 序号，保证 ID 唯一（去重只认 ID，不认内容）。
+ */
+function ensureMsgIds(data: SessionData, id: string): SessionData {
+  let filled = 0;
+  const seen = new Set<string>();
+  for (let idx = 0; idx < (data.messages ?? []).length; idx++) {
+    const m = data.messages[idx];
+    if (!m.msgId) {
+      m.msgId = legacyMsgId(idx, m);
+      filled++;
+    }
+    if (seen.has(m.msgId)) {
+      let n = 2;
+      while (seen.has(`${m.msgId}_${n}`)) n++;
+      m.msgId = `${m.msgId}_${n}`;
+    }
+    seen.add(m.msgId);
+  }
+  if (filled > 0) {
+    debug.log(`[session ${id}] 补生成消息 ID ${filled} 条（旧数据无 msgId）`);
+  }
+  return data;
+}
+
+/**
+ * 按 msgId 去重（需求 20261107-007 S2）：保留首次出现，丢弃后续同 ID 副本。
+ * 这是「历史回退后把同一批消息重复追加」的直接防线；
+ * 内容相同的合法消息（连发两次「继续」）ID 不同，不会被吞。
+ */
+function dedupeByMsgId(messages: ChatMessage[]): { messages: ChatMessage[]; removed: number } {
+  const seen = new Set<string>();
+  const out: ChatMessage[] = [];
+  let removed = 0;
+  for (const m of messages) {
+    if (m.msgId) {
+      if (seen.has(m.msgId)) {
+        removed++;
+        continue;
+      }
+      seen.add(m.msgId);
+    }
+    out.push(m);
+  }
+  return { messages: out, removed };
 }
 
 /** 摘要占位消息的固定前缀（buildCompactedView 注入；落盘为总结消息时剥离） */
@@ -58,6 +192,9 @@ function toStoredMessage(
   opts: { isCompact: boolean; isSummary?: boolean },
 ): ChatMessage {
   const out = { ...m } as ChatMessage;
+  // 消息稳定 ID（需求 20261107-007 S2）：已有则沿用（同一条消息多次落盘 ID 不变，是幂等去重的身份键）；
+  // 新消息在此分配，随落盘固化，后续轮次/恢复都以该 ID 识别「同一条消息」
+  if (!out.msgId) out.msgId = newMsgId();
   out.is_compact = m.role === 'system' ? false : opts.isCompact;
   out.is_show = m.role === 'system' ? false : opts.isSummary !== true;
   // 显式种类标记：总结消息写入 kind='summary'，其余消息清除（避免运行时残留标记误判）
@@ -252,6 +389,33 @@ export class SessionStore {
   private currentSessionId: string | null = null;
   /** 是否启用加密存储 */
   private readonly encryptionEnabled: boolean;
+  /**
+   * 曾以「尾部残留容错」方式降级读取过的会话（需求 20261107-007 S1）：
+   * 这类会话读出的历史可能是旧快照，写回前必须备份原始文件，避免回退历史把原文件彻底覆盖。
+   */
+  private readonly degradedSessions = new Set<string>();
+  /**
+   * 同会话写操作串行化（需求 20261107-007 S2）：updateSession / rewriteMessages 都是
+   * 「读文件 → 内存合并 → 写回」的 read-modify-write，两个调用并发交错会互相覆盖，
+   * 表现为「刚落盘的消息又消失」或被当成新消息重复追加（重复段成因之一）。
+   */
+  private readonly sessionLocks = new Map<string, Promise<void>>();
+
+  /** 在同一会话的写锁内执行（前序失败不阻塞后续） */
+  private async withSessionLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.sessionLocks.get(id) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.sessionLocks.set(id, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.sessionLocks.get(id) === tail) this.sessionLocks.delete(id);
+    }
+  }
 
   // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根
   constructor(
@@ -269,6 +433,32 @@ export class SessionStore {
   /** 当前会话 ID */
   get currentId(): string | null {
     return this.currentSessionId;
+  }
+
+  /**
+   * 该会话最近一次读取是否走了「尾部残留容错」降级路径（需求 20261107-007 S1）。
+   * true 表示读到的历史可能是旧快照（不完整）；调用方可据此提示用户，
+   * 写入侧已由 store 自动备份原始文件（`.torn`）兜底。
+   */
+  isDegraded(id: string): boolean {
+    return this.degradedSessions.has(id);
+  }
+
+  /**
+   * 把会话文件当前的原始字节复制为 `.torn` 快照（已存在则不覆盖）。
+   * 仅在降级会话写回前调用一次，保证「回退后的历史」覆盖文件后仍能取回原始数据。
+   */
+  private async backupTornFile(id: string): Promise<void> {
+    const found = await this.findSessionFile(id);
+    if (!found) return;
+    const target = `${found.file}.torn`;
+    if (await fileExists(target)) return;
+    try {
+      await copyFile(found.file, target);
+      debug.log(`[session ${id}] 降级恢复：原始文件已备份为 ${target}`);
+    } catch (e) {
+      debug.log(`[session ${id}] 撕裂文件备份失败: ${(e as Error).message}`);
+    }
   }
 
   /** 当前工作空间 ID */
@@ -409,11 +599,31 @@ export class SessionStore {
     firstUserMessage?: string,
     opts?: SessionUpdateOptions,
   ): Promise<ChatMessage[]> {
+    // 同会话串行化：并发交错会互相覆盖/重复追加（需求 20261107-007 S2）
+    return this.withSessionLock(id, () =>
+      this.updateSessionLocked(id, messages, firstUserMessage, opts),
+    );
+  }
+
+  /** updateSession 的实际实现（调用方必须经 updateSession 进入，以保证串行化） */
+  private async updateSessionLocked(
+    id: string,
+    messages: ChatMessage[],
+    firstUserMessage?: string,
+    opts?: SessionUpdateOptions,
+  ): Promise<ChatMessage[]> {
     const startedAt = Date.now();
     const log = (msg: string): void => debug.log(`[updateSession ${id}] ${msg}`);
 
     const data = await this.readSession(id);
     const prev = data.messages ?? [];
+
+    // 降级会话（文件曾撕裂、按有效前缀读取）写回前先备份原始字节（需求 20261107-007 S1）：
+    // 读到的可能是旧快照，若不备份就覆盖写，「原始撕裂文件」将永久丢失
+    if (this.degradedSessions.has(id)) {
+      await this.backupTornFile(id);
+      this.degradedSessions.delete(id);
+    }
 
     const system = messages.find((m) => m.role === 'system') ?? prev.find((m) => m.role === 'system');
     const prevNonSystem = prev.filter((m) => m.role !== 'system');
@@ -546,6 +756,17 @@ export class SessionStore {
     data.messages = system
       ? [toStoredMessage(system, { isCompact: false }), ...nextNonSystem]
       : nextNonSystem;
+    // 幂等防线（需求 20261107-007 S2）：同一 msgId 只保留首条。
+    // 历史因撕裂回退到旧快照后，内存基线里的消息会被当成「新消息」再追加一遍，
+    // 靠 ID 识别出它们是同一条消息并丢弃副本，重复段不再滚雪球。
+    const deduped = dedupeByMsgId(data.messages);
+    if (deduped.removed > 0) {
+      log(
+        `⚠ 按 msgId 去重：丢弃 ${deduped.removed} 条重复消息（历史回退/重复追加所致），` +
+          `保留 ${deduped.messages.length} 条`,
+      );
+      data.messages = deduped.messages;
+    }
     data.updatedAt = new Date().toISOString();
 
     await this.writeSession(data);
@@ -591,9 +812,32 @@ export class SessionStore {
    * 同步更新 messageCount / updatedAt；截断后若已无用户消息，标题重置为空。
    */
   async rewriteMessages(id: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
+    // 同会话串行化：与 updateSession 共用一把锁，避免互相覆盖（需求 20261107-007 S2）
+    return this.withSessionLock(id, () => this.rewriteMessagesLocked(id, messages));
+  }
+
+  /** rewriteMessages 的实际实现（调用方必须经 rewriteMessages 进入，以保证串行化） */
+  private async rewriteMessagesLocked(
+    id: string,
+    messages: ChatMessage[],
+  ): Promise<ChatMessage[]> {
     const startedAt = Date.now();
     const data = await this.readSession(id);
-    data.messages = messages;
+    if (this.degradedSessions.has(id)) {
+      await this.backupTornFile(id);
+      this.degradedSessions.delete(id);
+    }
+    // 幂等防线（需求 20261107-007 S2）：覆盖写前也按 msgId 去重——
+    // 调用方传入的数组若由「旧快照 + 追加」拼出，同 ID 副本会在此被收敛。
+    const deduped = dedupeByMsgId(messages);
+    if (deduped.removed > 0) {
+      debug.log(
+        `[rewriteMessages ${id}] 按 msgId 去重：丢弃 ${deduped.removed} 条重复消息`,
+      );
+    }
+    // 补 msgId（S2）：覆盖写不改变内容，但新消息必须带稳定 ID，
+    // 否则后续轮次无法识别「同一条消息」，去重与恢复链路失效
+    data.messages = deduped.messages.map((m) => (m.msgId ? m : { ...m, msgId: newMsgId() }));
     data.updatedAt = new Date().toISOString();
     await this.writeSession(data);
 
@@ -884,10 +1128,10 @@ export class SessionStore {
     }
     // 原子写：先写同目录临时文件再 rename 覆盖，避免进程中途退出留下半截 JSON
     // （节流落盘会频繁写同一文件，非原子覆盖一旦被打断会直接损坏会话）
-    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${tmpWriteSeq++}.tmp`;
     try {
       await writeFile(tmpPath, payload, 'utf-8');
-      await rename(tmpPath, filePath);
+      await renameWithRetry(tmpPath, filePath);
     } catch (e) {
       await unlink(tmpPath).catch(() => {});
       throw e;
@@ -905,9 +1149,14 @@ export class SessionStore {
       if (!key) {
         throw new Error('密钥未加载，无法读取会话');
       }
-      return decrypt<SessionData>(raw, key);
+      this.degradedSessions.delete(id);
+      return ensureMsgIds(decrypt<SessionData>(raw, key), id);
     }
-    return JSON.parse(raw) as SessionData;
+    const { data, degraded } = parseSessionJson(raw, found.file);
+    // 记录/清除降级标记：读干净文件即视为已恢复正常（文件已被重写或从未撕裂）
+    if (degraded) this.degradedSessions.add(id);
+    else this.degradedSessions.delete(id);
+    return ensureMsgIds(data, id);
   }
 
   private async readIndex(): Promise<SessionMeta[]> {

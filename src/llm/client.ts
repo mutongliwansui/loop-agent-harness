@@ -104,11 +104,12 @@ export class LLMClient {
     is_show?: unknown;
     show_content?: unknown;
     kind?: unknown;
+    msgId?: unknown;
   }>(
     messages: T[],
   ): T[] {
     return messages.map((m) => {
-      // 构造去掉会话标记字段的新对象：is_compact/is_show/show_content/kind 均不进入 LLM 请求，
+      // 构造去掉会话标记字段的新对象：is_compact/is_show/show_content/kind/msgId 均不进入 LLM 请求，
       // 否则会因非标准字段触发 API 400（TS 不允许在 ChatMessage 联合上直接解构）
       const {
         is_compact: _isCompact,
@@ -116,6 +117,7 @@ export class LLMClient {
         show_content: _showContent,
         kind: _kind,
         usage: _usage,
+        msgId: _msgId,
         tool_calls,
         ...rest
       } = m as unknown as Record<string, unknown>;

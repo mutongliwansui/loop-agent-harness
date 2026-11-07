@@ -233,6 +233,14 @@ export interface SessionMessageFlags {
   usage?: TurnUsage;
   /** 子 Agent 执行轨迹（需求 20261107-002 D4）：挂到 delegate 的 tool 消息，刷新后可恢复过程区 */
   sub?: SubAgentTrace;
+  /**
+   * 消息稳定 ID（需求 20261107-007 S2）：写入时生成并随会话落盘，
+   * 作为「同一条消息」的身份键，用于写入/恢复链路的幂等去重。
+   * 不用内容哈希作键：内容相同的合法消息（如连发两次「继续」）必须各自保留。
+   * 旧数据缺失时由 store 按确定性规则补生成（同文件多次读取得到同一 ID）。
+   * 仅存盘语义，调用 LLM 前由 LLMClient.normalizeMessages 剥离。
+   */
+  msgId?: string;
 }
 
 /**
