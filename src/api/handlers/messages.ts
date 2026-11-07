@@ -22,6 +22,7 @@ import {
   isSubAgentResultContent,
 } from '../../types.js';
 import { applySubAgentEvent, createSubAgentTrace } from '../../agent/subagent-trace.js';
+import { subAgentRegistry } from '../../agent/subagent-registry.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
 import { locateSession } from '../session-locator.js';
@@ -200,11 +201,46 @@ export async function runMessageTurn(
   // 同步 delegate 的轨迹按 callId 收集，run 结束时挂到对应 tool 消息（D4）；
   // 后台子任务走独立回调，完成后追加一张结果卡片并推送 SSE（D8）。
   const subTraces = new Map<string, SubAgentTrace>();
+  /**
+   * 后台子任务的描述文本（taskId → task，需求 20261107-008 P2）：
+   * onSubAgentEvent 只带 callId，增量落盘时要用它拼卡片内容。
+   */
+  const subTaskText = new Map<string, string>();
+  /**
+   * 过程轨迹增量落盘节流（需求 20261107-008 P2 / task-006 B6）：
+   * 后台任务运行中刷新页面时 running 卡片有、trace 却是空的。每事件落盘会造成
+   * 写放大（tool_progress 高频），故按间隔节流；收敛时 onSubAgentComplete 覆盖为最终轨迹。
+   */
+  const SUB_TRACE_FLUSH_MS = 8000;
+  const lastTraceFlush = new Map<string, number>();
+
   runOptions.onSubAgentEvent = (info) => {
     if (info.callId) {
       const trace = subTraces.get(info.callId) ?? createSubAgentTrace();
       applySubAgentEvent(trace, info);
       subTraces.set(info.callId, trace);
+      // 后台子任务（callId 即 sub_ 前缀的 taskId）：节流落盘过程轨迹
+      if (info.callId.startsWith('sub_')) {
+        const now = Date.now();
+        // P2（20261107-009）：把运行中进度同步进 registry，让 /subagents 在运行中
+        // 就带回真实轮次与耗时（前端 running 卡片/指示器据此显示「已运行 Xs · N 轮」）
+        subAgentRegistry.touch(info.callId, {
+          iterations: trace.iterations,
+          elapsedMs: trace.startedAt ? now - trace.startedAt : undefined,
+        });
+        if (now - (lastTraceFlush.get(info.callId) ?? 0) >= SUB_TRACE_FLUSH_MS) {
+          lastTraceFlush.set(info.callId, now);
+          const fork: SubAgentTrace = structuredClone(trace);
+          void upsertSubAgentCard({
+            taskId: info.callId,
+            task: subTaskText.get(info.callId) ?? '',
+            status: 'running',
+            iterations: fork.iterations,
+            elapsedMs: fork.startedAt ? now - fork.startedAt : 0,
+            trace: fork,
+          });
+        }
+      }
     }
     if (!stream) return;
     const seq = ctx.runs.publish(id, 'subagent_event', { info });
@@ -250,6 +286,7 @@ export async function runMessageTurn(
 
   // 提交即落盘「运行中」卡片（Agent 层 await 此回调，保证先于 updateSession 写入磁盘）
   runOptions.onSubAgentStart = async (info) => {
+    subTaskText.set(info.taskId, info.task); // 供过程轨迹增量落盘拼卡片内容（P2）
     await upsertSubAgentCard({
       taskId: info.taskId,
       task: info.task,

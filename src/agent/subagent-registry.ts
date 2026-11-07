@@ -58,6 +58,20 @@ class SubAgentRegistry {
     return sessionId ? all.filter((t) => t.sessionId === sessionId) : all;
   }
 
+  /**
+   * 运行期进度更新（需求 20261107-009 P2 / task-006 B7）。
+   *
+   * 只有完成时 `finish` 才写 iterations/elapsedMs，运行中查询只能拿到 0 →
+   * 前端 running 卡片只能显示静态「任务执行中…」。过程事件到达时同步刷新这两个字段，
+   * 让 `GET /sessions/:id/subagents` 在**运行中**就带回真实轮次与耗时（2s 轮询驱动 UI）。
+   */
+  touch(taskId: string, patch: { iterations?: number; elapsedMs?: number }): void {
+    const rec = this.tasks.get(taskId);
+    if (!rec || rec.status !== 'running') return;
+    if (patch.iterations !== undefined) rec.iterations = patch.iterations;
+    if (patch.elapsedMs !== undefined) rec.elapsedMs = patch.elapsedMs;
+  }
+
   finish(
     taskId: string,
     patch: Partial<Omit<SubAgentTaskRecord, 'taskId' | 'startedAt'>> & {

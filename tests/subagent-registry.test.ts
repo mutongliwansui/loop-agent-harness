@@ -55,6 +55,26 @@ describe('后台子任务注册表', () => {
     expect(subAgentRegistry.get('missing')).toBeUndefined();
   });
 
+  it('运行期 touch 刷新轮次与耗时，让 /subagents 在运行中就有实时数据（20261107-009 P2）', () => {
+    subAgentRegistry.create({ taskId: 'sub_a', sessionId: 's1', task: 'A' });
+    // 运行中：touch 前这两个字段是空的（只有 finish 才写）→ 前端只能显示静态文案
+    expect(subAgentRegistry.get('sub_a')?.iterations).toBeUndefined();
+
+    subAgentRegistry.touch('sub_a', { iterations: 2, elapsedMs: 1234 });
+    expect(subAgentRegistry.get('sub_a')?.iterations).toBe(2);
+    expect(subAgentRegistry.get('sub_a')?.elapsedMs).toBe(1234);
+    expect(subAgentRegistry.get('sub_a')?.status).toBe('running');
+
+    // 已完成/不存在：touch 不写入（避免完成结果被运行期采样覆盖）
+    subAgentRegistry.finish('sub_a', { status: 'done', iterations: 5, elapsedMs: 9000 });
+    subAgentRegistry.touch('sub_a', { iterations: 99, elapsedMs: 1 });
+    expect(subAgentRegistry.get('sub_a')?.iterations).toBe(5);
+    expect(subAgentRegistry.get('sub_a')?.elapsedMs).toBe(9000);
+
+    subAgentRegistry.touch('missing', { iterations: 1 });
+    expect(subAgentRegistry.get('missing')).toBeUndefined();
+  });
+
   it('CLI 提示队列先进先出且 drain 后清空', () => {
     subAgentRegistry.pushCliNotice('✅ 完成 1');
     subAgentRegistry.pushCliNotice('❌ 失败 2');
