@@ -58,6 +58,7 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
       'commandLogs',
       'commandStop',
       'activate_skill',
+      'delegate',
       'describe_image',
       'ask_image',
       'extract_json',
@@ -188,6 +189,21 @@ describe('toolSummary：摘要短语', () => {
     expect(toolSummary('activate_skill', JSON.stringify({ name: 'task-driven-development' }))).toBe(
       'task-driven-development',
     );
+  });
+
+  it('delegate：中文名 + 任务首句摘要（后台标注）', () => {
+    expect(toolDisplay('delegate')).toEqual({ icon: 'puzzle', name: '委托子任务', known: true });
+    expect(toolSummary('delegate', JSON.stringify({ task: '调研记忆系统' }))).toBe('委托 调研记忆系统');
+    expect(
+      toolSummary('delegate', JSON.stringify({ task: '调研记忆系统', background: true })),
+    ).toBe('委托 调研记忆系统（后台）');
+    // background 非布尔不误标
+    expect(toolSummary('delegate', JSON.stringify({ task: '调研', background: 'true' }))).toBe(
+      '委托 调研',
+    );
+    // task 缺失（含空参数）回退固定中文名，不再露出 JSON
+    expect(toolSummary('delegate', JSON.stringify({ context: 'x' }))).toBe('委托子任务');
+    expect(toolSummary('delegate', '{}')).toBe('委托子任务');
   });
 
   it('视觉工具：图片名 + 问题/字段', () => {

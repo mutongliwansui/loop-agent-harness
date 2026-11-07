@@ -12,7 +12,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import type { ChatMessage } from '../types.js';
-import { isBackgroundNoticeContent } from '../types.js';
+import { isDisplayOnlyContent, isSubAgentResultContent } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
 import { isSummaryMessage } from '../memory/summary-message.js';
@@ -623,6 +623,41 @@ export class SessionStore {
   }
 
   /**
+   * 进程重启后，把仍处于 running 状态的后台子任务卡片标记为 interrupted。
+   *
+   * 仅在 SessionManager.ensureEntry 冷启动路径（缓存 miss）调用一次，
+   * 避免误标当前进程内正在运行的子任务。返回被修改的卡片数量。
+   *
+   * 修改内容：status: running → status: interrupted；error 置为「进程重启，后台子任务未完成」。
+   * 定位 running 卡片用 /^status: running$/m；error 行锚定到 </subagent_result> 前一行，
+   * 防止误替换 task / answer 正文中出现的 error: 文本。
+   */
+  async markRunningSubAgentsInterrupted(id: string): Promise<number> {
+    const data = await this.readSession(id);
+    let changed = 0;
+    for (const m of data.messages ?? []) {
+      if (m.role !== 'user' || !isSubAgentResultContent(m.content)) continue;
+      const content = m.content ?? '';
+      if (!/^status: running$/m.test(content)) continue;
+      m.content = content
+        .replace(/^status: running$/m, 'status: interrupted')
+        .replace(
+          /^error:.*\n<\/subagent_result>/m,
+          'error: 进程重启，后台子任务未完成\n</subagent_result>',
+        );
+      changed++;
+    }
+    if (changed > 0) {
+      data.updatedAt = new Date().toISOString();
+      await this.writeSession(data);
+      debug.log(
+        `[markRunningSubAgentsInterrupted ${id}] 标记 ${changed} 张 running 卡片为 interrupted`,
+      );
+    }
+    return changed;
+  }
+
+  /**
    * 返回会话全量历史（含 system）。messages 已是唯一真源，
    * 展示层自行按 is_show 过滤（system 与压缩总结消息不展示）。
    */
@@ -645,9 +680,9 @@ export class SessionStore {
     for (const m of data.messages ?? []) {
       if (m.role === 'system') continue;
       if (m.is_compact === true) continue;
-      // 需求 20261105-001 D9：后台任务完成通知仅用于界面展示，不进入 LLM 历史前缀
-      // （含旧版本已落盘的、被 L2 记忆前缀包裹的遗留通知）
-      if (m.role === 'user' && isBackgroundNoticeContent(m.content)) continue;
+      // 需求 20261105-001 D9 + 20261107-002 D8：后台任务通知 / 子 Agent 结果卡片
+      // 仅用于界面展示，不进入 LLM 历史前缀（含旧版本已落盘的、被记忆前缀包裹的遗留通知）
+      if (m.role === 'user' && isDisplayOnlyContent(m.content)) continue;
       result.push(m);
     }
     return result;

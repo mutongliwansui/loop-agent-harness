@@ -30,7 +30,9 @@ import { showToast } from '../toast.js';
 import { clipName } from '../mcp-tool-meta.js';
 import { metaRev } from '../mcp-tool-meta-loader.js';
 import { parseBackgroundResult } from '../background-task-card.js';
+import type { ProcessTrace } from '../subagent-process.js';
 import BackgroundTaskCard from './BackgroundTaskCard.vue';
+import SubAgentProcess from './SubAgentProcess.vue';
 
 /** 卡片渲染所需的最小段形状（与 chat-stream 的 ToolSeg 结构兼容，避免耦合） */
 interface CardSeg {
@@ -40,6 +42,8 @@ interface CardSeg {
   done: boolean;
   elapsedMs?: number;
   aborted?: boolean;
+  /** 子 Agent 执行轨迹（需求 20261107-002 D3）：默认收起 */
+  sub?: ProcessTrace;
 }
 
 const props = defineProps<{ card: ToolCardVM<CardSeg>; wsRoot?: string }>();
@@ -191,6 +195,8 @@ function subChipOf(seg: CardSeg): { path: string; kind: 'file' | 'dir' } | undef
 
 const headArgs = computed(() => headSeg.value.args || '');
 
+/* ===== 子 Agent 过程区（需求 20261107-002 D3：默认收起，展开可查） ===== */
+const subTrace = computed(() => (grouped.value ? undefined : headSeg.value.sub));
 function toggleJson(): void {
   jsonOpen.value = !jsonOpen.value;
 }
@@ -364,6 +370,13 @@ const backgroundInitial = computed(() => ({
 
       <!-- 单卡：后台任务走卡片（D3 结果区替换）；普通工具走键值表 + 结果区 -->
       <template v-else>
+        <!-- 子 Agent 过程区（20261107-003）：渲染交给 SubAgentProcess，默认收起 -->
+        <SubAgentProcess
+          v-if="subTrace"
+          :trace="subTrace"
+          :status="subTrace.status"
+          :elapsed-ms="headSeg.elapsedMs"
+        />
         <BackgroundTaskCard
           v-if="backgroundInfo"
           class="tcard-bg"

@@ -32,8 +32,9 @@ import type { SessionManager } from '../session-manager.js';
 import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
 import { readJournal, dropJournal } from '../run-journal.js';
 import { estimateMessageTokens } from '../../memory/working.js';
-import { isBackgroundNoticeContent, type ChatMessage } from '../../types.js';
+import { isDisplayOnlyContent, type ChatMessage } from '../../types.js';
 import { ReActAgent, type CompactNowResult } from '../../agent/react-agent.js';
+import { subAgentRegistry } from '../../agent/subagent-registry.js';
 import { runMessageTurn } from './messages.js';
 
 /** 枚举本机盘符（Windows；返回 'C:\' 形式，非 Windows 返回空） */
@@ -263,9 +264,14 @@ export async function handleDeleteSession(ctx: HandlerContext, res: ServerRespon
   if (entry?.inFlight) {
     throw new ApiHttpError('busy', `会话 ${id} 正在处理消息，暂不能删除`);
   }
+  // 需求 20261107-002 D11：删除会话时中止其全部后台子任务，避免孤儿任务继续跑
+  const abortedSubAgents = subAgentRegistry.abortSession(id, `会话 ${id} 已删除`);
   await store.deleteSession(id);
   sessions.delete(id);
   ctx.runs.drop(id);
+  if (abortedSubAgents > 0) {
+    ctx.log(`[api] 已中止会话 ${id} 的 ${abortedSubAgents} 个后台子任务`);
+  }
   // journal 联动删除（Task-20261021-002-06）：会话删除后 runs/<id>.json 一并清掉
   await dropJournal(store, id);
   ctx.log(`[api] 会话已删除: ${id}`);
@@ -292,6 +298,35 @@ function resolveSessionScope(
     if (!owner) throw new ApiHttpError('not_found', `会话不存在: ${id}`);
     return { store, sessions: ctx.sessions, rt: null };
   })();
+}
+
+/**
+ * GET /sessions/:id/subagents：后台子任务列表（需求 20261107-002 D9）
+ *
+ * 仅返回进程内运行期状态（不落盘）：运行中/已完成/失败/取消。
+ * 结果卡片本身已由完成回调落盘，前端刷新后从消息历史恢复；
+ * 本端点用于「运行中」卡片与 2s 轮询（以及 CLI /subagent）。
+ */
+export async function handleListSubAgents(
+  ctx: HandlerContext,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  const { sessions } = await resolveSessionScope(ctx, id);
+  await sessions.ensureEntry(id);
+  const items = subAgentRegistry.list(id).map((t) => ({
+    taskId: t.taskId,
+    task: t.task,
+    status: t.status,
+    startedAt: t.startedAt,
+    finishedAt: t.finishedAt,
+    elapsedMs: t.elapsedMs,
+    iterations: t.iterations,
+    answer: t.answer,
+    error: t.error,
+    trace: t.trace,
+  }));
+  sendJson(res, 200, { items });
 }
 
 /**
@@ -480,10 +515,10 @@ export async function handleRetrySession(
   const visible = stored
     .map((m, i) => ({ m, i }))
     .filter(({ m }) => m.role !== 'system' && m.is_compact !== true);
-  // entry.history 缓存 miss 时来自 getRestoreMessages（剔除后台通知）；命中时含通知。
-  // 以长度对齐选择映射口径，避免通知造成下标偏移。
+  // entry.history 缓存 miss 时来自 getRestoreMessages（剔除展示专用消息）；命中时含它们。
+  // 以长度对齐选择映射口径，避免通知/结果卡片造成下标偏移。
   const stable = visible.filter(
-    ({ m }) => !(m.role === 'user' && isBackgroundNoticeContent(m.content)),
+    ({ m }) => !(m.role === 'user' && isDisplayOnlyContent(m.content)),
   );
   const rows = stable.length === entry.history.length ? stable : visible;
   const row = rows[userIdx];

@@ -13,6 +13,7 @@
 | 🔁 **文件编辑** | `editFile` | 三种模式：①字面量替换（要求唯一出现，多处匹配报错以防误改）；②`regex=true` 正则替换（支持 `$1`/`$&` 捕获引用）；③指定 `startLine`/`endLine` 整段行替换。**行尾归一化**：匹配与校验对 `\r\n`/`\n` 等价（多行 oldText 可直接编辑 CRLF 文件），写回保持原文件行尾风格（未触及区域字节级不变，替换段适配主导行尾）；同文件写操作自动串行化；失配时报错附首个差异行与近似候选，文件 mtime 变化时提示「可能已被并发修改，先 fileRead 再编辑」 | `path`（必填）, `newText`（必填）, `oldText`（未指定行范围时必填）, `startLine`（可选）, `endLine`（可选）, `replaceAll`（可选，默认 `false`）, `regex`（可选，默认 `false`）, `flags`（可选，如 `i`/`m`/`s`） |
 | 🔍 **内容检索** | `grep` | 在文件或目录中检索内容，支持正则、忽略大小写、递归搜索 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选）, `recursive`（可选）, `maxResults`（可选，默认 50） |
 | 🎯 **Skill 激活** | `activate_skill` | 激活指定 Skill（技能包），返回 SKILL.md 完整指令**及技能所在目录（技能目录 / SKILL.md 绝对路径）**，便于定位技能内附带的脚本、参考文档等文件 | `name`（必填） |
+| 🧑‍🤝‍🧑 **子任务委托** | `delegate` | 把自包含子任务交给独立子 Agent 执行，返回其最终结论。子 Agent 拥有独立消息历史、共享 L2/L3 记忆、独立 L1 工作记忆；工具集**排除 `delegate`**防无限递归；不落盘独立会话；取消信号透传。执行器由主 Agent 在 run 内注入（`ToolContext.runSubAgent`），未注入时降级报错。过程可见：WebUI 在卡片内提供「子 Agent 过程」折叠区（默认收起），CLI 结束打印一行摘要、`verbose` 时逐行缩进展开。支持 `background:true` 并行后台执行（立即返回 `sub_<id>`，完成后自动落盘结果卡片；并发上限 `agent.subAgent.maxConcurrent`，默认 3） | `task`（必填，自包含任务描述）, `context`（可选，背景补充）, `background`（可选，`true`=后台并行，缺省同步阻塞） |
 | 👁️ **图片描述** | `describe_image` | 对图片做整体描述（主体、场景、可见文字、颜色、数量等）；不确定该问什么时先用它获取全局信息 | `image`（必填，本地路径或 http(s) URL） |
 | ❓ **图片问答** | `ask_image` | 针对图片回答一个具体问题（界面文字、错误码、按钮状态、颜色、数量等），比 `describe_image` 更精准、输出更短 | `image`（必填）, `question`（必填） |
 | 🧾 **结构化提取** | `extract_json` | 按字段列表从图片提取结构化数据并返回 JSON（表单 / 表格 / 配置界面等场景）；解析失败自动降级返回原始文本 | `image`（必填）, `fields`（必填，字段名数组） |
@@ -73,6 +74,13 @@ grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 
 
 # Skill 激活（渐进式加载，返回 SKILL.md 完整内容 + 技能目录 / SKILL.md 绝对路径）
 activate_skill({ "name": "example-skill" })
+
+# 子任务委托（子 Agent 独立执行，结果作为 observation 返回）
+delegate({ "task": "调研本项目的三层记忆实现并输出要点", "context": "项目根目录为当前工作空间" })
+
+# 两个互不相干的任务并行后台执行：立即返回 taskId，主 Agent 继续推理
+delegate({ "task": "统计 src/ 下各目录的代码行数", "background": true })
+delegate({ "task": "整理 docs/ 中已过期的设计文档清单", "background": true })
 
 # 图片描述（本地路径自动转 base64 data URL，需 vision.enabled = true）
 describe_image({ "image": "screenshots/login.png" })

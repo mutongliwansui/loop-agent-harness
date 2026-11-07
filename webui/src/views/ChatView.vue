@@ -73,6 +73,7 @@ import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js
 import ToolCard from '../components/ToolCard.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
+import SubAgentResultCard from '../components/SubAgentResultCard.vue';
 import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
 import { nextTextareaHeight } from '../autogrow.js';
 import { createFollowState, type FollowState } from '../scroll-follow.js';
@@ -1178,6 +1179,8 @@ onUnmounted(() => {
             <div v-for="m in messages" :key="m.id" class="msg" :class="[m.role, { notice: noticeMap.has(m.id) }]">
               <!-- 20261105-001：后台任务完成通知渲染为系统卡片，不占用户气泡 -->
               <BackgroundNoticeCard v-if="noticeMap.get(m.id)" :info="noticeMap.get(m.id)!" />
+              <!-- 20261107-002 D8：后台子任务完成结果卡片（服务端主动落盘） -->
+              <SubAgentResultCard v-else-if="m.subResult" :info="m.subResult" />
               <template v-else>
               <div v-if="m.role === 'assistant'" class="m-head">
                 <div class="ava">L</div><span class="m-role">Loop Agent</span>

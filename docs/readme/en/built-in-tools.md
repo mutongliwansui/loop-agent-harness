@@ -13,6 +13,7 @@
 | 🔁 **File Edit** | `editFile` | Three modes: ① literal replacement (must appear exactly once; multiple matches error out to avoid accidental edits); ② `regex=true` regex replacement (supports `$1`/`$&` capture references); ③ whole-line-range replacement when `startLine`/`endLine` are given | `path` (required), `newText` (required), `oldText` (required unless a line range is given), `startLine` (optional), `endLine` (optional), `replaceAll` (optional, defaults to `false`), `regex` (optional, defaults to `false`), `flags` (optional, e.g. `i`/`m`/`s`) |
 | 🔍 **Content Search** | `grep` | Search content in a file or directory; supports regex, case-insensitivity and recursive search | `pattern` (required), `path` (required), `ignoreCase` (optional), `recursive` (optional), `maxResults` (optional, defaults to 50) |
 | 🎯 **Skill Activation** | `activate_skill` | Activate a Skill, returning the full SKILL.md instructions **plus the skill's directory (skill dir / absolute SKILL.md path)**, making it easy to locate bundled scripts, reference docs, etc. | `name` (required) |
+| 🧑‍🤝‍🧑 **Sub-agent Delegation** | `delegate` | Hand a self-contained sub-task to an independent sub-agent and return its final conclusion. The sub-agent has its own message history, shares L2/L3 memory, keeps an isolated L1 working memory, **excludes `delegate`** from its tool set (no infinite recursion), does not persist a separate session, and inherits the abort signal. The executor is injected by the parent agent at run time (`ToolContext.runSubAgent`); when absent the tool degrades with an error. Process visibility: WebUI shows a collapsible "sub-agent process" block inside the card (collapsed by default); CLI prints a one-line summary at the end and, with `verbose`, the expanded steps. `background:true` runs in parallel and returns a `sub_<id>` immediately; the result card is persisted on completion (concurrency capped by `agent.subAgent.maxConcurrent`, default 3) | `task` (required, self-contained description), `context` (optional background), `background` (optional, `true` = parallel background; default blocks) |
 | 👁️ **Image Description** | `describe_image` | Produce an overall description of an image (subject, scene, visible text, colors, counts, etc.); use it first to get global context when unsure what to ask | `image` (required, local path or http(s) URL) |
 | ❓ **Image Q&A** | `ask_image` | Answer a specific question about an image (UI text, error codes, button states, colors, counts, etc.); more precise and shorter output than `describe_image` | `image` (required), `question` (required) |
 | 🧾 **Structured Extraction** | `extract_json` | Extract structured data from an image by a list of fields and return JSON (forms / tables / config screens, etc.); falls back to the raw text automatically when parsing fails | `image` (required), `fields` (required, array of field names) |
@@ -74,19 +75,18 @@ grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 
 # Skill activation (progressive loading; returns the full SKILL.md content + skill dir / absolute SKILL.md path)
 activate_skill({ "name": "example-skill" })
 
+# Sub-agent delegation (runs in an isolated sub-agent; the result comes back as an observation)
+delegate({ "task": "Research this project's three-tier memory implementation and summarize the key points", "context": "The project root is the current workspace" })
+
+# Two unrelated tasks in parallel background mode: returns taskIds immediately, the main agent keeps reasoning
+delegate({ "task": "Count lines of code per directory under src/", "background": true })
+delegate({ "task": "List outdated design docs under docs/", "background": true })
+
 # Image description (local paths are auto-converted to base64 data URLs; requires vision.enabled = true)
 describe_image({ "image": "screenshots/login.png" })
 
 # Image Q&A (accepts a local path or an http(s) URL)
 ask_image({ "image": "https://example.com/chart.png", "question": "Which month does the tallest bar in this chart correspond to?" })
-
-# Structured extraction (returns a JSON string; falls back to the raw text when parsing fails)
-extract_json({ "image": "invoice.png", "fields": ["title", "amount", "date"] })
-
-# Text recognition (OCR; preserves the original reading order and line breaks)
-ocr_image({ "image": "receipt.jpg" })
-```
-": "Which month does the tallest bar in this chart correspond to?" })
 
 # Structured extraction (returns a JSON string; falls back to the raw text when parsing fails)
 extract_json({ "image": "invoice.png", "fields": ["title", "amount", "date"] })

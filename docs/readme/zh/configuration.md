@@ -72,7 +72,11 @@
     "debug": false,
     "systemPrompt": null,
     "showTokenStats": true,
-    "maxIterations": 100
+    "maxIterations": 100,
+    "subAgent": {
+      "background": true,
+      "maxConcurrent": 3
+    }
   },
   "session": {
     "autoSave": true,
@@ -156,6 +160,8 @@
 | `agent` | `showTokenStats` | 是否输出每轮/会话汇总 token 统计（Task-15） | `true` |
 | `agent` | `loading` | 是否显示等待 loading 指示器（非 TTY 环境始终禁用，Task-20260930-001） | `true` |
 | `agent` | `maxIterations` | 单次任务最大迭代次数 | `100` |
+| `agent.subAgent` | `background` | 是否允许 `delegate({background:true})` 后台并行执行（关闭后委托一律同步阻塞） | `true` |
+| `agent.subAgent` | `maxConcurrent` | 同一会话后台子任务并发上限，超限立即报错不排队 | `3` |
 | `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
 | `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |

@@ -162,6 +162,18 @@ export interface AgentBehaviorConfig {
   loading: boolean;
   /** 单次任务最大迭代次数（默认 100；环境变量 MAX_ITERATIONS 可覆盖） */
   maxIterations: number;
+  /** 子 Agent 委托配置（需求 20261107-002 D5） */
+  subAgent: SubAgentConfig;
+}
+
+/**
+ * 子 Agent 委托配置（需求 20261107-002）
+ */
+export interface SubAgentConfig {
+  /** 是否允许后台执行（delegate({background:true})）；关闭时委托一律同步阻塞 */
+  background: boolean;
+  /** 同一会话后台子任务并发上限（超限立即报错，不排队） */
+  maxConcurrent: number;
 }
 
 /**
@@ -324,6 +336,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
     llmLogEnabled: true,
     loading: true,
     maxIterations: 100,
+    subAgent: {
+      background: true,
+      maxConcurrent: 3,
+    },
   },
   session: {
     autoSave: true,

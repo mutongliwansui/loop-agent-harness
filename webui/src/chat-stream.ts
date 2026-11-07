@@ -21,12 +21,57 @@ export interface TextSeg {
   type: 'text';
   text: string;
 }
+/** 子 Agent 工具步骤（与后端 SubAgentToolStep 对齐） */
+export interface SubAgentToolStepVM {
+  name: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  elapsedMs?: number;
+  ok?: boolean;
+  iteration?: number;
+}
+/** 子 Agent 执行轨迹（与后端 SubAgentTrace 对齐，需求 20261107-002） */
+export interface SubAgentTraceVM {
+  status: 'running' | 'done' | 'failed' | 'aborted';
+  iterations: number;
+  think: { iteration: number; text: string }[];
+  tools: SubAgentToolStepVM[];
+  final?: string;
+  startedAt: number;
+}
+/** 子 Agent 过程事件（与后端 SubAgentEventInfo 对齐） */
+export interface SubAgentEventVM {
+  callId: string;
+  phase: 'start' | 'iteration' | 'think' | 'tool_start' | 'tool_end' | 'tool_progress' | 'final' | 'error' | 'aborted';
+  iteration?: number;
+  text?: string;
+  tool?: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  elapsedMs?: number;
+  error?: string;
+}
+/** 后台子任务结果卡片（kind='subagent_result' 的展示专用消息） */
+export interface SubAgentResultVM {
+  taskId: string;
+  task: string;
+  status: 'running' | 'done' | 'failed' | 'aborted' | 'interrupted';
+  elapsedMs: number;
+  iterations: number;
+  answer?: string;
+  error?: string;
+  trace?: SubAgentTraceVM;
+}
 export interface ToolSeg {
   type: 'tool';
   tool: string;
   args: string;
   result: string;
   done: boolean;
+  /** 子 Agent 过程轨迹（需求 20261107-002 D3）：默认收起，展开查看 */
+  sub?: SubAgentTraceVM;
+  /** 归属的 delegate callId（仅运行期用于把过程事件挂到正确卡片） */
+  callId?: string;
   /** 执行耗时：tool_end 时按本地时间计算；历史消息无此值 */
   elapsedMs?: number;
   /** 执行开始时间戳（仅流式期间用于算耗时，不渲染） */
@@ -58,6 +103,10 @@ export interface ApiHistoryMsg {
   show_content?: string;
   /** 本轮 token 统计（需求 20261106-006）：随会话落盘，仅每轮最终 assistant 消息携带 */
   usage?: TurnTokenStats;
+  /** 消息种类（20261107-002）：subagent_result = 后台子任务结果卡片（仅展示，不进 LLM 历史） */
+  kind?: string;
+  /** 子 Agent 轨迹（20261107-002 D4）：挂在该轮 delegate 的 tool 消息上 */
+  sub?: SubAgentTraceVM;
 }
 export interface ChatMsg {
   id: number;
@@ -80,6 +129,8 @@ export interface ChatMsg {
   meta?: string; // done/aborted 后的耗时/轮数标注（aborted 带「已停止 ·」前缀）
   live?: LivePhase | null; // 实时状态行（思考中/生成参数/执行中）
   lastEventAt?: number; // 最近一次收到 SSE 事件的时间（长时间无事件时提示仍在响应）
+  /** 后台子任务结果卡片（20261107-002 D8）：渲染为独立卡片，不占用户气泡 */
+  subResult?: SubAgentResultVM;
 }
 
 /**
@@ -289,6 +340,13 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
   };
   for (const m of list) {
     if (m.role === 'system' || m.is_compact === true) continue;
+    // 后台子任务结果卡片是展示专用消息（不进 LLM 历史），不占用恢复视图下标
+    if (m.role === 'user' && m.kind === 'subagent_result') {
+      flush();
+      const card = parseSubAgentResultCard(m.show_content || m.content || '', m.sub);
+      if (card) out.push({ id: nextMsgId(), role: 'user', segments: [], subResult: card });
+      continue;
+    }
     const historyIdx = viewIdx++;
     // 不展示的消息：压缩总结消息（is_show=false）仍计入恢复视图下标
     if (m.is_show === false) continue;
@@ -315,11 +373,107 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
       }
     } else if (m.role === 'tool') {
       const seg = toolSegById.get(m.tool_call_id ?? '');
-      if (seg) seg.result = m.content ?? '';
+      if (seg) {
+        seg.result = m.content ?? '';
+        // 落盘轨迹恢复：刷新/重进会话后过程区仍可展开
+        if (m.sub) seg.sub = m.sub;
+      }
     }
   }
   flush();
   return out;
+}
+
+/** 解析后台子任务结果卡片（content 由后端 serializeSubAgentResult 生成） */
+function parseSubAgentResultCard(content: string, sub?: SubAgentTraceVM): SubAgentResultVM | undefined {
+  const m = content.match(/<subagent_result>([\s\S]*?)<\/subagent_result>/);
+  if (!m) return undefined;
+  const body = m[1];
+  const field = (key: string): string | undefined => {
+    const hit = body.match(new RegExp(`^${key}: ?(.*)$`, 'm'));
+    return hit ? hit[1].trim() : undefined;
+  };
+  const answerStart = body.indexOf('answer: ');
+  const errorStart = body.indexOf('\nerror: ');
+  const answer = answerStart >= 0
+    ? body
+        .slice(answerStart + 'answer: '.length, errorStart > answerStart ? errorStart : undefined)
+        .trim()
+    : undefined;
+  return {
+    taskId: field('taskId') ?? 'sub_unknown',
+    task: field('task') ?? '',
+    status: (field('status') as SubAgentResultVM['status']) ?? 'done',
+    elapsedMs: Number(field('elapsedMs') ?? 0),
+    iterations: Number(field('iterations') ?? 0),
+    answer: answer || undefined,
+    error: field('error') || undefined,
+    trace: sub,
+  };
+}
+
+/** SSE 过程事件合入前端轨迹（规则与后端 applySubAgentEvent 对齐） */
+function applySubAgentEventVM(trace: SubAgentTraceVM, info: SubAgentEventVM): void {
+  switch (info.phase) {
+    case 'start':
+      trace.startedAt = Date.now();
+      break;
+    case 'iteration':
+      trace.iterations = Math.max(trace.iterations, info.iteration ?? 0);
+      break;
+    case 'think':
+      if (info.text) trace.think.push({ iteration: info.iteration ?? 1, text: info.text });
+      break;
+    case 'tool_start':
+      trace.tools.push({
+        name: info.tool ?? 'unknown',
+        args: info.args,
+        iteration: info.iteration,
+      });
+      break;
+    case 'tool_end': {
+      for (let i = trace.tools.length - 1; i >= 0; i--) {
+        const s = trace.tools[i];
+        if (s.name === info.tool && s.result === undefined) {
+          s.result = info.result;
+          s.ok = !(info.result ?? '').startsWith('工具执行失败');
+          if (info.elapsedMs !== undefined) s.elapsedMs = info.elapsedMs;
+          break;
+        }
+      }
+      break;
+    }
+    case 'tool_progress': {
+      const last = trace.tools[trace.tools.length - 1];
+      if (last && info.elapsedMs !== undefined) last.elapsedMs = info.elapsedMs;
+      break;
+    }
+    case 'final':
+      trace.final = info.text;
+      trace.status = 'done';
+      break;
+    case 'error':
+      trace.status = 'failed';
+      break;
+    case 'aborted':
+      trace.status = 'aborted';
+      break;
+  }
+}
+
+/** 找到（或认领）当前轮 assistant 消息里对应的 delegate 卡片段 */
+function attachSubAgentSeg(st: SessionStreamState, callId: string): ToolSeg | undefined {
+  const msg = st.messages[st.messages.length - 1];
+  if (!msg || msg.role !== 'assistant') return undefined;
+  const segs = msg.segments.filter(
+    (s): s is ToolSeg => s.type === 'tool' && s.tool === 'delegate',
+  );
+  const hit = segs.find((s) => s.callId === callId);
+  if (hit) return hit;
+  // 首次事件：按到达顺序认领一个尚未归属的 delegate 段（并发 delegate 时不串台）
+  const free = segs.find((s) => !s.callId);
+  if (free) free.callId = callId;
+  return free;
 }
 
 interface SessionDetail {
@@ -739,6 +893,33 @@ function applyEvent(id: string, ev: SseEvent): void {
       void reconcile(id, true);
       break;
     }
+    // 子 Agent 过程事件（需求 20261107-002 D3）：按 callId 挂到 delegate 卡片，驱动「过程区」
+    case 'subagent_event': {
+      const info = (d as { info?: SubAgentEventVM }).info;
+      if (info?.callId) {
+        const seg = attachSubAgentSeg(st, info.callId);
+        if (seg) {
+          if (!seg.sub) {
+            seg.sub = {
+              status: 'running',
+              iterations: 0,
+              think: [],
+              tools: [],
+              startedAt: Date.now(),
+            };
+          }
+          applySubAgentEventVM(seg.sub, info);
+        }
+        // 后台子任务提交后启动 2s 轮询，完成后以落盘历史为准重建（D9）
+        if (info.callId.startsWith('sub_') && info.phase === 'start') ensureSubAgentPoll(id);
+      }
+      break;
+    }
+    // 后台子任务完成：结果卡片已由服务端落盘，静默重拉历史
+    case 'subagent_result': {
+      void resync(id);
+      break;
+    }
     case 'done': {
       const asst = currentAssistant(st);
       asst.lastEventAt = now;
@@ -752,6 +933,36 @@ function applyEvent(id: string, ev: SseEvent): void {
     default:
       break; // llm_end/end 等事件不改变可见状态
   }
+}
+
+/* ===== 后台子任务轮询（需求 20261107-002 D9） ===== */
+
+const subPolls = new Map<string, ReturnType<typeof setInterval>>();
+
+/** 存在运行中的后台子任务时每 2s 查一次；全部收敛后停表并重建历史 */
+function ensureSubAgentPoll(id: string): void {
+  if (subPolls.has(id)) return;
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const r = await api<{ items: { status: string }[] }>(
+          `/sessions/${encodeURIComponent(id)}/subagents`,
+        );
+        if (r.items.some((t) => t.status === 'running')) return;
+        stopSubAgentPoll(id);
+        await resync(id);
+      } catch {
+        stopSubAgentPoll(id);
+      }
+    })();
+  }, 2000);
+  subPolls.set(id, timer);
+}
+
+function stopSubAgentPoll(id: string): void {
+  const timer = subPolls.get(id);
+  if (timer) clearInterval(timer);
+  subPolls.delete(id);
 }
 
 /** 缓冲溢出（reset）后重建历史：期间新事件入 pending，重建完再按序应用 */
@@ -804,7 +1015,8 @@ function keepLocalUserBubbles(disk: ChatMsg[], local: ChatMsg[]): void {
   const users = local.filter((m) => m.role === 'user');
   let i = 0;
   for (const m of disk) {
-    if (m.role !== 'user') continue;
+    // 结果卡片是系统风格卡片，不参与用户气泡对齐（否则后续气泡会错位）
+    if (m.role !== 'user' || m.subResult) continue;
     const l = users[i++];
     if (!l) break;
     const seg = l.segments[0];

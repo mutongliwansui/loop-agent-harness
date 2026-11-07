@@ -12,6 +12,8 @@ export { fileWrite } from './fileWrite.js';
 export { editFile } from './editFile.js';
 export { grep } from './grep.js';
 export { activateSkill } from './activateSkill.js';
+// 子 Agent 委托（需求 20261107-001）
+export { delegate } from './delegate.js';
 
 // 视觉工具（按 vision.enabled 条件注册）
 export { visionTools, describeImage, askImage, extractJson, ocrImage } from './vision/tools.js';
@@ -39,6 +41,7 @@ import { fileWrite } from './fileWrite.js';
 import { editFile } from './editFile.js';
 import { grep } from './grep.js';
 import { activateSkill } from './activateSkill.js';
+import { delegate } from './delegate.js';
 import { visionTools } from './vision/tools.js';
 import type { ToolsConfig, VisionConfig } from '../config/schema.js';
 
@@ -53,6 +56,8 @@ export function registerBuiltinTools(toolsConfig?: ToolsConfig, visionConfig?: V
   const allTools = [
     commandRun, commandStatus, commandLogs, commandStop,
     fileRead, fileWrite, editFile, grep, activateSkill,
+    // 需求 20261107-001：子 Agent 委托（子 Agent run 时由 excludeTools 排除，防无限递归）
+    delegate,
     ...(visionEnabled ? visionTools : []),
   ];
 

@@ -40,6 +40,7 @@ import { doctorCommand } from '../commands/doctor-command.js';
 import { initAgentMemory, type RuntimeContext } from '../runtime/init.js';
 import { AgentAbortedError, type ChatMessage } from '../types.js';
 import { sealPendingToolCalls } from '../agent/abort-utils.js';
+import { subAgentRegistry } from '../agent/subagent-registry.js';
 import { decideSigint, resolveExitArm, EXIT_WINDOW_MS } from './interrupt.js';
 
 /** 打印启动横幅与使用说明 */
@@ -371,6 +372,12 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
     // y/N 确认期间：答案行由 rl.question 回调处理，主循环忽略
     if (confirming) return;
 
+    // 需求 20261107-002 D13：上一轮期间完成的后台子任务，在下一次输入前打印
+    // （不在 finish 时直接打印，避免与用户正在输入的行抢光标）
+    for (const notice of subAgentRegistry.drainCliNotices()) {
+      console.log(`${C.gray}${notice}${C.reset}`);
+    }
+
     const input = raw.trim();
 
     if (!input) {
@@ -409,6 +416,45 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
 
     if (lower === '/status') {
       printStatus();
+      safePrompt();
+      return;
+    }
+
+    // 需求 20261107-002 D14：/subagent list | show <taskId>（CLI 无卡片时的查看入口）
+    if (lower === '/subagent' || lower === '/subagents') {
+      const tasks = subAgentRegistry.list(agent.currentSessionId ?? undefined);
+      if (tasks.length === 0) {
+        console.log(`${C.gray}当前会话没有后台子任务${C.reset}`);
+      } else {
+        console.log(`${C.bold}后台子任务（${tasks.length}）${C.reset}`);
+        for (const t of tasks) {
+          const secs = t.elapsedMs !== undefined ? `${(t.elapsedMs / 1000).toFixed(0)}s` : '-';
+          console.log(`  ${t.taskId}  [${t.status}]  ${secs}  ${t.task.slice(0, 60)}`);
+        }
+        console.log(`${C.gray}用 /subagent show <taskId> 查看过程摘要${C.reset}`);
+      }
+      safePrompt();
+      return;
+    }
+
+    if (lower.startsWith('/subagent show ') || lower.startsWith('/subagents show ')) {
+      const taskId = input.replace(/^\/subagents? show /i, '').trim();
+      const rec = subAgentRegistry.get(taskId);
+      if (!rec) {
+        console.log(`${C.yellow}未找到后台子任务 ${taskId}${C.reset}`);
+        safePrompt();
+        return;
+      }
+      console.log(
+        `${C.bold}${rec.taskId}${C.reset} [${rec.status}] ${rec.task}\n` +
+          `${C.gray}耗时 ${rec.elapsedMs !== undefined ? (rec.elapsedMs / 1000).toFixed(0) : '-'}s · ` +
+          `轮次 ${rec.trace?.iterations ?? rec.iterations ?? 0} · 工具 ${rec.trace?.tools.length ?? 0} 次${C.reset}`,
+      );
+      for (const step of rec.trace?.tools ?? []) {
+        console.log(`  ${C.gray}[${step.iteration ?? '?'}] ⏺ ${step.name}${C.reset}`);
+      }
+      if (rec.error) console.log(`${C.red}错误：${rec.error}${C.reset}`);
+      if (rec.answer) console.log(`\n${rec.answer}\n`);
       safePrompt();
       return;
     }

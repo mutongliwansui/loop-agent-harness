@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
-import { ConsoleLogger } from './logger.js';
+import { ConsoleLogger, SubAgentLogger } from './logger.js';
 import { buildLLMStatsSummary } from './stats.js';
 import { createToolCallGenTracker, dispatchStreamChunk } from './stream-forward.js';
 import { debug } from '../debug.js';
@@ -46,9 +46,18 @@ import type {
   LLMResponse,
   LLMStats,
   LLMUsage,
+  SubAgentCompleteInfo,
+  SubAgentEventInfo,
+  SubAgentOptions,
+  SubAgentResult,
+  SubAgentStartInfo,
+  SubAgentTrace,
   ToolCall,
 } from '../types.js';
-import { AgentAbortedError, isBackgroundNoticeContent } from '../types.js';
+import { AgentAbortedError, isDisplayOnlyContent } from '../types.js';
+import { randomUUID } from 'node:crypto';
+import { subAgentRegistry } from './subagent-registry.js';
+import { applySubAgentEvent, createSubAgentTrace } from './subagent-trace.js';
 import {
   drainBackgroundNotices,
   installBackgroundNoticeForwarder,
@@ -658,7 +667,239 @@ export class ReActAgent {
     }
 
     const steps: AgentStep[] = [];
-    const openaiTools = registry.toOpenAITools();
+    // 需求 20261107-001 D4：excludeTools 过滤（子 Agent 排除 delegate 防无限递归）
+    const excluded = new Set(options.excludeTools ?? []);
+    const openaiTools = excluded.size > 0
+      ? registry.toOpenAITools().filter((t) => !excluded.has(t.function.name))
+      : registry.toOpenAITools();
+
+    // 需求 20261107-001：子 Agent 委托执行器。
+    // 由本次 run 构造闭包注入 ToolContext.runSubAgent——子 Agent 用全新实例（不占 AgentPool 槽位，
+    // 避免父 Agent 持槽时嵌套租借死锁），共享本实例的记忆 kit（L2/L3），L1 工作记忆由 attachMemory 新建。
+    // 子任务不落盘会话（主对话为真相源）；取消信号透传；工具集排除 delegate 防无限递归。
+    const memoryKit: MemoryKit | null =
+      this._episodicMemory && this._curatedMemory && this._promotionGate && this._dreamingPipeline
+        ? {
+            episodic: this._episodicMemory,
+            curated: this._curatedMemory,
+            gate: this._promotionGate,
+            dream: this._dreamingPipeline,
+          }
+        : null;
+    // ===== 需求 20261107-002：子 Agent 过程可见 + 后台执行 =====
+    const subCfg = cfg.agent.subAgent ?? { background: true, maxConcurrent: 3 };
+    const eventMode = typeof options.onSubAgentEvent === 'function';
+    // 父 run 没有任何事件监听 = CLI 路径：走缩进控制台日志，不再静默（D12）
+    const consoleMode = !eventMode && (options.events?.length ?? 0) === 0;
+    const truncate = (text: string, max: number): string =>
+      text.length > max ? `${text.slice(0, max)}…` : text;
+
+    /** 执行一次子 Agent；过程事件按 callId 归属（D2） */
+    const runSubAgentOnce = async (
+      task: string,
+      subOpts: SubAgentOptions,
+      callId: string,
+      signal: AbortSignal | undefined,
+      mode: { console: boolean; onPhase?: (info: SubAgentEventInfo) => void },
+    ): Promise<SubAgentResult> => {
+      const startedAt = Date.now();
+      let currentIteration = 1;
+      const emit = (info: Omit<SubAgentEventInfo, 'callId'>): void => {
+        const full: SubAgentEventInfo = { callId, ...info };
+        mode.onPhase?.(full);
+        if (!options.onSubAgentEvent) return;
+        try {
+          const ret = options.onSubAgentEvent(full);
+          if (ret && typeof (ret as Promise<void>).catch === 'function') {
+            (ret as Promise<void>).catch((e) =>
+              debug.log(`[subagent] 事件转发失败: ${(e as Error).message}`),
+            );
+          }
+        } catch (e) {
+          debug.log(`[subagent] 事件转发失败: ${(e as Error).message}`);
+        }
+      };
+
+      const bridge: AgentEvents = {
+        onStart: () => emit({ phase: 'start', text: truncate(task, 600), iteration: 1 }),
+        onIterationStart: (iteration: number) => {
+          currentIteration = iteration + 1;
+          emit({ phase: 'iteration', iteration: currentIteration, elapsedMs: Date.now() - startedAt });
+        },
+        onLLMEnd: (response: LLMResponse) =>
+          emit({
+            phase: 'think',
+            iteration: currentIteration,
+            text: truncate(response.content ?? '', 4000),
+            elapsedMs: Date.now() - startedAt,
+          }),
+        onToolStart: (tool: string, args: Record<string, unknown>) =>
+          emit({ phase: 'tool_start', iteration: currentIteration, tool, args }),
+        onToolEnd: (tool: string, result: string) =>
+          emit({
+            phase: 'tool_end',
+            iteration: currentIteration,
+            tool,
+            result: truncate(result, 4000),
+            elapsedMs: Date.now() - startedAt,
+          }),
+        onToolProgress: (tool: string, elapsedMs: number) =>
+          emit({ phase: 'tool_progress', tool, elapsedMs }),
+        onFinal: (answer: string) =>
+          emit({
+            phase: 'final',
+            text: truncate(answer, 4000),
+            elapsedMs: Date.now() - startedAt,
+          }),
+        onError: (error: Error) => emit({ phase: 'error', error: error.message }),
+      };
+
+      const sub = new ReActAgent(this._configLoader);
+      sub.setWorkspaceRoot(wsRoot);
+      await sub.attachMemory(memoryKit, wsRoot);
+      try {
+        const prompt = subOpts.context ? `${subOpts.context}\n\n任务：${task}` : task;
+        // CLI：子 Agent 自带缩进日志（不共享父级 spinner，避免父子抢指示器）
+        const subEvents: AgentEvents[] = eventMode
+          ? [bridge]
+          : mode.console
+            ? [new SubAgentLogger(verbose, '  ┆ ')]
+            : [];
+        const result = await sub.run(prompt, {
+          model: subOpts.model ?? model,
+          maxIterations: subOpts.maxIterations ?? maxIterations,
+          signal,
+          sessionId: sessionId ?? undefined,
+          excludeTools: ['delegate'],
+          verbose: false,
+          showTokenStats: false,
+          events: subEvents.length > 0 ? subEvents : undefined,
+        });
+        return { answer: result.answer, iterations: result.iterations };
+      } catch (err) {
+        const aborted = (err as { aborted?: boolean }).aborted === true;
+        emit({ phase: aborted ? 'aborted' : 'error', error: (err as Error).message });
+        throw err;
+      } finally {
+        sub.dispose();
+      }
+    };
+
+    const runSubAgent = async (
+      task: string,
+      subOpts: SubAgentOptions = {},
+    ): Promise<SubAgentResult> => {
+      // 后台执行（D5/D6）：立即返回 taskId，主 Agent 继续推理；完成由回调/CLI 队列投递（D8/D13）
+      if (subOpts.background === true) {
+        if (!subCfg.background) {
+          return {
+            answer: '错误：配置已关闭后台子任务（agent.subAgent.background=false），请改为同步委托',
+            iterations: 0,
+          };
+        }
+        if (subAgentRegistry.countRunning(sessionId ?? undefined) >= subCfg.maxConcurrent) {
+          return {
+            answer: `错误：后台子任务并发已达上限 ${subCfg.maxConcurrent}，请等待现有任务完成后再提交`,
+            iterations: 0,
+          };
+        }
+        const taskId = `sub_${randomUUID().replace(/-/g, '').slice(0, 8)}_${Math.floor(Date.now() / 1000)}`;
+        const controller = new AbortController();
+        const parentSignal = options.signal;
+        if (parentSignal) {
+          if (parentSignal.aborted) controller.abort('父 run 已取消');
+          else parentSignal.addEventListener('abort', () => controller.abort('父 run 已取消'), { once: true });
+        }
+        const trace: SubAgentTrace = createSubAgentTrace();
+        const startedAt = Date.now();
+        subAgentRegistry.create({
+          taskId,
+          sessionId: sessionId ?? undefined,
+          task,
+          controller,
+        });
+        // 立即落盘「运行中」卡片（D8/D9）：刷新/重启后仍可见，中断时可被标记。
+        // 此处 await 落盘，保证运行中卡片先于本轮 updateSession 写入磁盘，避免被覆盖。
+        try {
+          if (options.onSubAgentStart) {
+            const startInfo: SubAgentStartInfo = {
+              taskId,
+              sessionId: sessionId ?? undefined,
+              task,
+              startedAt,
+            };
+            await options.onSubAgentStart(startInfo);
+          }
+        } catch (e) {
+          debug.log(`[subagent] 提交回调失败: ${(e as Error).message}`);
+        }
+        void (async () => {
+          let status: 'done' | 'failed' | 'aborted' = 'done';
+          let answer: string | undefined;
+          let error: string | undefined;
+          let iterations = 0;
+          try {
+            const r = await runSubAgentOnce(
+              task,
+              { ...subOpts, background: false },
+              taskId,
+              controller.signal,
+              { console: false, onPhase: (info) => applySubAgentEvent(trace, info) },
+            );
+            answer = r.answer;
+            iterations = r.iterations;
+            trace.status = 'done';
+          } catch (err) {
+            status = (err as { aborted?: boolean }).aborted === true ? 'aborted' : 'failed';
+            trace.status = status;
+            error = status === 'aborted' ? '已取消' : (err as Error).message;
+          }
+          const elapsedMs = Date.now() - startedAt;
+          if (trace.iterations === 0) trace.iterations = iterations;
+          subAgentRegistry.finish(taskId, { status, answer, error, iterations, elapsedMs, trace });
+
+          const oneLine = ((answer ?? error ?? '') as string).replace(/\s+/g, ' ');
+          const notice =
+            status === 'done'
+              ? `✅ 后台子任务 ${taskId} 完成（${(elapsedMs / 1000).toFixed(0)}s）：${truncate(oneLine, 160)}`
+              : `❌ 后台子任务 ${taskId} ${status === 'aborted' ? '已取消' : '失败'}（${(elapsedMs / 1000).toFixed(0)}s）：${truncate(oneLine, 160)}`;
+
+          if (options.onSubAgentComplete) {
+            const info: SubAgentCompleteInfo = {
+              taskId,
+              sessionId: sessionId ?? undefined,
+              task,
+              status,
+              answer,
+              error,
+              iterations,
+              elapsedMs,
+              trace,
+            };
+            try {
+              await options.onSubAgentComplete(info);
+            } catch (e) {
+              debug.log(`[subagent] 后台完成回调失败: ${(e as Error).message}`);
+            }
+          } else {
+            // CLI：下一次输入前 drain 打印（D13，避免与输入行抢光标）
+            subAgentRegistry.pushCliNotice(notice);
+          }
+        })();
+        return {
+          answer: `⏳ 已提交后台子任务 ${taskId}：${task}`,
+          iterations: 0,
+          taskId,
+          background: true,
+        };
+      }
+
+      // 同步执行（保留原有阻塞语义）
+      if (consoleMode) options.spinner?.stop();
+      return runSubAgentOnce(task, subOpts, subOpts.callId ?? '', options.signal, {
+        console: consoleMode,
+      });
+    };
 
     // 完整真实轨迹：L1 压缩只裁剪内存视图 messages，transcript 始终保留本轮全部真实消息。
     // run 结束时随 result 交给 SessionStore，用于归档「已被压缩、但从未落盘」的消息。
@@ -943,7 +1184,8 @@ export class ReActAgent {
         // 否则 L2 记忆前缀会随 result.messages 持久化（前端渲染出记忆内容）并残留到后续轮次
         // D9：历史视图剔除通知消息——避免 (a) 通知进入后续迭代的提示前缀，
         // (b) 记忆注入把通知误当作「最后一条 user 消息」（旧实现会把记忆前缀挂到通知上）
-        let llmMessages: ChatMessage[] = messages.filter((m) => !isBackgroundNoticeContent(m.content));
+        // 后台任务通知 / 子 Agent 结果卡片仅展示，不进 LLM 历史前缀（20261107-002 D8）
+        let llmMessages: ChatMessage[] = messages.filter((m) => !isDisplayOnlyContent(m.content));
         if (this._contextAssembler && this._memoryEnabled) {
           try {
             llmMessages = await this._contextAssembler.assemble(
@@ -1105,6 +1347,7 @@ export class ReActAgent {
         // 执行工具
         const observations = await Promise.all(
           callItems.map(async (c) => {
+            if (excluded.has(c.toolName)) return `工具 ${c.toolName} 在此上下文中不可用`;
             if (!c.tool) return `工具 ${c.toolName} 未注册，无法执行`;
             if (!c.args) return `工具 ${c.toolName} 参数无效：参数为空或解析失败，请重新调用并提供正确的参数`;
             const required = (c.tool.parameters?.required as string[] | undefined) ?? [];
@@ -1127,6 +1370,10 @@ export class ReActAgent {
                 workspaceRoot: wsRoot,
                 // 需求 20261104-004 D5：后台任务归属当前会话
                 sessionId: sessionId ?? undefined,
+                // 需求 20261107-001：注入子 Agent 委托执行器（delegate 工具消费）
+                runSubAgent,
+                // 需求 20261107-002 D2：过程事件按本次工具调用 ID 归属
+                callId: c.call.id,
               });
               void debug.toolCall(c.toolName, c.args ?? {}, result, Date.now() - toolStart);
               return result;

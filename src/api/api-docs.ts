@@ -122,6 +122,14 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
       '{ contextTokens, maxTokens, threshold, percent, keepRecentTurns, source: "stats" | "estimate", updatedAt? }',
     example: 'curl /sessions/<id>/context',
   },
+  'GET /sessions/:id/subagents': {
+    summary: '后台子任务列表（运行期内存状态：running/done/failed/aborted；结果卡片已落盘到会话）。',
+    scope: 'read',
+    params: [{ name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' }],
+    response:
+      '{ items: [{ taskId, task, status, startedAt, finishedAt?, elapsedMs?, iterations?, answer?, error?, trace? }] }',
+    example: 'curl /sessions/<id>/subagents',
+  },
   'POST /sessions/:id/compact': {
     summary: '空闲时强制 L1 压缩（运行中 409）；无可丢弃消息返回 ok=false reason=nothing_to_compact，不调 LLM。',
     scope: 'write',

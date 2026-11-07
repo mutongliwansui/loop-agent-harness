@@ -1,6 +1,6 @@
 // 工具执行器：统一执行工具，处理异常、超时、取消、结果归一化
 // Task-20261021-002-01：新增 signal 支持（raceAbort + 取消冒泡例外）
-import type { Tool, ToolContext } from '../types.js';
+import type { Tool, ToolContext, SubAgentOptions, SubAgentResult } from '../types.js';
 import { AgentAbortedError } from '../types.js';
 import { currentWorkspaceRoot } from '../runtime/workspace-context.js';
 import { governOneShot } from './output-governor.js';
@@ -23,6 +23,13 @@ export interface RunOptions {
   workspaceRoot?: string;
   /** 当前会话 ID（需求 20261104-004 D5）：透传给工具，后台任务归属由此确定 */
   sessionId?: string;
+  /**
+   * 子 Agent 委托执行器（需求 20261107-001）：由 Agent 层注入并原样透传给工具 ctx。
+   * 不传时工具拿不到该能力（CLI/单测路径），`delegate` 工具据此降级报错。
+   */
+  runSubAgent?: (task: string, opts?: SubAgentOptions) => Promise<SubAgentResult>;
+  /** 当前工具调用 ID（需求 20261107-002 D2）：透传给工具，子 Agent 事件按此归属卡片 */
+  callId?: string;
 }
 
 interface ToolCallItem {
@@ -60,7 +67,13 @@ export class ToolRunner {
     try {
       // ctx 注入：工具可感知取消信号（如 commandRun 杀子进程树）与空间根（D3 三级取值）
       const workspaceRoot = options.workspaceRoot ?? currentWorkspaceRoot() ?? process.cwd();
-      const ctx: ToolContext = { signal, workspaceRoot, sessionId: options.sessionId };
+      const ctx: ToolContext = {
+        signal,
+        workspaceRoot,
+        sessionId: options.sessionId,
+        runSubAgent: options.runSubAgent,
+        callId: options.callId,
+      };
       const exec$ = tool.execute(args, ctx);
       const raced = signal ? this.raceAbort(exec$, signal) : exec$;
       const result = await this.withTimeout(raced, timeout);

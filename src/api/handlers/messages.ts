@@ -5,8 +5,23 @@ import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendError, sendJson } from '../http-utils.js';
 import { createSseForwarder, sseFrame } from '../sse.js';
-import type { AgentOptions, ChatMessage, LLMStats, LLMStatsSummary, TurnUsage } from '../../types.js';
-import { AgentAbortedError } from '../../types.js';
+import type {
+  AgentOptions,
+  ChatMessage,
+  LLMStats,
+  LLMStatsSummary,
+  SubAgentCompleteInfo,
+  SubAgentTrace,
+  TurnUsage,
+} from '../../types.js';
+import {
+  AgentAbortedError,
+  SUBAGENT_RESULT_CLOSE,
+  SUBAGENT_RESULT_OPEN,
+  isDisplayOnlyContent,
+  isSubAgentResultContent,
+} from '../../types.js';
+import { applySubAgentEvent, createSubAgentTrace } from '../../agent/subagent-trace.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
 import { locateSession } from '../session-locator.js';
@@ -181,6 +196,94 @@ export async function runMessageTurn(
     },
   };
 
+  // ===== 需求 20261107-002：子 Agent 过程事件收集 + 后台完成主动落盘 =====
+  // 同步 delegate 的轨迹按 callId 收集，run 结束时挂到对应 tool 消息（D4）；
+  // 后台子任务走独立回调，完成后追加一张结果卡片并推送 SSE（D8）。
+  const subTraces = new Map<string, SubAgentTrace>();
+  runOptions.onSubAgentEvent = (info) => {
+    if (info.callId) {
+      const trace = subTraces.get(info.callId) ?? createSubAgentTrace();
+      applySubAgentEvent(trace, info);
+      subTraces.set(info.callId, trace);
+    }
+    if (!stream) return;
+    const seq = ctx.runs.publish(id, 'subagent_event', { info });
+    if (seq > 0) void writeJournal(store, id, { lastSeq: seq });
+  };
+  // 后台子任务卡片：按 taskId 原地更新（运行中→完成/中断），避免与 updateSession 落盘互相踩踏
+  // - 提交（onSubAgentStart）：由 Agent 层 await 落盘，保证运行中卡片先于本轮 updateSession 写入
+  // - 完成（onSubAgentComplete）：本轮仍在落盘时先排队，flush 时再 upsert
+  let turnActive = true;
+  const pendingSubAgentCards: SubAgentCardRecord[] = [];
+
+  const upsertSubAgentCard = async (record: SubAgentCardRecord): Promise<void> => {
+    try {
+      const data = await store.loadSession(id);
+      const card: ChatMessage = {
+        role: 'user',
+        content: serializeSubAgentResult(record),
+        is_show: true,
+        is_compact: false,
+        kind: 'subagent_result',
+        sub: record.trace,
+      };
+      const idx = data.messages.findIndex(
+        (m) =>
+          m.role === 'user' &&
+          isSubAgentResultContent(m.content) &&
+          extractSubAgentTaskId(m.content) === record.taskId,
+      );
+      if (idx >= 0) data.messages[idx] = card;
+      else data.messages.push(card);
+      await store.rewriteMessages(id, data.messages);
+      entry.history = data.messages.filter(
+        (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+      );
+      if (stream) ctx.runs.publish(id, 'subagent_result', { info: record });
+      log(`[api] 后台子任务 ${record.taskId} 卡片已落盘（${record.status}）`);
+    } catch (e) {
+      log(
+        `[api] 后台子任务 ${record.taskId} 卡片落盘失败: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
+  // 提交即落盘「运行中」卡片（Agent 层 await 此回调，保证先于 updateSession 写入磁盘）
+  runOptions.onSubAgentStart = async (info) => {
+    await upsertSubAgentCard({
+      taskId: info.taskId,
+      task: info.task,
+      status: 'running',
+      iterations: 0,
+      elapsedMs: 0,
+    });
+  };
+
+  runOptions.onSubAgentComplete = async (info) => {
+    const record: SubAgentCardRecord = {
+      taskId: info.taskId,
+      task: info.task,
+      status: info.status,
+      answer: info.answer,
+      error: info.error,
+      iterations: info.iterations,
+      elapsedMs: info.elapsedMs,
+      trace: info.trace,
+    };
+    if (turnActive) {
+      pendingSubAgentCards.push(record);
+      return;
+    }
+    await upsertSubAgentCard(record);
+  };
+
+  const flushPendingSubAgentCards = async (): Promise<void> => {
+    turnActive = false;
+    for (const record of pendingSubAgentCards.splice(0)) {
+      await upsertSubAgentCard(record);
+    }
+  };
+
   if (stream) {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -226,13 +329,18 @@ export async function runMessageTurn(
         // 避免折叠历史重新进入 LLM 上下文并导致每轮重复触发压缩
         // 需求 20261106-006：本轮 token 统计挂到最终 assistant 消息，随会话落盘
         attachTurnUsage(result.messages, buildTurnUsage(statsRecorder));
+        attachSubAgentTraces(result.messages, subTraces);
         const stored = await store.updateSession(id, result.messages, message, {
           transcript: result.transcript,
         });
-        entry.history = stored.filter((m) => m.role !== 'system' && m.is_compact !== true);
+        entry.history = stored.filter(
+          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+        );
       } catch (e) {
         warnings.push(`会话持久化失败（回答不受影响）: ${e instanceof Error ? e.message : String(e)}`);
-        entry.history = result.messages.filter((m) => m.role !== 'system' && m.is_compact !== true);
+        entry.history = result.messages.filter(
+          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+        );
       }
 
       const donePayload = {
@@ -285,6 +393,7 @@ export async function runMessageTurn(
         const sealed = sealPendingToolCalls(partial.messages);
         // 需求 20261106-006：中断轮也尽量落累计 token（无 summary 时用逐迭代累加兜底）
         attachTurnUsage(sealed, buildTurnUsage(statsRecorder));
+        attachSubAgentTraces(sealed, subTraces);
         const abortedWarnings: string[] = [];
         let stored = sealed;
         try {
@@ -297,7 +406,9 @@ export async function runMessageTurn(
           );
         }
         // store 归一化后的消息作为 entry.history（与成功路径同一过滤口径）
-        entry.history = stored.filter((m) => m.role !== 'system' && m.is_compact !== true);
+        entry.history = stored.filter(
+          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+        );
         for (const w of abortedWarnings) {
           ctx.runs.publish(id, 'warning', { level: 'warning', message: w });
         }
@@ -365,6 +476,8 @@ export async function runMessageTurn(
         sendError(res, 'internal', msg);
       }
     } finally {
+      // 本轮结束后再落盘排队中的后台子任务结果（此后完成的卡片直接落盘）
+      await flushPendingSubAgentCards();
       entry.inFlight = null;
     }
   })();
@@ -417,4 +530,53 @@ function attachTurnUsage(messages: ChatMessage[], usage: TurnUsage | undefined):
       return;
     }
   }
+}
+
+/**
+ * 需求 20261107-002 D4：把本轮收集到的子 Agent 轨迹挂到对应 delegate 工具消息上，
+ * 随会话落盘；刷新后前端据此恢复「默认收起」的过程区。
+ */
+function attachSubAgentTraces(
+  messages: ChatMessage[],
+  traces: Map<string, SubAgentTrace>,
+): void {
+  if (traces.size === 0) return;
+  for (const m of messages) {
+    if (m.role !== 'tool') continue;
+    const trace = traces.get(m.tool_call_id);
+    if (trace) m.sub = trace;
+  }
+}
+
+/** 后台子任务卡片字段（运行中/完成/中断共用同一序列化格式，仅展示，不进 LLM 历史） */
+interface SubAgentCardRecord {
+  taskId: string;
+  task: string;
+  status: 'running' | 'done' | 'failed' | 'aborted' | 'interrupted';
+  answer?: string;
+  error?: string;
+  iterations?: number;
+  elapsedMs?: number;
+  trace?: SubAgentTrace;
+}
+
+/** 从卡片内容里提取 taskId（用于 upsert 定位） */
+function extractSubAgentTaskId(content: string): string | undefined {
+  const hit = content.match(/^taskId: ?(.+)$/m);
+  return hit ? hit[1].trim() : undefined;
+}
+
+function serializeSubAgentResult(info: SubAgentCardRecord): string {
+  const lines = [
+    SUBAGENT_RESULT_OPEN,
+    `taskId: ${info.taskId}`,
+    `status: ${info.status}`,
+    `task: ${info.task}`,
+    `elapsedMs: ${info.elapsedMs ?? 0}`,
+    `iterations: ${info.iterations ?? 0}`,
+    `answer: ${info.answer ?? ''}`,
+    `error: ${info.error ?? ''}`,
+    SUBAGENT_RESULT_CLOSE,
+  ];
+  return lines.join('\n');
 }

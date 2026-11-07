@@ -72,7 +72,11 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "debug": false,
     "systemPrompt": null,
     "showTokenStats": true,
-    "maxIterations": 100
+    "maxIterations": 100,
+    "subAgent": {
+      "background": true,
+      "maxConcurrent": 3
+    }
   },
   "session": {
     "autoSave": true,
@@ -156,6 +160,8 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `agent` | `showTokenStats` | Whether to output per-round/summary token stats (Task-15) | `true` |
 | `agent` | `loading` | Whether to show the waiting loading indicator (always disabled in non-TTY environments, Task-20260930-001) | `true` |
 | `agent` | `maxIterations` | Max iterations per task | `100` |
+| `agent.subAgent` | `background` | Allow `delegate({background:true})` parallel background runs (when off, delegation always blocks) | `true` |
+| `agent.subAgent` | `maxConcurrent` | Max concurrent background sub-agents per session; exceeding it fails fast | `3` |
 | `session` | `autoSave` | Auto-save the session to disk after `run()` | `true` |
 | `session` | `autoRestore` | Auto-restore the most recent session on startup | `true` |
 | `session` | `encryptionEnabled` | Whether session files are stored encrypted (AES-256-GCM) | `true` |

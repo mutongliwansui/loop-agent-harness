@@ -269,3 +269,84 @@ export class ConsoleLogger implements AgentEvents {
 
 /** 默认日志实例（verbose=true） */
 export const logger = new ConsoleLogger(true);
+
+/** 缩进块内单行最大字符数（避免子 Agent 长文本撑破终端） */
+const SUB_LINE_MAX = 900;
+
+/**
+ * 子 Agent 缩进日志器（需求 20261107-002 D12）
+ *
+ * CLI 没有事件桥接，子 Agent 不共享父级 ConsoleLogger / spinner，改用独立缩进输出：
+ * - verbose=false（默认收起）：只在结束时打印一行摘要；
+ * - verbose=true（需要时查看）：逐行缩进展开迭代、思考、工具调用与观测。
+ *
+ * 每行统一加 `  ┆ ` 前缀，视觉上与父 Agent 的 delegate 调用区分开。
+ */
+export class SubAgentLogger implements AgentEvents {
+  private _startedAt = Date.now();
+  private _iterations = 0;
+  private _toolSteps = 0;
+
+  constructor(
+    private verbose: boolean = false,
+    private indent: string = '  ┆ ',
+  ) {}
+
+  private line(text: string): void {
+    const lines = text.split('\n');
+    const out = lines
+      .slice(0, 12)
+      .map((l) => `${this.indent}${l.length > SUB_LINE_MAX ? `${l.slice(0, SUB_LINE_MAX)}…` : l}`);
+    if (lines.length > 12) out.push(`${this.indent}…（省略 ${lines.length - 12} 行）`);
+    console.log(`${COLORS.gray}${out.join('\n')}${COLORS.reset}`);
+  }
+
+  onStart(input: string): void {
+    this._startedAt = Date.now();
+    this._iterations = 0;
+    this._toolSteps = 0;
+    if (this.verbose) this.line(`子 Agent 启动：${input.split('\n')[0]}`);
+  }
+
+  onIterationStart(iteration: number, maxIterations: number): void {
+    this._iterations++;
+    if (this.verbose) this.line(`[Iteration ${iteration + 1}/${maxIterations}]`);
+  }
+
+  onLLMEnd(response: LLMResponse): void {
+    if (!this.verbose) return;
+    const text = (response.content ?? '').trim();
+    if (text) this.line(`思考：${text}`);
+  }
+
+  onToolStart(tool: string, args: Record<string, unknown>): void {
+    this._toolSteps++;
+    if (!this.verbose) return;
+    this.line(`⏺ ${tool}(${JSON.stringify(args)})`);
+  }
+
+  onToolEnd(tool: string, result: string): void {
+    if (!this.verbose) return;
+    this.line(`[Observation] ${result}`);
+  }
+
+  onFinal(answer: string): void {
+    if (!this.verbose) return;
+    this.line(`结论：${answer.trim()}`);
+  }
+
+  onError(error: Error): void {
+    if (!this.verbose) return;
+    this.line(`[Error] ${error.message}`);
+  }
+
+  onEnd(result: AgentResult | null): void {
+    const seconds = Math.max(0, Math.round((Date.now() - this._startedAt) / 1000));
+    const answerLen = result?.answer?.length ?? 0;
+    const iters = result?.iterations ?? this._iterations;
+    const steps = result?.steps?.length ?? this._toolSteps;
+    console.log(
+      `${COLORS.gray}${this.indent}子 Agent 完成 · ${iters} 轮 · ${steps} 步 · ${seconds}s · 结论 ${answerLen} 字${COLORS.reset}`,
+    );
+  }
+}

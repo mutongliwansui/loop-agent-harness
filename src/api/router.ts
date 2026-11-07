@@ -6,7 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
-import { handleCompactSession, handleCreateSession, handleDeleteSession, handleGetSession, handleGetSessionContext, handleListDirs, handleListSessions, handleListWorkspaces, handleRetrySession } from './handlers/sessions.js';
+import { handleCompactSession, handleCreateSession, handleDeleteSession, handleGetSession, handleGetSessionContext, handleListDirs, handleListSessions, handleListSubAgents, handleListWorkspaces, handleRetrySession } from './handlers/sessions.js';
 import { handleSetSessionModelAlias } from './handlers/session-model.js';
 import { handleMessage } from './handlers/messages.js';
 import { handleStop } from './handlers/stop.js';
@@ -136,6 +136,8 @@ export function createRoutes(): Route[] {
     { method: 'POST', path: '/sessions/:id/stop', handler: (ctx, req, res, p) => handleStop(ctx, req, res, p.id) },
     // 需求 20261106-005：上下文用量 / 手动压缩 / 替换式重试（3 段静态尾段，先于 2 段 /sessions/:id）
     { method: 'GET', path: '/sessions/:id/context', handler: (ctx, _req, res, p) => handleGetSessionContext(ctx, res, p.id) },
+    // 需求 20261107-002 D9：后台子任务列表（3 段静态尾段，先于 2 段 /sessions/:id）
+    { method: 'GET', path: '/sessions/:id/subagents', handler: (ctx, _req, res, p) => handleListSubAgents(ctx, res, p.id) },
     { method: 'POST', path: '/sessions/:id/compact', handler: (ctx, _req, res, p) => handleCompactSession(ctx, res, p.id) },
     { method: 'POST', path: '/sessions/:id/retry', handler: (ctx, req, res, p) => handleRetrySession(ctx, req, res, p.id) },
   // 会话级模型选择（task-20261025-002 D7）：只写元数据，不改全局激活

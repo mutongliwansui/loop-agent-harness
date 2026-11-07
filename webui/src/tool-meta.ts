@@ -269,6 +269,21 @@ const TOOL_META: Record<string, ToolMeta> = {
     },
     brief: (a) => str(a, 'name'),
   },
+  delegate: {
+    zh: '委托子任务',
+    icon: 'puzzle',
+    params: {
+      task: '任务',
+      context: '背景上下文',
+      background: '后台执行',
+    },
+    brief: (a) => {
+      const task = str(a, 'task');
+      if (!task) return '委托子任务';
+      const head = clip(task, BRIEF_TEXT_MAX);
+      return a.background === true ? `委托 ${head}（后台）` : `委托 ${head}`;
+    },
+  },
   describe_image: {
     zh: '描述图片',
     icon: 'image',

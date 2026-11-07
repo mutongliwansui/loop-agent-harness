@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>20261107-001 · 子 Agent 委托原型</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --line: #2a2f3a;
+    --line-soft: #232831;
+    --text: #e6e8ed;
+    --muted: #8b92a0;
+    --brand: #4ade80;
+    --brand-weak: rgba(74, 222, 128, 0.12);
+    --accent: #60a5fa;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --r-lg: 12px;
+    --r-md: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  h2 { font-size: 15px; margin: 32px 0 12px; padding-left: 10px; border-left: 3px solid var(--brand); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 18px; }
+  .legend b { color: var(--text); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: 18px 20px;
+  }
+
+  /* ===== 对话区 ===== */
+  .chat { display: flex; flex-direction: column; gap: 18px; }
+  .msg { display: flex; gap: 12px; }
+  .msg.user .bubble { background: var(--panel-2); border: 1px solid var(--line); }
+  .msg.assistant .bubble { background: transparent; border: none; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 13px; font-weight: 600; }
+  .msg.user .avatar { background: var(--brand-weak); color: var(--brand); }
+  .msg.assistant .avatar { background: rgba(96,165,250,0.15); color: var(--accent); }
+  .bubble { flex: 1; padding: 12px 14px; border-radius: var(--r-md); font-size: 14px; }
+  .bubble p { margin: 0 0 8px; }
+  .bubble p:last-child { margin: 0; }
+  code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+
+  /* ===== delegate 工具卡片 ===== */
+  .tool-card {
+    margin-top: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    background: var(--panel-2);
+  }
+  .tool-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px;
+    background: rgba(74,222,128,0.06);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .tool-icon {
+    width: 28px; height: 28px; border-radius: 7px;
+    background: var(--brand-weak); color: var(--brand);
+    display: grid; place-items: center; flex: none;
+  }
+  .tool-title { font-size: 13px; font-weight: 600; }
+  .tool-sub { font-size: 12px; color: var(--muted); }
+  .tool-pill {
+    margin-left: auto; font-size: 11px; padding: 2px 8px;
+    border-radius: 999px; background: rgba(251,191,36,0.15); color: var(--warn);
+  }
+  .tool-pill.done { background: rgba(74,222,128,0.15); color: var(--brand); }
+  .tool-body { padding: 12px 14px; }
+  .task-desc {
+    font-size: 13px; color: var(--muted);
+    padding: 8px 10px; background: var(--bg); border-radius: 6px;
+    border-left: 2px solid var(--brand);
+    margin-bottom: 12px;
+  }
+  .task-desc b { color: var(--text); }
+
+  /* 子 Agent 运行态 */
+  .sub-run {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; background: var(--bg); border-radius: 6px;
+    border: 1px dashed var(--line);
+  }
+  .sub-avatar { width: 24px; height: 24px; border-radius: 50%; background: rgba(96,165,250,0.2); color: var(--accent); display: grid; place-items: center; font-size: 11px; flex: none; }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .sub-status { font-size: 13px; }
+  .sub-status .label { color: var(--muted); }
+  .elapsed { font-variant-numeric: tabular-nums; color: var(--accent); }
+  .sub-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  /* 子 Agent 完成结果（observation） */
+  .obs {
+    margin-top: 10px; padding: 10px 12px;
+    background: var(--bg); border-radius: 6px; border: 1px solid var(--line-soft);
+    font-size: 13px;
+  }
+  .obs-tag { font-size: 11px; color: var(--brand); font-weight: 600; margin-bottom: 4px; }
+
+  /* ===== 架构图 ===== */
+  .arch {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  @media (max-width: 720px) { .arch { grid-template-columns: 1fr; } }
+  .arch-box {
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 14px; background: var(--panel-2);
+  }
+  .arch-box h3 { margin: 0 0 10px; font-size: 13px; }
+  .arch-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin: 6px 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.share { background: var(--brand); }
+  .dot.isolate { background: var(--accent); }
+  .dot.none { background: var(--muted); opacity: 0.4; }
+  .arch-arrow { text-align: center; color: var(--muted); font-size: 20px; padding: 8px 0; }
+
+  /* ===== 调用链时序 ===== */
+  .seq { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; }
+  .seq-line { padding: 3px 0; color: var(--muted); }
+  .seq-line .k { color: var(--accent); }
+  .seq-line .v { color: var(--text); }
+  .seq-line .c { color: #6b7280; }
+
+  /* ===== 过程折叠区（20261107-002） ===== */
+  .proc-toggle {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 10px; padding: 7px 10px;
+    border: 1px solid var(--line-soft); border-radius: 6px;
+    background: var(--bg); color: var(--muted);
+    font-size: 12.5px; cursor: pointer; user-select: none;
+  }
+  .proc-toggle:hover { border-color: var(--line); color: var(--text); }
+  .proc-toggle .caret { display: inline-block; transition: transform .15s; color: var(--brand); }
+  .proc-toggle.open .caret { transform: rotate(90deg); }
+  .proc-meta { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .proc-body { margin-top: 8px; border-left: 2px solid var(--line); padding: 2px 0 2px 12px; }
+  .proc-body[hidden] { display: none; }
+  .proc-iter { margin: 10px 0; }
+  .proc-iter-h { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+  .proc-think {
+    font-size: 12.5px; color: var(--muted); background: var(--panel-2);
+    border-radius: 5px; padding: 7px 9px; margin-bottom: 6px; white-space: pre-wrap;
+  }
+  .proc-tool {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; padding: 4px 2px; border-bottom: 1px dashed var(--line-soft);
+  }
+  .proc-tool:last-child { border-bottom: none; }
+  .pt-name { font-family: ui-monospace, "Cascadia Code", monospace; color: var(--text); }
+  .pt-arg { color: var(--muted); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 11.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+  .pt-dur { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pt-ok { color: var(--brand); }
+  .proc-final { font-size: 12.5px; color: var(--text); background: var(--bg); border-radius: 5px; padding: 8px 9px; margin-top: 8px; }
+  .proc-final b { color: var(--brand); }
+
+  /* ===== 并行后台委托（20261107-002） ===== */
+  .bg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .bg-grid { grid-template-columns: 1fr; } }
+  .bg-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); overflow: hidden; }
+  .bg-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px; background: rgba(96,165,250,0.07); border-bottom: 1px solid var(--line-soft); }
+  .bg-id { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--accent); }
+  .bg-body { padding: 10px 12px; font-size: 12.5px; }
+  .bg-task { color: var(--muted); margin-bottom: 8px; }
+  .done-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); padding: 11px 13px; margin-top: 12px; }
+  .done-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 6px; }
+  .done-head .ok { color: var(--brand); font-weight: 600; }
+  .done-body { font-size: 12.5px; color: var(--muted); }
+
+  /* ===== CLI 终端示意（20261107-002） ===== */
+  .term {
+    background: #0a0c10; border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 13px 15px; font-family: ui-monospace, "Cascadia Code", monospace;
+    font-size: 12.5px; line-height: 1.8; white-space: pre-wrap; overflow-x: auto;
+  }
+  .term .p { color: var(--brand); }
+  .term .d { color: var(--muted); }
+  .term .k { color: var(--accent); }
+  .term .w { color: var(--warn); }
+  .term .g { color: #6b7280; }
+  .term-title { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+
+  .footnote { margin-top: 28px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line-soft); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>20261107-001 · 子 Agent 委托（delegate）原型</h1>
+  <div class="sub">主 Agent 通过 <code>delegate</code> 工具把自包含子任务交给独立子 Agent 执行，结果作为 observation 返回。子 Agent：独立历史 / 共享 L2·L3 / 独立 L1 / 工具集排除 delegate。</div>
+
+  <h2>一、对话流：主 Agent 调用 delegate</h2>
+  <div class="legend">
+    <span><b style="color:var(--brand)">●</b> 委托工具卡片（运行中/已完成）</span>
+    <span><b style="color:var(--accent)">●</b> 子 Agent 独立上下文</span>
+    <span><b style="color:var(--warn)">●</b> 防递归：子 Agent 不含 delegate</span>
+  </div>
+
+  <div class="chat">
+    <!-- 用户消息 -->
+    <div class="msg user">
+      <div class="avatar">我</div>
+      <div class="bubble">帮我调研一下 loop-agent 这个项目的记忆系统（L1/L2/L3），并给出一份结构清晰的笔记。</div>
+    </div>
+
+    <!-- 主 Agent 回答，含 delegate 工具调用 -->
+    <div class="msg assistant">
+      <div class="avatar">主</div>
+      <div class="bubble">
+        <p>好的，记忆系统调研需要独立检索与整理，我把它委托给一个子 Agent 来完成。</p>
+
+        <!-- delegate 工具卡片：运行中态 -->
+        <div class="tool-card">
+          <div class="tool-head">
+            <div class="tool-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </div>
+            <div>
+              <div class="tool-title">委托子任务 · delegate</div>
+              <div class="tool-sub">独立上下文 · 共享 L2/L3 记忆</div>
+            </div>
+            <div class="tool-pill">运行中</div>
+          </div>
+          <div class="tool-body">
+            <div class="task-desc"><b>任务：</b>调研 loop-agent 项目的记忆系统（L1 工作记忆 / L2 情景记忆 / L3 精炼记忆），输出结构清晰的笔记，涵盖存储形态、生命周期、自动注入策略。</div>
+
+            <!-- 子 Agent 运行态 -->
+            <div class="sub-run">
+              <div class="sub-avatar">子</div>
+              <div class="spinner"></div>
+              <div class="sub-status"><span class="label">子 Agent 执行中…</span> <span class="elapsed">00:12</span></div>
+            </div>
+            <div class="sub-hint">子 Agent 正在用自己的上下文调用工具（read / search / grep），进度以心跳计时展示，不污染主对话。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主 Agent 拿到结果后继续 -->
+    <div class="msg assistant">
+      <div class="avatar">主</div>
+      <div class="bubble">
+        <p>子 Agent 已完成调研，结果如下：</p>
+
+        <!-- delegate 工具卡片：已完成态 -->
+        <div class="tool-card">
+          <div class="tool-head">
+            <div class="tool-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </div>
+            <div>
+              <div class="tool-title">委托子任务 · delegate</div>
+              <div class="tool-sub">3 轮迭代 · 共享 L2/L3 · 独立 L1</div>
+            </div>
+            <div class="tool-pill done">已完成</div>
+          </div>
+          <div class="tool-body">
+            <div class="task-desc"><b>任务：</b>调研 loop-agent 记忆系统并输出笔记。</div>
+
+            <!-- observation：子 Agent 最终回答 -->
+            <div class="obs">
+              <div class="obs-tag">observation（子 Agent 最终回答）</div>
+              <p><b>L1 工作记忆</b>：内存 <code>_chatHistory</code>，单会话，始终进上下文；超阈值自动压缩（先写 L2 摘要，再注入占位）。</p>
+              <p><b>L2 情景记忆</b>：<code>memory/YYYY-MM-D.md</code>，永久归档，按需召回。</p>
+              <p><b>L3 精炼记忆</b>：<code>SOUL.md / USER.md / MEMORY.md</code>，永久，每次 LLM 调用注入 System Prompt。</p>
+            </div>
+          </div>
+        </div>
+
+        <p>我已整理完毕。需要我把这份笔记写入项目的 <code>docs/</code> 目录吗？</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ARCH_PLACEHOLDER -->
+  <h2>二、隔离与共享</h2>
+  <div class="arch">
+    <div class="arch-box">
+      <h3 style="color:var(--accent)">主 Agent</h3>
+      <div class="arch-row"><span class="dot share"></span> L2 情景记忆（共享）</div>
+      <div class="arch-row"><span class="dot share"></span> L3 精炼记忆（共享）</div>
+      <div class="arch-row"><span class="dot isolate"></span> L1 工作记忆（独立）</div>
+      <div class="arch-row"><span class="dot isolate"></span> _chatHistory（主对话）</div>
+      <div class="arch-row"><span class="dot isolate"></span> 工具集：全量（含 delegate）</div>
+    </div>
+    <div class="arch-box">
+      <h3 style="color:var(--brand)">子 Agent（delegate 触发）</h3>
+      <div class="arch-row"><span class="dot share"></span> L2 情景记忆（共享）</div>
+      <div class="arch-row"><span class="dot share"></span> L3 精炼记忆（共享）</div>
+      <div class="arch-row"><span class="dot isolate"></span> L1 工作记忆（独立）</div>
+      <div class="arch-row"><span class="dot isolate"></span> _chatHistory（仅 task 一条）</div>
+      <div class="arch-row"><span class="dot none" style="background:var(--danger)"></span> 工具集：全量 <b style="color:var(--danger)">排除 delegate</b></div>
+      <div class="arch-row"><span class="dot none"></span> 会话存储：不落盘</div>
+    </div>
+  </div>
+  <div class="arch-arrow">⬆ 子 Agent 结果作为 observation 回灌主对话 ⬆</div>
+
+  <h2>三、调用链时序</h2>
+  <div class="card seq">
+    <div class="seq-line"><span class="k">主 Agent</span> <span class="c">run()</span></div>
+    <div class="seq-line">　└─ LLM 返回 <span class="v">tool_call: delegate(task="...")</span></div>
+    <div class="seq-line">　└─ <span class="k">delegate.execute(args, ctx)</span></div>
+    <div class="seq-line">　　　└─ <span class="k">ctx.runSubAgent(task)</span>　<span class="c">// 由主 Agent run() 注入</span></div>
+    <div class="seq-line">　　　　　└─ <span class="v">new ReActAgent(configLoader)</span></div>
+    <div class="seq-line">　　　　　└─ <span class="v">attachMemory(共享 kit)</span>　<span class="c">// 共享 L2/L3，独立 L1</span></div>
+    <div class="seq-line">　　　　　└─ <span class="v">sub.run(task, { excludeTools:['delegate'], signal })</span></div>
+    <div class="seq-line">　　　　　│　└─ 子 Agent 独立 ReAct 循环（工具调用不暴露给主对话）</div>
+    <div class="seq-line">　　　　　└─ <span class="v">return { answer, iterations }</span></div>
+    <div class="seq-line">　　　└─ <span class="v">sub.dispose()</span></div>
+    <div class="seq-line">　└─ observation = <span class="v">answer</span>　<span class="c">// 回写主对话，主 Agent 继续推理</span></div>
+  </div>
+
+  <h2>四、防递归</h2>
+  <div class="card">
+    <p style="margin:0;font-size:13px">子 Agent 的 <code>excludeTools: ['delegate']</code> 在两处生效：</p>
+    <ol style="font-size:13px;color:var(--muted);margin:8px 0 0;padding-left:20px">
+      <li><b>工具列表过滤</b>：传给 LLM 的 tools 不含 delegate，LLM 看不到该工具。</li>
+      <li><b>执行阶段拦截</b>：若 LLM 幻觉仍调用 delegate，返回「工具 delegate 在此上下文中不可用」，<b>不递归执行</b>。</li>
+    </ol>
+  </div>
+
+  <h2>五、过程可见（20261107-002 · 默认收起，需要时展开）</h2>
+  <div class="legend">
+    <span><b style="color:var(--brand)">●</b> 过程事件经 <code>subagent_event</code>（带 callId）转发，按迭代渲染</span>
+    <span><b style="color:var(--muted)">●</b> 默认收起，不干扰主对话</span>
+  </div>
+  <div class="chat">
+    <div class="msg assistant">
+      <div class="avatar">主</div>
+      <div class="bubble">
+        <p>子任务已完成，下面是结论。想了解它怎么做的，可以展开过程查看。</p>
+        <div class="tool-card">
+          <div class="tool-head">
+            <div class="tool-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </div>
+            <div>
+              <div class="tool-title">委托子任务 · delegate</div>
+              <div class="tool-sub">3 轮迭代 · 共享 L2/L3 · 独立 L1</div>
+            </div>
+            <div class="tool-pill done">已完成</div>
+          </div>
+          <div class="tool-body">
+            <div class="task-desc"><b>任务：</b>调研 loop-agent 记忆系统并输出笔记。</div>
+
+            <!-- 过程折叠区：默认收起 -->
+            <div class="proc-toggle" data-target="proc-demo" onclick="toggleProc(this)">
+              <span class="caret">▶</span>
+              <span class="proc-label">展开过程</span>
+              <span class="proc-meta">3 轮 · 7 次工具调用 · 用时 42s</span>
+            </div>
+            <div class="proc-body" id="proc-demo" hidden>
+              <div class="proc-iter">
+                <div class="proc-iter-h">第 1 轮 · 思考</div>
+                <div class="proc-think">先定位记忆模块实现，确认 L1/L2/L3 各自的存储形态与生命周期。</div>
+                <div class="proc-tool"><span class="pt-name">grep</span><span class="pt-arg">"class WorkingMemory"</span><span class="pt-dur">1.2s</span><span class="pt-ok">✓</span></div>
+                <div class="proc-tool"><span class="pt-name">fileRead</span><span class="pt-arg">src/memory/working.ts</span><span class="pt-dur">0.4s</span><span class="pt-ok">✓</span></div>
+              </div>
+              <div class="proc-iter">
+                <div class="proc-iter-h">第 2 轮 · 思考</div>
+                <div class="proc-think">L1 的压缩阈值来自 memory.working 配置；需要确认默认值与保留轮次，再看 L2 写入路径。</div>
+                <div class="proc-tool"><span class="pt-name">grep</span><span class="pt-arg">"estimateMessageTokens"</span><span class="pt-dur">0.9s</span><span class="pt-ok">✓</span></div>
+                <div class="proc-tool"><span class="pt-name">fileRead</span><span class="pt-arg">src/memory/types.ts</span><span class="pt-dur">0.3s</span><span class="pt-ok">✓</span></div>
+              </div>
+              <div class="proc-iter">
+                <div class="proc-iter-h">第 3 轮 · 思考</div>
+                <div class="proc-think">三层形态已确认，整理成结构化笔记并核对 L3 注入时机。</div>
+                <div class="proc-tool"><span class="pt-name">grep</span><span class="pt-arg">"SOUL.md"</span><span class="pt-dur">2.1s</span><span class="pt-ok">✓</span></div>
+                <div class="proc-tool"><span class="pt-name">fileRead</span><span class="pt-arg">src/memory/curated.ts</span><span class="pt-dur">0.5s</span><span class="pt-ok">✓</span></div>
+                <div class="proc-tool"><span class="pt-name">grep</span><span class="pt-arg">"appendToday"</span><span class="pt-dur">0.8s</span><span class="pt-ok">✓</span></div>
+              </div>
+              <div class="proc-final"><b>结论：</b>L1 内存压缩（默认 8000 tokens / 80% 阈值、保留最近 3 轮）；L2 按日归档 <code>memory/YYYY-MM-DD.md</code>；L3 <code>SOUL/USER/MEMORY.md</code> 每次调用注入 System Prompt。</div>
+            </div>
+
+            <!-- 收起态下仍保留最终结论（observation） -->
+            <div class="obs" style="margin-top:10px">
+              <div class="obs-tag">observation（子 Agent 最终回答）</div>
+              <p>L1 内存压缩 · L2 日归档 · L3 常驻 System Prompt，详见上方过程与笔记。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 运行中的收起态：只显示当前阶段 -->
+    <div class="msg assistant">
+      <div class="avatar">主</div>
+      <div class="bubble">
+        <p>第二个子任务还在跑，需要时也可以展开看它当前在做什么。</p>
+        <div class="tool-card">
+          <div class="tool-head">
+            <div class="tool-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg></div>
+            <div>
+              <div class="tool-title">委托子任务 · delegate</div>
+              <div class="tool-sub">运行中 · 共享 L2/L3</div>
+            </div>
+            <div class="tool-pill">运行中 · 00:42</div>
+          </div>
+          <div class="tool-body">
+            <div class="task-desc"><b>任务：</b>梳理 WebUI 工具卡片渲染链路。</div>
+            <div class="proc-toggle">
+              <span class="caret">▶</span>
+              <span class="proc-label">展开过程</span>
+              <span class="proc-meta">第 2 轮 · 执行 fileRead · 3 次工具调用</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>六、并行后台委托（20261107-002 · background: true）</h2>
+  <div class="legend">
+    <span><b style="color:var(--accent)">●</b> 立即返回 taskId，主 Agent 不阻塞</span>
+    <span><b style="color:var(--brand)">●</b> 完成后自动落盘结果卡片 + 通知</span>
+  </div>
+  <div class="chat">
+    <div class="msg user">
+      <div class="avatar">我</div>
+      <div class="bubble">帮我把「记忆系统调研」和「工具卡片渲染链路调研」都做一下，两份互不相干，可以同时跑。</div>
+    </div>
+    <div class="msg assistant">
+      <div class="avatar">主</div>
+      <div class="bubble">
+        <p>两个任务互不相干，我并行提交到后台，先继续处理你接下来的问题。</p>
+        <div class="bg-grid">
+          <div class="bg-card">
+            <div class="bg-head">
+              <div class="sub-avatar">子</div>
+              <div class="spinner"></div>
+              <span class="bg-id">sub_a1b2c3</span>
+              <span class="tool-pill" style="margin-left:auto">运行中 00:18</span>
+            </div>
+            <div class="bg-body"><div class="bg-task">记忆系统调研（L1/L2/L3）</div><div class="sub-hint" style="margin:0">第 2 轮 · 已调用 3 次工具</div></div>
+          </div>
+          <div class="bg-card">
+            <div class="bg-head">
+              <div class="sub-avatar">子</div>
+              <div class="spinner"></div>
+              <span class="bg-id">sub_d4e5f6</span>
+              <span class="tool-pill" style="margin-left:auto">运行中 00:15</span>
+            </div>
+            <div class="bg-body"><div class="bg-task">工具卡片渲染链路调研</div><div class="sub-hint" style="margin:0">第 1 轮 · 已调用 2 次工具</div></div>
+          </div>
+        </div>
+        <div class="sub-hint">并发上限默认 3，超限立即报错（不排队）；两个任务各自独立上下文，互不影响。</div>
+      </div>
+    </div>
+    <div class="msg assistant">
+      <div class="avatar">主</div>
+      <div class="bubble">
+        <p>在它们跑的同时，我可以先回答你的其它问题——这就是后台模式与同步模式的区别。</p>
+        <div class="done-card">
+          <div class="done-head"><span class="ok">✓</span> 后台子任务完成 <span class="bg-id">sub_a1b2c3</span> <span style="color:var(--muted)">用时 42s · 3 轮</span></div>
+          <div class="done-body">记忆系统调研结论：L1 内存压缩（8000 tokens / 80% 阈值、保留 3 轮）· L2 按日归档 · L3 常驻 System Prompt。</div>
+        </div>
+        <div class="done-card">
+          <div class="done-head"><span class="ok">✓</span> 后台子任务完成 <span class="bg-id">sub_d4e5f6</span> <span style="color:var(--muted)">用时 35s · 2 轮</span></div>
+          <div class="done-body">渲染链路结论：chat-stream 组装 ToolSeg → ToolCard 渲染 → 事件按 callId 归属卡片；过程区默认收起。</div>
+        </div>
+        <div class="sub-hint">完成后自动落盘结果卡片（刷新/重启可见），并回灌通知；进程重启时未完成的卡片标记「已中断」。</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>七、CLI 模式展示（20261107-002 · D12–D13）</h2>
+  <div class="legend">
+    <span>CLI 无 SSE / 无折叠卡片：默认<b style="color:var(--text)">一行摘要</b>，<code>verbose</code> 打开即逐行缩进展开</span>
+  </div>
+  <div class="arch" style="grid-template-columns:1fr">
+    <div class="arch-box">
+      <p class="term-title">默认（verbose=false）：子 Agent 只留一行摘要，不刷屏</p>
+      <div class="term"><span class="p">❯</span> 帮我调研一下记忆系统
+
+<span class="d">⏺</span> <span class="k">delegate</span>({"task":"调研记忆系统并输出笔记"})
+  <span class="d">┆</span> 子 Agent 完成 · 3 轮 · 7 步 · 42s · 结论 120 字
+<span class="d">[Observation]</span> L1 内存压缩 · L2 日归档 · L3 常驻 System Prompt…
+<span class="p">✓</span> delegate <span class="g">(42s)</span>
+
+<span class="d">（完成：2 轮迭代 / 1 步工具 / 5 条消息历史）</span></div>
+    </div>
+    <div class="arch-box">
+      <p class="term-title">verbose=true（--verbose / /verbose）：缩进展开子 Agent 过程</p>
+      <div class="term"><span class="d">⏺</span> <span class="k">delegate</span>({"task":"调研记忆系统并输出笔记"})
+  <span class="d">┆</span> <span class="k">[Iteration 1/5]</span> 思考：先定位记忆模块实现…
+  <span class="d">┆</span> <span class="d">⏺</span> grep("class WorkingMemory") <span class="g">(1.2s)</span>
+  <span class="d">┆</span> <span class="d">[Observation]</span> src/memory/working.ts:59
+  <span class="d">┆</span> <span class="k">[Iteration 2/5]</span> 思考：压缩阈值来自 memory.working…
+  <span class="d">┆</span> <span class="d">⏺</span> fileRead("src/memory/types.ts") <span class="g">(0.3s)</span>
+  <span class="d">┆</span> 子 Agent 完成 · 3 轮 · 7 步 · 42s
+<span class="d">[Observation]</span> L1 内存压缩 · L2 日归档 · L3 常驻 System Prompt…
+<span class="p">✓</span> delegate <span class="g">(42s)</span></div>
+    </div>
+    <div class="arch-box">
+      <p class="term-title">后台模式（background: true）：提交即打印，完成在下一次输入前提示</p>
+      <div class="term"><span class="d">⏺</span> <span class="k">delegate</span>({"task":"调研记忆系统","background":true})
+<span class="w">⏳</span> 后台子任务 <span class="k">sub_a1b2c3</span> 已提交：调研记忆系统
+<span class="p">✓</span> delegate <span class="g">(0.1s)</span> <span class="d">// 主 Agent 继续，不阻塞</span>
+
+<span class="d">（用户继续提问 / 执行其它命令）</span>
+
+<span class="p">✅</span> 后台子任务 <span class="k">sub_a1b2c3</span> 完成 <span class="g">(42s)</span>：L1 内存压缩 · L2 日归档 · L3 常驻…
+<span class="d">（可用 /subagent list 查看全部，/subagent show sub_a1b2c3 查看过程摘要）</span></div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    MVP（20261107-001）：delegate 走现有 ToolCard + tool_progress 心跳。本次（20261107-002）新增：① <code>subagent_event</code>（带 callId）驱动的可折叠过程区（默认收起）；② <code>background: true</code> 并行后台执行 + 进程内注册表 + 结果卡片落盘 + <code>GET /sessions/:id/subagents</code> 轮询。多级委托 maxDepth、子任务独立会话、子 Agent 专用模型仍列演进项。
+  </div>
+
+<script>
+  function toggleProc(el) {
+    const body = document.getElementById(el.dataset.target);
+    const willOpen = body.hasAttribute('hidden');
+    if (willOpen) body.removeAttribute('hidden'); else body.setAttribute('hidden', '');
+    el.classList.toggle('open', willOpen);
+    const label = el.querySelector('.proc-label');
+    if (label) label.textContent = willOpen ? '收起过程' : '展开过程';
+  }
+</script>
+</div>
+</body>
+</html>

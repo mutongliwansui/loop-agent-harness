@@ -9,6 +9,126 @@ import type { Spinner } from './ui/spinner.js';
  * 作为 execute 的可选第二参传入，向后兼容：
  * 既有 `(args) => Promise<string>` 签名在 TS 结构类型下仍合法，无需改动。
  */
+/**
+ * 子 Agent 委托选项（需求 20261107-001）
+ */
+export interface SubAgentOptions {
+  /** 补充给子 Agent 的背景信息 */
+  context?: string;
+  /** 指定模型（缺省继承主 Agent 的本次 run 模型） */
+  model?: string;
+  /** 最大迭代数（缺省继承主 Agent） */
+  maxIterations?: number;
+  /**
+   * 归属的 delegate 工具调用 ID（需求 20261107-002 D2）：
+   * 过程事件按此归属到对应工具卡片；并发多个 delegate 时不会串台。
+   */
+  callId?: string;
+  /**
+   * 后台执行（需求 20261107-002 D5）：立即返回 taskId，主 Agent 继续推理。
+   * 受配置 `agent.subAgent.{background,maxConcurrent}` 约束。
+   */
+  background?: boolean;
+}
+
+/**
+ * 子 Agent 执行结果（需求 20261107-001）
+ */
+export interface SubAgentResult {
+  /** 子 Agent 的最终回答（作为主 Agent 的 observation 回写） */
+  answer: string;
+  /** 子 Agent 实际迭代轮数 */
+  iterations: number;
+  /** 后台任务 ID（background=true 时由执行器分配） */
+  taskId?: string;
+  /** 是否为后台提交（true 时 answer 为提交提示而非结论） */
+  background?: boolean;
+}
+
+/**
+ * 子 Agent 执行阶段（需求 20261107-002 D1/D2）
+ */
+export type SubAgentPhase =
+  | 'start'
+  | 'iteration'
+  | 'think'
+  | 'tool_start'
+  | 'tool_end'
+  | 'tool_progress'
+  | 'final'
+  | 'error'
+  | 'aborted';
+
+/**
+ * 子 Agent 过程事件（需求 20261107-002）：由父 run 转发到 SSE，前端挂到 delegate 卡片。
+ */
+export interface SubAgentEventInfo {
+  /** 归属：同步为 delegate 的 tool_call.id；后台为 taskId（sub_...） */
+  callId: string;
+  phase: SubAgentPhase;
+  /** phase='iteration' 时为目标轮次（从 1 起）；think/tool_* 时为所属轮次 */
+  iteration?: number;
+  /** phase='think' 为思考文本摘要；'start' 为任务描述；'final' 为最终回答（均已截断） */
+  text?: string;
+  /** phase='tool_*' 时 */
+  tool?: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  elapsedMs?: number;
+  error?: string;
+}
+
+/** 子 Agent 单次工具步骤（过程区渲染 + 落盘恢复） */
+export interface SubAgentToolStep {
+  name: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  elapsedMs?: number;
+  ok?: boolean;
+  /** 所属迭代轮次（从 1 起） */
+  iteration?: number;
+}
+
+/** 子 Agent 执行轨迹（默认收起的过程区数据，需求 20261107-002 D3/D4） */
+export interface SubAgentTrace {
+  status: 'running' | 'done' | 'failed' | 'aborted';
+  iterations: number;
+  think: Array<{ iteration: number; text: string }>;
+  tools: SubAgentToolStep[];
+  final?: string;
+  startedAt: number;
+}
+
+/** 后台子任务状态（落盘卡片 / 注册表共用） */
+export type SubAgentTaskStatus = 'running' | 'done' | 'failed' | 'aborted' | 'interrupted';
+
+/**
+ * 后台子任务提交信息（需求 20261107-002 D8/D9）：
+ * 由 Agent 层在后台任务登记后回调给 API 层，用于立即落盘「运行中」卡片。
+ */
+export interface SubAgentStartInfo {
+  taskId: string;
+  sessionId?: string;
+  task: string;
+  startedAt: number;
+}
+
+/**
+ * 后台子任务完成信息（需求 20261107-002 D8）：
+ * 由 Agent 层回调给 API 层，用于更新结果卡片 + 通知。
+ */
+export interface SubAgentCompleteInfo {
+  taskId: string;
+  sessionId?: string;
+  task: string;
+  status: 'done' | 'failed' | 'aborted';
+  answer?: string;
+  error?: string;
+  iterations?: number;
+  elapsedMs: number;
+  trace?: SubAgentTrace;
+}
+
 export interface ToolContext {
   /** run 级取消信号：来自 AgentOptions.signal，贯穿 LLM/工具/子进程三层 */
   signal?: AbortSignal;
@@ -22,6 +142,16 @@ export interface ToolContext {
    * 投递回原会话；CLI 首轮未建会话时为空，其通知进入无归属桶。
    */
   sessionId?: string;
+  /**
+   * 子 Agent 委托执行器（需求 20261107-001 D1）：
+   * 由 ReActAgent.run() 在本次 run 内构造并注入，持有 configLoader/共享记忆 kit/空间根/取消信号。
+   * 未注入时（如工具被脱离 Agent 直接调用）`delegate` 工具据此降级报错，不抛异常。
+   */
+  runSubAgent?: (task: string, opts?: SubAgentOptions) => Promise<SubAgentResult>;
+  /**
+   * 当前工具调用 ID（需求 20261107-002 D2）：由 runner 注入，子 Agent 过程事件据此归属卡片。
+   */
+  callId?: string;
 }
 
 /**
@@ -98,9 +228,11 @@ export interface SessionMessageFlags {
    * 显式判据，避免用 is_show=false 隐式推断（is_show 只是展示标记）；
    * 旧数据缺省时由 isSummaryMessage 回退到「role=user 且 is_show=false」。
    */
-  kind?: 'summary';
+  kind?: 'summary' | 'subagent_result';
   /** 本轮 token 统计（需求 20261106-006）：仅每轮最终 assistant 消息携带；不进入 LLM 请求 */
   usage?: TurnUsage;
+  /** 子 Agent 执行轨迹（需求 20261107-002 D4）：挂到 delegate 的 tool 消息，刷新后可恢复过程区 */
+  sub?: SubAgentTrace;
 }
 
 /**
@@ -134,6 +266,22 @@ export function isBackgroundNoticeContent(content: string | null | undefined): b
   if (typeof content !== 'string') return false;
   const t = content.trim();
   return t.endsWith(BACKGROUND_NOTICE_CLOSE) && t.includes(BACKGROUND_NOTICE_OPEN);
+}
+
+/** 后台子任务结果卡片边界（需求 20261107-002 D8）：仅用于前端展示，不作为 LLM 历史前缀 */
+export const SUBAGENT_RESULT_OPEN = '<subagent_result>';
+export const SUBAGENT_RESULT_CLOSE = '</subagent_result>';
+
+/** 判断一段消息文本是否为后台子任务结果卡片 */
+export function isSubAgentResultContent(content: string | null | undefined): boolean {
+  if (typeof content !== 'string') return false;
+  const t = content.trim();
+  return t.endsWith(SUBAGENT_RESULT_CLOSE) && t.includes(SUBAGENT_RESULT_OPEN);
+}
+
+/** 展示专用消息（后台任务通知 / 子任务结果卡片）：不进入 LLM 请求的历史前缀 */
+export function isDisplayOnlyContent(content: string | null | undefined): boolean {
+  return isBackgroundNoticeContent(content) || isSubAgentResultContent(content);
 }
 
 /**
@@ -336,6 +484,33 @@ export interface AgentOptions {
    * 不传时全部路径行为与无取消一致（CLI 模式零改动）。
    */
   signal?: AbortSignal;
+  /**
+   * 排除的工具名（需求 20261107-001 D4）：本次 run 传给 LLM 的 tools 列表会剔除这些工具，
+   * 执行阶段也会拦截（防止 LLM 幻觉调用）。用于子 Agent 排除 `delegate` 防无限递归；
+   * 主 Agent run 一般不传，行为与改动前完全一致。
+   */
+  excludeTools?: string[];
+  /**
+   * 是否输出 LLM token 统计（需求 20261107-002 D12）：
+   * 仅用于给子 Agent 关闭默认 ConsoleLogger 的统计行（子 Agent 过程走缩进日志/事件桥接）。
+   * 缺省读取 config.agent.showTokenStats。
+   */
+  showTokenStats?: boolean;
+  /**
+   * 子 Agent 过程事件回调（需求 20261107-002 D1/D2）：
+   * WebUI 由 API 层注入，转发为 SSE `subagent_event`；CLI 不注入（走缩进控制台日志）。
+   */
+  onSubAgentEvent?: (info: SubAgentEventInfo) => void | Promise<void>;
+  /**
+   * 后台子任务提交回调（需求 20261107-002 D8/D9）：
+   * API 层据此立即落盘「运行中」卡片（刷新/重启后仍可见，中断时可标记）。
+   */
+  onSubAgentStart?: (info: SubAgentStartInfo) => void | Promise<void>;
+  /**
+   * 后台子任务完成回调（需求 20261107-002 D8）：
+   * API 层据此更新结果卡片 + 推送通知；CLI 不注入时打印到终端。
+   */
+  onSubAgentComplete?: (info: SubAgentCompleteInfo) => void | Promise<void>;
 }
 
 // ===== 取消相关（Task-20261021-002-01） =====

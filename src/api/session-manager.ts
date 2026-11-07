@@ -78,6 +78,9 @@ export class SessionManager {
       const data = await this.store.loadSession(id);
       // 恢复视图：system 由调用方重建 + is_compact!==true 的消息（含摘要消息），不含 system
       history = SessionStore.getRestoreMessages(data).filter((m) => m.role !== 'system');
+      // 进程重启后首次打开会话：把仍为 running 的后台子任务卡片标记为 interrupted
+      // 仅缓存 miss 时执行（冷启动），运行中进程不会误标当前任务
+      await this.store.markRunningSubAgentsInterrupted(id);
     } catch {
       throw new ApiHttpError('not_found', `会话不存在: ${id}`);
     }
