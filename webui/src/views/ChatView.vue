@@ -74,6 +74,7 @@ import ToolCard from '../components/ToolCard.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
 import SubAgentResultCard from '../components/SubAgentResultCard.vue';
+import SubAgentDock from '../components/SubAgentDock.vue';
 import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
 import { nextTextareaHeight } from '../autogrow.js';
 import { createFollowState, type FollowState } from '../scroll-follow.js';
@@ -1180,7 +1181,7 @@ onUnmounted(() => {
               <!-- 20261105-001：后台任务完成通知渲染为系统卡片，不占用户气泡 -->
               <BackgroundNoticeCard v-if="noticeMap.get(m.id)" :info="noticeMap.get(m.id)!" />
               <!-- 20261107-002 D8：后台子任务完成结果卡片（服务端主动落盘） -->
-              <SubAgentResultCard v-else-if="m.subResult" :info="m.subResult" />
+              <SubAgentResultCard v-else-if="m.subResult" :info="m.subResult" :session-id="activeId" />
               <template v-else>
               <div v-if="m.role === 'assistant'" class="m-head">
                 <div class="ava">L</div><span class="m-role">Loop Agent</span>
@@ -1412,6 +1413,9 @@ onUnmounted(() => {
       </div>
 
       <div class="composer">
+        <!-- 后台子任务常驻指示器（需求 20261107-008 G1）：放在输入区上方，
+             无论消息滚到哪里都能看到「运行中 N」 -->
+        <SubAgentDock :session-id="activeId" />
         <div class="composer-inner">
           <div class="dock">
             <!-- 附件 pill（task-20261025-002 ③）：SVG + 文件名 + 大小 + 圆形删除 -->

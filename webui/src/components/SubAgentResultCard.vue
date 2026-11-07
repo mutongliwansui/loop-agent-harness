@@ -1,13 +1,56 @@
 <script setup lang="ts">
 // 后台子任务结果卡片（需求 20261107-002 D8）
 // 展示专用消息（kind='subagent_result'）：完成时由服务端主动落盘，不进入 LLM 历史。
-import { computed, ref } from 'vue';
-import type { SubAgentResultVM } from '../chat-stream.js';
+import { computed, onUnmounted, ref, watch } from 'vue';
+import { subAgentTasksOf, type SubAgentResultVM } from '../chat-stream.js';
 import SubAgentProcess from './SubAgentProcess.vue';
 
-const props = defineProps<{ info: SubAgentResultVM }>();
+const props = defineProps<{ info: SubAgentResultVM; sessionId?: string | null }>();
 
 const expanded = ref(false);
+
+/**
+ * 运行中卡片的实时数据（需求 20261107-008 P2 / task-006 B6）：
+ * 落盘卡片是快照（elapsedMs=0、iterations=0），运行期间由轮询快照补齐，
+ * 展示「已运行 Xs · N 轮」而不是静态「任务执行中…」。
+ */
+const live = computed(() =>
+  props.info.status === 'running' && props.sessionId
+    ? subAgentTasksOf(props.sessionId).find((t) => t.taskId === props.info.taskId)
+    : undefined,
+);
+/** 运行中每秒走表（仅当卡片处于 running 且拿到快照时启用，避免空转） */
+const now = ref(Date.now());
+let timer: ReturnType<typeof setInterval> | null = null;
+watch(
+  () => live.value !== undefined,
+  (on) => {
+    if (on && !timer) {
+      timer = setInterval(() => {
+        now.value = Date.now();
+      }, 1000);
+    } else if (!on && timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  },
+  { immediate: true },
+);
+onUnmounted(() => {
+  if (timer) clearInterval(timer);
+  timer = null;
+});
+
+const durationMs = computed(() => {
+  const l = live.value;
+  if (!l) return props.info.elapsedMs;
+  // 运行中优先本地走表（2s 轮询带回的 elapsedMs 只是采样点，直接用会显得跳变/停滞）
+  if (l.status === 'running' && l.startedAt) return Math.max(0, now.value - l.startedAt);
+  if (l.elapsedMs !== undefined) return l.elapsedMs;
+  return l.startedAt ? Math.max(0, now.value - l.startedAt) : 0;
+});
+const iterations = computed(() => live.value?.iterations ?? props.info.iterations);
+
 const tone = computed(() => {
   switch (props.info.status) {
     case 'failed':
@@ -34,9 +77,14 @@ const label = computed(() => {
       return '完成';
   }
 });
-const duration = computed(() => `${Math.round(props.info.elapsedMs / 1000)}s`);
+const duration = computed(() => `${Math.round(durationMs.value / 1000)}s`);
 const text = computed(() => {
-  if (props.info.status === 'running') return '任务执行中…';
+  if (props.info.status === 'running') {
+    // 有轨迹时过程区已展示进度，这里只补一句状态；无轨迹时给出实时轮次
+    return `任务执行中… · 已运行 ${Math.round(durationMs.value / 1000)}s${
+      iterations.value ? ` · ${iterations.value} 轮` : ''
+    }`;
+  }
   return props.info.answer || props.info.error || '（空结果）';
 });
 const long = computed(() => text.value.split('\n').length > 8 || text.value.length > 500);
@@ -52,7 +100,7 @@ const long = computed(() => text.value.split('\n').length > 8 || text.value.leng
       <span class="sarc-tag">后台子任务</span>
       <span class="pill" :class="tone">{{ label }}</span>
       <span class="sarc-id">{{ info.taskId }}</span>
-      <span class="sarc-dur">⏱ {{ duration }} · {{ info.iterations }} 轮</span>
+      <span class="sarc-dur">⏱ {{ duration }} · {{ iterations }} 轮</span>
     </div>
     <div v-if="info.task" class="sarc-task" :title="info.task">{{ info.task }}</div>
     <!-- 过程区（20261107-003）：刷新后从 m.sub 恢复；有轨迹时结论由过程区承载 -->

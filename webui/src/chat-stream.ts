@@ -62,6 +62,24 @@ export interface SubAgentResultVM {
   error?: string;
   trace?: SubAgentTraceVM;
 }
+/**
+ * 后台子任务运行期快照（GET /sessions/:id/subagents 的 items，需求 20261107-008 G1）。
+ *
+ * 与结果卡片（SubAgentResultVM，来自落盘历史）的区别：快照是**进程内实时状态**，
+ * 不依赖 SSE、不依赖消息时间线，因此可以驱动「常驻指示器」——
+ * 后台任务的生命周期远长于主 run，主 run 结束后 SSE 已关闭，只有轮询才能持续感知。
+ */
+export interface SubAgentTaskVM {
+  taskId: string;
+  task: string;
+  status: 'running' | 'done' | 'failed' | 'aborted' | 'interrupted';
+  startedAt?: number;
+  finishedAt?: number;
+  elapsedMs?: number;
+  iterations?: number;
+  answer?: string;
+  error?: string;
+}
 export interface ToolSeg {
   type: 'tool';
   tool: string;
@@ -169,6 +187,11 @@ export interface SessionStreamState {
   /** 缓冲溢出后正在重建历史：期间事件先入 pending */
   reloading: boolean;
   pending: SseEvent[];
+  /**
+   * 重建期间又被请求一次重建（需求 20261107-008 G3）：
+   * 原实现直接丢弃，导致「两个后台任务先后完成」时第二次完成通知被吞（task-006 B3）。
+   */
+  pendingResync?: boolean;
   /** 首次加载去重（并发 ensureLoaded 共享同一请求） */
   loadTask: Promise<void> | null;
   /**
@@ -528,6 +551,9 @@ async function fetchDetail(id: string, st: SessionStreamState): Promise<void> {
   } else if (st.note?.startsWith('⚠') || st.note === '上次运行由用户停止') {
     st.note = undefined;
   }
+  // 加载完成即补偿一次后台任务状态（G2 条件③）：刷新页面/切会话/SSE 未连上时
+  // 也能立刻拿到「运行中 N」，不再依赖是否收到过 sub_ start 事件
+  void bootstrapSubAgents(id);
 }
 
 /** 首次进入会话时加载历史（已加载直接返回）；加载中共享同一请求 */
@@ -560,6 +586,10 @@ export function drop(id: string): void {
   st.controller?.abort();
   st.attachCtrl?.abort();
   states.delete(id);
+  // 后台任务撤销随会话一起收尾（需求 20261107-008）：停轮询、清快照，
+  // 否则已删除会话的「运行中 N」会一直挂在全局指示器上
+  stopSubAgentPoll(id);
+  subTasks.delete(id);
 }
 
 /**
@@ -918,6 +948,9 @@ function applyEvent(id: string, ev: SseEvent): void {
     // 后台子任务完成：结果卡片已由服务端落盘，静默重拉历史
     case 'subagent_result': {
       void resync(id);
+      // 快照同步（需求 20261107-008）：卡片落盘与 registry 状态是两条链路，
+      // 事件到达时顺手刷新一次，让常驻指示器的「运行中 N」立刻减一
+      void tickSubAgents(id);
       break;
     }
     case 'done': {
@@ -935,28 +968,119 @@ function applyEvent(id: string, ev: SseEvent): void {
   }
 }
 
-/* ===== 后台子任务轮询（需求 20261107-002 D9） ===== */
+/* ===== 后台子任务：运行期快照、常驻指示与轮询（需求 20261107-008） =====
+ *
+ * 背景（task-006 §2.2/§2.3）：后台子任务的生命周期远长于主 run。delegate(background)
+ * 立即返回后主 run 很快 done、SSE 关闭，此后 subagent_event / subagent_result 无人接收；
+ * 原轮询只在「SSE 活跃时收到 sub_ start 事件」才启动，错过该事件（刷新页面、SSE 已断）
+ * 就永久失联 → 运行中看不见、完成了也不知道。
+ *
+ * 治理：改为**数据驱动**——快照来自轮询端点而不是事件流。
+ *   G1 常驻指示器读 snapshots（subAgentTasksOf）
+ *   G2 启动条件放宽：SSE start 事件 / 历史残留 running 卡片 / 会话加载与重连后主动查一次
+ *   G3 resync 排队补执行，不静默丢弃
+ *   G4 运行中 → 终态时弹提示（本端正在看该会话）
+ */
+
+/** 空快照（未加载过的会话，模板可直接 v-for） */
+const EMPTY_SUB_TASKS: SubAgentTaskVM[] = [];
+/** 按会话保存的运行期快照（轮询刷新；不随消息时间线重建而丢失） */
+const subTasks = reactive(new Map<string, SubAgentTaskVM[]>());
+/** 已弹过终态提示的 taskId：bootstrap 与轮询可能并发，避免同一任务重复提示 */
+const notifiedTaskIds = new Set<string>();
+
+/** 会话的后台子任务快照（未加载返回共享空数组） */
+export function subAgentTasksOf(id: string | null): SubAgentTaskVM[] {
+  if (!id) return EMPTY_SUB_TASKS;
+  return subTasks.get(id) ?? EMPTY_SUB_TASKS;
+}
+
+/** 全局「后台子任务运行中」计数：顶栏/输入区常驻指示器与侧栏 badge 共用 */
+export const subAgentRunningCount = computed<number>(() => {
+  let n = 0;
+  for (const list of subTasks.values()) {
+    for (const t of list) if (t.status === 'running') n++;
+  }
+  return n;
+});
+
+/**
+ * 拉一次 /subagents 并更新快照。返回是否仍有运行中的任务。
+ * 失败向上抛（调用方决定是否停表）；会话已删除/鉴权失败时轮询应停止。
+ */
+async function refreshSubAgents(id: string): Promise<boolean> {
+  const r = await api<{ items: SubAgentTaskVM[] }>(
+    `/sessions/${encodeURIComponent(id)}/subagents`,
+  );
+  const items = Array.isArray(r.items) ? r.items : [];
+  const prev = subTasks.get(id) ?? [];
+  const prevRunning = new Set(
+    prev.filter((t) => t.status === 'running').map((t) => t.taskId),
+  );
+  // G4：运行中 → 终态，且本端正在看这个会话（否则交给未读/侧栏提示，不打扰）
+  if (chatViewMounted && activeSessionId === id) {
+    for (const t of items) {
+      if (!prevRunning.has(t.taskId) || t.status === 'running') continue;
+      if (notifiedTaskIds.has(t.taskId)) continue;
+      notifiedTaskIds.add(t.taskId);
+      const what = t.status === 'done' ? '已完成' : t.status === 'failed' ? '失败' : '已结束';
+      showToast(
+        `后台子任务 ${t.taskId} ${what}` +
+          `${t.elapsedMs ? `（${Math.round(t.elapsedMs / 1000)}s` : ''}` +
+          `${t.elapsedMs ? ` · ${t.iterations ?? 0} 轮）` : ''}`,
+        t.status === 'failed' ? 'error' : 'success',
+      );
+    }
+  }
+  subTasks.set(id, items);
+  return items.some((t) => t.status === 'running');
+}
+
+/** 时间线里是否还有 running 的结果卡片（G2 条件②：刷新页面后据此恢复轮询） */
+function hasRunningSubCard(st: SessionStreamState): boolean {
+  for (const m of st.messages) {
+    if (m.subResult?.status === 'running') return true;
+  }
+  return false;
+}
 
 const subPolls = new Map<string, ReturnType<typeof setInterval>>();
+/** 进行中的 tick（防 setInterval 与立即 tick 叠加发重复请求） */
+const subTicking = new Set<string>();
+const SUB_POLL_MS = 2000;
 
-/** 存在运行中的后台子任务时每 2s 查一次；全部收敛后停表并重建历史 */
+/**
+ * 启动（或复用）轮询，并立即查一次。
+ * 启动条件已放宽（G2）：SSE start 事件、会话加载/重连、历史残留 running 卡片都可调用。
+ */
 function ensureSubAgentPoll(id: string): void {
-  if (subPolls.has(id)) return;
-  const timer = setInterval(() => {
-    void (async () => {
-      try {
-        const r = await api<{ items: { status: string }[] }>(
-          `/sessions/${encodeURIComponent(id)}/subagents`,
-        );
-        if (r.items.some((t) => t.status === 'running')) return;
-        stopSubAgentPoll(id);
-        await resync(id);
-      } catch {
-        stopSubAgentPoll(id);
-      }
-    })();
-  }, 2000);
-  subPolls.set(id, timer);
+  if (!subPolls.has(id)) {
+    subPolls.set(
+      id,
+      setInterval(() => void tickSubAgents(id), SUB_POLL_MS),
+    );
+  }
+  void tickSubAgents(id);
+}
+
+/** 一轮轮询：刷新快照；全部收敛后停表并以落盘历史为准重建时间线 */
+async function tickSubAgents(id: string): Promise<void> {
+  if (subTicking.has(id)) return;
+  subTicking.add(id);
+  try {
+    let running: boolean;
+    try {
+      running = await refreshSubAgents(id);
+    } catch {
+      stopSubAgentPoll(id); // 会话已删除 / 鉴权失败：不再重试
+      return;
+    }
+    if (running) return;
+    stopSubAgentPoll(id);
+    await resync(id);
+  } finally {
+    subTicking.delete(id);
+  }
 }
 
 function stopSubAgentPoll(id: string): void {
@@ -965,10 +1089,39 @@ function stopSubAgentPoll(id: string): void {
   subPolls.delete(id);
 }
 
+/**
+ * 会话加载 / SSE 重连后的补偿（G2 条件③、G5）。
+ *
+ * 前端 SSE 是 fetch 流（不是 EventSource），没有 onopen 钩子，因此把补偿点放在
+ * 「历史加载完成」与「attach/reconcile 结束」——二者都意味着与后端的连接刚建立或刚恢复。
+ */
+async function bootstrapSubAgents(id: string): Promise<void> {
+  const st = states.get(id);
+  if (!st) return;
+  try {
+    const running = await refreshSubAgents(id);
+    if (running) {
+      ensureSubAgentPoll(id);
+      return;
+    }
+  } catch {
+    // 快照是展示态数据，失败不打断会话加载
+  }
+  // 后端 registry 已无运行中任务，但时间线里残留 running 卡片（进程重启前的历史）：
+  // 仍启动一次轮询，让 tick 走「收敛 → resync」把卡片刷成真终态
+  if (hasRunningSubCard(st)) ensureSubAgentPoll(id);
+}
+
 /** 缓冲溢出（reset）后重建历史：期间新事件入 pending，重建完再按序应用 */
 async function resync(id: string): Promise<void> {
   const st = states.get(id);
-  if (!st || st.reloading) return;
+  if (!st) return;
+  // G3：reloading 期间的重建请求不丢弃，记标记待当前重建完成后补执行一次。
+  // 原实现直接 return，两个后台任务先后完成时第二次完成通知会被吞（task-006 §2.2 B3）。
+  if (st.reloading) {
+    st.pendingResync = true;
+    return;
+  }
   st.reloading = true;
   try {
     const r = await api<SessionDetail>(`/sessions/${encodeURIComponent(id)}`);
@@ -982,6 +1135,10 @@ async function resync(id: string): Promise<void> {
     const pend = st.pending;
     st.pending = [];
     for (const ev of pend) applyEvent(id, ev);
+    if (st.pendingResync) {
+      st.pendingResync = false;
+      void resync(id); // 补执行被合并掉的那次重建
+    }
   }
 }
 
@@ -1057,6 +1214,7 @@ async function reconcile(id: string, markAborted = false): Promise<void> {
         st.messages[i].seq = disk[i].seq;
       }
       void refreshContext(id);
+      void bootstrapSubAgents(id); // G5：主 run 收尾后补查一次后台任务状态
       return;
     }
     const prevAsst = markAborted ? st.messages[st.messages.length - 1] : undefined;
@@ -1072,6 +1230,7 @@ async function reconcile(id: string, markAborted = false): Promise<void> {
     // 内容被磁盘结果替换：通知视图重做高亮/mermaid 与滚动
     for (const cb of finishHandlers) cb(id);
     void refreshContext(id);
+    void bootstrapSubAgents(id); // G5：与后端刚完成一次对齐，顺带补查后台任务状态
   } catch {
     // 静默：对齐失败时保留流式结果
   }
