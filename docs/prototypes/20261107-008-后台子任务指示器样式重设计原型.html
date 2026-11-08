@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>20261107-008 · 后台子任务常驻指示器样式重设计原型</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --line: #2a2f3a;
+    --line-soft: #232831;
+    --line-strong: #3a4150;
+    --text: #e6e8ed;
+    --text-2: #b9c0cc;
+    --muted: #8b92a0;
+    --brand: #4ade80;
+    --brand-weak: rgba(74, 222, 128, 0.12);
+    --accent: #60a5fa;
+    --accent-weak: rgba(96, 165, 250, 0.12);
+    --warn: #fbbf24;
+    --warn-weak: rgba(251, 191, 36, 0.12);
+    --danger: #f87171;
+    --danger-weak: rgba(248, 113, 113, 0.12);
+    --code-bg: #12151b;
+    --hover: rgba(255, 255, 255, 0.04);
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    --r-lg: 12px;
+    --r-md: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 72px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  h2 { font-size: 15px; margin: 34px 0 12px; padding-left: 10px; border-left: 3px solid var(--brand); }
+  h3 { font-size: 13px; margin: 18px 0 8px; color: var(--text-2); font-weight: 600; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 18px; }
+  .panel + .panel { margin-top: 12px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .note code, .diag code { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
+  .stage { background: var(--bg); border: 1px dashed var(--line); border-radius: var(--r-md); padding: 14px; }
+  .stage + .stage { margin-top: 10px; }
+  .stage-label { font: 500 10.5px/1 var(--mono); letter-spacing: .04em; color: var(--muted); margin-bottom: 10px; }
+
+  /* ===== ① 现状（复刻截图里的旧样式，用于对照） ===== */
+  .old-dock {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--r-lg);
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .old-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12.5px; }
+  .old-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .old-count { font-weight: 600; color: var(--accent); }
+  .old-sum { flex: 1; min-width: 0; display: flex; gap: 12px; overflow: hidden; white-space: nowrap; }
+  .old-brief { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+  .old-chev { color: var(--muted); }
+
+  .diag { margin: 14px 0 0; padding: 0; list-style: none; counter-reset: d; }
+  .diag li { counter-increment: d; position: relative; padding-left: 26px; margin: 7px 0; font-size: 12.5px; color: var(--text-2); }
+  .diag li::before {
+    content: counter(d);
+    position: absolute; left: 0; top: 2px;
+    width: 17px; height: 17px; border-radius: 50%;
+    background: var(--danger-weak); color: var(--danger);
+    font: 600 10px/17px var(--mono); text-align: center;
+  }
+  .diag b { color: var(--text); font-weight: 600; }
+
+  /* ===== ② 重设计：复用对话卡片刻度（面板底、软边框、12px 圆角） ===== */
+  .dock {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
+    overflow: hidden;
+  }
+  /* 顶部 2px 呼吸线：表示「仍在跑」，不做进度百分比（后端无进度数据） */
+  .dock::before {
+    content: "";
+    position: absolute; inset: 0 0 auto;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--brand), transparent);
+    background-size: 40% 100%;
+    animation: slide 1.8s ease-in-out infinite;
+    opacity: .55;
+  }
+  @keyframes slide {
+    0% { background-position: -40% 0; }
+    100% { background-position: 140% 0; }
+  }
+
+  .dock-head {
+    display: flex; align-items: center; gap: 9px;
+    width: 100%; padding: 8px 12px 8px 10px;
+    font: inherit; color: var(--text); text-align: left;
+    background: none; border: 0; cursor: pointer;
+  }
+  .dock-head:hover { background: var(--hover); }
+  .dock-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  /* 图标徽标：与 ToolCard 的 .tool-ico 同形制（24×24 / 6px 圆角 / panel-2 底） */
+  .dock-ico {
+    position: relative; flex: none;
+    width: 24px; height: 24px; border-radius: 6px;
+    display: grid; place-items: center;
+    background: var(--panel-2); border: 1px solid var(--line-soft);
+    color: var(--muted);
+  }
+  .dock-ico svg { width: 14px; height: 14px; }
+  /* 运行状态：图标右下角 6px 呼吸点，替代此前「整条左侧色条 + 彩色大圆点」 */
+  .dock-ico::after {
+    content: "";
+    position: absolute; right: -2px; bottom: -2px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--brand);
+    box-shadow: 0 0 0 2px var(--panel);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+
+  .dock-title { flex: none; font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .dock-count {
+    flex: none; font-size: 11px; line-height: 1;
+    padding: 3px 7px; border-radius: 999px;
+    color: var(--brand); background: var(--brand-weak);
+    border: 1px solid rgba(74, 222, 128, .35);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 任务 chips：用序号 + 实时耗时替代「被截断成相同前缀的任务标题」 */
+  .dock-chips { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
+  .chip {
+    flex: none; display: inline-flex; align-items: center; gap: 6px;
+    height: 20px; padding: 0 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line-soft);
+    background: var(--code-bg);
+    font-size: 11px; color: var(--text-2);
+  }
+  .chip .cd { width: 5px; height: 5px; border-radius: 50%; background: var(--brand); animation: pulse 1.5s infinite; }
+  .chip .cn { font: 600 10.5px/1 var(--mono); color: var(--muted); }
+  .chip .ct { font: 11px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+  .chip.more { color: var(--muted); border-style: dashed; }
+
+  /* 收起态聚合耗时：多任务时回答「整体跑了多久」 */
+  .dock-total { flex: none; font: 11px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dock-chev { flex: none; color: var(--muted); transition: transform .18s; }
+  .dock-head[aria-expanded="true"] .dock-chev { transform: rotate(180deg); }
+
+  /* ===== 展开列表 ===== */
+  .dock-list {
+    margin: 0; padding: 2px 10px 8px; list-style: none;
+    border-top: 1px solid var(--line-soft);
+  }
+  .row {
+    display: flex; align-items: flex-start; gap: 9px;
+    padding: 7px 4px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .row:last-child { border-bottom: 0; }
+  /* 状态点位：running 呼吸，终态静态；不用彩色描边胶囊 */
+  .rdot {
+    flex: none; width: 7px; height: 7px; border-radius: 50%; margin-top: 6px;
+    background: var(--muted);
+  }
+  .row[data-s="running"] .rdot { background: var(--brand); animation: pulse 1.5s infinite; }
+  .row[data-s="done"] .rdot { background: var(--ok, var(--brand)); }
+  .row[data-s="failed"] .rdot { background: var(--danger); }
+  .row[data-s="aborted"] .rdot,
+  .row[data-s="interrupted"] .rdot { background: var(--line-strong); }
+
+  .rmain { flex: 1; min-width: 0; }
+  .rline { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+  .rn { flex: none; font: 600 10.5px/1 var(--mono); color: var(--muted); }
+  .rtask {
+    font-size: 12.5px; line-height: 1.55; color: var(--text);
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+  .rmeta { display: flex; align-items: center; gap: 10px; margin-top: 2px; font-size: 11px; color: var(--muted); }
+  .rmeta .m { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+  .rmeta svg { width: 11px; height: 11px; opacity: .8; }
+  .rid { font-family: var(--mono); font-size: 10.5px; color: var(--muted); opacity: .75; }
+  .rst { flex: none; font-size: 11px; color: var(--muted); align-self: center; }
+  .row[data-s="running"] .rst { color: var(--brand); }
+  .row[data-s="failed"] .rst { color: var(--danger); }
+  .rerr { margin-top: 2px; font-size: 11.5px; color: var(--danger); }
+
+  /* ===== 状态一览 ===== */
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+  td code { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
+
+  .swatches { display: flex; gap: 22px; flex-wrap: wrap; margin: 4px 0 10px; }
+  .sw { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
+  .sw i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+  .narrow { max-width: 420px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>后台子任务常驻指示器 · 样式重设计</h1>
+  <div class="sub">对应需求 20261107-008（G1 常驻指示器）｜ 本文只改视觉与信息层级，不改轮询/显隐逻辑</div>
+  <div class="legend">
+    <span><b>现状问题</b>：告警条观感、重复摘要、等宽字割裂</span>
+    <span><b>重设计</b>：复用对话卡片刻度 + 序号 chips + 聚合耗时</span>
+  </div>
+
+  <h2>一、现状诊断</h2>
+  <div class="panel">
+    <div class="stage">
+      <div class="stage-label">现状（复刻截图收起态）</div>
+      <div class="old-dock">
+        <div class="old-head">
+          <span class="old-dot"></span>
+          <span class="old-count">后台子任务运行中 2</span>
+          <span class="old-sum">
+            <span class="old-brief">对 D:\workspace\loo… · 42s</span>
+            <span class="old-brief">对 D:\workspace\loo… · 39s</span>
+          </span>
+          <svg class="old-chev" viewBox="0 0 12 12" width="10" height="10"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </div>
+      </div>
+    </div>
+    <ul class="diag">
+      <li><b>左侧 3px 蓝色条 + 彩色加粗字</b>：读起来像错误/告警横幅，与对话区的工具卡片（软边框、灰色标题）不是一套视觉语言。</li>
+      <li><b>多任务摘要前缀相同</b>：任务文本按 90 字截断，两个任务的描述都以「对 D:\workspace\loo…」开头，收起态等于两条一模一样的噪音。</li>
+      <li><b>等宽字体 11px</b> 承载中文任务描述，和界面其余 12.5px sans 正文割裂；路径一串反斜杠在窄宽度下不可读。</li>
+      <li><b>收起态没有聚合耗时</b>：用户看不到「这两个任务一共跑了多久」，只有逐个任务的小耗时。</li>
+      <li><b>展开列表信息主次倒置</b>：<code>sub_dcb8eef4_1794064172</code> 这类内部 ID 占最显眼位置，任务标题反而被压到一行省略；状态用描边胶囊 + <code>⏱</code> emoji，描边堆叠造成噪音。</li>
+    </ul>
+  </div>
+
+  <h2>二、重设计（收起态）</h2>
+  <div class="panel">
+    <div class="stage narrow">
+      <div class="stage-label">A · 两个任务（任务 chips 用序号 + 实时耗时，点击行展开）</div>
+      <div class="dock">
+        <button type="button" class="dock-head" aria-expanded="false">
+          <span class="dock-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z"/></svg>
+          </span>
+          <span class="dock-title">后台子任务</span>
+          <span class="dock-count">2 运行中</span>
+          <span class="dock-chips">
+            <span class="chip"><i class="cd"></i><span class="cn">#1</span><span class="ct">2m14s</span></span>
+            <span class="chip"><i class="cd"></i><span class="cn">#2</span><span class="ct">1m58s</span></span>
+          </span>
+          <span class="dock-total">共 2m14s</span>
+          <svg class="dock-chev" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="stage narrow">
+      <div class="stage-label">B · 单个任务（chip 可带任务短名，宽度足够时）</div>
+      <div class="dock">
+        <button type="button" class="dock-head" aria-expanded="false">
+          <span class="dock-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z"/></svg>
+          </span>
+          <span class="dock-title">后台子任务</span>
+          <span class="dock-count">1 运行中</span>
+          <span class="dock-chips">
+            <span class="chip"><i class="cd"></i><span class="cn">#1</span><span class="ct">42s</span></span>
+            <span class="chip more" title="任务标题">README 中英全量比对</span>
+          </span>
+          <svg class="dock-chev" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="stage narrow">
+      <div class="stage-label">C · 任务数溢出（>3 只展示前 3 个 + 「+N」，避免挤压标题）</div>
+      <div class="dock">
+        <button type="button" class="dock-head" aria-expanded="false">
+          <span class="dock-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z"/></svg>
+          </span>
+          <span class="dock-title">后台子任务</span>
+          <span class="dock-count">5 运行中</span>
+          <span class="dock-chips">
+            <span class="chip"><i class="cd"></i><span class="cn">#1</span><span class="ct">5m02s</span></span>
+            <span class="chip"><i class="cd"></i><span class="cn">#2</span><span class="ct">4m41s</span></span>
+            <span class="chip"><i class="cd"></i><span class="cn">#3</span><span class="ct">3m12s</span></span>
+            <span class="chip more">+2</span>
+          </span>
+          <span class="dock-total">共 5m02s</span>
+          <svg class="dock-chev" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="note">窄屏（&lt; 720px）只保留：图标 + 标题 + 计数 + 聚合耗时 + chevron；chips 整体隐藏（沿用现有断点，但不再隐藏后「什么都不剩」）。</div>
+  </div>
+
+  <h2>三、重设计（展开态）</h2>
+  <div class="panel">
+    <div class="stage">
+      <div class="stage-label">D · 展开：2 个运行中 + 1 个失败（列表同时承载进行中与终态）</div>
+      <div class="dock">
+        <button type="button" class="dock-head" aria-expanded="true">
+          <span class="dock-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z"/></svg>
+          </span>
+          <span class="dock-title">后台子任务</span>
+          <span class="dock-count">2 运行中</span>
+          <span class="dock-chips">
+            <span class="chip"><i class="cd"></i><span class="cn">#1</span><span class="ct">2m14s</span></span>
+            <span class="chip"><i class="cd"></i><span class="cn">#2</span><span class="ct">1m58s</span></span>
+          </span>
+          <span class="dock-total">共 2m14s</span>
+          <svg class="dock-chev" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <ul class="dock-list">
+          <li class="row" data-s="running">
+            <i class="rdot"></i>
+            <div class="rmain">
+              <div class="rline"><span class="rn">#1</span><span class="rtask">对 D:\workspace\loop-agent-command\README.md 与 README.en.md 主 README 全量比对，按 A/B/C 三类归因</span></div>
+              <div class="rmeta">
+                <span class="m"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><path d="M8 4.9V8l2.2 1.4"/></svg>2m14s</span>
+                <span class="m">3 轮</span>
+                <span class="rid">sub_dcb8eef4_1794064172</span>
+              </div>
+            </div>
+            <span class="rst">进行中</span>
+          </li>
+          <li class="row" data-s="running">
+            <i class="rdot"></i>
+            <div class="rmain">
+              <div class="rline"><span class="rn">#2</span><span class="rtask">docs\readme\zh 与 docs\readme\en 全量比对（20 对文件）</span></div>
+              <div class="rmeta">
+                <span class="m"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><path d="M8 4.9V8l2.2 1.4"/></svg>1m58s</span>
+                <span class="m">2 轮</span>
+                <span class="rid">sub_211652e9_1794064172</span>
+              </div>
+            </div>
+            <span class="rst">进行中</span>
+          </li>
+          <li class="row" data-s="failed">
+            <i class="rdot"></i>
+            <div class="rmain">
+              <div class="rline"><span class="rn">#3</span><span class="rtask">检查 docs\tasks 下 006–010 任务文档的状态字段一致性</span></div>
+              <div class="rmeta">
+                <span class="m"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.4"/><path d="M8 4.9V8l2.2 1.4"/></svg>38s</span>
+                <span class="rid">sub_3a1b77d0_1794064010</span>
+              </div>
+              <div class="rerr">工具执行失败：ENOENT: docs\tasks\006.md 不存在</div>
+            </div>
+            <span class="rst">失败</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+    <div class="note">
+      行内信息顺序：<b>序号 → 任务标题（2 行 clamp，hover 显示全量）→ 耗时 / 轮次 / 内部 ID（弱化）→ 状态词</b>。
+      ID 从主视觉降级为 meta 末位（保留排障价值，点击可复制）。
+    </div>
+  </div>
+
+  <h2>四、状态与视觉规则</h2>
+  <div class="panel">
+    <div class="swatches">
+      <span class="sw"><i style="background:var(--brand)"></i>running · 呼吸点 + 顶部呼吸线</span>
+      <span class="sw"><i style="background:var(--brand)"></i>done · 静态绿点</span>
+      <span class="sw"><i style="background:var(--danger)"></i>failed · 红点 + 错误摘要一行</span>
+      <span class="sw"><i style="background:var(--line-strong)"></i>aborted / interrupted · 灰点</span>
+    </div>
+    <table>
+      <thead><tr><th>元素</th><th>规则</th></tr></thead>
+      <tbody>
+        <tr><td>显示条件</td><td>存在 <code>running</code> 任务才渲染；全部收敛后自动隐藏（沿用现有逻辑）</td></tr>
+        <tr><td>收起标题</td><td><code>后台子任务</code> + 计数胶囊 <code>N 运行中</code>；数量为 0 时组件不渲染</td></tr>
+        <tr><td>任务 chips</td><td>最多 3 个：<code>#序号</code> + 实时耗时；溢出显示 <code>+N</code>。单任务且宽度 ≥ 480px 时追加任务短名（≤ 18 字）</td></tr>
+        <tr><td>聚合耗时</td><td><code>max(now - startedAt)</code>，1s 走表；与单个 chip 的耗时同源</td></tr>
+        <tr><td>展开行标题</td><td><code>task</code> 原文，12.5px sans，2 行 clamp，hover 显示完整标题</td></tr>
+        <tr><td>状态词</td><td>进行中 / 完成 / 失败 / 已取消 / 已中断（沿用现有 label 映射，颜色仅作用于状态词与点位）</td></tr>
+        <tr><td>失败摘要</td><td><code>error</code> 首个非空行，剥前缀后截 60 字；无 error 时显示「执行失败」</td></tr>
+        <tr><td>动效</td><td>顶部 2px 呼吸线 + running 点位 1.5s 脉冲；<code>prefers-reduced-motion</code> 下全部关闭</td></tr>
+        <tr><td>窄屏 &lt;720px</td><td>隐藏 chips 与聚合耗时，保留图标 / 标题 / 计数 / chevron；展开列表行标题改为 3 行 clamp</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>五、数据映射（全部来自现有快照，不需后端改动）</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>视觉元素</th><th>数据来源（<code>SubAgentTaskVM</code>）</th></tr></thead>
+      <tbody>
+        <tr><td>计数胶囊</td><td><code>running.length</code></td></tr>
+        <tr><td>chip 序号</td><td><code>running</code> 数组顺序（与展开列表一致）</td></tr>
+        <tr><td>chip / 行耗时</td><td>运行中：<code>now - startedAt</code>（本地 1s 走表）；终态：<code>elapsedMs</code></td></tr>
+        <tr><td>展开行标题</td><td><code>task</code></td></tr>
+        <tr><td>轮次</td><td><code>iterations</code>（0 或不存在则不显示）</td></tr>
+        <tr><td>状态词 / 点位色</td><td><code>status</code> → running / done / failed / aborted / interrupted</td></tr>
+        <tr><td>失败摘要</td><td><code>error</code></td></tr>
+        <tr><td>内部 ID</td><td><code>taskId</code></td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      不改协议、不改轮询：<code>chat-stream.ts</code> 的 <code>subAgentTasksOf</code> 与 2s 快照链路完全复用。
+    </div>
+  </div>
+
+  <h2>六、不做（本期边界）</h2>
+  <div class="panel">
+    <ul class="diag" style="counter-reset: none">
+      <li style="padding-left:0">不做进度百分比：后端没有「总步数」概念，硬造进度是假信息；用顶部呼吸线表达「仍在跑」即可。</li>
+      <li style="padding-left:0">不加取消按钮：取消涉及 API 与 registry，超出「样式重设计」范围。</li>
+      <li style="padding-left:0">不改显隐逻辑：仍只在有 running 任务时出现。</li>
+      <li style="padding-left:0">不引入新字号层级：标题 12.5 / 正文 12.5 / meta 11，与现有对话卡片一致。</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

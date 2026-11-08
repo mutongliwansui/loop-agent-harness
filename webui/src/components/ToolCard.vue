@@ -2,17 +2,17 @@
   工具调用卡片（Task-20261024-001，方案 B 卡片内聚式）
   ------------------------------------------------------------------
   设计定稿：docs/designs/原型-20261024-001+工具调用展示重设计.html
-  - 头部内聚：图标徽标 + 中文名（组卡带 ×N）+ 等宽副标题 + { } 浮层 / pill / 耗时 / caret
-  - 失败时副标题直写原因（不展开即可读懂）；组含失败不合并（groupToolSegs 已拆单卡，D5）
+  - 头部内聚：图标徽标 + 中文名 + 等宽副标题 + { } 浮层 / pill / 耗时 / caret
+  - 失败时副标题直写原因（不展开即可读懂）
   - 原始 JSON 降级为头部 { } 浮层，默认不占纵向空间（D4）
   - 结果区单滚动：190px ≈ 12 行，>12 行才出「展开全部 N 行」，展开 420px（D6）
-  卡片自治：展开态由本组件持有（D8），ChatView 只负责 groupToolSegs + v-for。
+  卡片自治：展开态由本组件持有（D8），ChatView 只负责 buildRenderItems + v-for。
+  20261107-010：取消「连续同名工具合并 ×N」——一次调用一张卡。
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
   isPathArgClickable,
-  PATH_ARGS,
   prettyJson,
   resultLines,
   resultMetaText,
@@ -22,7 +22,6 @@ import {
   toolFailReason,
   toolIconSvg,
   toolParamRows,
-  toolResultLooksFailed,
   toolSummary,
   type ToolCardVM,
 } from '../tool-meta.js';
@@ -59,9 +58,7 @@ const open = ref(false);
 const jsonOpen = ref(false);
 const expandedResult = ref(false);
 
-const items = computed(() => props.card.items);
-const grouped = computed(() => props.card.kind === 'group');
-const head = computed(() => items.value[0]);
+const head = computed(() => props.card.seg);
 const headSeg = computed(() => head.value.seg);
 const display = computed(() => {
   // 20261104-001：toolDisplay 读的是模块级 MCP 元信息注册表（非响应式），必须显式依赖 metaRev，
@@ -98,11 +95,11 @@ const pill = computed(() => {
     case 'run':
       return { cls: 'run', text: '执行中', spin: true };
     case 'fail':
-      return { cls: 'fail', text: grouped.value ? '有失败' : '失败', spin: false };
+      return { cls: 'fail', text: '失败', spin: false };
     case 'stop':
       return { cls: 'stop', text: '已中断', spin: false };
     default:
-      return { cls: 'ok', text: grouped.value ? '全部完成' : '完成', spin: false };
+      return { cls: 'ok', text: '完成', spin: false };
   }
 });
 
@@ -110,26 +107,24 @@ function fmtSecs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-const totalMsText = computed(() => {
-  const ms = props.card.totalMs;
+const elapsedText = computed(() => {
+  const ms = headSeg.value.elapsedMs;
   return typeof ms === 'number' ? fmtSecs(ms) : '';
 });
 
-/** 单次调用摘要（组卡逐行复用） */
+/** 单次调用摘要（副标题用） */
 function summaryOf(it: { seg: CardSeg }): string {
   return toolSummary(props.card.tool, it.seg.args) || '（无参数）';
 }
 
 /**
  * 副标题：
- * - 组卡：各次参数摘要依次拼接（CSS 单行省略）；
- * - 失败单卡：摘要 · 失败原因（不展开即可读懂为什么失败）；
- * - 中断单卡：用户停止，结果未返回；执行中：摘要 · 执行中…
+ * - 失败：摘要 · 失败原因（不展开即可读懂为什么失败）；
+ * - 中断：用户停止，结果未返回；执行中：摘要 · 执行中…
  */
 const subtitle = computed(() => {
   void metaRev.value; // 摘要走 MCP 元信息（mcpBrief），同上需显式依赖
   const c = props.card;
-  if (grouped.value) return items.value.map(summaryOf).join(' · ');
   const seg = headSeg.value;
   const sum = summaryOf(head.value);
   if (c.failed) {
@@ -146,9 +141,9 @@ const subtitle = computed(() => {
 
 const rows = computed(() => {
   void metaRev.value; // 参数中文标签走 MCP 元信息，同上需显式依赖
-  return grouped.value ? [] : toolParamRows(props.card.tool, headSeg.value.args);
+  return toolParamRows(props.card.tool, headSeg.value.args);
 });
-const jsonText = computed(() => (grouped.value ? '' : prettyJson(headSeg.value.args)));
+const jsonText = computed(() => prettyJson(headSeg.value.args));
 const canJson = computed(() => !!jsonText.value);
 
 /* ===== 路径 chip（20261028-006 D4/D7） ===== */
@@ -169,34 +164,10 @@ function chipOf(row: { path?: string; kind?: 'file' | 'dir' }): { path: string; 
 /** 单卡键值行的 chip 模型（v-for 内逐行判定，避免模板里塞复杂表达式） */
 const rowChips = computed(() => rows.value.map((r) => chipOf(r)));
 
-/**
- * 组卡子行 chip：本次调用 args 命中 PATH_ARGS 的路径参数（file 类优先），
- * 未命中或不可点返回 undefined（子行保持纯文本摘要）。
- */
-function subChipOf(seg: CardSeg): { path: string; kind: 'file' | 'dir' } | undefined {
-  const kindOf = PATH_ARGS[props.card.tool];
-  if (!kindOf) return undefined;
-  let args: Record<string, unknown> | undefined;
-  try {
-    const v: unknown = JSON.parse(seg.args || '{}');
-    if (v && typeof v === 'object' && !Array.isArray(v)) args = v as Record<string, unknown>;
-  } catch {
-    return undefined; // 历史脏数据/中断残片：保持纯文本
-  }
-  if (!args) return undefined;
-  const fileEntry = Object.entries(kindOf).find(([k, kd]) => kd === 'file' && typeof args[k] === 'string' && args[k]);
-  const dirEntry = Object.entries(kindOf).find(([k, kd]) => kd === 'dir' && typeof args[k] === 'string' && args[k]);
-  const entry = fileEntry ?? dirEntry;
-  if (!entry) return undefined;
-  const raw = args[entry[0]] as string;
-  if (!raw.trim() || !isPathArgClickable(raw, props.wsRoot)) return undefined;
-  return { path: raw, kind: entry[1] };
-}
-
 const headArgs = computed(() => headSeg.value.args || '');
 
 /* ===== 子 Agent 过程区（需求 20261107-002 D3：默认收起，展开可查） ===== */
-const subTrace = computed(() => (grouped.value ? undefined : headSeg.value.sub));
+const subTrace = computed(() => headSeg.value.sub);
 function toggleJson(): void {
   jsonOpen.value = !jsonOpen.value;
 }
@@ -259,7 +230,7 @@ const resultText = computed(() => {
 
 const resultLineCount = computed(() => resultLines(resultRaw.value));
 const outMeta = computed(() => resultMetaText(resultRaw.value));
-const canExpand = computed(() => !!resultRaw.value && !grouped.value && resultNeedsExpand(resultRaw.value));
+const canExpand = computed(() => !!resultRaw.value && resultNeedsExpand(resultRaw.value));
 const outLabel = computed(() => {
   switch (state.value) {
     case 'run':
@@ -271,18 +242,10 @@ const outLabel = computed(() => {
   }
 });
 
-/** 组行状态：执行中 / 失败 / 已中断 / 完成 */
-function rowState(it: { seg: CardSeg }): string {
-  const s = it.seg;
-  if (!s.done && !s.aborted) return 'run';
-  if (s.aborted) return 'stop';
-  return toolResultLooksFailed(s.result, s.tool) ? 'fail' : 'ok';
-}
-
 /* ===== 后台任务卡片分流（需求 20261104-005 D2/D3）===== */
-/** 结果 JSON 含合法 taskId → 结果区替换为 BackgroundTaskCard（仅单卡） */
+/** 结果 JSON 含合法 taskId → 结果区替换为 BackgroundTaskCard */
 const backgroundInfo = computed(() =>
-  grouped.value ? undefined : parseBackgroundResult(resultRaw.value, headArgs.value),
+  parseBackgroundResult(resultRaw.value, headArgs.value),
 );
 /** 初始态交给卡片自行轮询收敛：先按运行中展示，避免「退出码未知」的假失败 */
 const backgroundInitial = computed(() => ({
@@ -308,7 +271,6 @@ const backgroundInitial = computed(() => ({
       <span class="tcard-txt">
         <span class="tcard-name" :class="{ raw: !display.known && !display.mcp }" :title="nameTitle">{{ nameText }}</span>
         <span v-if="display.mcp" class="tsrc" :title="`来源 MCP server：${display.mcp.server}`">{{ display.mcp.server }}</span>
-        <span v-if="grouped" class="ttimes">×{{ items.length }}</span>
         <span class="tcard-sub">{{ subtitle }}</span>
       </span>
       <span class="tcard-side">
@@ -327,7 +289,7 @@ const backgroundInitial = computed(() => ({
         <span class="tpill" :class="pill.cls">
           <span v-if="pill.spin" class="sp"></span>{{ pill.text }}
         </span>
-        <span v-if="totalMsText" class="tcard-ms">{{ totalMsText }}</span>
+        <span v-if="elapsedText" class="tcard-ms">{{ elapsedText }}</span>
         <span class="tcaret">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 3.6L10.4 8 6 12.4" />
@@ -346,79 +308,54 @@ const backgroundInitial = computed(() => ({
     </div>
 
     <div v-if="open" class="tbody">
-      <!-- 组卡：逐次调用行（序号 / 状态点 / 摘要 / 耗时） -->
-      <div v-if="grouped" class="trows">
-        <div v-for="(it, k) in items" :key="it.index" class="trow" :data-state="rowState(it)">
-          <span class="trow-n">{{ k + 1 }}</span>
-          <span class="trow-dot"></span>
-          <template v-if="subChipOf(it.seg)">
-            <button
-              type="button"
-              class="path-chip"
-              :title="`${subChipOf(it.seg)!.path}（点击在文件面板打开）`"
-              @click.stop="emit('open-path', subChipOf(it.seg)!)"
-            >
-              <!-- eslint-disable-next-line vue/no-v-html — 图标为内置 SVG 常量，非用户输入 -->
-              <span class="path-chip-ico" v-html="CHIP_ICONS[subChipOf(it.seg)!.kind]"></span>
-              <span class="path-chip-txt">{{ subChipOf(it.seg)!.path }}</span>
-            </button>
-          </template>
-          <span v-else class="trow-sub">{{ summaryOf(it) }}</span>
-          <span v-if="it.seg.elapsedMs != null" class="trow-ms">{{ fmtSecs(it.seg.elapsedMs) }}</span>
-        </div>
-      </div>
-
-      <!-- 单卡：后台任务走卡片（D3 结果区替换）；普通工具走键值表 + 结果区 -->
+      <!-- 子 Agent 过程区（20261107-003）：渲染交给 SubAgentProcess，默认收起 -->
+      <SubAgentProcess
+        v-if="subTrace"
+        :trace="subTrace"
+        :status="subTrace.status"
+        :elapsed-ms="headSeg.elapsedMs"
+      />
+      <BackgroundTaskCard
+        v-if="backgroundInfo"
+        class="tcard-bg"
+        :task-id="backgroundInfo.taskId"
+        :command="backgroundInfo.command"
+        :initial="backgroundInitial"
+      />
       <template v-else>
-        <!-- 子 Agent 过程区（20261107-003）：渲染交给 SubAgentProcess，默认收起 -->
-        <SubAgentProcess
-          v-if="subTrace"
-          :trace="subTrace"
-          :status="subTrace.status"
-          :elapsed-ms="headSeg.elapsedMs"
-        />
-        <BackgroundTaskCard
-          v-if="backgroundInfo"
-          class="tcard-bg"
-          :task-id="backgroundInfo.taskId"
-          :command="backgroundInfo.command"
-          :initial="backgroundInitial"
-        />
-        <template v-else>
-          <div v-if="rows.length" class="tkv">
-          <template v-for="(row, ri) in rows" :key="row.key">
-            <span class="k">{{ row.zh }}</span>
-            <button
-              v-if="rowChips[ri] && 'path' in rowChips[ri]"
-              type="button"
-              class="path-chip"
-              :title="`${rowChips[ri].path}（点击在文件面板打开）`"
-              @click="emit('open-path', { path: rowChips[ri].path, kind: rowChips[ri].kind })"
-            >
-              <!-- eslint-disable-next-line vue/no-v-html — 图标为内置 SVG 常量，非用户输入 -->
-              <span class="path-chip-ico" v-html="CHIP_ICONS[rowChips[ri].kind]"></span>
-              <span class="path-chip-txt">{{ rowChips[ri].path }}</span>
-            </button>
-            <span v-else-if="rowChips[ri] && 'disabled' in rowChips[ri]" class="v v-disabled" :title="rowChips[ri].disabled">{{
-              row.text
-            }}</span>
-            <span v-else class="v">{{ row.text }}</span>
-          </template>
-        </div>
-        <div class="tout" :class="{ fail: state === 'fail', big: expandedResult }">
-          <div class="tout-h">
-            <span class="tout-t">{{ outLabel }}</span>
-            <span v-if="outMeta" class="tout-n">{{ outMeta }}</span>
-            <button v-if="resultRaw" type="button" class="tout-copy" title="复制结果" aria-label="复制结果" @click="copyResult">
-              复制
-            </button>
-          </div>
-          <pre>{{ resultText }}</pre>
-          <button v-if="canExpand" type="button" class="tmore" @click="expandedResult = !expandedResult">
-            {{ expandedResult ? '收起结果' : `展开全部 ${resultLineCount} 行` }}
+        <div v-if="rows.length" class="tkv">
+        <template v-for="(row, ri) in rows" :key="row.key">
+          <span class="k">{{ row.zh }}</span>
+          <button
+            v-if="rowChips[ri] && 'path' in rowChips[ri]"
+            type="button"
+            class="path-chip"
+            :title="`${rowChips[ri].path}（点击在文件面板打开）`"
+            @click="emit('open-path', { path: rowChips[ri].path, kind: rowChips[ri].kind })"
+          >
+            <!-- eslint-disable-next-line vue/no-v-html — 图标为内置 SVG 常量，非用户输入 -->
+            <span class="path-chip-ico" v-html="CHIP_ICONS[rowChips[ri].kind]"></span>
+            <span class="path-chip-txt">{{ rowChips[ri].path }}</span>
+          </button>
+          <span v-else-if="rowChips[ri] && 'disabled' in rowChips[ri]" class="v v-disabled" :title="rowChips[ri].disabled">{{
+            row.text
+          }}</span>
+          <span v-else class="v">{{ row.text }}</span>
+        </template>
+      </div>
+      <div class="tout" :class="{ fail: state === 'fail', big: expandedResult }">
+        <div class="tout-h">
+          <span class="tout-t">{{ outLabel }}</span>
+          <span v-if="outMeta" class="tout-n">{{ outMeta }}</span>
+          <button v-if="resultRaw" type="button" class="tout-copy" title="复制结果" aria-label="复制结果" @click="copyResult">
+            复制
           </button>
         </div>
-        </template>
+        <pre>{{ resultText }}</pre>
+        <button v-if="canExpand" type="button" class="tmore" @click="expandedResult = !expandedResult">
+          {{ expandedResult ? '收起结果' : `展开全部 ${resultLineCount} 行` }}
+        </button>
+      </div>
       </template>
     </div>
   </div>
@@ -494,11 +431,6 @@ const backgroundInitial = computed(() => ({
   font: 500 10.5px/1.4 ui-monospace, Consolas, monospace;
   color: var(--muted);
   align-self: center;
-}
-.ttimes {
-  flex: none;
-  font: 500 11px/1 ui-monospace, Consolas, monospace;
-  color: var(--muted);
 }
 .tcard-sub {
   flex: 1 1 auto;
@@ -675,37 +607,6 @@ const backgroundInitial = computed(() => ({
   cursor: pointer;
 }
 .tmore:hover { background: var(--hover); }
-
-/* 组卡逐次调用行（D5） */
-.trows { display: flex; flex-direction: column; }
-.trow { display: flex; align-items: center; gap: 8px; padding: 4px 2px; min-width: 0; }
-.trow-n {
-  flex: none;
-  width: 16px;
-  text-align: right;
-  font: 11px/1 ui-monospace, Consolas, monospace;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.trow-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
-.trow[data-state='fail'] .trow-dot { background: var(--danger); }
-.trow[data-state='run'] .trow-dot { background: var(--warn); }
-.trow[data-state='stop'] .trow-dot { background: var(--line-strong); }
-.trow-sub {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: 11.5px/1.5 ui-monospace, Consolas, monospace;
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.trow-ms {
-  flex: none;
-  font: 11px/1 ui-monospace, Consolas, monospace;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
 
 /* ===== 路径 chip（20261028-006）：等宽 + 虚线下划线 + hover 反馈，零新令牌 ===== */
 .path-chip {

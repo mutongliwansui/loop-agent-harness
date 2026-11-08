@@ -684,9 +684,9 @@ export function resultMetaText(result: string): string {
   return `${text.split('\n').length} 行 · ${formatBytes(bytes)}`;
 }
 
-/* ================= 连续同工具分组（D5） ================= */
+/* ================= 工具段 → 渲染项（20261107-010：取消连续同工具合并） ================= */
 
-/** 分组所需的最小工具段形状（不依赖 chat-stream 类型，避免循环依赖） */
+/** 卡片所需的最小工具段形状（不依赖 chat-stream 类型，避免循环依赖） */
 export interface ToolSegLike {
   tool: string;
   args: string;
@@ -696,93 +696,60 @@ export interface ToolSegLike {
   aborted?: boolean;
 }
 
-/** 组内单次调用：seg 为原段引用，index 为该段在 segments 中的下标 */
+/** 单次调用：seg 为原段引用，index 为该段在 segments 中的下标 */
 export interface ToolSegItem<T> {
   seg: T;
   index: number;
 }
 
-/** 卡片视图模型：单卡与组卡共用同一形状（模板无需判别联合收窄） */
+/** 卡片视图模型：一次工具调用一张卡 */
 export interface ToolCardVM<T> {
-  kind: 'single' | 'group';
-  /** 工具名（组内恒同名） */
+  /** 工具名 */
   tool: string;
-  /** 组内各次调用（single 时长度恒为 1） */
-  items: ToolSegItem<T>[];
-  /** 首段下标（渲染 key 与展开状态 key） */
+  /** 本次调用 */
+  seg: ToolSegItem<T>;
+  /** 段下标（渲染 key 与展开状态 key） */
   index: number;
-  /** 任一失败（已完成且判定失败，中断态不算失败） */
+  /** 已完成且判定失败（中断态不算失败） */
   failed: boolean;
-  /** 任一仍在执行（未完成且未中断） */
+  /** 未完成且未中断 */
   running: boolean;
-  /** 全部已中断且无完成 */
+  /** 已中断且未完成 */
   aborted: boolean;
-  /** 总耗时：全部组员都有 elapsedMs 时求和，否则 undefined */
-  totalMs?: number;
 }
 
 /** 顺序渲染项：非工具段原样输出，工具段输出卡片视图模型 */
 export type RenderItem<T> = { kind: 'seg'; seg: T; index: number } | { kind: 'tool'; card: ToolCardVM<T> };
-
-/** 合并阈值（D5：连续 ≥3 次同一工具） */
-export const TOOL_GROUP_MIN = 3;
 
 /** 把段当作工具段读取（调用前已确认 type === 'tool'） */
 function asTool<T>(seg: T): ToolSegLike {
   return seg as unknown as ToolSegLike;
 }
 
-/** 单卡/组卡的派生状态统一计算，避免模板里堆条件 */
-function buildCard<T extends { type: string }>(
-  kind: 'single' | 'group',
-  tool: string,
-  items: ToolSegItem<T>[],
-): ToolCardVM<T> {
-  const likes = items.map((it) => asTool(it.seg));
-  const failed = likes.some((s) => s.done && !s.aborted && toolResultLooksFailed(s.result, s.tool));
-  const running = likes.some((s) => !s.done && !s.aborted);
-  const aborted = likes.length > 0 && likes.every((s) => s.aborted === true && !s.done);
-  let totalMs: number | undefined;
-  if (likes.every((s) => typeof s.elapsedMs === 'number')) {
-    totalMs = likes.reduce((sum, s) => sum + (s.elapsedMs ?? 0), 0);
-  }
-  return { kind, tool, items, index: items[0]?.index ?? 0, failed, running, aborted, totalMs };
+/** 单次调用的派生状态统一计算，避免模板里堆条件 */
+function buildCard<T extends { type: string }>(seg: T, index: number): ToolCardVM<T> {
+  const s = asTool(seg);
+  return {
+    tool: s.tool,
+    seg: { seg, index },
+    index,
+    failed: s.done === true && s.aborted !== true && toolResultLooksFailed(s.result, s.tool),
+    running: !s.done && !s.aborted,
+    aborted: s.aborted === true && !s.done,
+  };
 }
 
 /**
- * 连续同工具分组（D5）：返回顺序渲染项。
- * - 连续 ≥minCount 次**同一工具**且中间没有文本段/其他工具 → 合并为一张组卡；
- * - 组内含失败 → **不合并**，逐个拆成单卡（失败必须一眼可见）；
- * - 阈值以下同样拆单卡。纯函数、无缓存：SSE 更新后重算即得最新形态。
+ * 段列表 → 顺序渲染项：**每段独立成卡**，不再把连续同名工具合并成 `×N` 组卡
+ * （需求 20261107-010）。每次调用各自带参数/结果/耗时与子 Agent 过程区。
+ * 纯函数、无缓存：SSE 更新后重算即得最新形态。
  */
-export function groupToolSegs<T extends { type: string }>(
-  segs: readonly T[],
-  minCount: number = TOOL_GROUP_MIN,
-): RenderItem<T>[] {
+export function buildRenderItems<T extends { type: string }>(segs: readonly T[]): RenderItem<T>[] {
   const out: RenderItem<T>[] = [];
-  let i = 0;
-  while (i < segs.length) {
+  for (let i = 0; i < segs.length; i++) {
     const seg = segs[i];
-    if (seg.type !== 'tool') {
-      out.push({ kind: 'seg', seg, index: i });
-      i++;
-      continue;
-    }
-    const tool = asTool(seg).tool;
-    let j = i + 1;
-    while (j < segs.length && segs[j].type === 'tool' && asTool(segs[j]).tool === tool) j++;
-    const items: ToolSegItem<T>[] = [];
-    for (let k = i; k < j; k++) items.push({ seg: segs[k], index: k });
-    const groupFailed = items.some((it) => {
-      const s = asTool(it.seg);
-      return s.done && !s.aborted && toolResultLooksFailed(s.result, s.tool);
-    });
-    if (items.length >= minCount && !groupFailed) {
-      out.push({ kind: 'tool', card: buildCard('group', tool, items) });
-    } else {
-      for (const it of items) out.push({ kind: 'tool', card: buildCard('single', asTool(it.seg).tool, [it]) });
-    }
-    i = j;
+    if (seg.type === 'tool') out.push({ kind: 'tool', card: buildCard(seg, i) });
+    else out.push({ kind: 'seg', seg, index: i });
   }
   return out;
 }

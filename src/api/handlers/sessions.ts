@@ -326,7 +326,9 @@ export async function handleListSubAgents(
     error: t.error,
     trace: t.trace,
   }));
-  sendJson(res, 200, { items });
+  // run 概况（需求 20261107-011）：后台子任务完成后主 Agent 可能被唤醒并启动新一轮，
+  // 前端轮询据此发现「服务端已开始新 run」并及时 attach 续传（同一标签页没有 run-started 广播）。
+  sendJson(res, 200, { items, run: ctx.runs.snapshot(id) });
 }
 
 /**

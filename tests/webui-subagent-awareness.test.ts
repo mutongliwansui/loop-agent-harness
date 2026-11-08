@@ -142,7 +142,15 @@ describe('后台子任务全局可感知（需求 20261107-008）', () => {
 
     expect(calls.detail).toBeGreaterThan(detailBefore); // resync 重新拉了历史
     expect(subAgentRunningCount.value).toBe(0);
-    // 收敛后停表：再过若干个周期不再请求 /subagents
+    // 收敛后进入「唤醒观察期」（20261107-011 情况2）：主 Agent 可能被完成通知唤醒并启动新 run，
+    // 需要多观察几个周期才能接上，因此不再立即停表
+    const subsAfterConverge = calls.subs;
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+    await flush();
+    expect(calls.subs).toBeGreaterThan(subsAfterConverge);
+    // 观察期结束（5 个空闲 tick）后停表：再推进若干个周期不再请求 /subagents
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+    await flush();
     const subsAfter = calls.subs;
     await vi.advanceTimersByTimeAsync(POLL_MS * 3);
     await flush();

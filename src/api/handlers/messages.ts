@@ -45,19 +45,86 @@ export async function handleMessage(
 }
 
 /**
+ * runMessageTurn 的内部选项。
+ * wake=true：由后台子任务完成通知触发的「唤醒轮次」——
+ * 输入只进 LLM（不进消息时间线，结果卡片已承担展示），落盘前剔除该合成用户消息。
+ */
+export interface RunTurnOptions {
+  wake?: boolean;
+}
+
+/**
+ * 后台子任务完成通知的前缀（情况1：主 run 仍在运行时作为一轮 user 消息插入 Loop）。
+ * 情况2 唤醒轮次还会用它把合成输入从落盘消息里剔除，避免会话里多出一条用户气泡。
+ */
+const SUBAGENT_WAKE_PREFIX = '[后台子任务完成通知]';
+
+/** 后台完成通知文本（LLM 可见）：任务/状态/耗时/结果，超长结果截断避免挤爆上下文 */
+function buildSubAgentWakeNotice(info: {
+  taskId: string;
+  task: string;
+  status: string;
+  answer?: string;
+  error?: string;
+  iterations?: number;
+  elapsedMs?: number;
+}): string {
+  const secs = ((info.elapsedMs ?? 0) / 1000).toFixed(1);
+  const status =
+    info.status === 'done' ? '已完成' : info.status === 'aborted' ? '已取消' : '失败';
+  const raw = (info.error || info.answer || '').trim();
+  const text = raw.length > 2000 ? `${raw.slice(0, 2000)}\n…（结果过长已截断）` : raw;
+  return [
+    `${SUBAGENT_WAKE_PREFIX} ${info.taskId} ${status}（${secs}s${info.iterations ? ` · ${info.iterations} 轮` : ''}）`,
+    `任务：${info.task || '（未命名）'}`,
+    `结果：${text || '（无输出）'}`,
+    '请基于该结果继续你的工作；不要把同一任务重复提交为后台子任务。',
+  ].join('\n');
+}
+
+/**
+ * 剔除唤醒轮次注入的合成用户消息（只影响落盘/回显，LLM 已在运行期看过）。
+ * 只按「与唤醒输入完全一致」匹配最后一条，避免误删历史里内容相近的用户消息。
+ */
+function stripWakeInput(messages: ChatMessage[], input: string): ChatMessage[];
+function stripWakeInput(
+  messages: ChatMessage[] | undefined,
+  input: string,
+): ChatMessage[] | undefined;
+function stripWakeInput(
+  messages: ChatMessage[] | undefined,
+  input: string,
+): ChatMessage[] | undefined {
+  if (!messages) return messages;
+  const out = [...messages];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i];
+    if (m.role === 'user' && m.content === input) {
+      out.splice(i, 1);
+      break;
+    }
+  }
+  return out;
+}
+
+/**
  * 启动一轮对话并通过 SSE/JSON 返回结果（需求 20261106-005 P1：重试复用此公共段）。
  *
  * 调用方负责：会话存在性、`inFlight` 互斥、重试时的历史截断。
  */
 export async function runMessageTurn(
   ctx: HandlerContext,
-  res: ServerResponse,
+  /** HTTP 响应；内部唤醒（后台子任务完成触发新一轮）无调用方连接时传 null */
+  res: ServerResponse | null,
   id: string,
   message: string,
   stream: boolean,
   modelAliasRaw: string,
+  opts?: RunTurnOptions,
 ): Promise<void> {
   const { deps, log } = ctx;
+  /** 内部唤醒轮次：输入为后台完成通知，只给 LLM 看，不回显到会话时间线 */
+  const wake = opts?.wake === true;
 
   // Task-20261021-010-04（D10/D17）：按 sessionId 定位归属 runtime，
   // 在该空间的 sessions/store/runAgent 内完成读历史、互斥与执行——
@@ -157,9 +224,14 @@ export async function runMessageTurn(
   // 进程中途退出时也能保留已产生的工具调用与结果。失败只记日志，不影响回答。
   runOptions.onSnapshot = async (snapshot) => {
     try {
-      await store.updateSession(id, snapshot.messages, message, {
-        transcript: snapshot.transcript,
-      });
+      await store.updateSession(
+        id,
+        wake ? stripWakeInput(snapshot.messages, message) : snapshot.messages,
+        message,
+        {
+          transcript: wake ? stripWakeInput(snapshot.transcript, message) : snapshot.transcript,
+        },
+      );
       // journal 同步（best-effort）：迭代数随节流窗口合并落盘（500ms 窗口，D3 不追求精确）
       void writeJournal(store, id, { iterations: snapshot.iterations });
     } catch (e) {
@@ -214,43 +286,20 @@ export async function runMessageTurn(
   const SUB_TRACE_FLUSH_MS = 8000;
   const lastTraceFlush = new Map<string, number>();
 
-  runOptions.onSubAgentEvent = (info) => {
-    if (info.callId) {
-      const trace = subTraces.get(info.callId) ?? createSubAgentTrace();
-      applySubAgentEvent(trace, info);
-      subTraces.set(info.callId, trace);
-      // 后台子任务（callId 即 sub_ 前缀的 taskId）：节流落盘过程轨迹
-      if (info.callId.startsWith('sub_')) {
-        const now = Date.now();
-        // P2（20261107-009）：把运行中进度同步进 registry，让 /subagents 在运行中
-        // 就带回真实轮次与耗时（前端 running 卡片/指示器据此显示「已运行 Xs · N 轮」）
-        subAgentRegistry.touch(info.callId, {
-          iterations: trace.iterations,
-          elapsedMs: trace.startedAt ? now - trace.startedAt : undefined,
-        });
-        if (now - (lastTraceFlush.get(info.callId) ?? 0) >= SUB_TRACE_FLUSH_MS) {
-          lastTraceFlush.set(info.callId, now);
-          const fork: SubAgentTrace = structuredClone(trace);
-          void upsertSubAgentCard({
-            taskId: info.callId,
-            task: subTaskText.get(info.callId) ?? '',
-            status: 'running',
-            iterations: fork.iterations,
-            elapsedMs: fork.startedAt ? now - fork.startedAt : 0,
-            trace: fork,
-          });
-        }
-      }
-    }
-    if (!stream) return;
-    const seq = ctx.runs.publish(id, 'subagent_event', { info });
-    if (seq > 0) void writeJournal(store, id, { lastSeq: seq });
-  };
-  // 后台子任务卡片：按 taskId 原地更新（运行中→完成/中断），避免与 updateSession 落盘互相踩踏
-  // - 提交（onSubAgentStart）：由 Agent 层 await 落盘，保证运行中卡片先于本轮 updateSession 写入
-  // - 完成（onSubAgentComplete）：本轮仍在落盘时先排队，flush 时再 upsert
+  // ===== 后台子任务卡片落盘（位置约束见下） =====
+  // updateSession 只「追加」本轮消息，不重排已有条目。若 delegate 提交时就把卡片 append 落盘，
+  // 此刻本轮的用户消息还只在内存里（要等首个快照或收尾才写盘），卡片就会排到用户消息**之前**。
+  // 故本轮进行中的卡片一律先排队，等本轮落盘结束（finally）再写：位置自然落在本轮消息之后，
+  // 与「结果到达时的时间线末尾」语义一致；同一 taskId 只保留最新一份（start → done 覆盖）。
   let turnActive = true;
   const pendingSubAgentCards: SubAgentCardRecord[] = [];
+
+  /** 本轮仍在进行：卡片排队（同 taskId 后者覆盖，避免 start/trace/done 各写一次盘） */
+  const queueSubAgentCard = (record: SubAgentCardRecord): void => {
+    const i = pendingSubAgentCards.findIndex((r) => r.taskId === record.taskId);
+    if (i >= 0) pendingSubAgentCards[i] = record;
+    else pendingSubAgentCards.push(record);
+  };
 
   const upsertSubAgentCard = async (record: SubAgentCardRecord): Promise<void> => {
     try {
@@ -284,10 +333,44 @@ export async function runMessageTurn(
     }
   };
 
-  // 提交即落盘「运行中」卡片（Agent 层 await 此回调，保证先于 updateSession 写入磁盘）
-  runOptions.onSubAgentStart = async (info) => {
-    subTaskText.set(info.taskId, info.task); // 供过程轨迹增量落盘拼卡片内容（P2）
-    await upsertSubAgentCard({
+  runOptions.onSubAgentEvent = (info) => {
+    if (info.callId) {
+      const trace = subTraces.get(info.callId) ?? createSubAgentTrace();
+      applySubAgentEvent(trace, info);
+      subTraces.set(info.callId, trace);
+      // 后台子任务（callId 即 sub_ 前缀的 taskId）：节流落盘过程轨迹
+      if (info.callId.startsWith('sub_')) {
+        const now = Date.now();
+        // P2（20261107-009）：把运行中进度同步进 registry，让 /subagents 在运行中
+        // 就带回真实轮次与耗时（前端 running 卡片/指示器据此显示「已运行 Xs · N 轮」）
+        subAgentRegistry.touch(info.callId, {
+          iterations: trace.iterations,
+          elapsedMs: trace.startedAt ? now - trace.startedAt : undefined,
+        });
+        if (now - (lastTraceFlush.get(info.callId) ?? 0) >= SUB_TRACE_FLUSH_MS) {
+          lastTraceFlush.set(info.callId, now);
+          const fork: SubAgentTrace = structuredClone(trace);
+          const record: SubAgentCardRecord = {
+            taskId: info.callId,
+            task: subTaskText.get(info.callId) ?? '',
+            status: 'running',
+            iterations: fork.iterations,
+            elapsedMs: fork.startedAt ? now - fork.startedAt : 0,
+            trace: fork,
+          };
+          if (turnActive) queueSubAgentCard(record);
+          else void upsertSubAgentCard(record);
+        }
+      }
+    }
+    if (!stream) return;
+    const seq = ctx.runs.publish(id, 'subagent_event', { info });
+    if (seq > 0) void writeJournal(store, id, { lastSeq: seq });
+  };
+  // 提交即登记「运行中」卡片：本轮未结束时只排队（见上方位置约束），收尾后由 finally 统一落盘
+  runOptions.onSubAgentStart = (info) => {
+    subTaskText.set(info.taskId, info.task); // 供过程轨迹落盘拼卡片内容（P2）
+    queueSubAgentCard({
       taskId: info.taskId,
       task: info.task,
       status: 'running',
@@ -307,11 +390,17 @@ export async function runMessageTurn(
       elapsedMs: info.elapsedMs,
       trace: info.trace,
     };
+    const notice = buildSubAgentWakeNotice(info);
     if (turnActive) {
-      pendingSubAgentCards.push(record);
+      queueSubAgentCard(record);
+      // 情况1：主 run 仍在跑 → 完成通知入队，由下一轮 LLM 调用前 drain 注入 Loop
+      subAgentRegistry.enqueueNotice(id, notice);
       return;
     }
     await upsertSubAgentCard(record);
+    // 情况2：主 run 已结束 → 落盘结果卡片后触发一次新的模型调用（由完成通知唤醒）
+    subAgentRegistry.enqueueNotice(id, notice);
+    scheduleWakeMainAgent(ctx, id);
   };
 
   const flushPendingSubAgentCards = async (): Promise<void> => {
@@ -322,22 +411,26 @@ export async function runMessageTurn(
   };
 
   if (stream) {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
-    let clientGone = false;
+    // 内部唤醒轮次没有 HTTP 连接：不写帧，但仍把事件发布到 Hub，供已 attach 的客户端实时接收
+    const clientRes = res;
+    let clientGone = clientRes === null;
     let unsubscribe = (): void => {};
-    res.on('close', () => {
-      clientGone = true; // 停止写流，但 run 照常完成并持久化
-      unsubscribe();
-    });
-    // 本连接作为 RunHub 的首个订阅者（cursor=0 → 全量回放；此刻尚无事件）
-    const sub = ctx.runs.subscribe(id, 0, (ev) => {
-      if (!clientGone) sseFrame(res, ev.event, ev.data, ev.seq);
-    });
-    unsubscribe = sub?.unsubscribe ?? ((): void => {});
+    if (clientRes) {
+      clientRes.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      clientRes.on('close', () => {
+        clientGone = true; // 停止写流，但 run 照常完成并持久化
+        unsubscribe();
+      });
+      // 本连接作为 RunHub 的首个订阅者（cursor=0 → 全量回放；此刻尚无事件）
+      const sub = ctx.runs.subscribe(id, 0, (ev) => {
+        if (!clientGone) sseFrame(clientRes, ev.event, ev.data, ev.seq);
+      });
+      unsubscribe = sub?.unsubscribe ?? ((): void => {});
+    }
     // Agent 事件先入 Hub（供断线续传），再由 Hub fan-out 到当前连接；
     // 发布返回的 seq 顺带同步 journal lastSeq（节流写，仅供中断诊断）
     runOptions.events = [
@@ -356,6 +449,11 @@ export async function runMessageTurn(
     try {
       // 05：sessionId 首参 → AgentPool 按会话租用独立实例（同空间多会话并发）
       const result = await runAgent(id, message, runOptions);
+      // 唤醒轮次的合成输入只给 LLM 看：落盘前剔除，避免会话里多出一条用户气泡
+      const finalMessages = wake ? stripWakeInput(result.messages, message) : result.messages;
+      const finalTranscript = wake
+        ? stripWakeInput(result.transcript, message)
+        : result.transcript;
 
       // 持久化（API 层自持 SessionStore；会话已在 ensureEntry/loadSession 阶段确认存在）
       try {
@@ -365,17 +463,19 @@ export async function runMessageTurn(
         // 同时剔除 is_compact=true 的已折叠历史：与 ensureEntry 的 getRestoreMessages 恢复视图对齐，
         // 避免折叠历史重新进入 LLM 上下文并导致每轮重复触发压缩
         // 需求 20261106-006：本轮 token 统计挂到最终 assistant 消息，随会话落盘
-        attachTurnUsage(result.messages, buildTurnUsage(statsRecorder));
-        attachSubAgentTraces(result.messages, subTraces);
-        const stored = await store.updateSession(id, result.messages, message, {
-          transcript: result.transcript,
+        attachTurnUsage(finalMessages, buildTurnUsage(statsRecorder));
+        attachSubAgentTraces(finalMessages, subTraces);
+        const stored = await store.updateSession(id, finalMessages, message, {
+          transcript: finalTranscript,
         });
         entry.history = stored.filter(
           (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
         );
+        // 排队的子任务卡片先落盘，再发终态事件——否则前端收到 done 后重建历史时看不到卡片
+        await flushPendingSubAgentCards();
       } catch (e) {
         warnings.push(`会话持久化失败（回答不受影响）: ${e instanceof Error ? e.message : String(e)}`);
-        entry.history = result.messages.filter(
+        entry.history = finalMessages.filter(
           (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
         );
       }
@@ -406,17 +506,19 @@ export async function runMessageTurn(
         durationMs: donePayload.durationMs,
         iterations: result.iterations,
       });
-      if (stream) {
-        res.end();
-      } else {
-        sendJson(res, 200, {
-          sessionId: id,
-          answer: result.answer,
-          iterations: result.iterations,
-          steps: result.steps,
-          durationMs: donePayload.durationMs,
-          ...(warnings.length ? { warnings } : {}),
-        });
+      if (res) {
+        if (stream) {
+          res.end();
+        } else {
+          sendJson(res, 200, {
+            sessionId: id,
+            answer: result.answer,
+            iterations: result.iterations,
+            steps: result.steps,
+            durationMs: donePayload.durationMs,
+            ...(warnings.length ? { warnings } : {}),
+          });
+        }
       }
       log(`[api] 会话 ${id} 完成: ${result.iterations} 轮 / ${result.steps.length} 步 / ${donePayload.durationMs}ms`);
     } catch (e) {
@@ -427,7 +529,14 @@ export async function runMessageTurn(
       // D7：非流式返回 200（用户主动行为不算错误）。
       if ((e as { aborted?: boolean }).aborted === true && e instanceof AgentAbortedError) {
         const partial = e.partial;
-        const sealed = sealPendingToolCalls(partial.messages);
+        // 唤醒轮次被中断：同样剔除合成输入，时间线里只留卡片与部分输出
+        const partialMessages = wake
+          ? stripWakeInput(partial.messages, message)
+          : partial.messages;
+        const partialTranscript = wake
+          ? stripWakeInput(partial.transcript, message)
+          : partial.transcript;
+        const sealed = sealPendingToolCalls(partialMessages);
         // 需求 20261106-006：中断轮也尽量落累计 token（无 summary 时用逐迭代累加兜底）
         attachTurnUsage(sealed, buildTurnUsage(statsRecorder));
         attachSubAgentTraces(sealed, subTraces);
@@ -435,7 +544,7 @@ export async function runMessageTurn(
         let stored = sealed;
         try {
           stored = await store.updateSession(id, sealed, message, {
-            transcript: partial.transcript,
+            transcript: partialTranscript,
           });
         } catch (err) {
           abortedWarnings.push(
@@ -446,6 +555,8 @@ export async function runMessageTurn(
         entry.history = stored.filter(
           (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
         );
+        // 同成功路径：卡片先落盘，再发 aborted 终态
+        await flushPendingSubAgentCards();
         for (const w of abortedWarnings) {
           ctx.runs.publish(id, 'warning', { level: 'warning', message: w });
         }
@@ -478,17 +589,19 @@ export async function runMessageTurn(
           durationMs: Date.now() - startedAt,
           iterations: partial.iterations,
         });
-        if (stream) {
-          res.end();
-        } else {
-          sendJson(res, 200, {
-            sessionId: id,
-            aborted: true,
-            partial: true,
-            iterations: partial.iterations,
-            steps: partial.steps.length,
-            ...(abortedWarnings.length ? { warnings: abortedWarnings } : {}),
-          });
+        if (res) {
+          if (stream) {
+            res.end();
+          } else {
+            sendJson(res, 200, {
+              sessionId: id,
+              aborted: true,
+              partial: true,
+              iterations: partial.iterations,
+              steps: partial.steps.length,
+              ...(abortedWarnings.length ? { warnings: abortedWarnings } : {}),
+            });
+          }
         }
         log(`[api] 会话 ${id} 已被用户停止: ${partial.iterations} 轮 / ${partial.steps.length} 步（部分输出已落盘）`);
         return;
@@ -496,6 +609,8 @@ export async function runMessageTurn(
       // run 抛错：流式先推已发生事件再合成 fatal 关流；非流式 500（失败轮不持久化，保留原历史）
       const msg = e instanceof Error ? e.message : String(e);
       log(`[api] 会话 ${id} 运行失败: ${msg}`);
+      // 失败轮不落盘本轮消息，但已提交的后台任务卡片仍要保留（否则任务在跑却无迹可循）
+      await flushPendingSubAgentCards();
       ctx.runs.finish(id, 'failed', { event: 'fatal', data: { message: msg } });
       // journal 终态 + 诊断日志（best-effort）
       void writeJournal(store, id, { status: 'failed', finishedAt: Date.now() });
@@ -507,10 +622,12 @@ export async function runMessageTurn(
         status: 'failed',
         durationMs: Date.now() - startedAt,
       });
-      if (stream) {
-        res.end();
-      } else {
-        sendError(res, 'internal', msg);
+      if (res) {
+        if (stream) {
+          res.end();
+        } else {
+          sendError(res, 'internal', msg);
+        }
       }
     } finally {
       // 本轮结束后再落盘排队中的后台子任务结果（此后完成的卡片直接落盘）
@@ -520,6 +637,54 @@ export async function runMessageTurn(
   })();
 
   await entry.inFlight;
+
+  // 情况2 兜底：完成通知恰好在收尾瞬间到达、没赶上最后一轮 LLM 注入 → 收尾后唤醒主 Agent
+  if (subAgentRegistry.peekNotices(id).length > 0) scheduleWakeMainAgent(ctx, id);
+}
+
+/**
+ * 后台子任务完成后唤醒主 Agent（需求：情况1/情况2）。
+ *
+ * 情况1（已有 run 在跑）：不入队唤醒——完成通知已进会话队列，由那次 run 的下一轮 LLM 前 drain 注入。
+ * 情况2（主 run 已结束）：取走队列中的完成通知，作为合成用户输入发起一次新的模型调用。
+ * 延后一拍执行，让当前 run 的 finally（inFlight 释放/响应结束）先完成；失败时把通知放回队列，
+ * 交给后续 run 注入，并对「刚收尾仍在飞」的互斥窗口做有限重试。
+ */
+function scheduleWakeMainAgent(
+  ctx: HandlerContext,
+  id: string,
+  delayMs = 0,
+  attempt = 0,
+): void {
+  setTimeout(() => {
+    void (async () => {
+      if (ctx.runs.isRunning(id)) return; // 情况1：活跃 run 会自行消费通知
+      const texts = subAgentRegistry.drainNotices(id);
+      if (texts.length === 0) return;
+      try {
+        // 唤醒轮沿用会话落盘的模型选择，避免后台任务把回答切回全局默认模型
+        const store = ctx.registry
+          ? (await locateSession(ctx.registry, id)).store
+          : ctx.deps.sessionStore;
+        let alias = '';
+        try {
+          alias = (await store.listSessions()).find((s) => s.id === id)?.modelAlias ?? '';
+        } catch {
+          // 别名读取失败不影响唤醒：按全局默认模型继续
+        }
+        await runMessageTurn(ctx, null, id, texts.join('\n\n'), true, alias, { wake: true });
+      } catch (e) {
+        subAgentRegistry.requeueNotices(id, texts);
+        if (attempt < 2) {
+          scheduleWakeMainAgent(ctx, id, 500, attempt + 1);
+          return;
+        }
+        ctx.log(
+          `[api] 后台子任务唤醒失败（通知已留在队列）: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    })();
+  }, delayMs);
 }
 
 /**

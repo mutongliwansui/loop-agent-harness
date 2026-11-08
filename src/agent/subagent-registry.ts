@@ -31,6 +31,12 @@ class SubAgentRegistry {
   private readonly tasks = new Map<string, SubAgentTaskRecord>();
   /** CLI 后台完成提示队列：在下一次用户输入前 drain 打印（D13，避免和输入行抢光标） */
   private readonly cliNotices: string[] = [];
+  /**
+   * 会话级「后台完成通知」队列（需求 20261107-011）：
+   * 情况1 —— 主 run 仍在跑：下一轮 LLM 调用前 drain，作为 user 消息注入 Loop；
+   * 情况2 —— 主 run 已结束：由 API 层 drain 后作为唤醒轮次的输入，触发新的模型调用。
+   */
+  private readonly notices = new Map<string, string[]>();
 
   create(record: Omit<SubAgentTaskRecord, 'status' | 'startedAt'>): SubAgentTaskRecord {
     const full: SubAgentTaskRecord = { ...record, status: 'running', startedAt: Date.now() };
@@ -113,10 +119,41 @@ class SubAgentRegistry {
     return this.cliNotices.splice(0, this.cliNotices.length);
   }
 
+  // ===== 会话级完成通知（LLM 可见；情况1 注入 Loop / 情况2 唤醒） =====
+
+  enqueueNotice(sessionId: string, text: string): void {
+    if (!sessionId || !text) return;
+    const list = this.notices.get(sessionId) ?? [];
+    list.push(text);
+    this.notices.set(sessionId, list);
+  }
+
+  /** 取走并清空：由主 run 每轮 LLM 前或唤醒前调用 */
+  drainNotices(sessionId: string): string[] {
+    const list = this.notices.get(sessionId);
+    if (!list || list.length === 0) return [];
+    this.notices.delete(sessionId);
+    return list;
+  }
+
+  /** 只看不取：主 run 收尾时判断是否需要唤醒 */
+  peekNotices(sessionId: string): string[] {
+    return this.notices.get(sessionId) ?? [];
+  }
+
+  /** 唤醒失败时回滚（通知不能被丢弃，交给后续 run 注入） */
+  requeueNotices(sessionId: string, texts: readonly string[]): void {
+    if (texts.length === 0) return;
+    const list = this.notices.get(sessionId) ?? [];
+    list.unshift(...texts);
+    this.notices.set(sessionId, list);
+  }
+
   /** 单测清理 */
   reset(): void {
     this.tasks.clear();
     this.cliNotices.length = 0;
+    this.notices.clear();
   }
 }
 

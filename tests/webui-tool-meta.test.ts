@@ -2,8 +2,8 @@
 // 映射层纯函数无 DOM 依赖，可在 Node vitest 下直测
 import { describe, expect, it } from 'vitest';
 import {
+  buildRenderItems,
   compactJson,
-  groupToolSegs,
   prettyJson,
   RESULT_PREVIEW_CHARS,
   RESULT_PREVIEW_LINES,
@@ -11,7 +11,6 @@ import {
   resultMetaText,
   resultNeedsExpand,
   stripAnsi,
-  TOOL_GROUP_MIN,
   TOOL_ICON_PATHS,
   toolDisplay,
   toolFailReason,
@@ -387,7 +386,7 @@ describe('后台任务三工具映射（Task-20261022-002）', () => {
   });
 });
 
-describe('groupToolSegs：连续 ≥3 次同工具合并（D5）', () => {
+describe('buildRenderItems：一次工具调用一张卡（20261107-010 取消合并）', () => {
   type Seg =
     | { type: 'tool'; tool: string; args: string; result: string; done: boolean; elapsedMs?: number; aborted?: boolean }
     | { type: 'text'; text: string };
@@ -406,80 +405,52 @@ describe('groupToolSegs：连续 ≥3 次同工具合并（D5）', () => {
   const cards = (items: RenderItem<Seg>[]) =>
     items.filter((it): it is { kind: 'tool'; card: ToolCardVM<Seg> } => it.kind === 'tool').map((it) => it.card);
 
-  it('阈值：连续 3 次合并为组，2 次保持单卡', () => {
-    expect(TOOL_GROUP_MIN).toBe(3);
-    const three = groupToolSegs<Seg>([tseg('fileRead'), tseg('fileRead'), tseg('fileRead')]);
-    expect(three).toHaveLength(1);
-    const [g] = cards(three);
-    expect(g.kind).toBe('group');
-    expect(g.tool).toBe('fileRead');
-    expect(g.items.map((i) => i.index)).toEqual([0, 1, 2]);
-    expect(g.totalMs).toBe(300);
-
-    const two = groupToolSegs<Seg>([tseg('fileRead'), tseg('fileRead')]);
-    expect(two).toHaveLength(2);
-    expect(cards(two).map((c) => c.kind)).toEqual(['single', 'single']);
-    expect(cards(two).map((c) => c.totalMs)).toEqual([100, 100]);
+  it('连续多次同名工具不再合并：每段各一张卡', () => {
+    const out = buildRenderItems<Seg>([tseg('fileRead'), tseg('fileRead'), tseg('fileRead')]);
+    expect(out).toHaveLength(3);
+    expect(out.every((it) => it.kind === 'tool')).toBe(true);
+    const cs = cards(out);
+    expect(cs.map((c) => c.tool)).toEqual(['fileRead', 'fileRead', 'fileRead']);
+    expect(cs.map((c) => c.seg.index)).toEqual([0, 1, 2]);
+    // 耗时不再求和，各卡自分段耗时
+    expect(cs.map((c) => c.seg.seg.elapsedMs)).toEqual([100, 100, 100]);
   });
 
-  it('「连续」约束：中间夹文本段或其他工具都不合并', () => {
-    const withText = groupToolSegs<Seg>([tseg('fileRead'), txt('我读一下'), tseg('fileRead'), tseg('fileRead'), tseg('fileRead')]);
-    // [单卡] [文本] [组]
+  it('中间夹文本段或其他工具时结构一一对应（index 保持原下标）', () => {
+    const withText = buildRenderItems<Seg>([tseg('fileRead'), txt('我读一下'), tseg('fileRead')]);
     expect(withText.map((it) => it.kind)).toEqual(['tool', 'seg', 'tool']);
-    const cs = cards(withText);
-    expect(cs[0].kind).toBe('single');
-    expect(cs[1].kind).toBe('group');
     expect(withText[1]).toMatchObject({ kind: 'seg', index: 1 });
 
-    const mixed = groupToolSegs<Seg>([tseg('fileRead'), tseg('grep'), tseg('fileRead'), tseg('fileRead')]);
-    expect(mixed).toHaveLength(4);
-    expect(cards(mixed).every((c) => c.kind === 'single')).toBe(true);
+    const mixed = buildRenderItems<Seg>([tseg('fileRead'), tseg('grep'), tseg('fileRead')]);
+    expect(mixed).toHaveLength(3);
+    expect(cards(mixed).map((c) => c.tool)).toEqual(['fileRead', 'grep', 'fileRead']);
   });
 
-  it('组内含失败 → 不合并，逐个单卡且失败卡可判定', () => {
+  it('失败只落在对应卡片上，不影响相邻同工具卡', () => {
     const segs: Seg[] = [
       tseg('fileRead'),
       tseg('fileRead'),
       tseg('fileRead', { result: 'Error: 文件不存在' }),
     ];
-    const out = groupToolSegs(segs);
-    expect(out).toHaveLength(3);
-    const cs = cards(out);
-    expect(cs.map((c) => c.kind)).toEqual(['single', 'single', 'single']);
+    const cs = cards(buildRenderItems(segs));
+    expect(cs).toHaveLength(3);
     expect(cs.map((c) => c.failed)).toEqual([false, false, true]);
   });
 
   it('状态派生：running / aborted / failed 优先级', () => {
-    const running = cards(groupToolSegs<Seg>([tseg('commandRun', { done: false }), tseg('commandRun', { done: false }), tseg('commandRun', { done: false })]));
+    const running = cards(buildRenderItems<Seg>([tseg('commandRun', { done: false })]));
     expect(running[0].running).toBe(true);
-    expect(running[0].kind).toBe('group');
+    expect(running[0].failed).toBe(false);
 
-    const aborted = cards(
-      groupToolSegs<Seg>([
-        tseg('grep', { done: false, aborted: true }),
-        tseg('grep', { done: false, aborted: true }),
-        tseg('grep', { done: false, aborted: true }),
-      ]),
-    );
+    const aborted = cards(buildRenderItems<Seg>([tseg('grep', { done: false, aborted: true })]));
     expect(aborted[0].aborted).toBe(true);
     expect(aborted[0].running).toBe(false);
     expect(aborted[0].failed).toBe(false);
   });
 
-  it('totalMs：组员耗时不全有值时不给总耗时', () => {
-    const out = cards(
-      groupToolSegs<Seg>([
-        tseg('fileRead', { elapsedMs: 100 }),
-        tseg('fileRead', { elapsedMs: undefined }),
-        tseg('fileRead', { elapsedMs: 200 }),
-      ]),
-    );
-    expect(out[0].totalMs).toBeUndefined();
-  });
-
-  it('空输入与非工具段原样透传（index 保持原下标）', () => {
-    expect(groupToolSegs<Seg>([])).toEqual([]);
-    const out = groupToolSegs<Seg>([txt('a'), txt('b')]);
+  it('空输入与非工具段原样透传', () => {
+    expect(buildRenderItems<Seg>([])).toEqual([]);
+    const out = buildRenderItems<Seg>([txt('a'), txt('b')]);
     expect(out).toEqual([
       { kind: 'seg', seg: { type: 'text', text: 'a' }, index: 0 },
       { kind: 'seg', seg: { type: 'text', text: 'b' }, index: 1 },

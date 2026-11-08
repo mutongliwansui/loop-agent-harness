@@ -223,4 +223,52 @@ describe('内置工具注册与 excludeTools', () => {
     expect(call).toBe(2);
     agent.dispose();
   });
+
+  it('会话级模型覆盖：子 Agent 继承 baseUrl/apiKey（否则跨供应商必报「未知模型或模型未开放」）', async () => {
+    registerBuiltinTools();
+    const wsDir = join(BASE, 'subagent-creds');
+    writeWorkspaceConfig(wsDir);
+    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    agent.setWorkspaceRoot(wsDir);
+
+    const seenOpts: Array<{ model?: string; baseUrl?: string; apiKey?: string }> = [];
+    let call = 0;
+    mocks.chatStream.mockImplementation(async function* (...args: unknown[]) {
+      // chatStream(messages, tools, opts) → opts 为第 3 个参数
+      seenOpts.push(args[2] as { model?: string; baseUrl?: string; apiKey?: string });
+      call += 1;
+      if (call === 1) {
+        yield {
+          type: 'done',
+          response: {
+            content: null,
+            finish_reason: 'tool_calls',
+            tool_calls: [
+              { id: 'c1', type: 'function', function: { name: 'delegate', arguments: '{"task":"子任务"}' } },
+            ],
+          },
+        };
+        return;
+      }
+      yield { type: 'delta', content: '结论' };
+      yield { type: 'done', response: { content: '结论', finish_reason: 'stop' } };
+    });
+
+    await agent.run('委派一下', {
+      model: 'deepseek-flash',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'sk-session',
+      verbose: false,
+      resetHistory: true,
+    });
+
+    // call 1 = 父 Agent，call 2 = 同步执行的子 Agent
+    expect(seenOpts.length).toBeGreaterThanOrEqual(2);
+    expect(seenOpts[0].model).toBe('deepseek-flash');
+    expect(seenOpts[1].model).toBe('deepseek-flash');
+    // 关键：子 Agent 必须带上会话凭据，否则会回落全局 baseUrl/apiKey 去调别家模型名
+    expect(seenOpts[1].baseUrl).toBe('https://api.deepseek.com/v1');
+    expect(seenOpts[1].apiKey).toBe('sk-session');
+    agent.dispose();
+  });
 });

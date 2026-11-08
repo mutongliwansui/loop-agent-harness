@@ -57,7 +57,9 @@ function toggleThink(key: string): void {
     </button>
 
     <div v-if="open" class="sproc-body">
-      <div v-if="!hasContent" class="sproc-empty">暂无过程事件</div>
+      <div v-if="!hasContent" class="sproc-empty">{{
+        effectiveStatus === 'running' ? '过程事件同步中…' : '暂无过程事件'
+      }}</div>
 
       <template v-for="iter in iterations" :key="iter.n">
         <div v-if="iter.think.length || iter.tools.length" class="sproc-iter">第 {{ iter.n }} 轮</div>

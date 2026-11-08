@@ -81,4 +81,19 @@ describe('后台子任务注册表', () => {
     expect(subAgentRegistry.drainCliNotices()).toEqual(['✅ 完成 1', '❌ 失败 2']);
     expect(subAgentRegistry.drainCliNotices()).toEqual([]);
   });
+
+  it('会话级完成通知：入队 → peek 不消费 → drain 清空；失败回滚插回队首（20261107-011）', () => {
+    subAgentRegistry.enqueueNotice('s1', '通知A');
+    subAgentRegistry.enqueueNotice('s1', '通知B');
+    // peek 只看不取（主 run 收尾时判断是否要唤醒）
+    expect(subAgentRegistry.peekNotices('s1')).toEqual(['通知A', '通知B']);
+    expect(subAgentRegistry.peekNotices('s2')).toEqual([]);
+    // drain 取走并清空
+    expect(subAgentRegistry.drainNotices('s1')).toEqual(['通知A', '通知B']);
+    expect(subAgentRegistry.peekNotices('s1')).toEqual([]);
+    // 唤醒失败回滚：放回队首，交给后续 run 注入
+    subAgentRegistry.enqueueNotice('s1', '通知C');
+    subAgentRegistry.requeueNotices('s1', ['通知A', '通知B']);
+    expect(subAgentRegistry.drainNotices('s1')).toEqual(['通知A', '通知B', '通知C']);
+  });
 });

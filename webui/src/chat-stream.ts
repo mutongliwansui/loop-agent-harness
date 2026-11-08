@@ -149,6 +149,12 @@ export interface ChatMsg {
   lastEventAt?: number; // 最近一次收到 SSE 事件的时间（长时间无事件时提示仍在响应）
   /** 后台子任务结果卡片（20261107-002 D8）：渲染为独立卡片，不占用户气泡 */
   subResult?: SubAgentResultVM;
+  /**
+   * 已被 L1 压缩折叠进摘要的历史消息（后端 is_compact=true）。
+   * 这类消息不进入恢复视图（不计 seq、不可重试），但磁盘上完好保留，
+   * 界面与普通历史一样平铺渲染——否则用户会看到「前面的对话凭空消失」。
+   */
+  archived?: boolean;
 }
 
 /**
@@ -342,6 +348,8 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
   const out: ChatMsg[] = [];
   let pending: Segment[] = [];
   let pendingSeq: number | undefined;
+  // 当前累积中的 assistant 消息是否属于归档区（已折叠历史）
+  let pendingArchived = false;
   // 需求 20261106-006：bundle 内任何 assistant 携带落盘 usage 时挂到展示消息上（每轮最终 assistant）
   let pendingUsage: TurnTokenStats | undefined;
   // 恢复视图下标：system 与已折叠归档不计数，其余（含压缩总结）计入后端 entry.history
@@ -355,14 +363,21 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
         segments: pending,
         seq: pendingSeq,
         turnTokens: pendingUsage,
+        ...(pendingArchived ? { archived: true } : {}),
       });
     }
     pending = [];
     pendingSeq = undefined;
     pendingUsage = undefined;
+    pendingArchived = false;
   };
   for (const m of list) {
-    if (m.role === 'system' || m.is_compact === true) continue;
+    if (m.role === 'system') continue;
+    // 已被 L1 压缩折叠进摘要的历史（is_compact=true）：磁盘上完整保留，仅「不进入 LLM 上下文」。
+    // 这里仍还原为消息（标记 archived）并正常展示——此前直接 continue 丢弃，
+    // 导致用户看到「压缩后前面的消息没了」（数据其实没丢）。
+    // 注意不计 viewIdx：归档消息不在后端 entry.history 里，计入会让重试锚点整体偏移。
+    const archived = m.is_compact === true;
     // 后台子任务结果卡片是展示专用消息（不进 LLM 历史），不占用恢复视图下标
     if (m.role === 'user' && m.kind === 'subagent_result') {
       flush();
@@ -370,19 +385,26 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
       if (card) out.push({ id: nextMsgId(), role: 'user', segments: [], subResult: card });
       continue;
     }
-    const historyIdx = viewIdx++;
+    const historyIdx = archived ? undefined : viewIdx++;
     // 不展示的消息：压缩总结消息（is_show=false）仍计入恢复视图下标
     if (m.is_show === false) continue;
     if (m.role === 'user') {
       flush();
       // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原
       const text = m.show_content || m.content || '';
-      out.push({ id: nextMsgId(), role: 'user', segments: [{ type: 'text', text }], seq: historyIdx });
+      out.push({
+        id: nextMsgId(),
+        role: 'user',
+        segments: [{ type: 'text', text }],
+        seq: historyIdx,
+        ...(archived ? { archived: true } : {}),
+      });
     } else if (m.role === 'assistant') {
+      if (archived) pendingArchived = true;
       if (m.content) pending.push({ type: 'text', text: m.content });
       if (m.usage) pendingUsage = m.usage;
       // 同轮多条 assistant（工具调用链）共用首条的下标，重试锚点即该轮回答
-      if (pendingSeq === undefined) pendingSeq = historyIdx;
+      if (pendingSeq === undefined && historyIdx !== undefined) pendingSeq = historyIdx;
       for (const tc of m.tool_calls ?? []) {
         let args = tc.function.arguments;
         try {
@@ -1005,13 +1027,19 @@ export const subAgentRunningCount = computed<number>(() => {
 });
 
 /**
- * 拉一次 /subagents 并更新快照。返回是否仍有运行中的任务。
+ * 拉一次 /subagents 并更新快照。
+ * 返回是否仍有运行中的任务 + 服务端 run 状态（需求 20261107-011：后台子任务完成后
+ * 主 Agent 可能被唤醒并启动新一轮，前端需要据此 attach 续传）。
  * 失败向上抛（调用方决定是否停表）；会话已删除/鉴权失败时轮询应停止。
  */
-async function refreshSubAgents(id: string): Promise<boolean> {
-  const r = await api<{ items: SubAgentTaskVM[] }>(
-    `/sessions/${encodeURIComponent(id)}/subagents`,
-  );
+async function refreshSubAgents(id: string): Promise<{
+  running: boolean;
+  runStatus: string | null;
+}> {
+  const r = await api<{
+    items: SubAgentTaskVM[];
+    run?: { status?: string } | null;
+  }>(`/sessions/${encodeURIComponent(id)}/subagents`);
   const items = Array.isArray(r.items) ? r.items : [];
   const prev = subTasks.get(id) ?? [];
   const prevRunning = new Set(
@@ -1033,7 +1061,10 @@ async function refreshSubAgents(id: string): Promise<boolean> {
     }
   }
   subTasks.set(id, items);
-  return items.some((t) => t.status === 'running');
+  return {
+    running: items.some((t) => t.status === 'running'),
+    runStatus: r.run?.status ?? null,
+  };
 }
 
 /** 时间线里是否还有 running 的结果卡片（G2 条件②：刷新页面后据此恢复轮询） */
@@ -1044,10 +1075,82 @@ function hasRunningSubCard(st: SessionStreamState): boolean {
   return false;
 }
 
+/** 轨迹同步节流：与后端运行卡片的落盘节奏（8s）对齐 */
+const SUB_TRACE_SYNC_MS = 8000;
+const lastTraceSync = new Map<string, number>();
+
+/** 轨迹是否有变化（取规模指纹，避免整段深比较） */
+function traceChanged(prev: SubAgentTraceVM | undefined, next: SubAgentTraceVM): boolean {
+  if (!prev) return true;
+  return (
+    prev.iterations !== next.iterations ||
+    prev.think.length !== next.think.length ||
+    prev.tools.length !== next.tools.length
+  );
+}
+
+/**
+ * 运行中后台卡片的过程轨迹同步（问题修复：过程区一直显示「暂无过程事件」）。
+ *
+ * 主 run 结束后本端没有 SSE，后端虽每 8s 把 trace 写盘，却推不到这里；
+ * 快照端点又不带 trace（一条 86 轮轨迹 ≈200KB，2s 轮询传不起）。
+ * 因此这里只在**时间线里存在运行中卡片**时每 8s 重拉一次历史，
+ * 并**只就地替换 subResult.trace**——不重建时间线，避免 resync 重挂组件导致
+ * 用户展开的卡片 / 过程区被折叠回去。
+ */
+async function syncRunningCardTraces(id: string): Promise<void> {
+  const st = states.get(id);
+  if (!st || st.reloading) return;
+  let detail: SessionDetail;
+  try {
+    detail = await api<SessionDetail>(`/sessions/${encodeURIComponent(id)}`);
+  } catch {
+    return; // 展示态数据：失败静默，下一轮 tick 再试
+  }
+  const fresh = new Map<string, SubAgentTraceVM>();
+  for (const m of detail.messages) {
+    if (m.role !== 'user' || m.kind !== 'subagent_result') continue;
+    const card = parseSubAgentResultCard(m.show_content || m.content || '', m.sub);
+    if (card?.status === 'running' && card.trace) fresh.set(card.taskId, card.trace);
+  }
+  if (!fresh.size) return;
+  for (const msg of st.messages) {
+    const sr = msg.subResult;
+    if (!sr || sr.status !== 'running') continue;
+    const t = fresh.get(sr.taskId);
+    if (!t || !traceChanged(sr.trace, t)) continue;
+    sr.trace = t;
+    sr.iterations = t.iterations;
+  }
+}
+
 const subPolls = new Map<string, ReturnType<typeof setInterval>>();
 /** 进行中的 tick（防 setInterval 与立即 tick 叠加发重复请求） */
 const subTicking = new Set<string>();
 const SUB_POLL_MS = 2000;
+/**
+ * 后台任务全部收敛后的「唤醒观察期」（tick 数）：服务端在完成回调里可能启动唤醒轮次，
+ * 本端没有 run-started 广播（同一标签页），需要多观察几轮才能接上新 run。
+ */
+const SUB_IDLE_GRACE_TICKS = 5;
+const subIdleTicks = new Map<string, number>();
+
+/**
+ * 接管服务端自行启动的 run（需求 20261107-011 情况2：后台子任务完成触发唤醒）。
+ *
+ * 同一标签页收不到「别的端发起 run」的信令，因此只能靠 /subagents 轮询里的 run 状态发现。
+ * 新 run 的 seq 从 0 重新计数，接管前必须重置 lastSeq，否则 attach 会按旧 cursor 跳过开头事件。
+ */
+function attachServerRun(id: string): void {
+  const st = states.get(id);
+  if (!st || st.status === 'running') return;
+  st.status = 'running';
+  st.lastSeq = 0;
+  st.runId = undefined;
+  st.runStartedAt = Date.now();
+  st.note = undefined;
+  void attach(id);
+}
 
 /**
  * 启动（或复用）轮询，并立即查一次。
@@ -1068,16 +1171,50 @@ async function tickSubAgents(id: string): Promise<void> {
   if (subTicking.has(id)) return;
   subTicking.add(id);
   try {
-    let running: boolean;
+    let snap: { running: boolean; runStatus: string | null };
     try {
-      running = await refreshSubAgents(id);
+      snap = await refreshSubAgents(id);
     } catch {
       stopSubAgentPoll(id); // 会话已删除 / 鉴权失败：不再重试
       return;
     }
-    if (running) return;
-    stopSubAgentPoll(id);
-    await resync(id);
+    if (snap.running) {
+      subIdleTicks.delete(id);
+      // 运行中：按落盘节奏同步过程轨迹，避免过程区停在首帧（「1 轮 · 0 步」/「暂无过程事件」）
+      const st = states.get(id);
+      if (
+        st &&
+        hasRunningSubCard(st) &&
+        Date.now() - (lastTraceSync.get(id) ?? 0) >= SUB_TRACE_SYNC_MS
+      ) {
+        lastTraceSync.set(id, Date.now());
+        void syncRunningCardTraces(id);
+      }
+      return;
+    }
+    const idle = subIdleTicks.get(id) ?? 0;
+    if (idle === 0) await resync(id); // 首次收敛：卡片终态与落盘历史对齐
+    if (snap.runStatus === 'running') {
+      const st = states.get(id);
+      if (st?.status === 'running') {
+        // 本端已接住当前 run：保持观察——它收尾后可能紧接一个唤醒轮次（情况2）
+        subIdleTicks.set(id, 0);
+        return;
+      }
+      // 服务端自行启动了新一轮（后台完成 → 唤醒）：接管 run，轮询使命完成（后续靠 SSE 续传）
+      attachServerRun(id);
+      stopSubAgentPoll(id);
+      subIdleTicks.delete(id);
+      return;
+    }
+    if (idle >= SUB_IDLE_GRACE_TICKS) {
+      // 观察期结束：兜底再对齐一次（唤醒轮可能已在两次轮询之间跑完并落盘）
+      stopSubAgentPoll(id);
+      subIdleTicks.delete(id);
+      await resync(id);
+      return;
+    }
+    subIdleTicks.set(id, idle + 1);
   } finally {
     subTicking.delete(id);
   }
@@ -1087,6 +1224,8 @@ function stopSubAgentPoll(id: string): void {
   const timer = subPolls.get(id);
   if (timer) clearInterval(timer);
   subPolls.delete(id);
+  lastTraceSync.delete(id);
+  subIdleTicks.delete(id);
 }
 
 /**
@@ -1099,7 +1238,7 @@ async function bootstrapSubAgents(id: string): Promise<void> {
   const st = states.get(id);
   if (!st) return;
   try {
-    const running = await refreshSubAgents(id);
+    const { running } = await refreshSubAgents(id);
     if (running) {
       ensureSubAgentPoll(id);
       return;
@@ -1519,10 +1658,12 @@ export async function attach(id: string): Promise<void> {
           ctrl.signal,
         );
         if (r.status === 204 && st.status === 'running') {
-          // run 已在两次请求之间结束：按空闲处理，移除可能残留的空助手占位
+          // run 已在两次请求之间结束：按空闲处理，移除可能残留的空助手占位；
+          // 再对齐一次落盘历史，拿回「刚结束但没来得及收 done」的回答（含后台唤醒轮次）
           const last = st.messages[st.messages.length - 1];
           if (last && last.role === 'assistant' && last.segments.length === 0) st.messages.pop();
           st.status = 'idle';
+          void reconcile(id);
         }
         return;
       } catch (e) {

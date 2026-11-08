@@ -69,7 +69,7 @@ import {
   type Segment,
   type ToolSeg,
 } from '../chat-stream.js';
-import { groupToolSegs, type RenderItem, type ToolCardVM } from '../tool-meta.js';
+import { buildRenderItems, type RenderItem, type ToolCardVM } from '../tool-meta.js';
 import ToolCard from '../components/ToolCard.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
@@ -82,13 +82,13 @@ import { buildPickerRows, resolvePill, type ModelProfileRow, type PickerRow } fr
 import { metaRev } from '../mcp-tool-meta-loader.js';
 
 /* ===== 工具调用卡片（Task-20261024-001：方案 B 卡片内聚式，渲染与样式在 ToolCard.vue）===== */
-/** segments → 顺序渲染项：连续 ≥3 次同工具合并成组（D5），文本段原样透传 */
+/** segments → 顺序渲染项：一次工具调用一张卡，文本段原样透传（20261107-010 取消合并） */
 function renderItems(m: ChatMsg): RenderItem<Segment>[] {
   // 20261104-001：读取 metaRev 以建立渲染依赖——元信息异步到位后卡片需要重算中文名/图标/参数标签
   void metaRev.value;
-  return groupToolSegs(m.segments);
+  return buildRenderItems(m.segments);
 }
-/** tool 分支的 items 恒为 ToolSeg（groupToolSegs 只在 type==='tool' 的段上产出），此处仅对齐类型 */
+/** tool 分支的 card 恒为 ToolSeg（buildRenderItems 只在 type==='tool' 的段上产出），此处仅对齐类型 */
 function cardVM(it: RenderItem<Segment>): ToolCardVM<ToolSeg> {
   return (it as Extract<RenderItem<Segment>, { kind: 'tool' }>).card as unknown as ToolCardVM<ToolSeg>;
 }
@@ -109,6 +109,10 @@ interface UploadChip {
 
 // 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
 const messages = computed(() => messagesOf(activeId.value));
+// 已压缩历史（后端 is_compact=true）与普通历史一样**平铺渲染**，不再显示「已压缩 N 条」提示条：
+// 该提示没有信息价值（原文完整可见），反而暗示「前面的对话被藏起来了」，与用户诉求相悖；
+// 且其计数取自前端收到的截断窗口，与实际归档数不符（显示 8 条，实际 147 条），会误导。
+// `m.archived` 仅作为数据层标记保留（seq 计算、可达性判断），不影响渲染。
 /** 20261105-001 D3：user 消息整体为后台通知块 → 系统通知卡片（按 id 预解析，模板只查表） */
 const noticeMap = computed(() => {
   const map = new Map<number, BackgroundNoticeInfo>();
@@ -1177,7 +1181,12 @@ onUnmounted(() => {
             <div v-if="!activeId && messages.length === 0" class="chat-empty">
               选择左侧会话，或点击「＋ 新建对话」开始
             </div>
-            <div v-for="m in messages" :key="m.id" class="msg" :class="[m.role, { notice: noticeMap.has(m.id) }]">
+            <div
+              v-for="m in messages"
+              :key="m.id"
+              class="msg"
+              :class="[m.role, { notice: noticeMap.has(m.id) }]"
+            >
               <!-- 20261105-001：后台任务完成通知渲染为系统卡片，不占用户气泡 -->
               <BackgroundNoticeCard v-if="noticeMap.get(m.id)" :info="noticeMap.get(m.id)!" />
               <!-- 20261107-002 D8：后台子任务完成结果卡片（服务端主动落盘） -->
@@ -1414,8 +1423,11 @@ onUnmounted(() => {
 
       <div class="composer">
         <!-- 后台子任务常驻指示器（需求 20261107-008 G1）：放在输入区上方，
-             无论消息滚到哪里都能看到「运行中 N」 -->
-        <SubAgentDock :session-id="activeId" />
+             无论消息滚到哪里都能看到「运行中 N」。
+             宽度与消息列对齐（800 - 20×2），否则会顶到面板边缘、比对话卡片更宽 -->
+        <div class="composer-dock">
+          <SubAgentDock :session-id="activeId" />
+        </div>
         <div class="composer-inner">
           <div class="dock">
             <!-- 附件 pill（task-20261025-002 ③）：SVG + 文件名 + 大小 + 圆形删除 -->
@@ -2009,6 +2021,8 @@ onUnmounted(() => {
 }
 /* 840 = 800 内容宽 + 左右各 20 内边距，与原「composer 20px + inner 800」等效 */
 .composer-inner { max-width: 840px; margin: 0 auto; position: relative; padding: 0 20px; }
+/* 指示器与消息列同宽（.msg-wrap：800 外宽 + 20 内边距），不比对话卡片更宽 */
+.composer-dock { max-width: 800px; margin: 0 auto; padding: 0 20px; }
 
 /* 一体卡片：底 + 描边 + 阴影；focus-within 转品牌色描边 + 3px 光晕 */
 .dock {

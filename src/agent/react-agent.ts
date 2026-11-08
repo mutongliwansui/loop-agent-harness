@@ -617,7 +617,7 @@ export class ReActAgent {
 
     // ===== 会话级模型覆盖（task-20261025-002 D4/D5/D6）=====
     // 凭据成对才生效：只给其中一个视为无效，回落全局（与 CLI 路径零差异）
-    const creds =
+    const creds: { baseUrl?: string; apiKey?: string } =
       options.baseUrl && options.apiKey
         ? { baseUrl: options.baseUrl, apiKey: options.apiKey }
         : {};
@@ -767,6 +767,12 @@ export class ReActAgent {
             : [];
         const result = await sub.run(prompt, {
           model: subOpts.model ?? model,
+          // 会话级模型覆盖必须连凭据一起继承（task-20261025-002 D4）：
+          // 只传模型名会让子 Agent 回落全局 baseUrl/apiKey 去调「别的供应商」的模型名，
+          // 网关直接 400「未知模型或模型未开放」（跨供应商会话选模型时 delegate 必踩）。
+          baseUrl: creds.baseUrl,
+          apiKey: creds.apiKey,
+          temperature,
           maxIterations: subOpts.maxIterations ?? maxIterations,
           signal,
           sessionId: sessionId ?? undefined,
@@ -818,8 +824,8 @@ export class ReActAgent {
           task,
           controller,
         });
-        // 立即落盘「运行中」卡片（D8/D9）：刷新/重启后仍可见，中断时可被标记。
-        // 此处 await 落盘，保证运行中卡片先于本轮 updateSession 写入磁盘，避免被覆盖。
+        // 提交回调（D8/D9）：API 层登记「运行中」卡片（本轮未收尾时先排队，收尾后落盘）。
+        // await 保证回调执行完再继续主循环（排队本身不写盘，因此不会阻塞）。
         try {
           if (options.onSubAgentStart) {
             const startInfo: SubAgentStartInfo = {
@@ -1183,6 +1189,14 @@ export class ReActAgent {
           // D6：通知注入失败不影响主回答
           debug.log(`后台通知注入失败: ${e instanceof Error ? e.message : String(e)}`);
         }
+        // 后台子 Agent 完成通知（需求 20261107-011 情况1）：主 run 仍在跑时插入 Loop。
+        // 展示层已由结果卡片承担，这里只投递给「本次 LLM 请求」，不写入 messages/transcript。
+        let freshSubNotices: string[] = [];
+        try {
+          freshSubNotices = subAgentRegistry.drainNotices(sessionId ?? '');
+        } catch (e) {
+          debug.log(`后台子任务通知注入失败: ${e instanceof Error ? e.message : String(e)}`);
+        }
 
         // ===== 记忆管理：Context Assembly（L3 + L2 + L1 组装） =====
         // 组装结果仅作为本次 LLM 调用的视图（llmMessages），不覆盖工作数组 messages——
@@ -1222,10 +1236,11 @@ export class ReActAgent {
 
         // D9：新到的通知仅作为本轮请求的尾部消息投递一次（不写入历史视图）。
         // 下一轮 drain 结果为空，通知不会再出现在提示前缀里。
-        if (freshNotices.length > 0) {
+        const deliveredNotices = [...freshNotices, ...freshSubNotices];
+        if (deliveredNotices.length > 0) {
           llmMessages = [
             ...llmMessages,
-            ...freshNotices.map((text) => ({ role: 'user' as const, content: text })),
+            ...deliveredNotices.map((text) => ({ role: 'user' as const, content: text })),
           ];
         }
 
