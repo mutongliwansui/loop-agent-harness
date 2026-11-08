@@ -114,6 +114,6 @@ loop-agent-command/
 ├── .mcp.json.example                 # 📄 MCP 配置模板
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts                  # 🧪 测试配置（串行执行）
+├── vitest.config.ts                  # 🧪 测试配置（unit 并行 / integration 串行分层）
 └── README.md                         # 📖 项目说明文档
 ```

@@ -124,11 +124,20 @@ npm start -- --no-setup
 # 📝 编程式调用示例
 npx tsx examples/run.ts
 
-# 🧪 测试（142 个测试文件 / 1788 个用例，含集成用例；串行执行避免 API 限速）
+# 🧪 测试（unit 层：154 个测试文件 / 1907 个用例，并行执行）
 npm test
 
-# 🔁 监听模式测试
+# 🧪 集成测试（真实 PTY 等慢用例，串行执行）
+npm run test:integration
+
+# 🧪 全量测试（unit + integration，push 前或 CI 运行）
+npm run test:full
+
+# 🔁 监听模式测试（unit 层）
 npm run test:watch
+
+# 🎯 只跑与改动文件相关的测试
+npm run test:related
 
 # ✅ 类型检查
 npm run typecheck

@@ -114,6 +114,6 @@ loop-agent-command/
 ├── .mcp.json.example                 # 📄 MCP config template
 ├── package.json
 ├── tsconfig.json
-├── vitest.config.ts                  # 🧪 Test config (serial execution)
+├── vitest.config.ts                  # 🧪 Test config (unit parallel / integration serial layers)
 └── README.md                         # 📖 Project documentation
 ```

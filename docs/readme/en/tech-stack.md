@@ -9,7 +9,7 @@
 | **LLM SDK** | `openai` v4.x | compatible with any OpenAI-protocol provider |
 | **MCP SDK** | `@modelcontextprotocol/sdk` v1.x | external tool integration protocol |
 | **Crypto** | Node.js `crypto` | PBKDF2 + AES-256-GCM session encryption |
-| **Test Framework** | vitest | integration tests, serial execution |
+| **Test Framework** | vitest | layered: unit parallel / integration serial |
 | **Build Tool** | tsup | outputs ESM format |
 | **Dev Tool** | tsx | run TypeScript directly during development |
 | **Env Vars** | built-in .env parser | auto-loads `.env` into `process.env` on startup (dotenv-compatible behavior) |

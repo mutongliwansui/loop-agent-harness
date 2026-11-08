@@ -24,7 +24,7 @@
 错误：请求过于频繁（429），请稍后重试或降低调用频率
 ```
 
-**解决**：降低调用频率。集成测试默认串行执行（`fileParallelism: false`）避免并发限速。
+**解决**：降低调用频率。集成测试（`tests/integration/`）默认串行执行（`fileParallelism: false`）避免并发限速；unit 层测试均为 mock，可并行执行。
 
 ### 工具执行超时
 

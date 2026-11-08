@@ -24,7 +24,7 @@ Error: Model does not exist (404). Please check MODEL_NAME in .env (current: xxx
 Error: Too many requests (429). Please retry later or reduce the call frequency
 ```
 
-**Fix**: Reduce the call frequency. Integration tests run serially by default (`fileParallelism: false`) to avoid concurrent rate limiting.
+**Fix**: Reduce the call frequency. Integration tests (`tests/integration/`) run serially by default (`fileParallelism: false`) to avoid concurrent rate limiting; unit tests are all mocked and run in parallel.
 
 ### Tool Execution Timeout
 
