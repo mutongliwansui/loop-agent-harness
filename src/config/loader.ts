@@ -1,8 +1,8 @@
 // 配置加载器：分层合并（CLI > 工作空间 > 全局 > .env > 默认值）
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
+import { loopAgentHome } from '../user-home.js';
 import {
   DEFAULT_CONFIG,
   type AgentConfig,
@@ -52,7 +52,7 @@ export class ConfigLoader {
   private globalDir: string;
 
   // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根（D7）
-  constructor(workspacePath = process.cwd(), globalDir = join(homedir(), '.loop-agent')) {
+  constructor(workspacePath = process.cwd(), globalDir = loopAgentHome()) {
     this.workspacePath = workspacePath;
     this.globalDir = globalDir;
     // 构造时读取 .env 文件到 process.env（幂等，不覆盖已有环境变量）

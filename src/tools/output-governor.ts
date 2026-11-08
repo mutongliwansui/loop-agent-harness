@@ -17,7 +17,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { loopAgentHome } from '../user-home.js';
 import type { WriteStream } from 'node:fs';
 import { debug } from '../debug.js';
 
@@ -79,7 +79,7 @@ export function setTmpDirForTest(dir: string | undefined): void {
   tmpDirOverride = dir;
 }
 export function tmpDir(): string {
-  return tmpDirOverride ?? join(homedir(), '.loop-agent', 'tmp');
+  return tmpDirOverride ?? join(loopAgentHome(), 'tmp');
 }
 
 /**

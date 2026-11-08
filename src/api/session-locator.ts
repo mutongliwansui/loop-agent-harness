@@ -10,10 +10,10 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { ApiHttpError } from './errors.js';
 import { canonicalWorkspacePath } from '../session/path-utils.js';
 import type { WorkspaceRegistry, WorkspaceRuntime } from './workspace-runtime.js';
+import { loopAgentHome } from '../user-home.js';
 
 /** 新格式 id 的空间段正则 */
 const NS_PREFIX = /^sess_([0-9a-f]{8})_/;
@@ -22,7 +22,7 @@ const NS_PREFIX = /^sess_([0-9a-f]{8})_/;
 const idRootCache = new Map<string, string>();
 
 function resolveUserDir(registry: WorkspaceRegistry): string {
-  return registry.userDir ?? join(homedir(), '.loop-agent');
+  return registry.userDir ?? loopAgentHome();
 }
 
 /** 解析 sessionId → 归属 runtime；找不到 → ApiHttpError('not_found') */

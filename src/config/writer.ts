@@ -1,10 +1,10 @@
 // 配置写入器：工作空间/全局写入，支持部分更新
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { PartialAgentConfig, AgentConfig } from './schema.js';
 import { deepMerge } from './merge.js';
 import { configLoader } from './loader.js';
+import { loopAgentHome } from '../user-home.js';
 
 export type ConfigScope = 'workspace' | 'global';
 
@@ -15,7 +15,7 @@ export class ConfigWriter {
   // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根（D7）
   constructor(
     workspacePath = process.cwd(),
-    globalDir = join(homedir(), '.loop-agent'),
+    globalDir = loopAgentHome(),
     private loader = configLoader,
   ) {
     this.workspacePath = workspacePath;

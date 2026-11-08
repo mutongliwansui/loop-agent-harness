@@ -5,7 +5,7 @@
 // 全程容错：文件缺失/损坏/字段非法一律当空表，绝不抛错影响 MCP 连接与对话。
 import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { loopAgentHome } from '../../user-home.js';
 
 /** 缓存条目：一次翻译的产物 */
 export interface MetaCacheEntry {
@@ -29,9 +29,9 @@ export const META_CACHE_KEEP = 500;
 
 const CACHE_VERSION = 1;
 
-/** 默认缓存文件路径（可用参数注入，便于单测） */
+/** 默认缓存文件路径（可用参数注入，便于单测；支持 LOOP_AGENT_HOME 重定向） */
 export function defaultMetaCachePath(): string {
-  return join(homedir(), '.loop-agent', 'mcp-meta.json');
+  return join(loopAgentHome(), 'mcp-meta.json');
 }
 
 function isEntry(v: unknown): v is MetaCacheEntry {

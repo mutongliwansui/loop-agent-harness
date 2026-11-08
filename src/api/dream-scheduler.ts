@@ -23,12 +23,12 @@
 
 import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import type { AgentConfig } from '../config/schema.js';
 import { debug } from '../debug.js';
 import { DreamRunLog, truncateError } from '../memory/dream-runs.js';
 import { workspaceId as toWorkspaceId } from '../session/store.js';
 import { listMemoryWorkspaces } from './memory-workspaces.js';
+import { loopAgentHome } from '../user-home.js';
 import type { DreamRunRecord, DreamRunReason, DreamRunSkipReason } from '../memory/dream-runs.js';
 import {
   describeCron,
@@ -239,7 +239,7 @@ export class DreamScheduler {
     this.now = deps.now ?? (() => Date.now());
     this.createTimer = deps.createTimer ?? defaultTimer;
     this.enumerateAllSpaces = deps.enumerateAllSpaces === true;
-    this.userDir = deps.userDir ?? join(homedir(), '.loop-agent');
+    this.userDir = deps.userDir ?? loopAgentHome();
   }
 
   /** 注册定时轮（schedule.enabled=false 时什么也不做；关停兜底由 onExit 独立控制） */

@@ -1,9 +1,9 @@
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { scanSkillsDir, parseSkillMd } from './scanner.js';
 import type { SkillMetadata, SkillContent } from './types.js';
 import { config } from '../config.js';
+import { loopAgentHome } from '../user-home.js';
 
 /** Skill 加载器：扫描、解析、渐进式加载 */
 export class SkillLoader {
@@ -11,7 +11,7 @@ export class SkillLoader {
 
   /** 全局 Skill 目录 */
   get globalDir(): string {
-    return join(homedir(), '.loop-agent', 'skills');
+    return join(loopAgentHome(), 'skills');
   }
 
   /** 扫描并加载所有 Skill 元信息 */

@@ -178,6 +178,14 @@ describe('LLMClient 取消短路', () => {
         },
       },
     };
+    // 关键：chatStream 实际走 getClientFor() → getClient()，后者在 apiKey/baseUrl 与缓存不一致时
+    // 会重建真实 client 并覆盖上面注入的假 client（测试隔离后 baseUrl 变为默认值即触发），
+    // 进而发起真实网络请求导致用例挂起。这里直接 stub getClientFor，彻底与外部配置解耦。
+    const fakeClient = llm['client'];
+    vi.spyOn(
+      llm as unknown as { getClientFor: () => unknown },
+      'getClientFor',
+    ).mockReturnValue(fakeClient);
     const ac2 = new AbortController();
     const gen = llm.chatStream(
       [{ role: 'user', content: 'hi' }],

@@ -4,12 +4,12 @@
 // 由本模块负责 CLI 专属流程——会话恢复与 SessionStore 注入 → 记忆初始化 → 横幅/历史渲染
 // → 命令注册 → readline/REPL 主循环 → 退出处理（Dreaming）。
 import readline from 'node:readline';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { agent } from '../agent/react-agent.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { registry, mcpManager } from '../tools/index.js';
 import { configLoader, configWriter } from '../config/index.js';
+import { loopAgentHome } from '../user-home.js';
 import { skillLoader } from '../skill/index.js';
 import { SessionStore, keychain } from '../session/index.js';
 import { COLORS as C } from '../ui/colors.js';
@@ -60,7 +60,7 @@ function printBanner(): void {
   });
 
   if (cfg.agent.debug) {
-    console.log(`${C.yellow}⚠ 调试模式已开启，日志输出到: ${join(homedir(), '.loop-agent', 'logs')}${C.reset}`);
+    console.log(`${C.yellow}⚠ 调试模式已开启，日志输出到: ${join(loopAgentHome(), 'logs')}${C.reset}`);
     console.log('');
   }
 }

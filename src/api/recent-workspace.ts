@@ -14,9 +14,9 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { canonicalWorkspacePath } from '../session/path-utils.js';
 import { debug } from '../debug.js';
+import { loopAgentHome } from '../user-home.js';
 
 /** 最近使用空间指针（模块级：进程内唯一事实源；defaultRoot() 同步读） */
 let mruRoot = '';
@@ -50,7 +50,7 @@ export function currentWorkspaceRoot(): string {
  * @returns canonical 空间根（推导成功）或 canonical(cwd)（无任何可用映射时）；绝不抛错
  */
 export async function resolveRecentRoot(userDir?: string): Promise<string> {
-  const base = userDir ?? join(homedir(), '.loop-agent');
+  const base = userDir ?? loopAgentHome();
   const sessionsDir = join(base, 'sessions');
   let dirs: string[];
   try {

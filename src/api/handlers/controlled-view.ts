@@ -2,13 +2,13 @@
 // 校验链：resolveInWs 词法防穿越 → assertRealInside 符号链接防逃逸 → file/raw 双档读取。
 // 常量与 Content-Type 表自 uploads.ts 上移（uploads.ts 保留 re-export 以免影响既有 import）。
 import { readFile, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { basename, extname, join, relative } from 'node:path';
 import type { ServerResponse } from 'node:http';
 import { ApiHttpError } from '../errors.js';
 import { resolveInWs, toSlash } from '../../tools/workspace-fs.js';
 import { assertRealInside } from './fs.js';
 import { sendJson } from '../http-utils.js';
+import { loopAgentHome } from '../../user-home.js';
 
 /** 文本预览读取上限（与 /fs/file 同构同限：512KB 截断） */
 export const MAX_VIEW_TEXT_BYTES = 512 * 1024;
@@ -36,11 +36,11 @@ export const VIEW_CONTENT_TYPES: Record<string, string> = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
-/** ~ 开头输入按 homedir 展开（'~'/'~/'/'~\'；其余原样）。home 参数供单测注入 */
+/** ~ 开头输入按 home 展开（'~'/'~/'/'~\'；其余原样）。home 参数供单测注入；缺省走 loopAgentHome（测试经 LOOP_AGENT_HOME 重定向） */
 export function expandHomeInput(input: string, home?: string): string {
-  if (input === '~') return home ?? homedir();
+  if (input === '~') return home ?? loopAgentHome();
   if (input.startsWith('~/') || input.startsWith('~\\')) {
-    return join(home ?? homedir(), input.slice(2));
+    return join(home ?? loopAgentHome(), input.slice(2));
   }
   return input;
 }

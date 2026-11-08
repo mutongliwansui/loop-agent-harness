@@ -23,6 +23,7 @@ import {
   defaultUploadsRoot,
   MAX_UPLOAD_BYTES,
 } from '../src/upload/manager.js';
+import { loopAgentHome } from '../src/user-home.js';
 
 /** 临时重定义 process.platform（测试结束恢复） */
 function mockPlatform(p: string): void {
@@ -326,7 +327,7 @@ describe('辅助', () => {
     ).toContain('类型: 图片 image/jpeg');
   });
 
-  it('defaultUploadsRoot 指向 ~/.loop-agent/uploads', () => {
-    expect(defaultUploadsRoot()).toContain(join('.loop-agent', 'uploads'));
+  it('defaultUploadsRoot 指向 {loopAgentHome}/uploads（默认 ~/.loop-agent，测试经 LOOP_AGENT_HOME 隔离）', () => {
+    expect(defaultUploadsRoot()).toBe(join(loopAgentHome(), 'uploads'));
   });
 });

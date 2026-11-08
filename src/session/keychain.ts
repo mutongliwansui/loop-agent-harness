@@ -1,10 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs';
 import { generateSalt, createVerifyToken, verifyKey } from './crypto.js';
+import { loopAgentHome } from '../user-home.js';
 
-const KEYFILE_PATH = join(homedir(), '.loop-agent', '.keyfile');
+/** keyfile 路径（惰性求值：支持测试经 LOOP_AGENT_HOME 重定向） */
+function keyfilePath(): string {
+  return join(loopAgentHome(), '.keyfile');
+}
 const KEY_LEN = 32;
 
 interface KeyFileData {
@@ -20,12 +23,12 @@ export class Keychain {
 
   /** 获取 keyfile 路径 */
   get keyfilePath(): string {
-    return KEYFILE_PATH;
+    return keyfilePath();
   }
 
   /** 检查密钥文件是否存在 */
   exists(): boolean {
-    return existsSync(KEYFILE_PATH);
+    return existsSync(keyfilePath());
   }
 
   /**
@@ -59,8 +62,8 @@ export class Keychain {
 
   /** 删除密钥文件（慎用，会导致所有加密数据无法解密） */
   reset(): void {
-    if (existsSync(KEYFILE_PATH)) {
-      unlinkSync(KEYFILE_PATH);
+    if (existsSync(keyfilePath())) {
+      unlinkSync(keyfilePath());
     }
     this.key = null;
   }
@@ -75,7 +78,7 @@ export class Keychain {
     const key = Buffer.from(keyBase64, 'base64');
     if (key.length !== KEY_LEN) return false;
 
-    const dir = join(homedir(), '.loop-agent');
+    const dir = loopAgentHome();
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
@@ -90,8 +93,8 @@ export class Keychain {
       createdAt: new Date().toISOString(),
     };
 
-    writeFileSync(KEYFILE_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
-    chmodSync(KEYFILE_PATH, 0o600);
+    writeFileSync(keyfilePath(), JSON.stringify(data, null, 2), { mode: 0o600 });
+    chmodSync(keyfilePath(), 0o600);
     this.key = key;
     return true;
   }
@@ -111,7 +114,7 @@ export class Keychain {
   private generateAndSaveKey(): Buffer {
     const key = randomBytes(KEY_LEN);
 
-    const dir = join(homedir(), '.loop-agent');
+    const dir = loopAgentHome();
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
@@ -126,14 +129,14 @@ export class Keychain {
       createdAt: new Date().toISOString(),
     };
 
-    writeFileSync(KEYFILE_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
-    chmodSync(KEYFILE_PATH, 0o600);
+    writeFileSync(keyfilePath(), JSON.stringify(data, null, 2), { mode: 0o600 });
+    chmodSync(keyfilePath(), 0o600);
 
     return key;
   }
 
   private readKeyFile(): KeyFileData {
-    const content = readFileSync(KEYFILE_PATH, 'utf-8');
+    const content = readFileSync(keyfilePath(), 'utf-8');
     return JSON.parse(content) as KeyFileData;
   }
 }

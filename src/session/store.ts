@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { loopAgentHome } from '../user-home.js';
 import {
   mkdir,
   readFile,
@@ -427,7 +427,7 @@ export class SessionStore {
   constructor(
     workspacePath: string = process.cwd(),
     encryptionEnabled = true,
-    userDir: string = join(homedir(), '.loop-agent'),
+    userDir: string = loopAgentHome(),
   ) {
     this.userDir = userDir;
     this.workspacePath = workspacePath;

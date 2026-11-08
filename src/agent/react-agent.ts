@@ -4,7 +4,6 @@
 import { llm } from '../llm/client.js';
 import { copyFile, writeFile, rename, cp, rm, mkdir } from 'node:fs/promises';
 import { join, isAbsolute, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { registry, runner } from '../tools/index.js';
 import { buildSystemPrompt } from './prompt.js';
@@ -13,6 +12,7 @@ import { buildLLMStatsSummary } from './stats.js';
 import { createToolCallGenTracker, dispatchStreamChunk } from './stream-forward.js';
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
+import { loopAgentHome } from '../user-home.js';
 import { skillLoader } from '../skill/loader.js';
 import { SessionStore, workspaceId } from '../session/store.js';
 import type { MemoryKit } from '../api/memory-kit.js';
@@ -400,7 +400,7 @@ export class ReActAgent {
     const configEpisodicDir = cfg.memory.episodic.dir;
     const episodicDir = configEpisodicDir && isAbsolute(configEpisodicDir)
       ? configEpisodicDir
-      : join(homedir(), '.loop-agent', 'memory', workspaceId(cwd));
+      : join(loopAgentHome(), 'memory', workspaceId(cwd));
 
     // 迁移旧版 L2 目录（{cwd}/memory → 用户目录），目标不存在且源存在时才迁移（幂等）
     const legacyEpisodicDir = join(cwd, configEpisodicDir);
@@ -428,7 +428,7 @@ export class ReActAgent {
 
     const curatedDir = cwd;
     // 全局 Curated 目录：SOUL/USER 存用户目录，MEMORY.md 留项目目录
-    const globalCuratedDir = join(homedir(), '.loop-agent', 'curated');
+    const globalCuratedDir = join(loopAgentHome(), 'curated');
 
     // L1 Working Memory
     this._workingMemory = new WorkingMemory(cfg.memory.working);

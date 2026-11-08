@@ -1,8 +1,8 @@
 // 启动体检：基于合并后生效值检测必备目录与配置是否齐备
 // 纯函数设计：文件存在性通过注入的 exists 探针完成，便于单测
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { loopAgentHome } from '../user-home.js';
 import type { AgentConfig } from '../config/schema.js';
 
 export type BootstrapIssueId =
@@ -48,7 +48,7 @@ export const defaultExistsProbe: ExistsProbe = (path) => existsSync(path);
  * @param workspaceRoot 工作空间根（缺省为进程 cwd；CLI 单空间即启动目录，serve 侧由 runtime 传入）
  */
 export function defaultBootstrapPaths(workspaceRoot = process.cwd()): BootstrapPaths {
-  const globalDir = join(homedir(), '.loop-agent');
+  const globalDir = loopAgentHome();
   const workspaceDir = join(workspaceRoot, '.loop-agent');
   return {
     globalConfigPath: join(globalDir, 'config.json'),

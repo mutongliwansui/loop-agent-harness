@@ -9,7 +9,6 @@
 // （方案 D4），新增 GET /memory/workspaces 聚合空间清单（D2）。
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getGateThresholds } from '../../memory/gate.js';
 import { CuratedMemory } from '../../memory/curated.js';
@@ -20,6 +19,7 @@ import { ApiHttpError } from '../errors.js';
 import { sendJson } from '../http-utils.js';
 import type { MemoryKit } from '../memory-kit.js';
 import { listMemoryWorkspaces, resolveMemorySpace, toWorkspaceId } from '../memory-workspaces.js';
+import { loopAgentHome } from '../../user-home.js';
 
 /** 解析 query 正整数（缺省/非法回落 fallback，夹在 [1, max]） */
 function queryInt(url: URL, key: string, fallback: number, max: number): number {
@@ -41,12 +41,12 @@ async function requireMemoryKit(ctx: HandlerContext): Promise<MemoryKit> {
 function memoryBaseDir(ctx: HandlerContext): string {
   const dir = ctx.configLoader.load().config.memory.episodic.dir;
   if (dir && /^([A-Za-z]:[\\/]|\/)/.test(dir)) return dir;
-  return join(ctx.userDir ?? join(homedir(), '.loop-agent'), 'memory');
+  return join(ctx.userDir ?? loopAgentHome(), 'memory');
 }
 
 /** sessions 索引根目录（meta.json 明文，供空间名映射；默认 {userDir}/sessions） */
 function sessionsBaseDir(ctx: HandlerContext): string {
-  return join(ctx.userDir ?? join(homedir(), '.loop-agent'), 'sessions');
+  return join(ctx.userDir ?? loopAgentHome(), 'sessions');
 }
 
 /** wsId 形态（workspaceId 产出 16 位十六进制；放宽 8-64 容纳测试） */
@@ -124,7 +124,7 @@ async function handleCurated(ctx: HandlerContext, req: IncomingMessage, res: Ser
     const curated = new CuratedMemory(
       target.wsRoot,
       null,
-      join(ctx.userDir ?? join(homedir(), '.loop-agent'), 'curated'),
+      join(ctx.userDir ?? loopAgentHome(), 'curated'),
     );
     const files = curated.getFilePaths();
     const entries = await Promise.all(

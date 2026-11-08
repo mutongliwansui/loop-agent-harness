@@ -1,10 +1,10 @@
 // 后台任务表：进程级单例，管理 commandRun background 模式的任务状态与日志游标
 // Task-20261022-002（需求 20261021-006）：D2 taskId 格式 / D3 日志落盘 / D6 孤儿检测 / D8 stop 幂等
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { debug } from '../debug.js';
+import { loopAgentHome } from '../user-home.js';
 
 /** 后台任务状态机：running → exited | killed；服务重启后运行中任务 → orphaned-*（D6） */
 export type BackgroundTaskStatus =
@@ -54,7 +54,7 @@ export function setRunsDirForTest(dir: string | undefined): void {
   runsDirOverride = dir;
 }
 export function runsDir(): string {
-  return runsDirOverride ?? join(homedir(), '.loop-agent', 'runs');
+  return runsDirOverride ?? join(loopAgentHome(), 'runs');
 }
 
 /** 日志清理配置（需求 20261104-003 D3：init 启动时由 config.tools.backgroundLog 注入） */

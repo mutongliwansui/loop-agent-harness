@@ -3,16 +3,16 @@
 // fileWrite 写记忆、fileRead 读 runs 日志、activate_skill 引导的 SKILL.md 等场景。
 // 与 /uploads/view 完全同构：只读、词法防穿越 + 符号链接防逃逸 + 只读读取，越界一律 403；
 // `~` 开头输入先按 homedir 展开（D3）。root 经 ctx.userDir 注入（默认 ~/.loop-agent），单测可换临时目录。
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { serveControlledView } from './controlled-view.js';
+import { loopAgentHome } from '../../user-home.js';
 
-/** userdir 根：显式注入优先，缺省 ~/.loop-agent（与 handlers/memory.ts 等同口径） */
+/** userdir 根：显式注入优先，缺省 ~/.loop-agent（与 handlers/memory.ts 等同口径；LOOP_AGENT_HOME 可重定向） */
 function userDirRoot(ctx: HandlerContext): string {
-  return ctx.userDir ?? join(homedir(), '.loop-agent');
+  return ctx.userDir ?? loopAgentHome();
 }
 
 /**

@@ -14,7 +14,6 @@
 // - preview 的非法 cron 返回 200 {ok:false,error}（输入期预览不属于错误请求，前端单分支处理）
 // - 记忆未启用时仍允许保存（配置先存着），响应带 warning 提示「定时不会执行」
 
-import { homedir } from 'node:os';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -23,6 +22,7 @@ import type { DreamRunRecord } from '../../memory/dream-runs.js';
 import type { PartialAgentConfig } from '../../config/schema.js';
 import { ConfigWriter } from '../../config/writer.js';
 import { describeCron, nextFireTimes, parseCron } from '../cron.js';
+import { loopAgentHome } from '../../user-home.js';
 import type { CronFields } from '../cron.js';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
@@ -55,10 +55,10 @@ function historyLimitOf(ctx: HandlerContext): number {
 function memoryBaseDir(ctx: HandlerContext): string {
   const dir = ctx.configLoader.load().config.memory.episodic.dir;
   if (dir && /^([A-Za-z]:[\\/]|\/)/.test(dir)) return dir;
-  return join(ctx.userDir ?? join(homedir(), '.loop-agent'), 'memory');
+  return join(ctx.userDir ?? loopAgentHome(), 'memory');
 }
 function sessionsBaseDir(ctx: HandlerContext): string {
-  return join(ctx.userDir ?? join(homedir(), '.loop-agent'), 'sessions');
+  return join(ctx.userDir ?? loopAgentHome(), 'sessions');
 }
 
 /**

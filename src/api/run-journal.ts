@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { loopAgentHome } from '../user-home.js';
 import type { SessionStore } from '../session/index.js';
 import { debug } from '../debug.js';
 
@@ -295,9 +296,8 @@ export interface RunLogEntry {
  */
 export async function writeRunLog(entry: RunLogEntry): Promise<void> {
   try {
-    const { homedir } = await import('node:os');
     const { appendFile } = await import('node:fs/promises');
-    const dir = join(homedir(), '.loop-agent', 'logs');
+    const dir = join(loopAgentHome(), 'logs');
     await mkdir(dir, { recursive: true });
     const date = new Date().toISOString().split('T')[0];
     await appendFile(join(dir, `runs-${date}.jsonl`), JSON.stringify(entry) + '\n', 'utf-8');

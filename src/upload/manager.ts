@@ -3,10 +3,10 @@
 // 设计依据：docs/tasks/optimizations/task-20261012-001-文件上传（upload 会话隔离上传目录）.md
 import { exec } from 'node:child_process';
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { MIME_BY_EXT } from '../tools/vision/image.js';
+import { loopAgentHome } from '../user-home.js';
 
 const execAsync = promisify(exec);
 
@@ -16,9 +16,9 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 /** 文件选择框超时（模态等待上限，防挂死） */
 const DIALOG_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** 全局上传根目录：~/.loop-agent/uploads */
+/** 全局上传根目录：~/.loop-agent/uploads（支持 LOOP_AGENT_HOME 重定向） */
 export function defaultUploadsRoot(): string {
-  return join(homedir(), '.loop-agent', 'uploads');
+  return join(loopAgentHome(), 'uploads');
 }
 
 /** 单个上传文件记录 */

@@ -1,10 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { config } from './config.js';
+import { loopAgentHome } from './user-home.js';
 
-/** 日志目录 */
-const LOG_DIR = join(homedir(), '.loop-agent', 'logs');
+/** 日志目录（惰性求值：支持测试经 LOOP_AGENT_HOME 重定向） */
+function logDir(): string {
+  return join(loopAgentHome(), 'logs');
+}
 
 /** 最大单个日志文件大小（10MB） */
 const MAX_LOG_SIZE = 10 * 1024 * 1024;
@@ -15,13 +17,13 @@ const MAX_LOG_FILES = 5;
 /** 获取当前日志文件路径（按日期命名） */
 function getLogPath(): string {
   const date = new Date().toISOString().split('T')[0];
-  return join(LOG_DIR, `debug-${date}.log`);
+  return join(logDir(), `debug-${date}.log`);
 }
 
 /** 确保日志目录存在 */
 function ensureDir(): void {
-  if (!existsSync(LOG_DIR)) {
-    mkdirSync(LOG_DIR, { recursive: true });
+  if (!existsSync(logDir())) {
+    mkdirSync(logDir(), { recursive: true });
   }
 }
 

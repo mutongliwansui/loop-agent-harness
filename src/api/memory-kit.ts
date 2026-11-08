@@ -5,7 +5,6 @@
 // 与 initMemory 的唯一差异：不含旧版 {cwd}/memory 目录迁移——启动期一次性逻辑归 agent 所有。
 // D8：opts 支持注入目录（单测隔离，避免污染真实 ~/.loop-agent）。
 
-import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { ConfigLoader } from '../config/loader.js';
 import { configLoader } from '../config/loader.js';
@@ -15,6 +14,7 @@ import { CuratedMemory, DreamingPipeline, EpisodicMemory, PromotionGate } from '
 import type { ILLMClient } from '../memory/index.js';
 import type { ChatMessage } from '../types.js';
 import { workspaceId } from '../session/store.js';
+import { loopAgentHome } from '../user-home.js';
 
 /** /memory 端点所需的记忆子系统集合（与 ReactAgent 私有字段同口径） */
 export interface MemoryKit {
@@ -44,14 +44,14 @@ export async function createMemoryKit(
   const { config: cfg } = loader.load();
 
   // L2 目录：显式绝对路径配置 → 尊重配置；默认相对路径 → {memoryRoot}/{workspaceId}
-  const baseDir = opts.memoryRoot ?? join(homedir(), '.loop-agent', 'memory');
+  const baseDir = opts.memoryRoot ?? join(loopAgentHome(), 'memory');
   const configEpisodicDir = cfg.memory.episodic.dir;
   const episodicDir = configEpisodicDir && isAbsolute(configEpisodicDir)
     ? configEpisodicDir
     : join(baseDir, workspaceId(cwd));
 
   // 全局 Curated 目录：SOUL/USER 存用户目录，MEMORY.md 留项目目录
-  const globalCuratedDir = opts.globalCuratedDir ?? join(homedir(), '.loop-agent', 'curated');
+  const globalCuratedDir = opts.globalCuratedDir ?? join(loopAgentHome(), 'curated');
 
   const episodic = new EpisodicMemory(episodicDir, cfg.memory.episodic.vectorSearch);
   await episodic.init();

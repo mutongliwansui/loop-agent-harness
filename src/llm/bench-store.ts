@@ -7,13 +7,13 @@
 // - 写入沿用「同目录临时文件 + rename」原子写法（与 session/store.ts 一致）
 
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { loopAgentHome } from '../user-home.js';
 import type { BenchPromptKey, BenchSummary } from './bench.js';
 
-/** 默认根目录 */
+/** 默认根目录（支持 LOOP_AGENT_HOME 重定向） */
 export function defaultBenchRoot(): string {
-  return join(homedir(), '.loop-agent', 'model-bench');
+  return join(loopAgentHome(), 'model-bench');
 }
 
 /** 每个模型保留的历史条数 */

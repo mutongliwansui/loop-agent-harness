@@ -4,7 +4,7 @@ import type { SessionConfig } from '../session/types.js';
 import type { SkillConfig } from '../skill/types.js';
 import type { MemoryConfig } from '../memory/types.js';
 import { DEFAULT_MEMORY_CONFIG } from '../memory/types.js';
-import { homedir } from 'node:os';
+import { loopAgentHome } from '../user-home.js';
 import { join } from 'node:path';
 
 /** Agent 完整配置结构 */
@@ -348,7 +348,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   },
   skill: {
     enabled: true,
-    globalDir: join(homedir(), '.loop-agent', 'skills'),
+    globalDir: join(loopAgentHome(), 'skills'),
     workspaceDir: '.loop-agent/skills',
     autoLoad: true,
   },
