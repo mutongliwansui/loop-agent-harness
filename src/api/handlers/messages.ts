@@ -23,6 +23,7 @@ import {
 } from '../../types.js';
 import { applySubAgentEvent, createSubAgentTrace } from '../../agent/subagent-trace.js';
 import { subAgentRegistry } from '../../agent/subagent-registry.js';
+import { buildSubAgentWakeNotice, SUBAGENT_WAKE_PREFIX } from '../subagent-notice.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
 import { locateSession } from '../session-locator.js';
@@ -57,30 +58,8 @@ export interface RunTurnOptions {
  * 后台子任务完成通知的前缀（情况1：主 run 仍在运行时作为一轮 user 消息插入 Loop）。
  * 情况2 唤醒轮次还会用它把合成输入从落盘消息里剔除，避免会话里多出一条用户气泡。
  */
-const SUBAGENT_WAKE_PREFIX = '[后台子任务完成通知]';
-
-/** 后台完成通知文本（LLM 可见）：任务/状态/耗时/结果，超长结果截断避免挤爆上下文 */
-function buildSubAgentWakeNotice(info: {
-  taskId: string;
-  task: string;
-  status: string;
-  answer?: string;
-  error?: string;
-  iterations?: number;
-  elapsedMs?: number;
-}): string {
-  const secs = ((info.elapsedMs ?? 0) / 1000).toFixed(1);
-  const status =
-    info.status === 'done' ? '已完成' : info.status === 'aborted' ? '已取消' : '失败';
-  const raw = (info.error || info.answer || '').trim();
-  const text = raw.length > 2000 ? `${raw.slice(0, 2000)}\n…（结果过长已截断）` : raw;
-  return [
-    `${SUBAGENT_WAKE_PREFIX} ${info.taskId} ${status}（${secs}s${info.iterations ? ` · ${info.iterations} 轮` : ''}）`,
-    `任务：${info.task || '（未命名）'}`,
-    `结果：${text || '（无输出）'}`,
-    '请基于该结果继续你的工作；不要把同一任务重复提交为后台子任务。',
-  ].join('\n');
-}
+// SUBAGENT_WAKE_PREFIX 与 buildSubAgentWakeNotice 已迁移到 ../subagent-notice.ts
+// （需求 20261108-001：超长结果落盘 tmp，通知带路径 + 预览，见该模块头部注释）
 
 /**
  * 剔除唤醒轮次注入的合成用户消息（只影响落盘/回显，LLM 已在运行期看过）。
@@ -390,7 +369,7 @@ export async function runMessageTurn(
       elapsedMs: info.elapsedMs,
       trace: info.trace,
     };
-    const notice = buildSubAgentWakeNotice(info);
+    const notice = await buildSubAgentWakeNotice({ ...info });
     if (turnActive) {
       queueSubAgentCard(record);
       // 情况1：主 run 仍在跑 → 完成通知入队，由下一轮 LLM 调用前 drain 注入 Loop
