@@ -24,9 +24,15 @@ function stubBrowserGlobals(): void {
   });
 }
 
-// sse.js 全程不产生事件：本文件的关注点是「没有 SSE 事件也要能感知」
+// sse.js 默认不产生事件：本文件的关注点是「没有 SSE 事件也要能感知」；
+// 个别用例需要让主 run 停在 running（SSE 挂起），通过 sseMock.impl 覆写
+const sseMock = vi.hoisted(() => ({
+  impl: null as null | (() => Promise<void>),
+}));
 vi.mock('./../webui/src/api/sse.js', () => ({
-  sseFetch: async (): Promise<void> => {},
+  sseFetch: async (): Promise<void> => {
+    if (sseMock.impl) return sseMock.impl();
+  },
   sseGet: async (): Promise<{ status: number }> => ({ status: 204 }),
 }));
 
@@ -42,6 +48,9 @@ const {
   setChatViewMounted,
   reloadHistory,
   drop,
+  sendMessage,
+  messagesOf,
+  isRunning,
 } = mod;
 
 const ok = (body: unknown, status = 200): Response =>
@@ -88,6 +97,7 @@ describe('后台子任务全局可感知（需求 20261107-008）', () => {
     subItems = [];
     detailMessages = [{ role: 'user', content: '你好', is_show: true }];
     toastMock.showToast.mockClear();
+    sseMock.impl = null;
     installFetch();
     vi.useFakeTimers();
     setChatViewMounted(true);
@@ -157,6 +167,80 @@ describe('后台子任务全局可感知（需求 20261107-008）', () => {
     expect(calls.subs).toBe(subsAfter);
 
     drop('sess_g2');
+  });
+
+  it('主 run 进行中：子任务收敛不重建，刚发的用户气泡不被吞掉', async () => {
+    subItems = [
+      { taskId: 'sub_fff', task: '长任务', status: 'running', startedAt: Date.now() },
+    ];
+    setActiveSession('sess_g7');
+    await ensureLoaded('sess_g7');
+    await flush();
+    expect(subAgentRunningCount.value).toBe(1);
+
+    // 发消息后 SSE 挂起 → 本端 run 停在 running；服务端此时还没把这条消息落盘
+    let release: (() => void) | null = null;
+    sseMock.impl = () =>
+      new Promise<void>((r) => {
+        release = r;
+      });
+    const sending = sendMessage('sess_g7', {
+      message: '第二条',
+      text: '第二条',
+      files: [],
+      stream: true,
+    });
+    await flush(4);
+    expect(isRunning('sess_g7')).toBe(true);
+    const detailBefore = calls.detail;
+
+    // 后台任务完成 → 轮询收敛；若此刻 resync，磁盘快照没有「第二条」，气泡会被吞掉
+    subItems = [{ taskId: 'sub_fff', task: '长任务', status: 'done', elapsedMs: 3000 }];
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    await flush();
+
+    expect(calls.detail).toBe(detailBefore); // 进行中不整表重建
+    const texts = messagesOf('sess_g7')
+      .filter((m) => m.role === 'user')
+      .flatMap((m) => m.segments.filter((s) => s.type === 'text').map((s) => s.text));
+    expect(texts).toContain('第二条');
+
+    release?.();
+    await sending;
+    drop('sess_g7');
+  });
+
+  it('运行中重建：磁盘缺用户消息时保留乐观气泡与助手占位（resync 路径）', async () => {
+    setActiveSession('sess_g8');
+    await ensureLoaded('sess_g8');
+    await flush();
+
+    let release: (() => void) | null = null;
+    sseMock.impl = () =>
+      new Promise<void>((r) => {
+        release = r;
+      });
+    const sending = sendMessage('sess_g8', {
+      message: '第三条',
+      text: '第三条',
+      files: [],
+      stream: true,
+    });
+    await flush(4);
+    expect(isRunning('sess_g8')).toBe(true);
+    expect(messagesOf('sess_g8').filter((m) => m.role === 'user')).toHaveLength(2);
+
+    // 服务端还没落盘这条消息：detailMessages 仍只有旧的一条
+    await reloadHistory('sess_g8');
+    await flush();
+
+    const msgs = messagesOf('sess_g8');
+    expect(msgs.filter((m) => m.role === 'user')).toHaveLength(2); // 乐观气泡被接回
+    expect(msgs[msgs.length - 1].role).toBe('assistant'); // 助手占位仍在
+
+    release?.();
+    await sending;
+    drop('sess_g8');
   });
 
   it('完成提示：运行中 → 终态时弹一次 toast，且不重复弹（G4）', async () => {

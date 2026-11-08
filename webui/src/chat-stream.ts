@@ -1193,7 +1193,10 @@ async function tickSubAgents(id: string): Promise<void> {
       return;
     }
     const idle = subIdleTicks.get(id) ?? 0;
-    if (idle === 0) await resync(id); // 首次收敛：卡片终态与落盘历史对齐
+    // 本端 run 进行中不能重建：此刻磁盘快照还没写入刚发出的用户消息，整表替换会把它
+    // 「吞掉」，要等首次快照（约 10~30s）落盘才重新出现。进行中由 SSE 与收尾 reconcile 负责对齐。
+    const localRunning = states.get(id)?.status === 'running';
+    if (idle === 0 && !localRunning) await resync(id); // 首次收敛：卡片终态与落盘历史对齐
     if (snap.runStatus === 'running') {
       const st = states.get(id);
       if (st?.status === 'running') {
@@ -1208,10 +1211,12 @@ async function tickSubAgents(id: string): Promise<void> {
       return;
     }
     if (idle >= SUB_IDLE_GRACE_TICKS) {
-      // 观察期结束：兜底再对齐一次（唤醒轮可能已在两次轮询之间跑完并落盘）
+      // 观察期结束：兜底再对齐一次（唤醒轮可能已在两次轮询之间跑完并落盘）。
+      // 本端 run 仍在进行时跳过——磁盘还没有刚发的用户消息，重建会让气泡消失一段；
+      // 收尾的 reconcile 会以落盘结果为准做最终对齐。
       stopSubAgentPoll(id);
       subIdleTicks.delete(id);
-      await resync(id);
+      if (states.get(id)?.status !== 'running') await resync(id);
       return;
     }
     subIdleTicks.set(id, idle + 1);
@@ -1264,7 +1269,10 @@ async function resync(id: string): Promise<void> {
   st.reloading = true;
   try {
     const r = await api<SessionDetail>(`/sessions/${encodeURIComponent(id)}`);
-    st.messages.splice(0, st.messages.length, ...rebuildChatMsgs(r.messages));
+    const disk = rebuildChatMsgs(r.messages);
+    // 运行中：磁盘快照可能还没写入刚发的用户消息，先接回本地乐观尾部再整表替换
+    if (st.status === 'running') preserveOptimisticTail(disk, st.messages);
+    st.messages.splice(0, st.messages.length, ...disk);
     // 保留仍在运行中的助手占位（历史快照可能落后于已收到的实时事件）
     if (st.status === 'running') currentAssistant(st);
   } catch (e) {
@@ -1304,6 +1312,26 @@ function sameTimeline(a: ChatMsg[], b: ChatMsg[]): boolean {
     }
   }
   return true;
+}
+
+/**
+ * 运行中的本轮：磁盘快照可能还没写入刚发出的用户消息（服务端首次快照约 10~30s 一次），
+ * 此时整表替换会把用户气泡「吞掉」，直到落盘才重新出现。这里把本地「磁盘还没有的尾部」
+ * （用户气泡 + 助手占位/已收片段）原样接回重建结果。
+ */
+function preserveOptimisticTail(disk: ChatMsg[], local: ChatMsg[]): void {
+  const countUser = (list: ChatMsg[]): number =>
+    list.filter((m) => m.role === 'user' && !m.subResult).length;
+  const diskUsers = countUser(disk);
+  if (countUser(local) <= diskUsers) return;
+  let seen = 0;
+  for (let i = 0; i < local.length; i++) {
+    const m = local[i];
+    if (m.role === 'user' && !m.subResult && ++seen > diskUsers) {
+      disk.push(...local.slice(i));
+      return;
+    }
+  }
 }
 
 /** 磁盘 user 消息的 content 含附件 note / 记忆前缀：展示层沿用本地乐观气泡的原文与附件 */
