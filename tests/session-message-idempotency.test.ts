@@ -117,6 +117,33 @@ describe('按 msgId 去重：重复追加收敛', () => {
     expect(stored.map((m) => m.content)).toEqual(['A', 'B']);
   });
 
+  it('锚点未命中时，同一批无 ID 的内存消息多次落盘也只保留一份', async () => {
+    // 复现线上现象：内存基线比文件旧（锚点只命中前 4 条），后续消息每落盘一次就被
+    // 分配一次新 msgId，于是同一轮回答在文件里出现多份。
+    const created = await store.createSession('A', [
+      { role: 'user', content: 'A' },
+      { role: 'assistant', content: 'B' },
+      { role: 'user', content: 'C' },
+      { role: 'assistant', content: 'D' },
+      { role: 'assistant', content: 'E' },
+    ]);
+    const memory: ChatMessage[] = [
+      { role: 'user', content: 'A' },
+      { role: 'assistant', content: 'B' },
+      { role: 'user', content: 'C' },
+      { role: 'assistant', content: 'D' },
+      { role: 'user', content: 'X' },
+      { role: 'assistant', content: 'Y' },
+    ];
+
+    await store.updateSession(created.id, memory);
+    // 同一批对象再次落盘（节流快照 + 收尾各写一次）
+    const second = nonSystem(await store.updateSession(created.id, memory));
+
+    expect(second.map((m) => m.content)).toEqual(['A', 'B', 'C', 'D', 'E', 'X', 'Y']);
+    expect(new Set(second.map((m) => m.msgId)).size).toBe(second.length);
+  });
+
   it('内容相同的两条独立消息（连发两次「继续」）都保留', async () => {
     const created = await store.createSession('继续', [{ role: 'user', content: '继续' }]);
     const prev = (await store.loadSession(created.id)).messages;

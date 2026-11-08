@@ -194,7 +194,13 @@ function toStoredMessage(
   const out = { ...m } as ChatMessage;
   // 消息稳定 ID（需求 20261107-007 S2）：已有则沿用（同一条消息多次落盘 ID 不变，是幂等去重的身份键）；
   // 新消息在此分配，随落盘固化，后续轮次/恢复都以该 ID 识别「同一条消息」
-  if (!out.msgId) out.msgId = newMsgId();
+  if (!out.msgId) {
+    out.msgId = newMsgId();
+    // 回写给内存源对象（需求 20261107-011 回归）：一次 run 内会被多个快照反复落盘，
+    // 只在副本上分配 ID 的话每次落盘都会得到新 ID，锚点未命中时同一消息会以不同 ID
+    // 重复追加，msgId 去重完全失效（用户现象：只说一次「提交推送吧」却存了好几条）。
+    m.msgId = out.msgId;
+  }
   out.is_compact = m.role === 'system' ? false : opts.isCompact;
   out.is_show = m.role === 'system' ? false : opts.isSummary !== true;
   // 显式种类标记：总结消息写入 kind='summary'，其余消息清除（避免运行时残留标记误判）
