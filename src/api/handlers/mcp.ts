@@ -31,7 +31,7 @@ function toolCountFor(name: string): number {
 
 /** GET /mcp/servers：合并配置全量 + 实时连接状态（serve 模式附监测器运行态） */
 async function handleListServers(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const { config: cfg } = ctx.configLoader.load();
+  const { config: cfg, sources } = ctx.configLoader.load();
   const connected = new Set(ctx.mcpManager.listConnected());
   // 监测器可能不存在（CLI 模式或单测未启动 serve）：此时只返回连接的二态
   const runtime = new Map((getMcpMonitor()?.snapshot() ?? []).map((s) => [s.name, s]));
@@ -40,6 +40,8 @@ async function handleListServers(ctx: HandlerContext, _req: IncomingMessage, res
     return {
       name,
       transport: s.type,
+      // D9：来源范围随列表返回，前端据此显示徽标并默认移除范围
+      scope: sources[`tools.mcpServers.${name}`] === 'global' ? 'global' : 'workspace',
       status: connected.has(name) ? 'connected' : 'disconnected',
       toolCount: toolCountFor(name),
       // connecting/failed 时 status 仍是 disconnected，这两个字段用于排障与前端提示
@@ -147,8 +149,12 @@ async function handleDeleteServer(
   name: string,
 ): Promise<void> {
   const scope = parseScope(queryScope(req));
-  const { config: cfg } = ctx.configLoader.load();
-  const existed = cfg.tools.mcpServers[name] !== undefined;
+  // 按所选范围判断是否存在：合并配置里有但该层没有时 deleted:false，
+  // 避免旧版「工作空间默认范围删全局 server」误报成功（也不应提前断连）
+  const layer = scope === 'global'
+    ? await ctx.configLoader.loadGlobal()
+    : await ctx.configLoader.loadWorkspace();
+  const existed = layer.tools?.mcpServers?.[name] !== undefined;
   if (existed) {
     await ctx.mcpManager.unloadServer(name);
     await ctx.configWriter.deleteScopeKey(scope, ['tools', 'mcpServers', name]);

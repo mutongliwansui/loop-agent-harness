@@ -533,7 +533,8 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
     expect(list.status).toBe(200);
     const body = (await list.json()) as { servers: { name: string; transport: string; status: string; toolCount: number }[] };
     const srv = body.servers.find((s) => s.name === 'e2e-mcp');
-    expect(srv).toMatchObject({ transport: 'stdio', status: 'disconnected', toolCount: 0 });
+    // D9：列表项携带来源范围（workspace 登记）
+    expect(srv).toMatchObject({ transport: 'stdio', status: 'disconnected', toolCount: 0, scope: 'workspace' });
 
     expect((await req('GET', '/mcp/servers/ghost')).status).toBe(404);
     expect((await req('GET', '/mcp/servers/e2e-mcp')).status).toBe(502);
@@ -553,7 +554,34 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
     expect(reloadBody.failed).toContain('e2e-mcp');
   });
 
-  it('DELETE → 先断连再删配置：200 deleted:true 且盘上移除', async () => {
+  it('DELETE → 范围不匹配 deleted:false 且配置保留；正确范围 deleted:true 且盘上移除', async () => {
+    // 全局登记一个 server（连接必败，但配置已落盘），验证列表 scope 与删除范围
+    const globalReg = await req('POST', '/mcp/servers', {
+      name: 'e2e-mcp-global', transport: 'stdio', command: BAD_CMD, scope: 'global',
+    });
+    expect(globalReg.status).toBe(502);
+
+    const list = await req('GET', '/mcp/servers');
+    const listBody = (await list.json()) as { servers: { name: string; scope: string }[] };
+    expect(listBody.servers.find((s) => s.name === 'e2e-mcp-global')).toMatchObject({ scope: 'global' });
+
+    // 用默认 workspace 范围删除全局 server：不误报成功，也不删全局配置
+    const wrong = await req('DELETE', '/mcp/servers/e2e-mcp-global');
+    expect(wrong.status).toBe(200);
+    expect((await wrong.json()) as { name: string; scope: string; deleted: boolean })
+      .toEqual({ name: 'e2e-mcp-global', scope: 'workspace', deleted: false });
+    expect((await testLoader.loadGlobal() as { tools?: { mcpServers?: Record<string, unknown> } })
+      .tools?.mcpServers?.['e2e-mcp-global']).toBeTruthy();
+
+    // 切到 global 后删除成功
+    const g = await req('DELETE', '/mcp/servers/e2e-mcp-global?scope=global');
+    expect(g.status).toBe(200);
+    expect((await g.json()) as { name: string; scope: string; deleted: boolean })
+      .toEqual({ name: 'e2e-mcp-global', scope: 'global', deleted: true });
+    expect((await testLoader.loadGlobal() as { tools?: { mcpServers?: Record<string, unknown> } })
+      .tools?.mcpServers?.['e2e-mcp-global']).toBeUndefined();
+
+    // workspace 登记项按默认范围删除
     const res = await req('DELETE', '/mcp/servers/e2e-mcp');
     expect(res.status).toBe(200);
     expect((await res.json()) as { name: string; scope: string; deleted: boolean })
