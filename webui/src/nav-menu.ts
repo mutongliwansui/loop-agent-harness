@@ -45,12 +45,27 @@ export const NAV_ICON_PATHS: Record<NavIconKey, string> = {
   caret: '<path d="M4 9.6 8 5.6 12 9.6"/>',
 };
 
+/** 图标视觉中心偏离 viewBox 8,8 的微调（svg.getBBox() 实测）：
+ * - puzzle（技能）cy ≈ 5.0，下移 +3 对齐 8,8
+ * - wrench（工具）cx ≈ 7.62, cy ≈ 7.88，右 +0.4 下 +0.1
+ * - link（MCP）几何中心已在 8,8，保持不动
+ * 偏移以 <g transform="translate(x,y)"> 包裹 inner 元素，不改动 NAV_ICON_PATHS 原始路径，
+ * 保持与 tool-meta.ts TOOL_ICON_PATHS 的逐字节一致。 */
+const NAV_ICON_OFFSET: Partial<Record<NavIconKey, [number, number]>> = {
+  puzzle: [0, 3],
+  wrench: [0.4, 0.1],
+};
+
 /** 完整 `<svg>` 串：供 `v-html` 渲染（尺寸由 CSS 控制） */
 export function navIconSvg(key: NavIconKey, strokeWidth = 1.6): string {
   const d = NAV_ICON_PATHS[key] ?? NAV_ICON_PATHS.gear;
+  const offset = NAV_ICON_OFFSET[key];
+  const inner = offset
+    ? `<g transform="translate(${offset[0]},${offset[1]})">${d}</g>`
+    : d;
   return (
     `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${strokeWidth}"` +
-    ` stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
+    ` stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`
   );
 }
 
