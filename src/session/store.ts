@@ -205,6 +205,11 @@ function toStoredMessage(
   out.is_show = m.role === 'system' ? false : opts.isSummary !== true;
   // 显式种类标记：总结消息写入 kind='summary'，其余消息清除（避免运行时残留标记误判）
   if (opts.isSummary === true && m.role !== 'system') out.kind = 'summary';
+  // 需求 20261108-003：按内容特征补回展示专用消息的 kind 标记——
+  // 全量重写（压缩轨迹重建/legacy 回退）会把磁盘历史重新 map(toStoredMessage)，
+  // 旧实现走 else delete out.kind 把卡片标记抹掉，前端（认 kind）进不了卡片分支，
+  // <subagent_result> 原文被当普通文本渲染（模型侧不受影响：getRestoreMessages 按内容过滤）。
+  else if (m.role === 'user' && isSubAgentResultContent(out.content)) out.kind = 'subagent_result';
   else delete out.kind;
   if (m.role === 'user' && typeof m.content === 'string') {
     // content 为原始用户输入（存量数据可能含 L2 记忆前缀）；展示内容单独存 show_content
@@ -903,6 +908,34 @@ export class SessionStore {
       debug.log(
         `[markRunningSubAgentsInterrupted ${id}] 标记 ${changed} 张 running 卡片为 interrupted`,
       );
+    }
+    return changed;
+  }
+
+  /**
+   * 存量脏数据修复（需求 20261108-003）：
+   * 旧版 toStoredMessage 在全量重写（压缩轨迹重建/legacy 回退）时无条件 delete out.kind，
+   * 后台子任务结果卡片的 kind='subagent_result' 标记被抹掉——后端按内容特征仍能正确
+   * 过滤 LLM 上下文，但前端（只认 kind）进不了卡片分支，<subagent_result> 原文被
+   * 当普通文本渲染到界面上。本方法按内容特征（isSubAgentResultContent，容忍记忆前缀
+   * 包裹）补回标记，与内容判据天然幂等。
+   *
+   * 仅在 SessionManager.ensureEntry 冷启动路径（缓存 miss）调用一次，
+   * 与 markRunningSubAgentsInterrupted 同模式，避免与运行中写入竞争。返回修复条数。
+   */
+  async repairSubAgentCardKinds(id: string): Promise<number> {
+    const data = await this.readSession(id);
+    let changed = 0;
+    for (const m of data.messages ?? []) {
+      if (m.role !== 'user' || m.kind === 'subagent_result') continue;
+      if (!isSubAgentResultContent(m.content)) continue;
+      m.kind = 'subagent_result';
+      changed++;
+    }
+    if (changed > 0) {
+      data.updatedAt = new Date().toISOString();
+      await this.writeSession(data);
+      debug.log(`[repairSubAgentCardKinds ${id}] 补回 ${changed} 张卡片的 kind 标记`);
     }
     return changed;
   }

@@ -111,11 +111,14 @@ export interface OutputGovernorConfig {
  *
  * - enabled：关闭后不产生通知、不写 notifiedAt
  * - tailLines / maxChars：注入日志尾部的行数与字符上限
+ * - wakeIdle：会话空闲（无运行循环）时任务完成，是否像后台子任务一样
+ *   唤醒一轮 run 主动消费通知（需求 20261108-002；默认 true，WebUI/服务模式生效）
  */
 export interface BackgroundNotifyConfig {
   enabled: boolean;
   tailLines: number;
   maxChars: number;
+  wakeIdle: boolean;
 }
 
 /**
@@ -326,6 +329,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       enabled: true,
       tailLines: 20,
       maxChars: 2000,
+      wakeIdle: true,
     },
   },
   agent: {

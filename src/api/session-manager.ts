@@ -81,6 +81,9 @@ export class SessionManager {
       // 进程重启后首次打开会话：把仍为 running 的后台子任务卡片标记为 interrupted
       // 仅缓存 miss 时执行（冷启动），运行中进程不会误标当前任务
       await this.store.markRunningSubAgentsInterrupted(id);
+      // 存量修复（需求 20261108-003）：旧版压缩全量重写会清掉卡片 kind 标记，
+      // 按内容特征补回（幂等）。同样仅冷启动执行，避免与运行中写入竞争
+      await this.store.repairSubAgentCardKinds(id);
     } catch {
       throw new ApiHttpError('not_found', `会话不存在: ${id}`);
     }

@@ -64,6 +64,7 @@ Three auth modes:
 | GET | `/sessions/:id` | Session detail `{meta, messages, run, lastRun, workspace}` (locates the owning workspace by id and reads from it — **pure read, no server-state change**; `messages` is the full history, system and compaction-summary messages carry `is_show=false` for the frontend to filter) |
 | DELETE | `/sessions/:id` | Delete a session `{deleted: true}` (409 while in-flight in its owning workspace; runs in other workspaces are unaffected) |
 | POST | `/sessions/:id/messages` | Send a message (SSE streaming by default; `"stream": false` for JSON; the owning workspace is located by id) |
+| GET | `/sessions/:id/subagents` | Background sub-agent list snapshot (requirement 20261107-002 D9): `{tasks: [{taskId, status, task, elapsedMs, iterations, …}]}`; polled every 2s by the WebUI "background sub-agents running N" indicator, independent of SSE (survives page refreshes and missed events) |
 
 #### Command Resources (CLI commands → REST, 10 groups, 40 endpoints)
 

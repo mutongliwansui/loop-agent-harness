@@ -23,6 +23,7 @@ import {
 } from '../../types.js';
 import { applySubAgentEvent, createSubAgentTrace } from '../../agent/subagent-trace.js';
 import { subAgentRegistry } from '../../agent/subagent-registry.js';
+import { peekBackgroundNotices } from '../../agent/background-notice.js';
 import { buildSubAgentWakeNotice, SUBAGENT_WAKE_PREFIX } from '../subagent-notice.js';
 import { sealPendingToolCalls } from '../abort-utils.js';
 import { currentBootId, writeJournal, writeRunLog } from '../run-journal.js';
@@ -424,6 +425,10 @@ export async function runMessageTurn(
     runOptions.events = [statsRecorder];
   }
 
+  // 后台任务兜底唤醒开关（需求 20261108-002）：仅正常完成时允许收尾兜底。
+  // 失败/中止路径不兜底——唤醒 run 若在 drain 通知前就失败，通知仍在队列，
+  // 兜底再唤醒会形成「失败 → 唤醒 → 再失败」的循环；留给用户下次输入注入。
+  let allowBackgroundWakeFallback = true;
   entry.inFlight = (async () => {
     try {
       // 05：sessionId 首参 → AgentPool 按会话租用独立实例（同空间多会话并发）
@@ -583,11 +588,13 @@ export async function runMessageTurn(
           }
         }
         log(`[api] 会话 ${id} 已被用户停止: ${partial.iterations} 轮 / ${partial.steps.length} 步（部分输出已落盘）`);
+        allowBackgroundWakeFallback = false;
         return;
       }
       // run 抛错：流式先推已发生事件再合成 fatal 关流；非流式 500（失败轮不持久化，保留原历史）
       const msg = e instanceof Error ? e.message : String(e);
       log(`[api] 会话 ${id} 运行失败: ${msg}`);
+      allowBackgroundWakeFallback = false;
       // 失败轮不落盘本轮消息，但已提交的后台任务卡片仍要保留（否则任务在跑却无迹可循）
       await flushPendingSubAgentCards();
       ctx.runs.finish(id, 'failed', { event: 'fatal', data: { message: msg } });
@@ -619,6 +626,84 @@ export async function runMessageTurn(
 
   // 情况2 兜底：完成通知恰好在收尾瞬间到达、没赶上最后一轮 LLM 注入 → 收尾后唤醒主 Agent
   if (subAgentRegistry.peekNotices(id).length > 0) scheduleWakeMainAgent(ctx, id);
+  // 后台命令任务通知的同类兜底（需求 20261108-002）：收尾瞬间入队、没赶上最后一轮注入。
+  // 仅正常完成时兜底；失败/中止路径不兜底（见 allowBackgroundWakeFallback 注释）
+  if (allowBackgroundWakeFallback && peekBackgroundNotices(id).length > 0) {
+    scheduleBackgroundWake(ctx, id);
+  }
+}
+
+/**
+ * 后台命令任务（commandRun background）完成通知的空闲唤醒（需求 20261108-002）。
+ *
+ * 与子 Agent 唤醒（scheduleWakeMainAgent）镜像：
+ * - 情况1（已有 run 在跑）：不唤醒——通知由该 run 的下一轮 LLM 前 drain 注入；
+ * - 情况2（会话空闲）：以合成输入发起一轮 wake run 消费通知。
+ *
+ * 与子 Agent 的差异：详情由 display-only 通知卡片承担（run 首轮迭代 drain 注入 LLM +
+ * 落盘展示），唤醒输入只是简短触发器，不携带日志尾部，避免 LLM 看到两份重复内容。
+ */
+export function scheduleBackgroundWake(
+  ctx: HandlerContext,
+  id: string,
+  delayMs = 0,
+  attempt = 0,
+): void {
+  setTimeout(() => {
+    void (async () => {
+      if (ctx.runs.isRunning(id)) return; // 情况1：活跃 run 会自行消费通知
+      if (peekBackgroundNotices(id).length === 0) return; // 通知已被消费/清空
+      try {
+        // 唤醒轮沿用会话落盘的模型选择，避免后台任务把回答切回全局默认模型
+        const store = ctx.registry
+          ? (await locateSession(ctx.registry, id)).store
+          : ctx.deps.sessionStore;
+        let alias = '';
+        try {
+          alias = (await store.listSessions()).find((s) => s.id === id)?.modelAlias ?? '';
+        } catch {
+          // 别名读取失败不影响唤醒：按全局默认模型继续
+        }
+        await runMessageTurn(ctx, null, id, buildBackgroundWakeInput(id), true, alias, {
+          wake: true,
+        });
+      } catch (e) {
+        // 通知留在队列（未 drain 即未消费），交给后续 run 注入；有限重试互斥窗口
+        if (attempt < 2) {
+          scheduleBackgroundWake(ctx, id, 500, attempt + 1);
+          return;
+        }
+        ctx.log(
+          `[api] 后台任务唤醒失败（通知已留在队列）: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    })();
+  }, delayMs);
+}
+
+/** 唤醒输入前缀：run 首轮迭代 drain 到通知后，据此把「触发器」从落盘历史中剥离 */
+export const BACKGROUND_WAKE_PREFIX = '[后台任务完成通知]';
+
+/**
+ * 唤醒触发器输入（需求 20261108-002）：只做「敲门」，不携带日志尾部——
+ * 详情由 run 首轮迭代 drain 的 display-only 通知承担（注入 LLM + 落盘展示卡片），
+ * 避免同一份日志尾部在本次请求里出现两遍。
+ * 注意：不能用 <background_task_notification> 包裹——该格式会被
+ * isDisplayOnlyContent 过滤出 LLM 视图，模型将看不到任何输入。
+ */
+function buildBackgroundWakeInput(sessionId: string): string {
+  const texts = peekBackgroundNotices(sessionId);
+  // 从通知文本提取 taskId（通知格式含 "taskId: xxx" 行），最多列 5 个
+  const taskIds = texts
+    .map((t) => /taskId: (\S+)/.exec(t)?.[1] ?? '')
+    .filter(Boolean)
+    .slice(0, 5);
+  const head = taskIds.length > 0 ? `（taskId: ${taskIds.join('、')}）` : '';
+  return [
+    `${BACKGROUND_WAKE_PREFIX} 有 ${texts.length} 条后台命令任务完成通知待处理${head}。`,
+    '请先读取本轮注入的通知内容，基于任务结果继续你的工作；',
+    '若通知与当前对话无关，简要确认即可，不要展开无关动作。',
+  ].join('\n');
 }
 
 /**

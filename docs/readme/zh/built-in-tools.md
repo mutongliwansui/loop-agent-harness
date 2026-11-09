@@ -4,7 +4,7 @@
 
 | 工具 | 名称 | 说明 | 参数 |
 |---|---|---|---|
-| 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr；长任务可 `background:true` 后台运行（立即返回 `taskId`，不受 30s 超时限制）。前台输出头尾各保留 128KB（总上限可配），中间省略并标注字节数，不再因 maxBuffer 失败；结束标签统一为 `[exit=N]` / `[timeout=Nms]` / `[aborted]` / `[signal=…]` + `[duration=…]` | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认取 `tools.commandRun.timeoutMs`，仅前台生效）, `background`（可选，默认 `false`） |
+| 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr；长任务可 `background:true` 后台运行（立即返回 `taskId`，不受 30s 超时限制）；会话空闲期间任务完成时，API 服务以合成输入发起一轮唤醒 run 主动消费完成通知（`tools.backgroundNotify.wakeIdle`，默认开启）。前台输出头尾各保留 128KB（总上限可配），中间省略并标注字节数，不再因 maxBuffer 失败；结束标签统一为 `[exit=N]` / `[timeout=Nms]` / `[aborted]` / `[signal=…]` + `[duration=…]` | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认取 `tools.commandRun.timeoutMs`，仅前台生效）, `background`（可选，默认 `false`） |
 | ⏱️ **后台任务状态** | `commandStatus` | 查询后台命令任务状态（running/exited/killed/orphaned-*）、退出码、耗时与日志大小；不带 `taskId` 时返回最近 5 个任务摘要 | `taskId`（可选） |
 | 📜 **后台任务日志** | `commandLogs` | 增量读取后台任务日志：不传 `sinceOffset` 返回「上次读到处→尾部」并推进游标；单次上限 8KB；`tail:true` 只读最近 2KB 尾部 | `taskId`（必填）, `sinceOffset`（可选，字节偏移）, `tail`（可选） |
 | ⏹️ **后台任务停止** | `commandStop` | 终止后台任务：杀掉其进程树（Windows `taskkill /T /F`；POSIX 进程组）。幂等；会话停止不连带终止后台任务，必须显式调用 | `taskId`（必填） |
@@ -13,7 +13,7 @@
 | 🔁 **文件编辑** | `editFile` | 三种模式：①字面量替换（要求唯一出现，多处匹配报错以防误改）；②`regex=true` 正则替换（支持 `$1`/`$&` 捕获引用）；③指定 `startLine`/`endLine` 整段行替换。**行尾归一化**：匹配与校验对 `\r\n`/`\n` 等价（多行 oldText 可直接编辑 CRLF 文件），写回保持原文件行尾风格（未触及区域字节级不变，替换段适配主导行尾）；同文件写操作自动串行化；失配时报错附首个差异行与近似候选，文件 mtime 变化时提示「可能已被并发修改，先 fileRead 再编辑」 | `path`（必填）, `newText`（必填）, `oldText`（未指定行范围时必填）, `startLine`（可选）, `endLine`（可选）, `replaceAll`（可选，默认 `false`）, `regex`（可选，默认 `false`）, `flags`（可选，如 `i`/`m`/`s`） |
 | 🔍 **内容检索** | `grep` | 在文件或目录中检索内容，支持正则、忽略大小写、递归搜索 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选）, `recursive`（可选）, `maxResults`（可选，默认 50） |
 | 🎯 **Skill 激活** | `activate_skill` | 激活指定 Skill（技能包），返回 SKILL.md 完整指令**及技能所在目录（技能目录 / SKILL.md 绝对路径）**，便于定位技能内附带的脚本、参考文档等文件 | `name`（必填） |
-| 🧑‍🤝‍🧑 **子任务委托** | `delegate` | 把自包含子任务交给独立子 Agent 执行，返回其最终结论。子 Agent 拥有独立消息历史、共享 L2/L3 记忆、独立 L1 工作记忆；工具集**排除 `delegate`**防无限递归；不落盘独立会话；取消信号透传。执行器由主 Agent 在 run 内注入（`ToolContext.runSubAgent`），未注入时降级报错。过程可见：WebUI 在卡片内提供「子 Agent 过程」折叠区（默认收起），CLI 结束打印一行摘要、`verbose` 时逐行缩进展开。支持 `background:true` 并行后台执行（立即返回 `sub_<id>`，完成后自动落盘结果卡片；并发上限 `agent.subAgent.maxConcurrent`，默认 3） | `task`（必填，自包含任务描述）, `context`（可选，背景补充）, `background`（可选，`true`=后台并行，缺省同步阻塞） |
+| 🧑‍🤝‍🧑 **子任务委托** | `delegate` | 把自包含子任务交给独立子 Agent 执行，返回其最终结论。子 Agent 拥有独立消息历史、共享 L2/L3 记忆、独立 L1 工作记忆；工具集**排除 `delegate`**防无限递归；不落盘独立会话；取消信号透传。执行器由主 Agent 在 run 内注入（`ToolContext.runSubAgent`），未注入时降级报错。过程可见：WebUI 在卡片内提供「子 Agent 过程」折叠区（默认收起），CLI 结束打印一行摘要、`verbose` 时逐行缩进展开。支持 `background:true` 并行后台执行（立即返回 `sub_<id>`，完成后自动落盘结果卡片；并发上限 `agent.subAgent.maxConcurrent`，默认 3）。完成通知双通道（需求 20261107-011）：主 Agent 仍在运行时于下一轮 LLM 调用前注入通知，已结束时自动发起一轮唤醒 run；结果 >2000 字符时完整落盘 `~/.loop-agent/tmp/<sessionId>/subagent-*.txt`（复用 7 天 TTL 清理），通知只带 400 字符预览 + 路径 + `fileRead` 分段读取建议，落盘失败降级回截断（需求 20261108-001） | `task`（必填，自包含任务描述）, `context`（可选，背景补充）, `background`（可选，`true`=后台并行，缺省同步阻塞） |
 | 👁️ **图片描述** | `describe_image` | 对图片做整体描述（主体、场景、可见文字、颜色、数量等）；不确定该问什么时先用它获取全局信息 | `image`（必填，本地路径或 http(s) URL） |
 | ❓ **图片问答** | `ask_image` | 针对图片回答一个具体问题（界面文字、错误码、按钮状态、颜色、数量等），比 `describe_image` 更精准、输出更短 | `image`（必填）, `question`（必填） |
 | 🧾 **结构化提取** | `extract_json` | 按字段列表从图片提取结构化数据并返回 JSON（表单 / 表格 / 配置界面等场景）；解析失败自动降级返回原始文本 | `image`（必填）, `fields`（必填，字段名数组） |

@@ -64,7 +64,8 @@
     "backgroundNotify": {
       "enabled": true,
       "tailLines": 20,
-      "maxChars": 2000
+      "maxChars": 2000,
+      "wakeIdle": true
     }
   },
   "agent": {
@@ -153,7 +154,7 @@
 | `tools` | `mcpTranslate` | MCP 工具展示名中文化（需求 20261104-001）：`enabled` 总开关；`mode` 为 `auto`（描述已是中文则本地提炼，不调 LLM）或 `always`（一律走 LLM）；`timeoutMs` 单批超时；`maxToolsPerBatch` 单批工具数上限 | `{ enabled: true, mode: 'auto', timeoutMs: 20000, maxToolsPerBatch: 60 }` |
 | `tools` | `backgroundLog` | 后台任务日志清理（需求 20261104-003）：`enabled` 总开关（启动期与每次后台启动前各清理一次）；`retentionDays` 已结束任务 `.json`+`.log` 保留天数；`maxTotalMb` `~/.loop-agent/runs/` 日志总量上限，超出按 mtime 从旧删起；运行中的活日志不截断 | `{ enabled: true, retentionDays: 7, maxTotalMb: 100 }` |
 | `tools` | `commandRun` | 前台命令执行（需求 20261104-006）：`outputLimitKb` 返回内容总上限，头尾各占一半、中间省略并标注字节数（不再因 maxBuffer 失败）；`timeoutMs` 未显式传 `timeout` 时的默认超时，长任务请用 `background:true` | `{ outputLimitKb: 256, timeoutMs: 30000 }` |
-| `tools` | `backgroundNotify` | 后台任务完成通知（需求 20261104-004）：任务结束/被停止后，把完整提示与日志尾部注入原会话下一轮对话；`enabled` 总开关；`tailLines`/`maxChars` 日志尾部行数与字符上限 | `{ enabled: true, tailLines: 20, maxChars: 2000 }` |
+| `tools` | `backgroundNotify` | 后台任务完成通知（需求 20261104-004）：任务结束/被停止后，把完整提示与日志尾部注入原会话下一轮对话；`enabled` 总开关；`tailLines`/`maxChars` 日志尾部行数与字符上限；`wakeIdle` 空闲唤醒（需求 20261108-002，默认 `true`）：会话空闲期间后台命令任务完成时，API 服务以合成输入发起一轮唤醒 run 主动消费通知（镜像后台子 Agent 唤醒），唤醒输入不落盘为用户气泡；CLI 模式无运行循环，维持被动注入 | `{ enabled: true, tailLines: 20, maxChars: 2000, wakeIdle: true }` |
 | `agent` | `verbose` | 是否输出 Thought/Action/Observation 控制台日志 | `true` |
 | `agent` | `debug` | 是否开启文件调试日志（见 📝 调试日志） | `false` |
 | `agent` | `systemPrompt` | 自定义 system prompt 覆盖 | `null` |

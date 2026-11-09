@@ -43,6 +43,8 @@ import type { DreamScheduler } from './dream-scheduler.js';
 import { runBench, type BenchRunner } from '../llm/bench.js';
 import { defaultBenchRoot } from '../llm/bench-store.js';
 import { BenchRunHub } from './bench-hub.js';
+import { onBackgroundNoticeWake } from '../agent/background-notice.js';
+import { scheduleBackgroundWake } from './handlers/messages.js';
 
 /**
  * 命令资源化运行时依赖（Task-20261016-002 D8）：
@@ -124,6 +126,10 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
   const log = (msg: string): void => deps.log?.(msg);
   // D8：runtime 缺省字段回落全局单例（bootstrap 传真实单例；单测注入临时目录实例）
   const rt = deps.runtime ?? {};
+  // 空闲唤醒（需求 20261108-002）：后台命令任务在会话空闲期间完成时，
+  // 以合成输入发起一轮 wake run 消费通知（镜像子 Agent 情况2 唤醒）。
+  // start 时挂载、close 时注销；close 后到达的完成通知维持纯被动注入。
+  let detachBackgroundWake: (() => void) | null = null;
   const ctx: HandlerContext = {
     deps,
     sessions,
@@ -250,6 +256,12 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
 
       httpServer = server;
 
+      // ---- 空闲唤醒（需求 20261108-002）：API 服务存活期间注册唤醒回调 ----
+      detachBackgroundWake = onBackgroundNoticeWake((sessionId) => {
+        if (!sessionId) return;
+        scheduleBackgroundWake(ctx, sessionId);
+      });
+
       // ---- 终端（Task-20261027-001）：仅在 webui.terminal 显式开启时挂载 ----
       // 默认关闭：终端 = 当前用户权限下的任意命令执行（D7）。
       // 会话表懒建，避免默认关闭时白起一个 30s 回收定时器。
@@ -294,6 +306,11 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
       if (!httpServer) return;
       const server = httpServer;
       httpServer = null;
+      // 空闲唤醒回调：先注销再关流（close 后到达的完成通知不再触发唤醒）
+      if (detachBackgroundWake) {
+        detachBackgroundWake();
+        detachBackgroundWake = null;
+      }
       // 终端：先断开 WS 并杀全部 PTY（Windows 下额外清 conhost 进程树）
       if (detachTerminal) {
         detachTerminal();

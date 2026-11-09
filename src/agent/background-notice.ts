@@ -25,9 +25,11 @@ export interface BackgroundNotifyOptions {
   enabled: boolean;
   tailLines: number;
   maxChars: number;
+  /** 会话空闲时任务完成是否请求唤醒一轮 run（需求 20261108-002；仅 WebUI/服务模式消费） */
+  wakeIdle: boolean;
 }
 
-let options: BackgroundNotifyOptions = { enabled: true, tailLines: 20, maxChars: 2000 };
+let options: BackgroundNotifyOptions = { enabled: true, tailLines: 20, maxChars: 2000, wakeIdle: true };
 
 /** 注入配置（init 调用；单测/未注入场景使用默认值） */
 export function configureBackgroundNotify(opts: Partial<BackgroundNotifyOptions>): void {
@@ -35,6 +37,7 @@ export function configureBackgroundNotify(opts: Partial<BackgroundNotifyOptions>
     enabled: opts.enabled ?? options.enabled,
     tailLines: Math.max(1, opts.tailLines ?? options.tailLines),
     maxChars: Math.max(100, opts.maxChars ?? options.maxChars),
+    wakeIdle: opts.wakeIdle ?? options.wakeIdle,
   };
 }
 
@@ -144,6 +147,9 @@ function enqueueFromTask(task: BackgroundTask): void {
     queues.set(bucket, list);
     queued.add(task.taskId);
     debug.log(`后台任务完成通知入队: ${task.taskId} → 会话 ${bucket || '(无归属)'}`);
+    // 空闲唤醒（需求 20261108-002）：入队成功后请求 API 层唤醒该会话；
+    // 无归属（sessionId=''）不唤醒——没有可定位的目标会话，维持纯被动注入。
+    if (bucket) requestWake(bucket);
   } catch (e) {
     // D6：通知失败不得影响主流程
     debug.log(`后台任务通知生成失败 ${task.taskId}: ${e instanceof Error ? e.message : String(e)}`);
@@ -156,6 +162,32 @@ export function installBackgroundNoticeForwarder(): void {
   if (installed) return;
   installed = true;
   onBackgroundTaskFinished(enqueueFromTask);
+}
+
+/**
+ * 空闲唤醒监听器（需求 20261108-002）：任务在会话空闲期间完成时，
+ * 由 API 层注册的回调以合成输入发起一轮 run 消费通知（镜像子 Agent 情况2 唤醒）。
+ * 进程级单监听器（API server 创建时注册）；CLI 无运行循环，不注册即维持纯被动注入。
+ */
+type WakeListener = (sessionId: string) => void;
+let wakeListener: WakeListener | null = null;
+
+/** 注册空闲唤醒回调（返回注销函数；重复注册覆盖旧监听器） */
+export function onBackgroundNoticeWake(listener: WakeListener): () => void {
+  wakeListener = listener;
+  return () => {
+    if (wakeListener === listener) wakeListener = null;
+  };
+}
+
+/** enqueueFromTask 内部通知：入队成功且 wakeIdle 开启时请求唤醒 */
+function requestWake(sessionId: string): void {
+  if (!options.wakeIdle) return;
+  try {
+    wakeListener?.(sessionId);
+  } catch (e) {
+    debug.log(`后台通知唤醒请求失败: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** 取走某会话的通知（同时取无归属桶），并落盘 notifiedAt（D3） */
@@ -181,6 +213,19 @@ export function drainBackgroundNotices(sessionId: string): string[] {
         );
       }
     }
+  }
+  return texts;
+}
+
+/** 只看不取：run 收尾时判断是否需要兜底唤醒（需求 20261108-002） */
+export function peekBackgroundNotices(sessionId: string): string[] {
+  if (!options.enabled) return [];
+  const buckets = sessionId && sessionId !== '' ? [sessionId, ''] : [''];
+  const texts: string[] = [];
+  for (const bucket of buckets) {
+    const list = queues.get(bucket);
+    if (!list) continue;
+    for (const notice of list) texts.push(notice.text);
   }
   return texts;
 }
@@ -238,9 +283,10 @@ export function restoreBackgroundNotices(sessionId: string, dir: string = runsDi
   return restored.length;
 }
 
-/** 测试专用：清空队列与去重集合 */
+/** 测试专用：清空队列与去重集合（含唤醒监听器，避免跨用例泄漏） */
 export function resetBackgroundNoticesForTest(): void {
   queues.clear();
   queued.clear();
   restoredSessions.clear();
+  wakeListener = null;
 }

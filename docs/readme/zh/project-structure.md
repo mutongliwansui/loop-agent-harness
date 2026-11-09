@@ -16,6 +16,12 @@ loop-agent-command/
 │   │   └── stats.ts                  # 📊 LLM 统计聚合（buildLLMStatsSummary）
 │   ├── llm/
 │   │   └── client.ts                 # 🤖 LLM 客户端（chat + chatStream + 自动重试）
+│   ├── api/                          # 🌐 HTTP API 服务层（--serve 与 WebUI 共用后端）
+│   │   ├── router.ts                 # 路由注册（createRoutes，开发者中心反射数据源）
+│   │   ├── server.ts                 # HTTP 服务器（token 鉴权 / 静态托管 / SSE）
+│   │   ├── handlers/                 # 各资源处理器（sessions/messages/tools/models/mcp/memory/…）
+│   │   ├── subagent-notice.ts        # 后台子任务完成通知构造（超长结果完整落盘）
+│   │   └── run-journal.ts            # run 生命周期日志（running/done/failed/aborted）
 │   ├── config/                       # ⚙️ 分层配置系统
 │   │   ├── index.ts                  # 统一导出
 │   │   ├── schema.ts                 # 配置类型定义 + 默认值（含 skill / memory 段）
@@ -69,8 +75,8 @@ loop-agent-command/
 │           └── adapter.ts            # MCP 工具适配器（转 Tool 接口）
 ├── examples/
 │   └── run.ts                        # 📝 编程式调用示例
-├── tests/                            # 🧪 测试（串行执行避免 API 限速）
-│   ├── integration/                  # 集成测试（7 个用例）
+├── tests/                            # 🧪 测试（unit 并行 / integration 串行，分层见 vitest.config.ts）
+│   ├── integration/                  # 集成测试（8 个测试文件 / 17 个用例，真实 LLM/PTY，串行）
 │   │   ├── a-no-tool.test.ts         # 无需工具的场景
 │   │   ├── b-single-tool.test.ts     # 单工具调用
 │   │   ├── c-multi-tool.test.ts      # 多工具调用

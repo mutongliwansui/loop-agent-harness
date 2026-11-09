@@ -64,7 +64,8 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "backgroundNotify": {
       "enabled": true,
       "tailLines": 20,
-      "maxChars": 2000
+      "maxChars": 2000,
+      "wakeIdle": true
     }
   },
   "agent": {
@@ -153,7 +154,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `tools` | `mcpTranslate` | MCP tool display-name localization (requirement 20261104-001): `enabled` master switch; `mode` = `auto` (distill locally when the description is already Chinese, no LLM call) or `always` (always use the LLM); `timeoutMs` per-batch timeout; `maxToolsPerBatch` tools per batch | `{ enabled: true, mode: 'auto', timeoutMs: 20000, maxToolsPerBatch: 60 }` |
 | `tools` | `backgroundLog` | Background task log cleanup (requirement 20261104-003): `enabled` master switch (runs at startup and before each background launch); `retentionDays` retention for finished tasks' `.json`+`.log`; `maxTotalMb` total size cap for `~/.loop-agent/runs/`, oldest by mtime evicted first; live logs of running tasks are never truncated | `{ enabled: true, retentionDays: 7, maxTotalMb: 100 }` |
 | `tools` | `commandRun` | Foreground command execution (requirement 20261104-006): `outputLimitKb` total output cap returned to the model, split head/tail with the middle omitted and byte count annotated (no more maxBuffer failures); `timeoutMs` default timeout when `timeout` is not passed explicitly — use `background:true` for long tasks | `{ outputLimitKb: 256, timeoutMs: 30000 }` |
-| `tools` | `backgroundNotify` | Background task completion notice (requirement 20261104-004): after a task exits or is stopped, inject its summary and log tail into the originating session's next turn; `enabled` master switch; `tailLines`/`maxChars` bound the log tail | `{ enabled: true, tailLines: 20, maxChars: 2000 }` |
+| `tools` | `backgroundNotify` | Background task completion notice (requirement 20261104-004): after a task exits or is stopped, inject its summary and log tail into the originating session's next turn; `enabled` master switch; `tailLines`/`maxChars` bound the log tail; `wakeIdle` idle wake-up (requirement 20261108-002, default `true`): when a background command task finishes while the session is idle, the API service starts a wake-up run with a synthetic input to consume the notice proactively (mirroring the sub-agent wake-up); the wake-up input is not persisted as a user bubble; CLI mode has no run loop and keeps passive injection | `{ enabled: true, tailLines: 20, maxChars: 2000, wakeIdle: true }` |
 | `agent` | `verbose` | Whether to output Thought/Action/Observation console logs | `true` |
 | `agent` | `debug` | Whether to enable file debug logging (see 📝 Debug Logging) | `false` |
 | `agent` | `systemPrompt` | Custom system prompt override | `null` |

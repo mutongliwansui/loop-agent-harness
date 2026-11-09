@@ -16,6 +16,12 @@ loop-agent-command/
 │   │   └── stats.ts                  # 📊 LLM stats aggregation (buildLLMStatsSummary)
 │   ├── llm/
 │   │   └── client.ts                 # 🤖 LLM client (chat + chatStream + auto-retry)
+│   ├── api/                          # 🌐 HTTP API service layer (shared backend for --serve and the WebUI)
+│   │   ├── router.ts                 # Route registration (createRoutes, reflection source for the developer center)
+│   │   ├── server.ts                 # HTTP server (token auth / static hosting / SSE)
+│   │   ├── handlers/                 # Resource handlers (sessions/messages/tools/models/mcp/memory/…)
+│   │   ├── subagent-notice.ts        # Background sub-agent completion notice builder (full persistence of oversized results)
+│   │   └── run-journal.ts            # Run lifecycle journal (running/done/failed/aborted)
 │   ├── config/                       # ⚙️ Layered configuration system
 │   │   ├── index.ts                  # Unified exports
 │   │   ├── schema.ts                 # Config type definitions + defaults (incl. skill / memory sections)
@@ -69,8 +75,8 @@ loop-agent-command/
 │           └── adapter.ts            # MCP tool adapter (converts to the Tool interface)
 ├── examples/
 │   └── run.ts                        # 📝 Programmatic usage example
-├── tests/                            # 🧪 Tests (run serially to avoid API rate limits)
-│   ├── integration/                  # Integration tests (7 cases)
+├── tests/                            # 🧪 Tests (unit parallel / integration serial, layering in vitest.config.ts)
+│   ├── integration/                  # Integration tests (8 test files / 17 cases, real LLM/PTY, serial)
 │   │   ├── a-no-tool.test.ts         # Scenario requiring no tools
 │   │   ├── b-single-tool.test.ts     # Single tool call
 │   │   ├── c-multi-tool.test.ts      # Multiple tool calls

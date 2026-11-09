@@ -378,8 +378,10 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
     // 导致用户看到「压缩后前面的消息没了」（数据其实没丢）。
     // 注意不计 viewIdx：归档消息不在后端 entry.history 里，计入会让重试锚点整体偏移。
     const archived = m.is_compact === true;
-    // 后台子任务结果卡片是展示专用消息（不进 LLM 历史），不占用恢复视图下标
-    if (m.role === 'user' && m.kind === 'subagent_result') {
+    // 后台子任务结果卡片是展示专用消息（不进 LLM 历史），不占用恢复视图下标。
+    // 需求 20261108-003：kind 可能被压缩全量重写清掉（旧版 toStoredMessage），
+    // 内容兜底与后端 isSubAgentResultContent 同形，识别失败时原文会裸渲到界面上
+    if (m.role === 'user' && (m.kind === 'subagent_result' || isSubAgentResultContent(m.content))) {
       flush();
       const card = parseSubAgentResultCard(m.show_content || m.content || '', m.sub);
       if (card) out.push({ id: nextMsgId(), role: 'user', segments: [], subResult: card });
@@ -390,8 +392,11 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
     if (m.is_show === false) continue;
     if (m.role === 'user') {
       flush();
-      // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原
-      const text = m.show_content || m.content || '';
+      // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原；
+      // 需求 20261108-003：show_content 缺失时（存量数据/特殊落盘路径）前端兜底剥离，
+      // 不再单点依赖后端写入的 show_content——否则「## 相关历史记忆…<<<LOOP_AGENT_MEMORY_END…>>>」
+      // 会裸渲到界面上
+      const text = stripMemorySection(m.show_content || m.content || '');
       out.push({
         id: nextMsgId(),
         role: 'user',
@@ -430,6 +435,37 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
 }
 
 /** 解析后台子任务结果卡片（content 由后端 serializeSubAgentResult 生成） */
+
+/* ===== 展示层兜底（需求 20261108-003）=====
+ * 后端判展示专用消息用内容特征（src/types.ts isSubAgentResultContent，容忍 L2 记忆前缀包裹），
+ * 前端此前只认 kind 标记——标记被压缩全量重写清掉后（旧版 toStoredMessage 无条件 delete），
+ * 卡片报文被当普通文本渲染。两侧各自独立实现（不跨端 import），判据保持同形。
+ */
+const SUBAGENT_RESULT_OPEN = '<subagent_result>';
+const SUBAGENT_RESULT_CLOSE = '</subagent_result>';
+
+/** 判断消息文本是否为后台子任务结果卡片（容忍 L2 记忆前缀包裹，与后端同形） */
+function isSubAgentResultContent(content: string | null | undefined): boolean {
+  if (typeof content !== 'string') return false;
+  const t = content.trim();
+  return t.endsWith(SUBAGENT_RESULT_CLOSE) && t.includes(SUBAGENT_RESULT_OPEN);
+}
+
+// L2 记忆注入前缀（与后端 memory-section.ts 同形；show_content 缺失时的展示剥离兜底）
+const MEMORY_SECTION_HEAD = '## 相关历史记忆\n以下是你在之前会话中积累的相关信息，请参考：\n';
+const MEMORY_SECTION_TAIL = '\n\n<<<LOOP_AGENT_MEMORY_END_7f3a9c2e>>>\n\n';
+
+/** 剥离 L2 记忆注入前缀（循环剥离嵌套前缀），未命中原样返回 */
+function stripMemorySection(content: string): string {
+  let cur = content;
+  while (cur.startsWith(MEMORY_SECTION_HEAD)) {
+    const tailIdx = cur.indexOf(MEMORY_SECTION_TAIL, MEMORY_SECTION_HEAD.length);
+    if (tailIdx < 0) break;
+    cur = cur.slice(tailIdx + MEMORY_SECTION_TAIL.length);
+  }
+  return cur;
+}
+
 function parseSubAgentResultCard(content: string, sub?: SubAgentTraceVM): SubAgentResultVM | undefined {
   const m = content.match(/<subagent_result>([\s\S]*?)<\/subagent_result>/);
   if (!m) return undefined;
@@ -1109,7 +1145,8 @@ async function syncRunningCardTraces(id: string): Promise<void> {
   }
   const fresh = new Map<string, SubAgentTraceVM>();
   for (const m of detail.messages) {
-    if (m.role !== 'user' || m.kind !== 'subagent_result') continue;
+    // 需求 20261108-003：kind 兜底内容特征（与时间线重建入口同判据）
+    if (m.role !== 'user' || (m.kind !== 'subagent_result' && !isSubAgentResultContent(m.content))) continue;
     const card = parseSubAgentResultCard(m.show_content || m.content || '', m.sub);
     if (card?.status === 'running' && card.trace) fresh.set(card.taskId, card.trace);
   }

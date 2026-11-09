@@ -63,6 +63,7 @@ HTTP API 服务已启动
 | GET | `/sessions/:id` | 会话详情 `{meta, messages, run, lastRun, workspace}`（按 id 定位归属空间读取，**纯读不改变服务端状态**；`messages` 为全量历史，system 与压缩总结消息带 `is_show=false` 由前端过滤） |
 | DELETE | `/sessions/:id` | 删除会话 `{deleted: true}`（归属空间内 in-flight 时 409；其他空间的运行不影响） |
 | POST | `/sessions/:id/messages` | 发消息（默认 SSE 流式，`"stream": false` 切非流式 JSON；按 id 定位归属空间执行） |
+| GET | `/sessions/:id/subagents` | 后台子任务列表快照（需求 20261107-002 D9）：`{tasks: [{taskId, status, task, elapsedMs, iterations, …}]}`，供 WebUI「后台子任务运行中 N」指示器 2s 轮询，不依赖 SSE（刷新页面/错过事件不失联） |
 
 #### 命令资源化（CLI 命令 → REST，10 组 40 端点）
 
