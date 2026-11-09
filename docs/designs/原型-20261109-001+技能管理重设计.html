@@ -1,0 +1,2226 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · 技能管理重设计 · 20261109-001</title>
+<!--
+  原型：WebUI 技能管理页（SkillsView）视觉与交互重设计
+  目标文件：webui/src/views/SkillsView.vue（模板 + 样式段）、webui/src/style.css（新增 .sk-* 令牌别名）
+  接口不变：GET /skills · POST /skills/upload · DELETE /skills/:name · POST /skills/reload
+  结论：方案 B（卡片流 + 右侧详情抽屉 + 安装模态），D1~D9 为推荐项，待确认后落地。
+  自包含：无 CDN、无外部字体、无外部图片，离线可开；图标全部为内联 SVG。
+-->
+<style>
+/* ============================================================
+   0. 主题令牌（与 webui/src/style.css 同名同值）
+   ============================================================ */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+  --code-bg: #f1f3f5;
+
+  --line-soft: #eef0f3;
+  --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;
+  --bar-bg: #fbfcfd;
+  --view-bg: #ffffff;
+  --radius-card: 12px;
+  --radius-ctl: 7px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --brand-on: #0b221a;
+  --danger: #f87171;
+  --danger-weak: #3b1a1a;
+  --warn: #fbbf24;
+  --warn-weak: #3a2e10;
+  --ok: #34d399;
+  --ok-weak: #143528;
+  --code-bg: #22272f;
+
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 0 90px;
+  background: var(--bg); color: var(--text);
+  font: 14px/1.65 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+body.lock { overflow: hidden; }
+button { font-family: inherit; }
+
+/* ============================================================
+   1. 原型文档骨架
+   ============================================================ */
+.page { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 60;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 24px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+.topbar .tag {
+  font: 500 11px/1 var(--mono); color: var(--muted);
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px;
+  white-space: nowrap;
+}
+.topbar nav { display: flex; gap: 2px; margin-left: 6px; }
+.topbar nav a {
+  font-size: 12px; color: var(--muted); text-decoration: none;
+  padding: 5px 9px; border-radius: 6px; white-space: nowrap;
+}
+.topbar nav a:hover { background: var(--hover); color: var(--text); }
+.topbar .spring { flex: 1; }
+@media (max-width: 900px) { .topbar nav { display: none; } }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px;
+  font: 500 12px/1 var(--sans); color: var(--text-2); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--line-strong); color: var(--text); }
+.btn-ghost svg { width: 14px; height: 14px; }
+
+section { padding-top: 42px; scroll-margin-top: 64px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.sec-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+.sec-head .badge {
+  font: 500 11px/1 var(--mono); color: var(--brand);
+  background: var(--brand-weak); padding: 4px 7px; border-radius: 999px;
+}
+.sec-head .badge.mute { color: var(--muted); background: var(--code-bg); }
+.sec-desc { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; max-width: 82ch; }
+.sec-desc code, .note code, .kv td code, .no code {
+  font: 500 11.5px/1 var(--mono); color: var(--text-2);
+  background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
+}
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+@media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.card-label {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted);
+  margin-bottom: 8px; letter-spacing: .02em;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); flex: none; }
+.dot.bad { background: var(--danger); }
+
+.ctx {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+  padding: 16px; box-shadow: var(--shadow-card);
+}
+.note {
+  margin: 10px 0 0; font-size: 12px; color: var(--muted);
+  padding: 9px 11px; background: var(--bar-bg);
+  border: 1px solid var(--line-soft); border-left: 2px solid var(--line-strong);
+  border-radius: 0 7px 7px 0;
+}
+.note b { color: var(--text-2); font-weight: 600; }
+
+/* 元信息条 */
+.meta-strip {
+  display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 0;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-card); overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+.meta-strip .ms { padding: 13px 16px; border-left: 1px solid var(--line-soft); min-width: 0; }
+.meta-strip .ms:first-child { border-left: none; }
+.meta-strip .ms b {
+  display: block; font-size: 11px; font-weight: 600; color: var(--muted);
+  margin-bottom: 3px; letter-spacing: .02em;
+}
+.meta-strip .ms span, .meta-strip .ms code {
+  font-size: 12px; color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.meta-strip .ms code { font-family: var(--mono); font-size: 11.5px; }
+@media (max-width: 860px) {
+  .meta-strip { grid-template-columns: 1fr; }
+  .meta-strip .ms { border-left: none; border-top: 1px solid var(--line-soft); }
+  .meta-strip .ms:first-child { border-top: none; }
+}
+
+/* 症状列表 */
+.sx { margin: 0; padding: 0; list-style: none; counter-reset: sx; columns: 2; column-gap: 26px; }
+@media (max-width: 860px) { .sx { columns: 1; } }
+.sx li {
+  position: relative; padding: 7px 0 7px 30px;
+  font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+  border-top: 1px solid var(--line-soft);
+  break-inside: avoid;
+}
+.sx li:first-child { border-top: none; padding-top: 0; }
+.sx li::before {
+  counter-increment: sx; content: "S" counter(sx);
+  position: absolute; left: 0; top: 8px;
+  font: 600 10.5px/16px var(--mono); color: var(--danger);
+  background: var(--danger-weak); width: 22px; height: 16px;
+  text-align: center; border-radius: 4px;
+}
+.sx li:first-child::before { top: 1px; }
+.sx li b { color: var(--text); font-weight: 600; }
+.sx li em { font-style: normal; font: 500 11px/1 var(--mono); background: var(--code-bg); padding: 2px 4px; border-radius: 4px; color: var(--text-2); }
+
+/* ============================================================
+   2. 线上现状 1:1 复刻（仅对照）
+   ============================================================ */
+.old-shell {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 18px 20px 16px;
+}
+.old-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.old-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
+.old-head .ep { font: 500 10.5px/1 var(--mono); color: var(--muted); }
+.old-head .sp { flex: 1; }
+.old-btn {
+  height: 27px; padding: 0 10px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--text-2);
+  font-size: 12px; cursor: pointer;
+}
+.old-btn.danger { color: var(--danger); }
+table.old-tbl { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12.5px; }
+table.old-tbl th {
+  text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px;
+  padding: 8px 9px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+table.old-tbl td { padding: 8px 9px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.old-tbl tr:last-child td { border-bottom: none; }
+table.old-tbl tbody tr:hover td { background: var(--code-bg); }
+.old-name { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.old-scope { color: var(--brand); font-size: 10.5px; font-weight: 600; }
+.old-desc { color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+.old-path { font: 400 10.5px/1.55 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.old-ops { white-space: nowrap; width: 108px; }
+.old-ops .old-btn { height: 25px; padding: 0 8px; font-size: 11.5px; }
+.old-ops .old-btn.view { color: var(--brand); }
+.old-notes { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.old-notes span { font-size: 11px; color: var(--muted); display: inline-flex; gap: 5px; align-items: center; }
+.old-notes i { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+
+/* ============================================================
+   3. 方案对比 / 决策
+   ============================================================ */
+.opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 860px) { .opts { grid-template-columns: 1fr; } }
+.opt {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+  padding: 14px; display: flex; flex-direction: column; gap: 9px;
+}
+.opt.pick { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand) inset; }
+.opt-h { display: flex; align-items: center; gap: 8px; }
+.opt-h strong { font-size: 13px; font-weight: 650; }
+.opt-tag {
+  font: 500 10.5px/1 var(--mono); padding: 3px 6px; border-radius: 5px;
+  color: var(--muted); background: var(--code-bg);
+}
+.opt.pick .opt-tag { color: var(--brand); background: var(--brand-weak); }
+.opt p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.65; }
+.opt .wf {
+  height: 86px; border: 1px solid var(--line-soft); border-radius: 8px;
+  background: var(--bar-bg); padding: 8px; display: flex; flex-direction: column; gap: 5px;
+}
+.wf-a { flex-direction: column; gap: 4px; }
+.wf-a i { display: block; height: 8px; background: var(--code-bg); border-radius: 3px; }
+.wf-a i:nth-child(1) { height: 10px; background: var(--line); }
+.wf-b { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.wf-b i {
+  display: block; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  position: relative;
+}
+.wf-b i::before { content: ""; position: absolute; left: 6px; top: 7px; width: 10px; height: 10px; border-radius: 3px; background: var(--brand-weak); border: 1px solid var(--brand); opacity: .5; }
+.wf-b i::after { content: ""; position: absolute; left: 20px; right: 6px; top: 9px; height: 6px; border-radius: 3px; background: var(--code-bg); }
+.wf-c { flex-direction: row; gap: 5px; }
+.wf-c .l { width: 42%; background: var(--code-bg); border-radius: 5px; }
+.wf-c .r { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; }
+
+.flow { margin: 0; padding: 0; list-style: none; }
+.flow li {
+  position: relative; padding: 0 0 13px 28px;
+  font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+}
+.flow li:last-child { padding-bottom: 0; }
+.flow li::before {
+  counter-increment: fl; content: counter(fl);
+  position: absolute; left: 0; top: 1px;
+  width: 18px; height: 18px; border-radius: 6px;
+  font: 600 10.5px/18px var(--mono); text-align: center;
+  color: var(--brand); background: var(--brand-weak);
+}
+.flow { counter-reset: fl; }
+.flow li::after {
+  content: ""; position: absolute; left: 8.5px; top: 23px; bottom: 3px;
+  width: 1px; background: var(--line-soft);
+}
+.flow li:last-child::after { display: none; }
+.flow li b { color: var(--text); font-weight: 600; }
+.flow li span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+
+.sw-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--text-2); }
+.sw-row:first-child { border-top: none; padding-top: 0; }
+.sw {
+  width: 16px; height: 16px; border-radius: 5px; flex: none;
+  box-shadow: inset 0 0 0 1px rgba(16, 24, 40, .08);
+}
+.sw-row .sw-label { margin-left: auto; font: 500 10.5px/1 var(--mono); color: var(--muted); }
+
+/* 表格 */
+.kv { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.kv th {
+  text-align: left; font-size: 11px; font-weight: 600; color: var(--muted);
+  padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.kv td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; color: var(--text-2); line-height: 1.6; }
+.kv tr:last-child td { border-bottom: none; }
+.kv td b { color: var(--text); font-weight: 600; }
+.kv .no { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.pill {
+  display: inline-block; font: 600 10.5px/16px var(--mono);
+  padding: 0 7px; border-radius: 5px; color: var(--brand); background: var(--brand-weak);
+}
+.pill.mute { color: var(--muted); background: var(--code-bg); }
+
+/* ============================================================
+   4. 新设计：技能管理页（.sk-*）
+   ============================================================ */
+.demo-cap {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 9px; font-size: 11.5px; color: var(--muted);
+}
+.demo-cap .dot { width: 6px; height: 6px; background: var(--brand); }
+.demo-cap .sp { flex: 1; }
+.demo-cap .hint { font-family: var(--mono); font-size: 10.5px; }
+
+.demo {
+  background: var(--bar-bg); border: 1px solid var(--line);
+  border-radius: 16px; padding: 26px;
+  box-shadow: var(--shadow-card);
+}
+@media (max-width: 720px) { .demo { padding: 18px 16px; border-radius: 14px; } }
+
+.sk-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+.sk-head .lead { min-width: 0; }
+.sk-eyebrow {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted);
+}
+.sk-eyebrow svg { width: 12px; height: 12px; color: var(--brand); }
+.sk-head h1 {
+  margin: 3px 0 0; font-size: 24px; font-weight: 700;
+  line-height: 1.2; letter-spacing: -.01em;
+}
+.sk-head p { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); max-width: 62ch; }
+.sk-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 34px; padding: 0 13px;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--text-2);
+  font: 500 12.5px/1 var(--sans); cursor: pointer; white-space: nowrap;
+  transition: border-color .13s, background .13s, color .13s, filter .13s;
+}
+.btn:hover { border-color: var(--line-strong); color: var(--text); background: var(--bar-bg); }
+.btn svg { width: 15px; height: 15px; flex: none; }
+.btn.primary {
+  background: var(--brand); border-color: var(--brand); color: var(--brand-on);
+  font-weight: 600; box-shadow: 0 1px 2px rgba(14, 159, 110, .22);
+}
+.btn.primary:hover { filter: brightness(1.05); color: var(--brand-on); background: var(--brand); }
+.btn.icon { width: 34px; padding: 0; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 8px; }
+.btn.danger-ghost { color: var(--danger); border-color: transparent; background: transparent; }
+.btn.danger-ghost:hover { background: var(--danger-weak); border-color: var(--danger); color: var(--danger); }
+.btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.spin svg { animation: rot .7s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+/* 统计条 */
+.sk-stats {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  margin-top: 20px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+}
+.sk-stat { padding: 11px 16px 12px; border-left: 1px solid var(--line-soft); min-width: 0; }
+.sk-stat:first-child { border-left: none; }
+.sk-stat .k {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--muted); letter-spacing: .01em;
+}
+.sk-stat .k i { width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.sk-stat .v {
+  font-size: 20px; font-weight: 650; line-height: 1.3;
+  letter-spacing: -.01em; margin-top: 1px; font-variant-numeric: tabular-nums;
+}
+.sk-stat .v small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; letter-spacing: 0; }
+.sk-stat .v.small { font-size: 15px; font-weight: 600; color: var(--text-2); line-height: 1.75; }
+
+/* 工具条 */
+.sk-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 13px; }
+.sk-search {
+  flex: 1; min-width: 210px; max-width: 350px;
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  transition: border-color .13s, box-shadow .13s;
+}
+.sk-search:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.sk-search svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.sk-search input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font: 400 12.5px/1 var(--sans); color: var(--text);
+}
+.sk-search input::placeholder { color: var(--muted); }
+.sk-search kbd {
+  font: 500 10px/1 var(--mono); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; flex: none;
+}
+
+.sk-seg { display: flex; gap: 2px; padding: 2px; background: var(--code-bg); border-radius: 9px; }
+.sk-seg button {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 10px; border: none; border-radius: 7px;
+  background: transparent; color: var(--muted);
+  font: 500 12px/1 var(--sans); cursor: pointer;
+}
+.sk-seg button:hover { color: var(--text-2); }
+.sk-seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .09); }
+.sk-seg .n {
+  font: 600 10px/14px var(--mono); color: var(--muted);
+  background: var(--panel); border-radius: 999px; padding: 0 5px; min-width: 16px; text-align: center;
+}
+.sk-seg button.on .n { color: var(--brand); background: var(--brand-weak); }
+
+.sk-sort {
+  height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center;
+  color: var(--text-2); font: 500 12px/1 var(--sans); cursor: pointer; appearance: none;
+  margin-left: auto;
+}
+.sk-count { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* 卡片网格 */
+.sk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.sk-card {
+  position: relative; display: flex; flex-direction: column; gap: 9px;
+  padding: 14px 16px 11px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .03);
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.sk-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.sk-card-top { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.sk-tile {
+  width: 42px; height: 42px; border-radius: 12px; flex: none;
+  display: grid; place-items: center;
+  font: 700 12px/1 var(--sans); letter-spacing: .04em; color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 2px 7px -3px rgba(16, 24, 40, .35);
+}
+.sk-tile.ws { background: linear-gradient(135deg, #10b981, #0d9488); }
+.sk-tile.gl { background: linear-gradient(135deg, #64748b, #475569); }
+.sk-id { flex: 1; min-width: 0; }
+.sk-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.sk-name {
+  margin: 0; font-size: 14px; font-weight: 650; line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.sk-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 19px; padding: 0 7px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.sk-badge i { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+.sk-badge.ws { color: var(--brand); background: var(--brand-weak); }
+.sk-badge.ws i { background: var(--brand); }
+.sk-badge.gl { color: var(--muted); background: var(--code-bg); }
+.sk-badge.gl i { background: var(--muted); }
+.sk-path {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  margin-top: 3px; font: 400 11px/1.45 var(--mono); color: var(--muted);
+}
+.sk-path svg { width: 11px; height: 11px; flex: none; opacity: .75; }
+.sk-path span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-more {
+  width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0;
+  display: grid; place-items: center; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  opacity: .6; transition: opacity .12s, background .12s;
+}
+.sk-more svg { width: 15px; height: 15px; }
+.sk-card:hover .sk-more { opacity: 1; }
+.sk-more:hover { background: var(--active); color: var(--text); }
+.sk-desc {
+  flex: 1; margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.64;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  min-height: 61px;
+}
+.sk-desc mark, .sk-name mark, .sk-path mark {
+  background: var(--warn-weak); color: var(--warn); border-radius: 3px; padding: 0 1px;
+}
+.sk-foot { display: flex; align-items: center; gap: 8px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
+.sk-meta { font-size: 11px; color: var(--muted); display: flex; align-items: center; min-width: 0; }
+.sk-meta .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--line-strong); margin: 0 7px; flex: none; }
+.sk-spring { flex: 1; }
+.sk-view {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 26px; padding: 0 9px; flex: none;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: transparent; color: var(--text-2);
+  font: 500 11.5px/1 var(--sans); cursor: pointer;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.sk-view:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
+.sk-view svg { width: 12px; height: 12px; }
+
+.sk-nothing {
+  grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center;
+  padding: 34px 20px; text-align: center;
+  border: 1px dashed var(--line-strong); border-radius: 14px;
+  background: var(--panel);
+}
+.sk-nothing .nt-ico {
+  width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--code-bg); color: var(--muted); margin-bottom: 11px;
+}
+.sk-nothing .nt-ico svg { width: 22px; height: 22px; }
+.sk-nothing b { font-size: 13.5px; font-weight: 650; }
+.sk-nothing p { margin: 5px 0 13px; font-size: 12px; color: var(--muted); max-width: 42ch; }
+
+.sk-footline {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--line-soft);
+  font-size: 11px; color: var(--muted);
+}
+.sk-footline .sp { flex: 1; }
+.sk-footline code {
+  font: 500 10.5px/1 var(--mono); color: var(--text-2);
+  background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
+}
+
+/* ============================================================
+   5. 浮层：卡片菜单 / 详情抽屉 / 安装模态 / 确认框 / Toast
+   ============================================================ */
+.sk-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(16, 24, 40, .4); backdrop-filter: blur(2px);
+  opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+.sk-backdrop.show { opacity: 1; pointer-events: auto; }
+
+.card-menu {
+  position: fixed; z-index: 96; width: 178px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow-pop); display: none;
+}
+.card-menu.show { display: block; }
+.card-menu button {
+  display: flex; width: 100%; align-items: center; gap: 8px;
+  padding: 7px 9px; border: none; border-radius: 6px; background: transparent;
+  font: 400 12px/1.3 var(--sans); color: var(--text-2); text-align: left; cursor: pointer;
+}
+.card-menu button svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.card-menu button:hover { background: var(--hover); color: var(--text); }
+.card-menu .hr { height: 1px; background: var(--line-soft); margin: 4px 2px; }
+.card-menu button.danger { color: var(--danger); }
+.card-menu button.danger svg { color: var(--danger); }
+.card-menu button.danger:hover { background: var(--danger-weak); }
+
+.drv {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 110;
+  width: min(480px, 100%); display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: -24px 0 64px -24px rgba(16, 24, 40, .45);
+  transform: translateX(102%);
+  transition: transform .26s cubic-bezier(.2, .8, .2, 1);
+}
+.drv.show { transform: none; }
+.drv-head {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 18px 20px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.drv-head .sk-tile { width: 46px; height: 46px; border-radius: 13px; font-size: 13px; }
+.drv-title { flex: 1; min-width: 0; }
+.drv-title h2 {
+  margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 16px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere;
+}
+.drv-path {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  font: 400 10.5px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere;
+}
+.drv-path svg { width: 11px; height: 11px; flex: none; }
+.drv-close {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  color: var(--muted); cursor: pointer; margin: -3px -4px 0 0;
+}
+.drv-close:hover { background: var(--code-bg); color: var(--text); }
+.drv-close svg { width: 14px; height: 14px; }
+.drv-body { flex: 1; overflow: auto; padding: 16px 20px 28px; }
+.drv-lab {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; color: var(--muted); margin: 17px 0 8px;
+}
+.drv-lab svg { width: 12px; height: 12px; }
+.drv-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.drv-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--muted); background: var(--code-bg);
+  border-radius: 6px; padding: 3px 7px;
+}
+.drv-chip svg { width: 11px; height: 11px; }
+.fm { background: var(--bar-bg); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.fm-cap {
+  padding: 7px 12px; font: 500 10.5px/1.4 var(--mono); color: var(--muted);
+  background: var(--code-bg); border-bottom: 1px solid var(--line-soft);
+}
+.fm-row {
+  display: grid; grid-template-columns: 92px 1fr; gap: 10px;
+  padding: 7px 12px; border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+.fm-cap + .fm-row { border-top: none; }
+.fm-k { font: 500 10.5px/1.7 var(--mono); color: var(--muted); }
+.fm-v { color: var(--text-2); overflow-wrap: anywhere; line-height: 1.65; }
+.md h2 {
+  margin: 20px 0 7px; padding-bottom: 6px;
+  font-size: 13px; font-weight: 650; border-bottom: 1px solid var(--line-soft);
+}
+.md h2:first-child { margin-top: 0; }
+.md p { margin: 7px 0; font-size: 12.5px; line-height: 1.72; color: var(--text-2); }
+.md ul, .md ol { margin: 7px 0; padding-left: 20px; font-size: 12.5px; line-height: 1.78; color: var(--text-2); }
+.md li { margin: 2px 0; }
+.md li::marker { color: var(--muted); }
+.md code {
+  font: 500 11px/1.5 var(--mono); color: var(--text-2);
+  background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
+}
+.md pre {
+  margin: 10px 0 4px; padding: 11px 13px; overflow: auto;
+  background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 8px;
+  font: 400 11.5px/1.6 var(--mono); color: var(--text-2); white-space: pre-wrap; word-break: break-all;
+}
+.md pre code { background: none; padding: 0; }
+.drv-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--line);
+  background: var(--bar-bg);
+}
+.drv-foot .sp { flex: 1; }
+
+.mdl {
+  position: fixed; z-index: 120; left: 50%; top: 7vh;
+  width: min(560px, calc(100vw - 32px)); max-height: 86vh; overflow: auto;
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 30px 90px -24px rgba(16, 24, 40, .5);
+  opacity: 0; pointer-events: none;
+  transform: translate(-50%, -8px) scale(.985);
+  transition: opacity .18s, transform .18s;
+}
+.mdl.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0) scale(1); }
+.mdl-head { padding: 18px 20px 0; display: flex; align-items: flex-start; gap: 12px; }
+.mdl-head .mh { flex: 1; min-width: 0; }
+.mdl-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.005em; }
+.mdl-head p { margin: 5px 0 0; font-size: 12px; color: var(--muted); }
+.mdl-body { padding: 16px 20px 4px; }
+.mdl-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 20px; margin-top: 14px;
+  border-top: 1px solid var(--line-soft); background: var(--bar-bg);
+  border-radius: 0 0 16px 16px;
+}
+.mdl-foot .sp { flex: 1; }
+
+/* 拖拽区 */
+.dz {
+  border: 1.5px dashed var(--line-strong); border-radius: 12px;
+  background: var(--bar-bg); padding: 22px 16px; text-align: center;
+  cursor: pointer; transition: border-color .14s, background .14s, transform .14s;
+}
+.dz:hover, .dz.over { border-color: var(--brand); background: var(--brand-weak); }
+.dz.over { transform: scale(1.004); }
+.dz-idle .dz-ico {
+  width: 42px; height: 42px; margin: 0 auto; display: grid; place-items: center;
+  border-radius: 12px; background: var(--panel); border: 1px solid var(--line);
+  color: var(--brand);
+}
+.dz-idle .dz-ico svg { width: 20px; height: 20px; }
+.dz-idle b { display: block; margin-top: 9px; font-size: 13px; font-weight: 600; }
+.dz-idle p { margin: 4px 0 0; font-size: 11.5px; color: var(--muted); }
+.link {
+  border: none; background: none; padding: 0; color: var(--brand);
+  font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.dz-picked { display: flex; align-items: center; gap: 11px; text-align: left; }
+.dz-picked[hidden] { display: none; }
+.mf-ico {
+  width: 38px; height: 38px; flex: none; display: grid; place-items: center;
+  border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+  font: 700 10px/1 var(--mono); color: var(--muted);
+}
+.mf-main { flex: 1; min-width: 0; }
+.mf-main b { display: block; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.mf-main small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.samples { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.samples button {
+  height: 23px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 6px;
+  background: transparent; color: var(--text-2); font: 400 11px/1 var(--sans); cursor: pointer;
+}
+.samples button:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
+
+.sec-lab {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; color: var(--muted); margin: 16px 0 8px;
+}
+.sec-lab .req { color: var(--brand); }
+.scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 520px) { .scope-grid { grid-template-columns: 1fr; } }
+.scope {
+  position: relative; display: block; padding: 11px 12px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); cursor: pointer; transition: border-color .12s, background .12s;
+}
+.scope:hover { border-color: var(--line-strong); }
+.scope.on { border-color: var(--brand); background: var(--brand-weak); box-shadow: 0 0 0 1px var(--brand) inset; }
+.scope input { position: absolute; opacity: 0; pointer-events: none; }
+.sc-t { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.sc-t i {
+  font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--brand);
+  background: var(--panel); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 6px;
+}
+.sc-d { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.sc-p { display: block; margin-top: 6px; font: 400 10.5px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.ovw-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 13px; }
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.chk input { accent-color: var(--brand); cursor: pointer; }
+.chk-hint { font-size: 11px; color: var(--muted); }
+.err {
+  display: flex; align-items: flex-start; gap: 9px; margin-top: 12px;
+  padding: 9px 12px; border-radius: 9px; font-size: 12px; line-height: 1.6;
+  color: var(--danger); background: var(--danger-weak); border: 1px solid var(--danger);
+}
+.err[hidden] { display: none; }
+.err .ei {
+  width: 17px; height: 17px; flex: none; display: grid; place-items: center; margin-top: 1px;
+  border-radius: 50%; border: 1px solid currentColor;
+  font: 700 10px/1 var(--mono);
+}
+.err b { font-weight: 650; }
+.prog { height: 6px; margin-top: 13px; border-radius: 999px; background: var(--code-bg); overflow: hidden; }
+.prog[hidden] { display: none; }
+.prog i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--brand); transition: width .16s linear; }
+.prog-note { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
+.prog-note[hidden] { display: none; }
+
+/* 确认框 */
+.cfm {
+  position: fixed; z-index: 140; left: 50%; top: 50%;
+  width: min(400px, calc(100vw - 32px)); padding: 20px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 24px 70px -20px rgba(16, 24, 40, .5);
+  opacity: 0; pointer-events: none;
+  transform: translate(-50%, -48%) scale(.985); transition: opacity .16s, transform .16s;
+}
+.cfm.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.cfm-ico {
+  width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 12px;
+  border-radius: 11px; background: var(--danger-weak); color: var(--danger);
+}
+.cfm-ico svg { width: 18px; height: 18px; }
+.cfm h3 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.cfm p { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.65; }
+.cfm .cfm-k { font: 500 10.5px/1.6 var(--mono); color: var(--muted); margin-top: 8px; overflow-wrap: anywhere; }
+.cfm-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger:hover { background: var(--danger); color: #fff; filter: brightness(1.06); }
+
+/* Toast */
+.toast {
+  position: fixed; z-index: 200; left: 50%; bottom: 30px;
+  display: flex; align-items: center; gap: 8px; max-width: min(560px, calc(100vw - 40px));
+  padding: 9px 15px; background: #1f2630; color: #f3f4f6;
+  border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, .5);
+  opacity: 0; transform: translate(-50%, 8px); pointer-events: none;
+  transition: opacity .18s, transform .18s;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast .tk { width: 6px; height: 6px; border-radius: 50%; background: #34d399; flex: none; }
+.toast.err .tk { background: #f87171; }
+
+/* ============================================================
+   6. 状态矩阵（静态小样）
+   ============================================================ */
+.state-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 860px) { .state-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .state-grid { grid-template-columns: 1fr; } }
+.mini {
+  display: flex; flex-direction: column; gap: 10px; min-height: 196px;
+  padding: 13px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow-card);
+}
+.mini-cap { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.mini-cap i { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.mini-note { margin-top: auto; padding-top: 9px; border-top: 1px solid var(--line-soft); font-size: 10.5px; color: var(--muted); line-height: 1.55; }
+
+.mini-skel { display: flex; gap: 9px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--bar-bg); }
+.ms-tile { width: 30px; height: 30px; flex: none; border-radius: 9px; background: var(--code-bg); animation: pulse 1.2s ease-in-out infinite; }
+.ms-lines { flex: 1; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+.ms-lines i { display: block; height: 7px; border-radius: 4px; background: var(--code-bg); animation: pulse 1.2s ease-in-out infinite; }
+.ms-lines i:nth-child(2) { animation-delay: .12s; }
+.ms-lines i:nth-child(3) { animation-delay: .24s; }
+@keyframes pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+.mini-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 8px 0; }
+.mini-empty .me-ico {
+  width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 9px;
+  border-radius: 11px; background: var(--code-bg); color: var(--muted);
+}
+.mini-empty .me-ico svg { width: 19px; height: 19px; }
+.mini-empty b { font-size: 12.5px; font-weight: 650; }
+.mini-empty p { margin: 4px 0 10px; font-size: 11px; color: var(--muted); max-width: 30ch; }
+.mini-btn {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+  font-size: 11px; font-weight: 500; color: var(--text-2);
+}
+.mini-btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; }
+.mini-btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.mini-file { display: flex; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bar-bg); }
+.mini-file .mf-ico { width: 32px; height: 32px; background: var(--panel); }
+.mini-file b { display: block; font-size: 11.5px; font-weight: 600; }
+.mini-file small { display: block; font-size: 10.5px; color: var(--muted); }
+.mini-file .mf-pct { margin-left: auto; font: 600 11px/1 var(--mono); color: var(--brand); }
+.mini-prog { height: 5px; border-radius: 999px; background: var(--code-bg); overflow: hidden; }
+.mini-prog i { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
+.mini-err { display: flex; gap: 8px; align-items: flex-start; padding: 10px; border-radius: 9px; background: var(--danger-weak); border: 1px solid var(--danger); color: var(--danger); }
+.mini-err .me-x {
+  width: 16px; height: 16px; flex: none; display: grid; place-items: center; margin-top: 1px;
+  border: 1px solid currentColor; border-radius: 50%; font: 700 9px/1 var(--mono);
+}
+.mini-err b { display: block; font-size: 11.5px; font-weight: 650; }
+.mini-err p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.55; color: var(--danger); opacity: .85; }
+.mini-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mini-chk { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); }
+.mini-dlg { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 4px 2px; }
+.mini-dlg .md-ico {
+  width: 32px; height: 32px; display: grid; place-items: center; margin-bottom: 8px;
+  border-radius: 9px; background: var(--danger-weak); color: var(--danger);
+}
+.mini-dlg .md-ico svg { width: 15px; height: 15px; }
+.mini-dlg b { font-size: 12px; font-weight: 650; }
+.mini-dlg p { margin: 4px 0 11px; font-size: 10.5px; color: var(--muted); line-height: 1.55; }
+.mini-dlg .mini-row { justify-content: flex-end; }
+
+/* ============================================================
+   7. 窄屏预览（容器级覆盖，不依赖视口宽度）
+   ============================================================ */
+.narrow-stage { display: flex; justify-content: center; }
+.narrow {
+  width: 400px; max-width: 100%; padding: 16px;
+  background: var(--bar-bg); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: var(--shadow-card);
+}
+.narrow .sk-head { flex-direction: column; align-items: flex-start; gap: 12px; }
+.narrow .sk-head h1 { font-size: 21px; }
+.narrow .sk-head p { font-size: 12px; }
+.narrow .sk-actions { margin-left: 0; width: 100%; }
+.narrow .sk-actions .btn.primary { flex: 1; }
+.narrow .sk-actions .btn:not(.primary):not(.icon) { display: none; }
+.narrow .sk-stats { grid-template-columns: 1fr 1fr; margin-top: 15px; }
+.narrow .sk-stat:nth-child(3) { border-left: none; border-top: 1px solid var(--line-soft); }
+.narrow .sk-stat:nth-child(4) { border-top: 1px solid var(--line-soft); }
+.narrow .sk-toolbar { margin-top: 13px; gap: 8px; }
+.narrow .sk-search { max-width: none; width: 100%; flex-basis: 100%; }
+.narrow .sk-sort { margin-left: 0; flex: 1; }
+.narrow .sk-count { display: none; }
+.narrow .sk-grid { grid-template-columns: 1fr; }
+.narrow .sk-stat .v { font-size: 18px; }
+
+/* ============================================================
+   8. 响应式
+   ============================================================ */
+@media (max-width: 980px) {
+  .sk-grid { grid-template-columns: 1fr; }
+  .sk-stats { grid-template-columns: 1fr 1fr; }
+  .sk-stat:nth-child(3) { border-left: none; border-top: 1px solid var(--line-soft); }
+  .sk-stat:nth-child(4) { border-top: 1px solid var(--line-soft); }
+}
+@media (max-width: 700px) {
+  .sk-head { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .sk-actions { margin-left: 0; width: 100%; }
+  .sk-actions .btn.primary { flex: 1; }
+  .sk-search { max-width: none; flex-basis: 100%; }
+  .sk-sort { margin-left: 0; }
+  .sk-count { display: none; }
+  .drv { width: 100%; }
+}
+
+/* ============================================================
+   9. 决策表 / 其他
+   ============================================================ */
+.decision td:first-child { font-weight: 600; color: var(--text); white-space: nowrap; }
+.decision td:last-child { width: 68px; }
+.accept { margin: 0; padding: 0; list-style: none; }
+.accept li { position: relative; padding: 6px 0 6px 20px; font-size: 12px; color: var(--text-2); line-height: 1.65; border-top: 1px solid var(--line-soft); }
+.accept li:first-child { border-top: none; }
+.accept li::before { content: ""; position: absolute; left: 2px; top: 12px; width: 6px; height: 6px; border-radius: 2px; background: var(--brand); }
+.accept b { color: var(--text); }
+
+/* 深色小修：抽屉/卡片的白色高光降低 */
+:root[data-theme="dark"] .sk-tile { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 2px 8px -3px rgba(0, 0, 0, .5); }
+:root[data-theme="dark"] .sk-card { box-shadow: none; }
+:root[data-theme="dark"] .toast { background: #2a313b; }
+
+/* 焦点可见性 */
+.btn:focus-visible, .sk-view:focus-visible, .sk-more:focus-visible,
+.sk-seg button:focus-visible, .drv-close:focus-visible, .scope:focus-within {
+  outline: 2px solid var(--brand); outline-offset: 2px;
+}
+
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>WebUI 原型 · 技能管理重设计</h1>
+  <span class="tag">20261109-001</span>
+  <nav>
+    <a href="#s0">目标</a>
+    <a href="#s1">现状</a>
+    <a href="#s2">方向</a>
+    <a href="#s3">新设计</a>
+    <a href="#s4">状态</a>
+    <a href="#s5">窄屏</a>
+    <a href="#s6">决策</a>
+  </nav>
+  <span class="spring"></span>
+  <button class="btn-ghost" id="themeBtn" type="button">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v1.4M8 13.1v1.4M1.5 8h1.4M13.1 8h1.4M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1"/></svg>
+    <span id="themeTxt">深色</span>
+  </button>
+</header>
+
+<div class="page">
+
+<section id="s0">
+  <div class="sec-head">
+    <h2>0 · 目标与边界</h2>
+    <span class="badge">只改展示层</span>
+  </div>
+  <p class="sec-desc">
+    现状把技能当成一张后台表格：描述与长路径挤在同一行、名称列被压窄、危险按钮常驻每一行、安装区游离在列表之外。
+    本次重设计不改任何接口与 Agent 侧技能加载逻辑，只重排 <code>SkillsView</code> 的信息层级与交互，让「技能」更像一个可浏览、可安装、可检查的能力库。
+  </p>
+  <div class="meta-strip">
+    <div class="ms">
+      <b>目标文件</b>
+      <code>webui/src/views/SkillsView.vue</code>
+    </div>
+    <div class="ms">
+      <b>接口（保持不变）</b>
+      <span><code>GET /skills</code> · <code>POST /skills/upload</code> · <code>DELETE /skills/:name</code> · <code>POST /skills/reload</code></span>
+    </div>
+    <div class="ms">
+      <b>不改动</b>
+      <span>技能扫描 / 加载 / SKILL.md 校验逻辑，<code>webui/src/style.css</code> 仅追加令牌别名</span>
+    </div>
+  </div>
+  <p class="note">
+    <b>数据口径：</b>现有 <code>GET /skills</code> 只返回 <b>name / description / scope / path</b>。
+    原型卡片里的「文件数 · 体积 · 更新时间」为演示数据；落地 P0 先隐藏这三项，或由后端扩展后再展示（见 D6）。
+  </p>
+</section>
+
+<section id="s1">
+  <div class="sec-head">
+    <h2>1 · 现状与症状</h2>
+    <span class="badge mute">1:1 复刻</span>
+  </div>
+  <p class="sec-desc">下面是当前管理台的原样复刻（视觉与截图一致），用来对照问题；不包含任何修改。</p>
+
+  <div class="old-shell">
+    <div class="old-head">
+      <h3>技能</h3>
+      <span class="ep">GET /skills</span>
+      <span class="sp"></span>
+      <button class="old-btn" type="button">⟳ 重载</button>
+      <button class="old-btn" type="button">⟳ 刷新</button>
+    </div>
+    <table class="old-tbl">
+      <colgroup>
+        <col style="width:118px"><col style="width:76px"><col><col style="width:238px"><col style="width:104px">
+      </colgroup>
+      <thead>
+        <tr><th>技能</th><th>来源</th><th>描述</th><th>路径</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="old-name">py-pptx</td>
+          <td><span class="old-scope">workspace</span></td>
+          <td class="old-desc">使用 Python 引擎创建专业 PowerPoint 演示文稿。适用于根据主题从零创建或基于上传素材生成符合设计规范的 .pptx 文件；内置设计规范检查确保每页质量；支持学术、商务咨询、红金政务、国网电力等多种设计风格。</td>
+          <td class="old-path">D:\workspace\loop-agent-command\.loop-agent\skills\py-pptx\SKILL.md</td>
+          <td class="old-ops"><button class="old-btn view" type="button">查看</button> <button class="old-btn danger" type="button">卸载</button></td>
+        </tr>
+        <tr>
+          <td class="old-name">task-driven-development</td>
+          <td><span class="old-scope" style="color:var(--muted)">global</span></td>
+          <td class="old-desc">任务文档驱动的开发流程，先登记需求台账、完善需求并确认不确定点（含联网检索）、按难易度把需求拆成单个或多个任务、再出含 D 决策点的方案等待确认、分层 P0/P1/P2 实施、单测与全量回归、双语文档同步、中文提交推送。当用户说「出个方案先不要执行」「按方案X来」「完善需求」「登记需求」「放到 task 目录」「提交并推送」时使用。不适用于纯问答或一次性小改。</td>
+          <td class="old-path">C:\Users\muton\.loop-agent\skills\task-driven-development\SKILL.md</td>
+          <td class="old-ops"><button class="old-btn view" type="button">查看</button> <button class="old-btn danger" type="button">卸载</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="old-notes">
+      <span><i></i>安装技能（POST /skills/upload）位于列表下方另一张卡片</span>
+      <span><i></i>展开正文时以纯文本 &lt;pre&gt; 倾倒整篇 SKILL.md</span>
+    </div>
+  </div>
+
+  <div class="card-label" style="margin-top:18px"><span class="dot bad"></span>8 个可感知问题</div>
+  <ul class="sx">
+    <li><b>列宽失衡：</b>描述与长路径同处一行级别，路径换行把行高撑乱，扫读节奏被打断。</li>
+    <li><b>名称最窄：</b><em>py-pptx</em> 折行、<em>task-driven-development</em> 折三行；第一识别项反而最拥挤。</li>
+    <li><b>来源无层级：</b>只有一行绿色 / 灰色小字，工作空间与全局没有可筛选的视觉区分。</li>
+    <li><b>危险操作常驻：</b>每一行都有红色「卸载」，误触风险高，也拉高整页视觉噪音。</li>
+    <li><b>正文不可读：</b>展开后直接倾倒 <em>&lt;pre&gt;</em>，frontmatter 与章节混在一起，长文档无法阅读。</li>
+    <li><b>没有检索：</b>无搜索、无来源筛选、无总数统计，技能一多只能逐行扫。</li>
+    <li><b>安装被割裂：</b>主操作藏在列表下方；不支持拖拽、没有上传进度，409 只靠 toast 一闪而过。</li>
+    <li><b>接口语义抢戏：</b>「GET /skills」与「重载 / 刷新」同权重，产品页读起来像调试面板。</li>
+  </ul>
+</section>
+
+<section id="s2">
+  <div class="sec-head">
+    <h2>2 · 设计方向</h2>
+    <span class="badge">定为方案 B</span>
+  </div>
+  <p class="sec-desc">
+    技能是「少量、高价值、带说明文档」的对象，天然适合卡片而不是数据表。三条路径对比后选 B：卡片承担识别与浏览，抽屉承担阅读，安装升级为页头主入口。
+  </p>
+
+  <div class="opts">
+    <div class="opt">
+      <div class="opt-h"><strong>A · 表格增强</strong><span class="opt-tag">改动最小</span></div>
+      <div class="wf wf-a"><i></i><i></i><i></i><i></i><i></i></div>
+      <p>保留 5 列表格，加搜索、筛选、路径折叠、操作收进 ⋯。路径与描述仍挤在同一行，整体仍是后台表格观感。</p>
+    </div>
+    <div class="opt pick">
+      <div class="opt-h"><strong>B · 卡片流 + 详情抽屉</strong><span class="opt-tag">推荐</span></div>
+      <div class="wf wf-b"><i></i><i></i><i></i><i></i></div>
+      <p>名称 / 来源 / 描述分三层，路径降为辅助行；详情用右侧抽屉阅读，列表不被打断；安装是页头主 CTA。</p>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><strong>C · 双栏 List-Detail</strong><span class="opt-tag">信息最全</span></div>
+      <div class="wf wf-c"><div class="l"></div><div class="r"></div></div>
+      <p>左列表右常驻正文。技能数量少时右栏长期空白，窄屏需要折叠，交互与布局成本都更高。</p>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top:18px">
+    <div>
+      <div class="card-label"><span class="dot"></span>信息层级（从上到下）</div>
+      <div class="ctx">
+        <ol class="flow">
+          <li><b>页头：</b>标题 + 一句用途说明 + 刷新 / 重载 / 安装技能<span>接口标签只在开发模式出现</span></li>
+          <li><b>统计条：</b>技能总数 / 工作空间 / 全局 / 最近重载<span>让「现在有什么」一眼可见</span></li>
+          <li><b>工具条：</b>搜索 + 来源分段筛选 + 排序 + 结果计数<span>检索先于浏览</span></li>
+          <li><b>技能卡片：</b>图标 · 名称 · 来源 · 描述 · 路径 · 查看<span>两列网格，窄屏单列</span></li>
+          <li><b>按需浮层：</b>详情抽屉（阅读）/ 安装模态（写入）<span>不占常驻版面，关闭即回到列表</span></li>
+        </ol>
+      </div>
+    </div>
+    <div>
+      <div class="card-label"><span class="dot"></span>视觉规范</div>
+      <div class="ctx">
+        <div class="sw-row"><span class="sw" style="background:#0e9f6e"></span>工作空间 / 主 CTA<span class="sw-label">--brand</span></div>
+        <div class="sw-row"><span class="sw" style="background:#64748b"></span>全局来源 / 次级信息<span class="sw-label">slate</span></div>
+        <div class="sw-row"><span class="sw" style="background:#dc2626"></span>仅卸载确认按钮<span class="sw-label">--danger</span></div>
+        <div class="sw-row"><span class="sw" style="background:#e6f6ef"></span>来源徽标 / 选中态底色<span class="sw-label">--brand-weak</span></div>
+        <div class="sw-row"><span class="sw" style="background:#f1f3f5"></span>路径 / 元信息 / 分段底<span class="sw-label">--code-bg</span></div>
+        <p class="note" style="margin-top:12px">
+          圆角：卡片 13px · 控件 9px · 徽标 999px。阴影只在 hover 抬升 1px；文字：名称 14/650，描述 12.5/1.64 截断 3 行，路径 mono 11。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="s3">
+  <div class="sec-head">
+    <h2>3 · 新设计 · 技能管理页</h2>
+    <span class="badge">可交互</span>
+  </div>
+  <p class="sec-desc">
+    下面是重新设计后的技能管理页。搜索、来源筛选、排序、详情抽屉、安装模态、409 冲突与卸载确认都可以直接操作；卡片为演示数据。
+  </p>
+  <div class="demo-cap">
+    <span class="dot"></span>live prototype
+    <span class="sp"></span>
+    <span class="hint">搜索 / 筛选 / 查看 / 安装 / 卸载</span>
+  </div>
+
+  <div class="demo">
+    <div class="sk-head">
+      <div class="lead">
+        <div class="sk-eyebrow">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.8 2.2 4.4 9h3l-.9 4.8L11.6 7h-3z"/></svg>
+          能力库 · Capability library
+        </div>
+        <h1>技能</h1>
+        <p>按需加载的专业能力包，工作空间优先于全局。安装后自动重载，Agent 会在匹配任务时启用。</p>
+      </div>
+      <div class="sk-actions">
+        <button class="btn icon" id="refreshBtn" type="button" title="刷新列表" aria-label="刷新列表">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.8V5h-2.2"/></svg>
+        </button>
+        <button class="btn" id="reloadBtn" type="button">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 8a5.6 5.6 0 0 1 9.6-4"/><path d="M13.6 8a5.6 5.6 0 0 1-9.6 4"/><path d="M12.4 1.8v2.8h-2.8M3.6 14.2v-2.8h2.8"/></svg>
+          重载
+        </button>
+        <button class="btn primary js-install" type="button">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M3 8h10"/></svg>
+          安装技能
+        </button>
+      </div>
+    </div>
+
+    <div class="sk-stats">
+      <div class="sk-stat">
+        <div class="k"><i style="background:var(--brand)"></i>已安装技能</div>
+        <div class="v"><span data-bind="total">4</span><small>个</small></div>
+      </div>
+      <div class="sk-stat">
+        <div class="k"><i style="background:var(--brand)"></i>工作空间</div>
+        <div class="v"><span data-bind="ws">2</span><small>个</small></div>
+      </div>
+      <div class="sk-stat">
+        <div class="k"><i></i>全局</div>
+        <div class="v"><span data-bind="gl">2</span><small>个</small></div>
+      </div>
+      <div class="sk-stat">
+        <div class="k"><i></i>上次重载</div>
+        <div class="v small" id="stTime">刚刚</div>
+      </div>
+    </div>
+
+    <div class="sk-toolbar">
+      <div class="sk-search">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
+        <input id="searchInput" type="text" placeholder="搜索名称、描述或路径" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </div>
+      <div class="sk-seg" role="tablist" aria-label="按来源筛选">
+        <button type="button" class="on" data-scope="all" role="tab" aria-selected="true">全部 <span class="n" id="cAll">4</span></button>
+        <button type="button" data-scope="workspace" role="tab" aria-selected="false">工作空间 <span class="n" id="cWs">2</span></button>
+        <button type="button" data-scope="global" role="tab" aria-selected="false">全局 <span class="n" id="cGl">2</span></button>
+      </div>
+      <select class="sk-sort" id="sortSel" aria-label="排序方式">
+        <option value="scope">来源优先</option>
+        <option value="name">名称 A→Z</option>
+      </select>
+      <span class="sk-count" id="countLabel">4 个技能</span>
+    </div>
+
+    <div class="sk-grid" id="grid">
+      <!-- 卡片由脚本渲染；无脚本时给出静态兜底 -->
+      <article class="sk-card">
+        <div class="sk-card-top">
+          <span class="sk-tile ws">PP</span>
+          <div class="sk-id">
+            <div class="sk-name-row"><h3 class="sk-name">py-pptx</h3><span class="sk-badge ws"><i></i>工作空间</span></div>
+            <div class="sk-path"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 4.4c0-.7.6-1.3 1.3-1.3h3l1.3 1.5h4.8c.7 0 1.3.6 1.3 1.3v5.4c0 .7-.6 1.3-1.3 1.3H3.1c-.7 0-1.3-.6-1.3-1.3z"/></svg><span>.loop-agent/skills/py-pptx</span></div>
+          </div>
+          <button class="sk-more" type="button" aria-label="更多操作"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12.5" cy="8" r="1.2"/></svg></button>
+        </div>
+        <p class="sk-desc">使用 Python 引擎创建专业 PowerPoint 演示文稿。适用于根据主题从零创建或基于上传素材生成符合设计规范的 .pptx 文件；内置设计规范检查确保每页质量；支持学术、商务咨询、红金政务、国网电力等多种设计风格。</p>
+        <div class="sk-foot">
+          <span class="sk-meta">46 个文件<span class="sep"></span>2.4 MB<span class="sep"></span>3 天前</span>
+          <span class="sk-spring"></span>
+          <button class="sk-view" type="button">查看 SKILL.md <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg></button>
+        </div>
+      </article>
+    </div>
+
+    <div class="sk-footline">
+      <span>技能由 <code>SKILL.md</code> 驱动 · 安装 / 卸载后自动重载</span>
+      <span class="sp"></span>
+      <span>演示数据</span>
+    </div>
+  </div>
+
+  <p class="note">
+    键盘：<b>/</b> 聚焦搜索，<b>Esc</b> 关闭浮层；危险操作收进卡片 <b>⋯</b> 菜单与确认框。卡片 hover 抬升 1px，避免表格式的整行高亮。
+  </p>
+</section>
+
+<section id="s4">
+  <div class="sec-head">
+    <h2>4 · 状态矩阵</h2>
+    <span class="badge mute">6 态</span>
+  </div>
+  <p class="sec-desc">列表、安装与删除的边界状态都给定答案，避免白屏、空白和一闪而过的 toast。</p>
+
+  <div class="state-grid">
+    <div class="mini">
+      <div class="mini-cap"><i></i>加载中</div>
+      <div class="mini-skel">
+        <span class="ms-tile"></span>
+        <div class="ms-lines"><i style="width:34%"></i><i style="width:88%"></i><i style="width:62%"></i></div>
+      </div>
+      <div class="mini-skel">
+        <span class="ms-tile"></span>
+        <div class="ms-lines"><i style="width:46%"></i><i style="width:72%"></i><i style="width:54%"></i></div>
+      </div>
+      <div class="mini-note">骨架屏与真实卡片同高，加载完成不跳动</div>
+    </div>
+
+    <div class="mini">
+      <div class="mini-cap"><i></i>空库（首次使用）</div>
+      <div class="mini-empty">
+        <span class="me-ico">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.6 2.2 4.3 8.8h2.9l-.8 5 4.3-6.6h-2.9z"/></svg>
+        </span>
+        <b>还没有安装技能</b>
+        <p>把技能 zip 包拖进安装窗口，Agent 会在需要时自动加载。</p>
+        <span class="mini-btn primary">＋ 安装第一个技能</span>
+      </div>
+      <div class="mini-note">空态即引导，主 CTA 与页头一致</div>
+    </div>
+
+    <div class="mini">
+      <div class="mini-cap"><i></i>搜索 / 筛选无结果</div>
+      <div class="mini-empty">
+        <span class="me-ico">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
+        </span>
+        <b>没有匹配的技能</b>
+        <p>换个关键词，或清空来源筛选后重试。</p>
+        <span class="mini-btn">清空筛选</span>
+      </div>
+      <div class="mini-note">结果计数同步归零；提供一键复原</div>
+    </div>
+
+    <div class="mini">
+      <div class="mini-cap"><i></i>上传 / 校验中</div>
+      <div class="mini-file">
+        <span class="mf-ico">ZIP</span>
+        <div><b>slide-theme.zip</b><small>1.2 MB / 2.4 MB</small></div>
+        <span class="mf-pct">48%</span>
+      </div>
+      <div class="mini-prog"><i style="width:48%"></i></div>
+      <div class="mini-note">上传与校验分两段；按钮进入禁用态，可随时取消</div>
+    </div>
+
+    <div class="mini">
+      <div class="mini-cap"><i></i>同名冲突 · 409</div>
+      <div class="mini-err">
+        <span class="me-x">!</span>
+        <div><b>安装失败 · 409 Conflict</b><p>已存在同名技能「py-pptx」。勾选「同名覆盖」后重试，或重命名 zip 包。</p></div>
+      </div>
+      <div class="mini-row">
+        <label class="mini-chk"><input type="checkbox"> 同名覆盖</label>
+        <span class="mini-btn">重新安装</span>
+      </div>
+      <div class="mini-note">错误留在面板内，并直接给出下一步动作</div>
+    </div>
+
+    <div class="mini">
+      <div class="mini-cap"><i></i>卸载确认</div>
+      <div class="mini-dlg">
+        <span class="md-ico">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 4.6h9.6M6.4 4.6V3.2h3.2v1.4M4.7 4.6l.6 8.2h5.4l.6-8.2"/></svg>
+        </span>
+        <b>卸载「py-pptx」？</b>
+        <p>将删除工作空间内的技能目录，操作不可撤销。</p>
+        <div class="mini-row"><span class="mini-btn">取消</span><span class="mini-btn danger">卸载技能</span></div>
+      </div>
+      <div class="mini-note">危险动作二次确认，红色只出现在最终按钮</div>
+    </div>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="sec-head">
+    <h2>5 · 窄屏预览</h2>
+    <span class="badge mute">容器 400px</span>
+  </div>
+  <p class="sec-desc">
+    管理台在窄窗下不保留表格，也不强行压缩两列：页头动作换行、统计落成 2×2、工具条堆叠、卡片单列。下面按 400px 容器模拟。
+  </p>
+  <div class="narrow-stage">
+    <div class="narrow">
+      <div class="sk-head">
+        <div class="lead">
+          <div class="sk-eyebrow">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.8 2.2 4.4 9h3l-.9 4.8L11.6 7h-3z"/></svg>
+            能力库
+          </div>
+          <h1>技能</h1>
+          <p>工作空间优先于全局，安装后自动重载。</p>
+        </div>
+        <div class="sk-actions">
+          <button class="btn icon" type="button" aria-label="刷新列表">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.8V5h-2.2"/></svg>
+          </button>
+          <button class="btn primary js-install" type="button">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M3 8h10"/></svg>
+            安装技能
+          </button>
+        </div>
+      </div>
+
+      <div class="sk-stats">
+        <div class="sk-stat">
+          <div class="k"><i style="background:var(--brand)"></i>已安装</div>
+          <div class="v"><span data-bind="total">4</span><small>个</small></div>
+        </div>
+        <div class="sk-stat">
+          <div class="k"><i style="background:var(--brand)"></i>工作空间</div>
+          <div class="v"><span data-bind="ws">2</span><small>个</small></div>
+        </div>
+        <div class="sk-stat">
+          <div class="k"><i></i>全局</div>
+          <div class="v"><span data-bind="gl">2</span><small>个</small></div>
+        </div>
+        <div class="sk-stat">
+          <div class="k"><i></i>上次重载</div>
+          <div class="v small">刚刚</div>
+        </div>
+      </div>
+
+      <div class="sk-toolbar">
+        <div class="sk-search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
+          <input type="text" placeholder="搜索技能" aria-label="搜索技能">
+        </div>
+        <div class="sk-seg">
+          <button type="button" class="on">全部 <span class="n">4</span></button>
+          <button type="button">工作空间</button>
+          <button type="button">全局</button>
+        </div>
+        <select class="sk-sort" aria-label="排序方式">
+          <option>来源优先</option>
+        </select>
+      </div>
+
+      <div class="sk-grid" id="gridN"></div>
+    </div>
+  </div>
+  <p class="note">
+    <b>断点约定：</b>≤980px 卡片单列、统计 2×2；≤700px 页头动作换行、搜索占满、排序去右浮动；抽屉在 ≤700px 变为全宽。
+  </p>
+</section>
+
+<section id="s6">
+  <div class="sec-head">
+    <h2>6 · 决策点与落地</h2>
+    <span class="badge mute">待确认</span>
+  </div>
+  <p class="sec-desc">D1–D9 为推荐值；确认后按 task-driven-development 建任务文档、拆 P0 / P1 / P2 实施，接口与后端不动。</p>
+
+  <div class="grid-2">
+    <div>
+      <div class="card-label"><span class="dot"></span>D1–D9 决策</div>
+      <div class="ctx" style="padding:0;overflow:hidden">
+        <table class="kv decision">
+          <thead><tr><th>决策点</th><th>推荐做法</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td>D1 列表形态</td><td>卡片流：≥980px 两列，窄屏单列；描述统一 3 行截断</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D2 页头</td><td>标题 + 用途说明 + 刷新 / 重载 / 安装；接口标签只在开发模式显示</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D3 统计条</td><td>总数 / 工作空间 / 全局 / 最近重载，随增删与重载实时更新</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D4 来源表达</td><td>来源徽标 + 图标底色（绿 / 灰）+ 分段筛选，路径降为辅助行</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D5 详情阅读</td><td>右侧抽屉：frontmatter 键值块 + 正文排版；复制路径；Esc 关闭</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D6 卡片元信息</td><td>P0 只展示来源与 path；文件数 / 体积 / 时间非现有接口字段，暂不展示</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D7 危险操作</td><td>卡片 ⋯ 菜单 + 二次确认；红色只出现在确认按钮</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D8 安装流程</td><td>页头主按钮打开模态：拖拽 / 选择 → 范围 → 覆盖开关；409 内联报错</td><td><span class="pill">推荐</span></td></tr>
+            <tr><td>D9 响应式与主题</td><td>沿用全局令牌，深浅一致；≤980 单列，≤700 页头换行</td><td><span class="pill">推荐</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div>
+      <div class="card-label"><span class="dot"></span>落地清单</div>
+      <div class="ctx" style="padding:0;overflow:hidden">
+        <table class="kv">
+          <thead><tr><th>文件</th><th style="width:58px">阶段</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>webui/src/views/SkillsView.vue</code><span class="no">模板重写为 <code>.sk-*</code> 结构，样式段约 +260 行；保留现有 API 调用、busy 与错误处理</span></td>
+              <td><span class="pill">P0</span></td>
+            </tr>
+            <tr>
+              <td><code>webui/src/style.css</code><span class="no">追加 <code>.sk-*</code> 选择器；复用现有 <code>--panel / --line / --brand</code>，不新增主题分支</span></td>
+              <td><span class="pill">P0</span></td>
+            </tr>
+            <tr>
+              <td><code>tests/webui-skills-view.test.ts</code><span class="no">新增：搜索与来源筛选计数、scope 文案、安装前置校验（zip / 20MB / 覆盖）</span></td>
+              <td><span class="pill">P1</span></td>
+            </tr>
+            <tr>
+              <td><code>docs/readme/zh|en/web-ui.md</code><span class="no">技能页截图与说明同步（浅色 / 深色）</span></td>
+              <td><span class="pill mute">P2</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card-label" style="margin-top:16px"><span class="dot"></span>验收要点</div>
+      <ul class="accept">
+        <li><b>视觉：</b>≥980px 两列、≤980px 单列，无横向滚动；描述 3 行截断不撑高卡片。</li>
+        <li><b>交互：</b>搜索结果数 = 卡片数；Esc 可关闭全部浮层；409 保留已选文件与覆盖开关。</li>
+        <li><b>数据：</b>接口字段不变；卸载缺省 scope 仍为 auto；安装成功后自动 refresh。</li>
+        <li><b>可访问：</b>按钮带 aria-label，Tab 可聚焦，焦点环可见（P1 补齐）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="note">
+    <b>本文件仅为原型，未改任何产品代码。</b>待确认的只有一件事：D1–D9 是否全部按推荐值执行。确认后我再建任务、拆阶段并落地。
+  </p>
+</section>
+
+</div>
+
+<!-- 卡片 ⋯ 菜单 -->
+<div class="card-menu" id="cardMenu" role="menu">
+  <button type="button" data-act="view" role="menuitem">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 8s2.3-4.2 6.2-4.2S14.2 8 14.2 8 11.9 12.2 8 12.2 1.8 8 1.8 8z"/><circle cx="8" cy="8" r="1.6"/></svg>
+    查看 SKILL.md
+  </button>
+  <button type="button" data-act="copy" role="menuitem">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.4" y="3.2" width="8" height="9" rx="1.6"/><path d="M10.6 3.2V2.2a1.2 1.2 0 0 0-1.2-1.2H3.1A1.2 1.2 0 0 0 1.9 2.2v7.4c0 .7.5 1.2 1.2 1.2h1"/></svg>
+    复制路径
+  </button>
+  <div class="hr"></div>
+  <button type="button" class="danger" data-act="del" role="menuitem">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 4.6h9.6M6.4 4.6V3.2h3.2v1.4M4.7 4.6l.6 8.2h5.4l.6-8.2"/></svg>
+    卸载技能
+  </button>
+</div>
+
+<!-- 浮层：详情抽屉 -->
+<div class="sk-backdrop" id="drvOvl"></div>
+<aside class="drv" id="drv" aria-label="技能详情">
+  <div class="drv-head">
+    <span class="sk-tile ws" id="drvIcon">PP</span>
+    <div class="drv-title">
+      <h2><span id="drvName">py-pptx</span><span class="sk-badge ws" id="drvBadge"><i></i>工作空间</span></h2>
+      <div class="drv-path">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 4.4c0-.7.6-1.3 1.3-1.3h3l1.3 1.5h4.8c.7 0 1.3.6 1.3 1.3v5.4c0 .7-.6 1.3-1.3 1.3H3.1c-.7 0-1.3-.6-1.3-1.3z"/></svg>
+        <span id="drvPath">D:\workspace\loop-agent-command\.loop-agent\skills\py-pptx</span>
+      </div>
+      <div class="drv-meta" id="drvChips"></div>
+    </div>
+    <button class="drv-close" id="drvClose" type="button" aria-label="关闭详情">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4L4 12"/></svg>
+    </button>
+  </div>
+  <div class="drv-body">
+    <div class="drv-lab">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.4 1.9h5.2l3 3v9.2H4.4z"/><path d="M9.4 1.9v3.2h3"/></svg>
+      FRONTMATTER
+    </div>
+    <div class="fm">
+      <div class="fm-cap">SKILL.md · frontmatter</div>
+      <div id="drvFront"></div>
+    </div>
+    <div class="drv-lab">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 3.4h10.4v9.2H2.8z"/><path d="M2.8 6.2h10.4M5.4 9h2.2M5.4 11h4.6"/></svg>
+      正文
+    </div>
+    <div class="md" id="drvBody"></div>
+  </div>
+  <div class="drv-foot">
+    <button class="btn danger-ghost" id="drvDel" type="button">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 4.6h9.6M6.4 4.6V3.2h3.2v1.4M4.7 4.6l.6 8.2h5.4l.6-8.2"/></svg>
+      卸载技能
+    </button>
+    <span class="sp"></span>
+    <button class="btn" id="drvCopy" type="button">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.4" y="3.2" width="8" height="9" rx="1.6"/><path d="M10.6 3.2V2.2a1.2 1.2 0 0 0-1.2-1.2H3.1A1.2 1.2 0 0 0 1.9 2.2v7.4c0 .7.5 1.2 1.2 1.2h1"/></svg>
+      复制路径
+    </button>
+    <button class="btn primary" id="drvDone" type="button">关闭</button>
+  </div>
+</aside>
+
+<!-- 浮层：安装模态 -->
+<div class="sk-backdrop" id="mdlOvl" style="z-index:115"></div>
+<div class="mdl" id="mdl" role="dialog" aria-modal="true" aria-labelledby="mdlTitle">
+  <div class="mdl-head">
+    <div class="mh">
+      <h2 id="mdlTitle">安装技能</h2>
+      <p>上传技能 zip 包；安装目录名 = zip 文件名（去掉 .zip），服务端会校验 SKILL.md。</p>
+    </div>
+    <button class="drv-close" id="mdlX" type="button" aria-label="关闭安装窗口">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4L4 12"/></svg>
+    </button>
+  </div>
+  <div class="mdl-body">
+    <input id="fileInput" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+    <div class="dz" id="dz">
+      <div class="dz-idle" id="dzIdle">
+        <span class="dz-ico">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10.4V2.6M5 5.6 8 2.6l3 3"/><path d="M2.6 9.6v2.6c0 .8.6 1.4 1.4 1.4h8c.8 0 1.4-.6 1.4-1.4V9.6"/></svg>
+        </span>
+        <b>拖拽 zip 包到此处</b>
+        <p>或 <button class="link" id="dzPick" type="button">点击选择文件</button> · 仅 .zip · 上限 20 MB</p>
+      </div>
+      <div class="dz-picked" id="dzPicked" hidden>
+        <span class="mf-ico">ZIP</span>
+        <div class="mf-main">
+          <b id="dzName">slide-theme.zip</b>
+          <small>安装为 <span id="dzRoot">slide-theme</span>/ · <span id="dzSize">192 KB</span></small>
+        </div>
+        <button class="btn sm" id="dzClear" type="button">重选</button>
+      </div>
+    </div>
+    <div class="samples">
+      试用示例：
+      <button type="button" data-file="slide-theme.zip" data-size="196608">slide-theme.zip</button>
+      <button type="button" data-file="py-pptx.zip" data-size="2411724">py-pptx.zip（触发冲突）</button>
+    </div>
+
+    <div class="sec-lab">安装范围 <span class="req">*</span></div>
+    <div class="scope-grid">
+      <label class="scope on">
+        <input type="radio" name="scope" value="workspace" checked>
+        <div class="sc-t">工作空间 <i>推荐</i></div>
+        <span class="sc-d">仅当前项目可用</span>
+        <span class="sc-p">.loop-agent/skills/</span>
+      </label>
+      <label class="scope">
+        <input type="radio" name="scope" value="global">
+        <div class="sc-t">全局</div>
+        <span class="sc-d">所有项目可用</span>
+        <span class="sc-p">C:\Users\muton\.loop-agent\skills\</span>
+      </label>
+    </div>
+
+    <div class="ovw-row">
+      <label class="chk"><input type="checkbox" id="ovw"> 同名覆盖</label>
+      <span class="chk-hint">未勾选时同名返回 409；勾选后覆盖旧目录</span>
+    </div>
+
+    <div class="err" id="err" hidden>
+      <span class="ei">!</span>
+      <div id="errText"></div>
+    </div>
+    <div class="prog" id="prog" hidden><i id="progFill"></i></div>
+    <div class="prog-note" id="progNote" hidden><span id="progState">上传中</span><span id="progPct">0%</span></div>
+  </div>
+  <div class="mdl-foot">
+    <span class="sp"></span>
+    <button class="btn" id="mdlCancel" type="button">取消</button>
+    <button class="btn primary" id="installBtn" type="button" disabled>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10.4V2.8M5 5.8 8 2.8l3 3"/><path d="M2.6 10v2.2c0 .8.6 1.4 1.4 1.4h8c.8 0 1.4-.6 1.4-1.4V10"/></svg>
+      <span id="installBtnText">上传安装</span>
+    </button>
+  </div>
+</div>
+
+<!-- 浮层：卸载确认 -->
+<div class="sk-backdrop" id="cfmOvl" style="z-index:135"></div>
+<div class="cfm" id="cfm" role="dialog" aria-modal="true" aria-labelledby="cfmTitle">
+  <div class="cfm-ico">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 4.6h9.6M6.4 4.6V3.2h3.2v1.4M4.7 4.6l.6 8.2h5.4l.6-8.2"/></svg>
+  </div>
+  <h3 id="cfmTitle">卸载「<span id="cfmName">py-pptx</span>」？</h3>
+  <p>将删除该技能目录，随包的脚本与文档一并移除，操作不可撤销。</p>
+  <div class="cfm-k" id="cfmScope"></div>
+  <div class="cfm-btns">
+    <button class="btn" id="cfmCancel" type="button">取消</button>
+    <button class="btn danger" id="cfmOk" type="button">卸载技能</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span class="tk"></span><span id="toastText"></span></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var root = document.documentElement;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function scopeLabel(scope) { return scope === 'workspace' ? '工作空间' : '全局'; }
+  function monoOf(name) {
+    var parts = name.split(/[-_]/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
+    return name.slice(0, 2).toUpperCase();
+  }
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+  function hl(text, q) {
+    var raw = String(text);
+    if (!q) return esc(raw);
+    var safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var parts = raw.split(new RegExp('(' + safe + ')', 'ig'));
+    return parts.map(function (part, i) {
+      return i % 2 ? '<mark>' + esc(part) + '</mark>' : esc(part);
+    }).join('');
+  }
+
+  var ICO = {
+    folder: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 4.4c0-.7.6-1.3 1.3-1.3h3l1.3 1.5h4.8c.7 0 1.3.6 1.3 1.3v5.4c0 .7-.6 1.3-1.3 1.3H3.1c-.7 0-1.3-.6-1.3-1.3z"/></svg>',
+    more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12.5" cy="8" r="1.2"/></svg>',
+    arrow: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>',
+    search: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>'
+  };
+
+  var SKILLS = [
+    {
+      name: 'py-pptx',
+      scope: 'workspace',
+      short: '.loop-agent/skills/py-pptx',
+      path: 'D:\\workspace\\loop-agent-command\\.loop-agent\\skills\\py-pptx',
+      meta: ['46 个文件', '2.4 MB', '3 天前'],
+      desc: '使用 Python 引擎创建专业 PowerPoint 演示文稿。适用于根据主题从零创建或基于上传素材生成符合设计规范的 .pptx 文件；内置设计规范检查确保每页质量；支持学术、商务咨询、红金政务、国网电力等多种设计风格。',
+      front: [['name', 'py-pptx'], ['license', 'MIT'], ['allowed-tools', 'Read, Write, Bash']],
+      body:
+        '<h2>适用场景</h2>' +
+        '<ul><li>根据主题从零创建演示文稿</li><li>基于上传素材改写并统一版式</li><li>按设计规范批量产出多套风格</li></ul>' +
+        '<h2>工作流程</h2>' +
+        '<ol><li>读取主题与素材，确认页数与版式</li><li>选择设计风格，生成页面骨架</li><li>填充内容并执行设计规范检查</li><li>导出 .pptx 并输出质检报告</li></ol>' +
+        '<h2>质量检查</h2>' +
+        '<p>逐页校验边距、字号层级、对比度与文本溢出；未通过的页面会被标记并给出修改建议。</p>' +
+        '<pre><code>python scripts/slidep.py build --deck deck.yaml --out dist/</code></pre>'
+    },
+    {
+      name: 'task-driven-development',
+      scope: 'global',
+      short: '~/.loop-agent/skills/task-driven-development',
+      path: 'C:\\Users\\muton\\.loop-agent\\skills\\task-driven-development',
+      meta: ['3 个文件', '48 KB', '7 天前'],
+      desc: '任务文档驱动的开发流程，先登记需求台账、完善需求并确认不确定点（含联网检索）、按难易度把需求拆成单个或多个任务、再出含 D 决策点的方案等待确认、分层 P0/P1/P2 实施、单测与全量回归、双语文档同步、中文提交推送。当用户说「出个方案先不要执行」「按方案X来」「完善需求」「登记需求」「放到 task 目录」「提交并推送」时使用。不适用于纯问答或一次性小改。',
+      front: [['name', 'task-driven-development'], ['version', '1.2.0'], ['allowed-tools', 'Read, Write, Edit, Bash']],
+      body:
+        '<h2>触发方式</h2>' +
+        '<p>当用户说「出个方案先不要执行」「按方案 X 来」「完善需求」「登记需求」「放到 task 目录」「提交并推送」时使用。</p>' +
+        '<h2>流程</h2>' +
+        '<ol><li>登记需求台账，补全背景与边界</li><li>确认不确定点，必要时联网检索</li><li>按难易度拆成单个或多个任务</li><li>输出含 D 决策点的方案，等待确认</li><li>分层 P0 / P1 / P2 实施并做全量回归</li><li>同步双语文档，中文提交与推送</li></ol>' +
+        '<h2>不适用</h2>' +
+        '<p>纯问答、一次性小改，或没有文档交付要求的临时脚本。</p>'
+    },
+    {
+      name: 'pdf-kit',
+      scope: 'workspace',
+      short: '.loop-agent/skills/pdf-kit',
+      path: 'D:\\workspace\\loop-agent-command\\.loop-agent\\skills\\pdf-kit',
+      meta: ['18 个文件', '860 KB', '1 天前'],
+      desc: 'PDF 工具箱：拆分与合并页面、旋转与重排、抽取文本与表格、填写表单字段，并在输出前校验页数与书签结构。适合合同归档、报告拼装与批量导出场景。',
+      front: [['name', 'pdf-kit'], ['license', 'Apache-2.0'], ['allowed-tools', 'Read, Write, Bash']],
+      body:
+        '<h2>能力范围</h2>' +
+        '<ul><li>拆分 / 合并 / 重排页面，保留书签层级</li><li>抽取文本与表格为 Markdown / CSV</li><li>读取并填写 AcroForm 表单字段</li></ul>' +
+        '<h2>约束</h2>' +
+        '<p>输出前校验页数、书签与文件可打开；不处理加密文档，遇到密码保护会明确报错。</p>' +
+        '<pre><code>python scripts/pdfkit.py merge a.pdf b.pdf -o out.pdf</code></pre>'
+    },
+    {
+      name: 'webapp-testing',
+      scope: 'global',
+      short: '~/.loop-agent/skills/webapp-testing',
+      path: 'C:\\Users\\muton\\.loop-agent\\skills\\webapp-testing',
+      meta: ['9 个文件', '132 KB', '12 天前'],
+      desc: '基于浏览器驱动的端到端测试：启动本地服务、定位元素、填写表单、断言页面状态并输出截图。适用于验证前端改动、复现交互缺陷与生成可回归的测试脚本。',
+      front: [['name', 'webapp-testing'], ['allowed-tools', 'Bash, Read, Write']],
+      body:
+        '<h2>适用场景</h2>' +
+        '<ul><li>验证前端改动是否按预期渲染</li><li>复现并定位交互缺陷</li><li>生成可重复执行的回归脚本</li></ul>' +
+        '<h2>执行流程</h2>' +
+        '<ol><li>启动本地服务并等待端口就绪</li><li>按用例定位元素、填写并提交</li><li>断言页面状态，收集控制台错误</li><li>输出截图与测试脚本</li></ol>' +
+        '<h2>产物</h2>' +
+        '<p>截图、控制台日志与可直接复跑的测试脚本；失败时保留现场 URL 与操作轨迹。</p>'
+    }
+  ];
+
+  var grid = $('grid');
+  var gridN = $('gridN');
+  var searchInput = $('searchInput');
+  var sortSel = $('sortSel');
+  var countLabel = $('countLabel');
+  var segBtns = Array.prototype.slice.call(document.querySelectorAll('.sk-seg [data-scope]'));
+  var cardMenu = $('cardMenu');
+  var drv = $('drv');
+  var drvOvl = $('drvOvl');
+  var mdl = $('mdl');
+  var mdlOvl = $('mdlOvl');
+  var cfm = $('cfm');
+  var cfmOvl = $('cfmOvl');
+  var toastEl = $('toast');
+  var toastText = $('toastText');
+  var dz = $('dz');
+  var dzIdle = $('dzIdle');
+  var dzPicked = $('dzPicked');
+  var dzName = $('dzName');
+  var dzRoot = $('dzRoot');
+  var dzSize = $('dzSize');
+  var fileInput = $('fileInput');
+  var installBtn = $('installBtn');
+  var installBtnText = $('installBtnText');
+  var err = $('err');
+  var errText = $('errText');
+  var prog = $('prog');
+  var progFill = $('progFill');
+  var progNote = $('progNote');
+  var progPct = $('progPct');
+  var progState = $('progState');
+  var ovw = $('ovw');
+  var stTime = $('stTime');
+
+  var curScope = 'all';
+  var currentSkill = null;
+  var menuSkill = null;
+  var pendingDel = null;
+  var picked = null;
+  var uploadTimer = null;
+  var toastTimer = null;
+
+  /* ---------- 主题 ---------- */
+  function syncTheme() {
+    var dark = root.getAttribute('data-theme') === 'dark';
+    $('themeTxt').textContent = dark ? '浅色' : '深色';
+  }
+  $('themeBtn').addEventListener('click', function () {
+    root.setAttribute('data-theme', root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+    syncTheme();
+  });
+  syncTheme();
+
+  /* ---------- 渲染 ---------- */
+  function metaHtml(s) {
+    return s.meta.map(function (m) { return esc(m); }).join('<span class="sep"></span>');
+  }
+  function cardHTML(s, q) {
+    var cls = s.scope === 'workspace' ? 'ws' : 'gl';
+    return '<article class="sk-card" data-name="' + escAttr(s.name) + '">' +
+      '<div class="sk-card-top">' +
+        '<span class="sk-tile ' + cls + '" aria-hidden="true">' + monoOf(s.name) + '</span>' +
+        '<div class="sk-id">' +
+          '<div class="sk-name-row"><h3 class="sk-name">' + hl(s.name, q) + '</h3>' +
+            '<span class="sk-badge ' + cls + '"><i></i>' + scopeLabel(s.scope) + '</span></div>' +
+          '<div class="sk-path" title="' + escAttr(s.path) + '">' + ICO.folder + '<span>' + hl(s.short, q) + '</span></div>' +
+        '</div>' +
+        '<button class="sk-more" type="button" data-act="menu" data-name="' + escAttr(s.name) + '" aria-label="更多操作">' + ICO.more + '</button>' +
+      '</div>' +
+      '<p class="sk-desc">' + hl(s.desc, q) + '</p>' +
+      '<div class="sk-foot">' +
+        '<span class="sk-meta">' + metaHtml(s) + '</span>' +
+        '<span class="sk-spring"></span>' +
+        '<button class="sk-view" type="button" data-act="view" data-name="' + escAttr(s.name) + '">查看 SKILL.md ' + ICO.arrow + '</button>' +
+      '</div>' +
+    '</article>';
+  }
+  function emptyHTML() {
+    return '<div class="sk-nothing">' +
+      '<div class="nt-ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.6 2.2 4.3 8.8h2.9l-.8 5 4.3-6.6h-2.9z"/></svg></div>' +
+      '<b>还没有安装技能</b>' +
+      '<p>把技能 zip 包拖进安装窗口，Agent 会在需要时自动加载。</p>' +
+      '<button class="btn primary sm" type="button" data-act="install">＋ 安装第一个技能</button>' +
+    '</div>';
+  }
+  function noResultHTML() {
+    return '<div class="sk-nothing">' +
+      '<div class="nt-ico">' + ICO.search + '</div>' +
+      '<b>没有匹配的技能</b>' +
+      '<p>换个关键词，或清空来源筛选后重试。</p>' +
+      '<button class="btn sm" type="button" data-act="clear">清空筛选</button>' +
+    '</div>';
+  }
+  function findSkill(name) {
+    for (var i = 0; i < SKILLS.length; i++) { if (SKILLS[i].name === name) return SKILLS[i]; }
+    return null;
+  }
+  function visibleSkills() {
+    var q = searchInput.value.trim().toLowerCase();
+    var arr = SKILLS.filter(function (s) {
+      if (curScope !== 'all' && s.scope !== curScope) return false;
+      if (!q) return true;
+      return (s.name + ' ' + s.desc + ' ' + s.path + ' ' + scopeLabel(s.scope)).toLowerCase().indexOf(q) >= 0;
+    });
+    if (sortSel.value === 'name') {
+      arr.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    } else {
+      arr.sort(function (a, b) {
+        var d = (a.scope === 'workspace' ? 0 : 1) - (b.scope === 'workspace' ? 0 : 1);
+        return d || a.name.localeCompare(b.name);
+      });
+    }
+    return arr;
+  }
+  function updateStats() {
+    var ws = 0;
+    SKILLS.forEach(function (s) { if (s.scope === 'workspace') ws++; });
+    var gl = SKILLS.length - ws;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-bind="total"]'), function (n) { n.textContent = SKILLS.length; });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-bind="ws"]'), function (n) { n.textContent = ws; });
+    Array.prototype.forEach.call(document.querySelectorAll('[data-bind="gl"]'), function (n) { n.textContent = gl; });
+    if ($('cAll')) $('cAll').textContent = SKILLS.length;
+    if ($('cWs')) $('cWs').textContent = ws;
+    if ($('cGl')) $('cGl').textContent = gl;
+  }
+  function syncSeg() {
+    segBtns.forEach(function (b) {
+      var on = b.getAttribute('data-scope') === curScope;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+  }
+  function render() {
+    var q = searchInput.value.trim();
+    var arr = visibleSkills();
+    if (SKILLS.length === 0) {
+      grid.innerHTML = emptyHTML();
+    } else if (arr.length === 0) {
+      grid.innerHTML = noResultHTML();
+    } else {
+      grid.innerHTML = arr.map(function (s) { return cardHTML(s, q); }).join('');
+    }
+    if (gridN) {
+      gridN.innerHTML = arr.length
+        ? cardHTML(arr[0], q)
+        : '<div class="sk-nothing" style="padding:22px 14px"><b>没有可显示的技能</b><p>清空搜索或筛选后重试。</p></div>';
+    }
+    countLabel.textContent = arr.length + ' 个技能';
+    updateStats();
+  }
+
+  /* ---------- 工具条 ---------- */
+  searchInput.addEventListener('input', render);
+  sortSel.addEventListener('change', render);
+  segBtns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      curScope = b.getAttribute('data-scope');
+      syncSeg();
+      render();
+    });
+  });
+
+  grid.addEventListener('click', onGridClick);
+  if (gridN) gridN.addEventListener('click', onGridClick);
+  function onGridClick(e) {
+    var el = e.target.closest('[data-act]');
+    if (!el) return;
+    var act = el.getAttribute('data-act');
+    var name = el.getAttribute('data-name');
+    if (act === 'clear') {
+      searchInput.value = '';
+      curScope = 'all';
+      syncSeg();
+      render();
+      searchInput.focus();
+    } else if (act === 'install') {
+      openInstall();
+    } else if (act === 'menu') {
+      e.stopPropagation();
+      openMenu(el, name);
+    } else if (act === 'view') {
+      openDrawer(name);
+    }
+  }
+
+  /* ---------- 卡片菜单 ---------- */
+  function openMenu(btn, name) {
+    menuSkill = name;
+    var r = btn.getBoundingClientRect();
+    var w = 178, h = 132;
+    var left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
+    var top = r.bottom + 6;
+    if (top + h > window.innerHeight - 8) top = r.top - h - 6;
+    cardMenu.style.left = left + 'px';
+    cardMenu.style.top = Math.max(8, top) + 'px';
+    cardMenu.classList.add('show');
+  }
+  function closeMenu() {
+    cardMenu.classList.remove('show');
+  }
+  cardMenu.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-act]');
+    if (!b) return;
+    var act = b.getAttribute('data-act');
+    var name = menuSkill;
+    closeMenu();
+    if (act === 'view') openDrawer(name);
+    if (act === 'copy') { var s = findSkill(name); if (s) copyText(s.path); }
+    if (act === 'del') askUninstall(name);
+  });
+  document.addEventListener('click', function (e) {
+    if (!cardMenu.contains(e.target)) closeMenu();
+  });
+
+  /* ---------- 复制 ---------- */
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (err) { /* ignore */ }
+  }
+  function copyText(text) {
+    function done() { toast('路径已复制到剪贴板'); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    } else {
+      fallbackCopy(text);
+      done();
+    }
+  }
+
+  /* ---------- 详情抽屉 ---------- */
+  function openDrawer(name) {
+    var s = findSkill(name);
+    if (!s) return;
+    currentSkill = s;
+    var cls = s.scope === 'workspace' ? 'ws' : 'gl';
+    $('drvIcon').textContent = monoOf(s.name);
+    $('drvIcon').className = 'sk-tile ' + cls;
+    $('drvName').textContent = s.name;
+    $('drvBadge').className = 'sk-badge ' + cls;
+    $('drvBadge').innerHTML = '<i></i>' + scopeLabel(s.scope);
+    $('drvPath').textContent = s.path;
+    $('drvChips').innerHTML = s.meta.map(function (m) { return '<span class="drv-chip">' + esc(m) + '</span>'; }).join('') +
+      '<span class="drv-chip">SKILL.md</span>';
+    $('drvFront').innerHTML = s.front.map(function (p) {
+      return '<div class="fm-row"><span class="fm-k">' + esc(p[0]) + '</span><span class="fm-v">' + esc(p[1]) + '</span></div>';
+    }).join('');
+    $('drvBody').innerHTML = s.body;
+    drv.classList.add('show');
+    drvOvl.classList.add('show');
+    syncLock();
+    closeMenu();
+  }
+  function closeDrawer() {
+    drv.classList.remove('show');
+    drvOvl.classList.remove('show');
+    currentSkill = null;
+    syncLock();
+  }
+  $('drvClose').addEventListener('click', closeDrawer);
+  $('drvDone').addEventListener('click', closeDrawer);
+  drvOvl.addEventListener('click', closeDrawer);
+  $('drvCopy').addEventListener('click', function () {
+    if (currentSkill) copyText(currentSkill.path);
+  });
+  $('drvDel').addEventListener('click', function () {
+    if (currentSkill) askUninstall(currentSkill.name);
+  });
+
+  /* ---------- 卸载确认 ---------- */
+  function askUninstall(name) {
+    var s = findSkill(name);
+    if (!s) return;
+    pendingDel = name;
+    $('cfmName').textContent = name;
+    $('cfmScope').textContent = scopeLabel(s.scope) + ' · ' + s.path;
+    cfm.classList.add('show');
+    cfmOvl.classList.add('show');
+    syncLock();
+  }
+  function closeCfm() {
+    cfm.classList.remove('show');
+    cfmOvl.classList.remove('show');
+    pendingDel = null;
+    syncLock();
+  }
+  $('cfmCancel').addEventListener('click', closeCfm);
+  cfmOvl.addEventListener('click', closeCfm);
+  $('cfmOk').addEventListener('click', function () {
+    if (!pendingDel) return;
+    var name = pendingDel;
+    SKILLS = SKILLS.filter(function (s) { return s.name !== name; });
+    closeCfm();
+    if (currentSkill && currentSkill.name === name) closeDrawer();
+    render();
+    toast('已卸载技能 ' + name);
+  });
+
+  /* ---------- 安装模态 ---------- */
+  function syncScopes() {
+    Array.prototype.forEach.call(document.querySelectorAll('.scope'), function (lab) {
+      var input = lab.querySelector('input');
+      lab.classList.toggle('on', !!input.checked);
+    });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="scope"]'), function (r) {
+    r.addEventListener('change', syncScopes);
+  });
+  syncScopes();
+
+  function showErr(html) {
+    errText.innerHTML = html;
+    err.hidden = false;
+  }
+  function resetInstall() {
+    picked = null;
+    fileInput.value = '';
+    dzIdle.hidden = false;
+    dzPicked.hidden = true;
+    err.hidden = true;
+    errText.innerHTML = '';
+    prog.hidden = true;
+    progNote.hidden = true;
+    progFill.style.width = '0%';
+    progPct.textContent = '0%';
+    progState.textContent = '上传中';
+    installBtnText.textContent = '上传安装';
+    installBtn.disabled = true;
+    ovw.checked = false;
+    var ws = document.querySelector('input[name="scope"][value="workspace"]');
+    if (ws) ws.checked = true;
+    syncScopes();
+    if (uploadTimer) { clearInterval(uploadTimer); uploadTimer = null; }
+  }
+  function openInstall() {
+    resetInstall();
+    mdl.classList.add('show');
+    mdlOvl.classList.add('show');
+    syncLock();
+  }
+  function closeInstall() {
+    if (uploadTimer) { clearInterval(uploadTimer); uploadTimer = null; }
+    mdl.classList.remove('show');
+    mdlOvl.classList.remove('show');
+    syncLock();
+    setTimeout(resetInstall, 200);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.js-install'), function (b) {
+    b.addEventListener('click', openInstall);
+  });
+  $('mdlX').addEventListener('click', closeInstall);
+  $('mdlCancel').addEventListener('click', closeInstall);
+  mdlOvl.addEventListener('click', closeInstall);
+
+  function pickFile(name, size) {
+    if (!/\.zip$/i.test(name)) {
+      showErr('<b>文件格式不支持。</b>仅接受 .zip 技能包，请重新选择。');
+      return;
+    }
+    if (size > 20 * 1024 * 1024) {
+      showErr('<b>文件超过上限。</b>技能包不能大于 20 MB，请精简后重试。');
+      return;
+    }
+    picked = { name: name, root: name.replace(/\.zip$/i, ''), size: size };
+    err.hidden = true;
+    dzIdle.hidden = true;
+    dzPicked.hidden = false;
+    dzName.textContent = name;
+    dzRoot.textContent = picked.root;
+    dzSize.textContent = fmtSize(size);
+    installBtn.disabled = false;
+  }
+  function clearPicked() {
+    picked = null;
+    fileInput.value = '';
+    dzIdle.hidden = false;
+    dzPicked.hidden = true;
+    installBtn.disabled = true;
+    err.hidden = true;
+  }
+  dz.addEventListener('click', function (e) {
+    if (e.target.closest('#dzClear')) return;
+    fileInput.click();
+  });
+  $('dzClear').addEventListener('click', function (e) {
+    e.stopPropagation();
+    clearPicked();
+  });
+  fileInput.addEventListener('change', function () {
+    var f = this.files && this.files[0];
+    this.value = '';
+    if (f) pickFile(f.name, f.size);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.samples [data-file]'), function (b) {
+    b.addEventListener('click', function () {
+      pickFile(b.getAttribute('data-file'), Number(b.getAttribute('data-size')));
+    });
+  });
+  dz.addEventListener('dragover', function (e) { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', function () { dz.classList.remove('over'); });
+  dz.addEventListener('drop', function (e) {
+    e.preventDefault();
+    dz.classList.remove('over');
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) pickFile(f.name, f.size);
+  });
+
+  installBtn.addEventListener('click', function () {
+    if (!picked) return;
+    var exists = SKILLS.some(function (s) { return s.name === picked.root; });
+    if (exists && !ovw.checked) {
+      showErr('<b>安装失败 · 409 Conflict。</b>已存在同名技能「' + esc(picked.root) + '」。勾选「同名覆盖」后重试，或重命名 zip 包。');
+      return;
+    }
+    err.hidden = true;
+    startUpload(exists);
+  });
+
+  function startUpload(overwrite) {
+    var pct = 0;
+    prog.hidden = false;
+    progNote.hidden = false;
+    progFill.style.width = '0%';
+    progPct.textContent = '0%';
+    progState.textContent = '上传中';
+    installBtn.disabled = true;
+    installBtnText.textContent = '上传中…';
+    var tick = function () {
+      pct += 5 + Math.random() * 9;
+      if (pct >= 100) {
+        progFill.style.width = '100%';
+        progPct.textContent = '100%';
+        progState.textContent = '校验 SKILL.md…';
+        installBtnText.textContent = '校验中…';
+        clearInterval(uploadTimer);
+        uploadTimer = null;
+        setTimeout(function () { finishInstall(overwrite); }, 460);
+      } else {
+        progFill.style.width = pct + '%';
+        progPct.textContent = Math.round(pct) + '%';
+      }
+    };
+    if (uploadTimer) clearInterval(uploadTimer);
+    uploadTimer = setInterval(tick, 140);
+  }
+
+  function finishInstall(overwrite) {
+    if (!picked) return;
+    var name = picked.root;
+    var size = picked.size;
+    var scope = document.querySelector('input[name="scope"]:checked').value;
+    var base = scope === 'workspace'
+      ? 'D:\\workspace\\loop-agent-command\\.loop-agent\\skills\\'
+      : 'C:\\Users\\muton\\.loop-agent\\skills\\';
+    var short = scope === 'workspace' ? '.loop-agent/skills/' + name : '~/.loop-agent/skills/' + name;
+    var meta = ['1 个文件', fmtSize(size), '刚刚'];
+    var existing = findSkill(name);
+    if (existing && overwrite) {
+      existing.scope = scope;
+      existing.path = base + name;
+      existing.short = short;
+      existing.meta = meta;
+      SKILLS = [existing].concat(SKILLS.filter(function (s) { return s.name !== name; }));
+    } else {
+      SKILLS.unshift({
+        name: name,
+        scope: scope,
+        short: short,
+        path: base + name,
+        meta: meta,
+        desc: '刚通过 zip 包安装的演示技能。首次调用时由服务端解析 SKILL.md，描述与正文会在重载后补全。',
+        front: [['name', name], ['source', '本地 zip 上传'], ['scope', scope]],
+        body: '<h2>安装成功</h2><p>技能包已解压到目标目录。首次调用时会读取 <code>SKILL.md</code>，请确认 frontmatter 中的 name 与描述。</p><pre><code>skills/' + esc(name) + '/SKILL.md</code></pre>'
+      });
+    }
+    closeInstall();
+    render();
+    toast('已安装技能 ' + name + ' · ' + scopeLabel(scope));
+  }
+
+  /* ---------- 顶栏动作 ---------- */
+  $('refreshBtn').addEventListener('click', function () {
+    var b = this;
+    b.classList.add('spin');
+    setTimeout(function () { b.classList.remove('spin'); }, 720);
+    toast('列表已刷新 · ' + SKILLS.length + ' 个技能');
+  });
+  $('reloadBtn').addEventListener('click', function () {
+    var b = this;
+    b.classList.add('spin');
+    setTimeout(function () { b.classList.remove('spin'); }, 900);
+    var d = new Date();
+    stTime.textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    toast('已重新扫描技能目录 · ' + SKILLS.length + ' 个技能');
+  });
+
+  /* ---------- Toast ---------- */
+  function toast(msg, isErr) {
+    toastText.textContent = msg;
+    toastEl.classList.toggle('err', !!isErr);
+    toastEl.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 2400);
+  }
+
+  /* ---------- 锁定 / 键盘 ---------- */
+  function syncLock() {
+    var open = drv.classList.contains('show') || mdl.classList.contains('show') || cfm.classList.contains('show');
+    document.body.classList.toggle('lock', open);
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      if (cfm.classList.contains('show')) { closeCfm(); return; }
+      if (mdl.classList.contains('show')) { closeInstall(); return; }
+      if (drv.classList.contains('show')) { closeDrawer(); return; }
+      closeMenu();
+    }
+    if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) {
+      e.preventDefault();
+      searchInput.focus();
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
+
+
