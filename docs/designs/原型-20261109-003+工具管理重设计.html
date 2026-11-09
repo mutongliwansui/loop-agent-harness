@@ -9,7 +9,7 @@
   目标文件：webui/src/views/ToolsView.vue
   端点不变：GET /tools · GET /tools/:name（schema 详情）· PATCH /tools/:name {enabled, scope}
             POST /tools/reload
-  后端事实：内置工具可 enabled/disabled（落盘 + registry 同步）；MCP 工具不可关（PATCH 会 400），需去 MCP 页断连
+  后端事实：内置工具可 enabled/disabled（落盘 + registry 同步）；本页仅展示内置工具
   自包含：无 CDN、无外部字体、无外部图片，离线可开；图标全部为内联 SVG。
 -->
 <style>
@@ -100,7 +100,7 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
 .btn.danger:hover { filter: brightness(1.06); }
 
-.tl-stats { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.tl-stats { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .tl-stat { padding: 11px 16px 12px; border-left: 1px solid var(--line-soft); min-width: 0; }
 .tl-stat:first-child { border-left: none; }
 .tl-stat .k { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
@@ -142,8 +142,6 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 .tl-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); transform: translateY(-1px); }
 .tl-card.disabled { border-left: 3px solid var(--muted); padding-left: 14px; background: linear-gradient(180deg, var(--panel) 0%, color-mix(in srgb, var(--muted) 3%, var(--panel)) 100%); }
 .tl-card.disabled::before { content: '禁用 · 不出现在 prompt schema'; position: absolute; right: 12px; top: -10px; font: 500 10px/1 var(--mono); color: var(--muted); background: var(--code-bg); border: 1px solid var(--line); padding: 3px 6px; border-radius: 999px; }
-.tl-card.mcp { border-left: 3px solid transparent; padding-left: 16px; }
-.tl-card.mcp.bad { border-left-color: var(--danger); padding-left: 14px; }
 .tl-card.vision-off::before { content: '视觉未启用'; position: absolute; right: 12px; top: -10px; font: 500 10px/1 var(--mono); color: var(--warn); background: var(--warn-weak); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); padding: 3px 6px; border-radius: 999px; }
 
 .tl-top { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
@@ -156,7 +154,6 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 .tile.http     { background: linear-gradient(135deg, #ea580c, #c2410c); }
 .tile.skill    { background: linear-gradient(135deg, #059669, #047857); }
 .tile.other    { background: linear-gradient(135deg, #6b7280, #4b5563); }
-.tile.mcp-off  { filter: grayscale(1) opacity(.75); }
 .tile.disabled { filter: grayscale(1) opacity(.65); }
 
 .tl-id { flex: 1; min-width: 0; }
@@ -186,7 +183,7 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 .tl-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, .22); transition: transform .18s; }
 .tl-toggle.on { background: var(--brand); }
 .tl-toggle.on::after { transform: translateX(18px); }
-.tl-toggle.mcp { background: var(--line); cursor: not-allowed; opacity: .65; }
+.tl-toggle.lock { background: var(--line); cursor: not-allowed; opacity: .65; }
 
 .tl-more { width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: .6; }
 .tl-more svg { width: 15px; height: 15px; }
@@ -287,8 +284,6 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 /* ====== 响应式 & 深色微调 ====== */
 @media (max-width: 980px) {
   .tl-grid { grid-template-columns: 1fr; }
-  .tl-stats { grid-template-columns: repeat(3, 1fr); }
-  .tl-stat:nth-child(4), .tl-stat:nth-child(5) { border-left: none; border-top: 1px solid var(--line-soft); }
 }
 @media (max-width: 700px) {
   .tl-head { flex-direction: column; align-items: flex-start; gap: 14px; }
@@ -324,32 +319,31 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
   <!-- ======= A. 现状问题 ======= -->
   <section>
     <div class="sec-head"><h2>A. 现状问题</h2><span class="badge mute">先问为什么改</span></div>
-    <p class="sec-desc">当前工具管理页（ToolsView）是一张扁平表格 + 页头 scope 下拉 + 行内 JsonViewer 展开。按 20261109-001 / 20261109-002 已经确立的「卡片流 + 抽屉」新范式，对照 MCP 与技能页，这里有 6 个具体问题：</p>
+    <p class="sec-desc">当前工具管理页（ToolsView）是一张扁平表格 + 页头 scope 下拉 + 行内 JsonViewer 展开。按 20261109-001 / 20261109-002 已经确立的「卡片流 + 抽屉」新范式，对照技能页，这里有 5 个具体问题：</p>
     <div class="issue-grid">
       <div class="issue"><div class="no">1</div><div><b>表格信息密度不均</b><p>内置工具 20+ 行全部挤进一张表，行内描述被挤窄无法换行，视觉四件套（describe_image/ask_image/extract_json/ocr_image）直接消失（vision.enabled=false 时），用户不知道有这能力。</p></div></div>
       <div class="issue"><div class="no">2</div><div><b>启用/禁用视觉语义弱</b><p>一个 toggle 开关直接决定 prompt schema 是否注入，属于「影响 Agent 核心能力」的高影响操作，但旧版只有一行文字说明，没有禁用态提醒。</p></div></div>
-      <div class="issue"><div class="no">3</div><div><b>MCP 工具从这里消失</b><p>GET /tools 同时返回 builtin + mcp 两类，旧版只展示 builtin，让用户误以为 MCP 工具只是「不在」而不是「归 MCP 页管」，信息割裂。</p></div></div>
-      <div class="issue"><div class="no">4</div><div><b>Schema 查看是行内展开</b><p>JSON schema 可能上百行，展开后把整个表格撑得面目全非，且跟在所属工具行紧挨着，视觉无法区分是哪个工具的 schema。</p></div></div>
-      <div class="issue"><div class="no">5</div><div><b>scope 写在页头影响面模糊</b><p>所有开关共用一个 scope 下拉。用户禁用 fileRead（workspace）后，可能忘记切回 global 就去禁用 commandRun，导致多个工具在两个层被拆解得支离破碎。</p></div></div>
-      <div class="issue"><div class="no">6</div><div><b>没有分类 / 搜索 / 筛选</b><p>20 个内置工具分属文件 / 命令 / 会话 / 记忆 / 视觉 / HTTP / 技能 7 个家族，旧版不展示家族，用户要找 editFile 或 grep 只能盯着表格扫。</p></div></div>
+      <div class="issue"><div class="no">3</div><div><b>Schema 查看是行内展开</b><p>JSON schema 可能上百行，展开后把整个表格撑得面目全非，且跟在所属工具行紧挨着，视觉无法区分是哪个工具的 schema。</p></div></div>
+      <div class="issue"><div class="no">4</div><div><b>scope 写在页头影响面模糊</b><p>所有开关共用一个 scope 下拉。用户禁用 fileRead（workspace）后，可能忘记切回 global 就去禁用 commandRun，导致多个工具在两个层被拆解得支离破碎。</p></div></div>
+      <div class="issue"><div class="no">5</div><div><b>没有分类 / 搜索 / 筛选</b><p>20 个内置工具分属文件 / 命令 / 会话 / 记忆 / 视觉 / HTTP / 技能 7 个家族，旧版不展示家族，用户要找 editFile 或 grep 只能盯着表格扫。</p></div></div>
     </div>
   </section>
 
   <!-- ======= B. 设计决策 D1-D9 ======= -->
   <section>
     <div class="sec-head"><h2>B. 设计决策</h2><span class="badge">D1–D9</span></div>
-    <p class="sec-desc">沿用 20261109-001（技能）和 20261109-002（MCP）已经建立的「卡片流 + 统计条 + 工具条 + 抽屉 + 弹层」范式，避免每一页重新发明一套。后端接口保持不变，无需改动。</p>
+    <p class="sec-desc">沿用 20261109-001（技能）等已经建立的「卡片流 + 统计条 + 工具条 + 抽屉 + 弹层」范式，避免每一页重新发明一套。后端接口保持不变，无需改动。</p>
     <div class="issue-grid" style="grid-template-columns: 1fr; gap: 10px;">
 
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D1</div><div><b>卡片流两列，桌面优先，窄屏自动单列</b><p>每卡：工具名（等宽） + 分组图标 tile（按家族染色：文件蓝、命令紫、会话青、记忆玫红、视觉琥珀、HTTP 橙、技能绿） + 简述（2 行截断） + 启用 pill + toggle + ⋯ 菜单 + scope 默认写入下拉（工具条）。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D2</div><div><b>来源分段：内置 / MCP 各自成组</b><p>工具条第一分段「全部 / 内置 / MCP / 仅禁用」，MCP 工具卡不显示 toggle（PATCH 会 400），改用「跳 MCP 页」按钮；内置禁用卡灰色底 + 红色斜条 + 标题删除线，突出「不出现在 prompt schema」。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D2</div><div><b>状态分段：全部 / 已启用 / 已禁用</b><p>工具条第一分段按启用状态过滤；禁用卡灰色底 + 灰色斜条 + 标题删除线，突出「不出现在 prompt schema」。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D3</div><div><b>视觉四件套单独提醒</b><p>vision.enabled=false 时，describe_image / ask_image / extract_json / ocr_image 仍在卡片流里，tile 灰化 + 右上角「视觉未启用」徽标 + toggle 禁用 + 简述前加「vision.enabled=false，打开后即可调用」，让用户一眼知道「能力存在但被配置挡住」。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D4</div><div><b>详情抽屉替代行内 JsonViewer</b><p>点卡片或「Schema」菜单项打开右侧抽屉：名称 + 来源 + 分组 + 启用 pill + 简短说明 + 参数明细表（name / type / required / description）+ 原始 Schema JSON（折叠）+ 示例调用（从描述里提取第一行代码片段）+ scope 信息 + 底部「禁用 / 关闭」按钮。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D5</div><div><b>切换开关直接生效 + 可选重载</b><p>点 toggle 直接 PATCH /tools/:name，落盘 + registry 同步 + toast「已禁用 fileRead（workspace），运行中的会话继续可用；重载后新会话生效」。不弹确认模态（同技能页 uninstall 的「一次确认」思路：禁用后果可逆且可见，但需提示影响面）。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D6</div><div><b>搜索 / 来源分段 / 状态分段 / 排序</b><p>搜索按名称 + 简述匹配（含 server__tool 的 server 前缀命中）；第二分段「启用 / 禁用 / MCP 失败」；排序「名称 A→Z / 家族优先（文件 → 命令 → 会话 → 记忆 → 视觉 → HTTP → 技能 → 其他）/ 禁用优先（禁用顶到最上）」。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D7</div><div><b>统计条：总工具 / 内置 / MCP / 已禁用 / MCP 失败</b><p>五项统计，禁用计数红色，MCP 失败计数红色；分段 Tab 右侧的「N 个」实时同步统计。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D8</div><div><b>后端零改动</b><p>沿用 GET /tools + GET /tools/:name + PATCH /tools/:name + POST /tools/reload。唯一约束：MCP 工具卡不调用 PATCH（后端会 400），改为引导去 MCP 页。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D9</div><div><b>键盘 & 无障碍</b><p>Esc 关闭抽屉与菜单；`/` 聚焦搜索；菜单 `role=menu` / `role=menuitem`；Toggle 可键盘触发；抽屉 `aria-modal`。骨架 / 空态 / 无匹配态与 MCP / 技能页同构。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D6</div><div><b>搜索 / 状态分段 / 排序</b><p>搜索按名称 + 简述匹配；排序「名称 A→Z / 家族优先（文件 → 命令 → 会话 → 记忆 → 视觉 → HTTP → 技能 → 其他）/ 禁用优先（禁用顶到最上）」。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D7</div><div><b>统计条：总工具 / 已启用 / 已禁用</b><p>三项统计，禁用计数红色；分段 Tab 右侧的「N 个」实时同步统计。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D8</div><div><b>后端零改动</b><p>沿用 GET /tools + GET /tools/:name + PATCH /tools/:name + POST /tools/reload，前端仅取 source=builtin 的行展示。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D9</div><div><b>键盘 & 无障碍</b><p>Esc 关闭抽屉与菜单；`/` 聚焦搜索；菜单 `role=menu` / `role=menuitem`；Toggle 可键盘触发；抽屉 `aria-modal`。骨架 / 空态 / 无匹配态与技能页同构。</p></div></div>
 
     </div>
   </section>
@@ -357,7 +351,7 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
   <!-- ======= C. 原型预览 ======= -->
   <section>
     <div class="sec-head"><h2>C. 原型预览</h2><span class="badge">状态矩阵 · 交互</span></div>
-    <p class="sec-desc">点击搜索框、分段 Tab、排序、scope 下拉、卡片 toggle、⋯ 菜单、Schema 抽屉、Esc 关闭、深色切换。演示数据含 20 个内置工具（vision.enabled=false 导致 4 个视觉工具灰化）+ 5 个 MCP 工具（其中 postgres__query 已连接、grafana__run 对应 server 失败）。</p>
+    <p class="sec-desc">点击搜索框、分段 Tab、排序、scope 下拉、卡片 toggle、⋯ 菜单、Schema 抽屉、Esc 关闭、深色切换。演示数据含 20 个内置工具（vision.enabled=false 导致 4 个视觉工具灰化，其中 editFile / deleteFile 处于禁用态）。</p>
 
     <div class="ctx">
       <div class="ctx-tag">工具管理 · 20261109-003</div>
@@ -367,10 +361,10 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
         <div class="lead">
           <div class="eyebrow">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 12h10M4.5 8h7"/></svg>
-            内置 & MCP · 协议工具
+            内置工具 · 协议注册表
           </div>
           <h1>工具</h1>
-          <p>内置工具直接改变 prompt schema；MCP 工具由服务器连接决定。禁用后运行中的会话继续可用，重载会影响新会话。</p>
+          <p>内置工具直接改变 prompt schema。禁用后运行中的会话继续可用，重载会影响新会话。</p>
         </div>
         <div class="tl-actions">
           <button class="btn icon" title="刷新列表" aria-label="刷新列表" id="tl-refresh-btn">
@@ -385,25 +379,22 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 
       <!-- 统计条 -->
       <div class="tl-stats">
-        <div class="tl-stat"><div class="k"><i class="on"></i>总工具</div><div class="v" id="tl-sum-total">25<small>个</small></div></div>
-        <div class="tl-stat"><div class="k"><i class="on"></i>内置</div><div class="v" id="tl-sum-builtin">20<small>个</small></div></div>
-        <div class="tl-stat"><div class="k"><i class="on"></i>MCP 工具</div><div class="v" id="tl-sum-mcp">5<small>个</small></div></div>
-        <div class="tl-stat"><div class="k"><i class="warn"></i>已禁用</div><div class="v warn" id="tl-sum-disabled">3<small>个</small></div></div>
-        <div class="tl-stat"><div class="k"><i class="bad"></i>MCP 失败</div><div class="v bad" id="tl-sum-mcpbad">1<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="on"></i>总工具</div><div class="v" id="tl-sum-total">20<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="on"></i>已启用</div><div class="v" id="tl-sum-enabled">18<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="bad"></i>已禁用</div><div class="v bad" id="tl-sum-disabled">2<small>个</small></div></div>
       </div>
 
       <!-- 工具条 -->
       <div class="tl-toolbar">
         <div class="tl-search">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
-          <input id="tl-search" type="text" placeholder="搜索工具名、简述或 server" autocomplete="off" spellcheck="false">
+          <input id="tl-search" type="text" placeholder="搜索工具名或简述" autocomplete="off" spellcheck="false">
           <kbd>/</kbd>
         </div>
-        <div class="tl-seg" role="tablist" aria-label="按来源筛选" id="tl-src-seg">
-          <button type="button" class="on" data-src="all">全部 <span class="n">25</span></button>
-          <button type="button" data-src="builtin">内置 <span class="n">20</span></button>
-          <button type="button" data-src="mcp">MCP <span class="n">5</span></button>
-          <button type="button" data-src="disabled">禁用 <span class="n">3</span></button>
+        <div class="tl-seg" role="tablist" aria-label="按状态筛选" id="tl-src-seg">
+          <button type="button" class="on" data-src="all">全部 <span class="n">20</span></button>
+          <button type="button" data-src="enabled">已启用 <span class="n">18</span></button>
+          <button type="button" data-src="disabled">已禁用 <span class="n">2</span></button>
         </div>
         <select class="tl-sort" id="tl-sort" aria-label="排序">
           <option value="name">名称 A→Z</option>
@@ -414,16 +405,16 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
           <option value="workspace">scope · workspace</option>
           <option value="global">scope · global</option>
         </select>
-        <span class="tl-count" id="tl-count">显示 25 / 25 个</span>
+        <span class="tl-count" id="tl-count">显示 20 / 20 个</span>
       </div>
 
       <!-- 卡片流 -->
       <div class="tl-grid" id="tl-grid"></div>
 
       <div class="tl-footline">
-        <span>禁用内置工具 = 从 prompt schema 移除；运行中的会话不影响。MCP 工具不可在此处关闭，请去 MCP 页。</span>
+        <span>禁用内置工具 = 从 prompt schema 移除；运行中的会话不影响。</span>
         <span class="sp"></span>
-        <span>共 <b id="tl-foot-total" style="color:var(--text);font-weight:600">25</b> 个工具</span>
+        <span>共 <b id="tl-foot-total" style="color:var(--text);font-weight:600">20</b> 个工具</span>
       </div>
     </div>
   </section>
@@ -449,14 +440,6 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
       <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill off"><i></i>禁用</span></div>
       <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">tile 灰化 + 右上角「视觉未启用」徽标 + toggle 禁用 + 简述前置提醒</div>
       <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle disabled；门控源头是 vision.enabled，不是 tools.disabled</div>
-      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">MCP · server 已连接</div>
-      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill on"><i></i>已连接</span></div>
-      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">白底 + MCP tile + 工具名含 server__ 前缀 + 底部 server 徽标</div>
-      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle disabled（PATCH 会 400）；「跳 MCP 页」按钮</div>
-      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">MCP · server 失败</div>
-      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill err"><i></i>连接失败</span></div>
-      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">左边 3px 红色条 + tile 灰化 + 底部 server 名</div>
-      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle disabled；「跳 MCP 页」按钮</div>
       <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">骨架加载</div>
       <div style="padding: 9px 11px; background: var(--panel);">—</div>
       <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">4 个骨架卡，tile + 3 行文字占位</div>
@@ -476,11 +459,10 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
   <section>
     <div class="sec-head"><h2>E. 接口映射</h2><span class="badge">后端零改动</span></div>
     <div style="display:grid; gap:10px;">
-      <div class="d-item"><b>GET /tools</b> → <code>{ tools: [{name, description, enabled, source}] }</code>（内置 + MCP 快照，原样使用；前端按 source 分两组；MCP 失败判定从 <code>GET /mcp/servers</code> 合并）</div>
-      <div class="d-item"><b>PATCH /tools/:name</b> <code>{ enabled, scope }</code> → 内置工具 toggle（前端按 D5 直接调用；MCP 工具卡不调用，后端会 400）</div>
+      <div class="d-item"><b>GET /tools</b> → <code>{ tools: [{name, description, enabled, source}] }</code>（工具快照，原样使用；前端仅取 source=builtin 的内置工具展示）</div>
+      <div class="d-item"><b>PATCH /tools/:name</b> <code>{ enabled, scope }</code> → 内置工具 toggle（前端按 D5 直接调用）</div>
       <div class="d-item"><b>GET /tools/:name</b> → <code>{ name, description, enabled, source, schema }</code>（抽屉正文，参数表 + 原始 JSON 都来自 schema）</div>
       <div class="d-item"><b>POST /tools/reload</b> → <code>{ reloaded }</code>（页头「重载」按钮；抽屉底部也可调用）</div>
-      <div class="d-item"><b>GET /mcp/servers</b>（合并读取）→ 决定 MCP 工具的 server 来源 + 失败态，用于 MCP 工具卡的 tile 灰化 + 红色条</div>
     </div>
     <p class="note">后端没有工具登记/删除/改名端点（静态注册），所以原型不设计「新建」「删除」「改名」等模态。视觉四件套的门控由 <code>vision.enabled</code> 决定，不是 <code>tools.disabled</code>，前端渲染时要额外读取 <code>GET /config</code> 判断是否灰化。</p>
   </section>
@@ -489,8 +471,8 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
   <section>
     <div class="sec-head"><h2>F. 响应式</h2><span class="badge mute">三个断点</span></div>
     <div class="issue-grid">
-      <div class="issue"><div class="no">≥ 980</div><div><b>桌面 · 双列</b><p>卡片两列；统计条 5 项均分；搜索 max-width 330px；scope 下拉在工具条最右侧。</p></div></div>
-      <div class="issue"><div class="no">860–980</div><div><b>平板 · 单列</b><p>卡片变单列；统计条变 3+2 两行；搜索保持 max-width；分段 Tab 折行。</p></div></div>
+      <div class="issue"><div class="no">≥ 980</div><div><b>桌面 · 双列</b><p>卡片两列；统计条 3 项均分；搜索 max-width 330px；scope 下拉在工具条最右侧。</p></div></div>
+      <div class="issue"><div class="no">860–980</div><div><b>平板 · 单列</b><p>卡片变单列；统计条 3 项保持一行；搜索保持 max-width；分段 Tab 折行。</p></div></div>
       <div class="issue"><div class="no">≤ 700</div><div><b>手机 · 堆叠</b><p>页头纵排，主按钮 flex:1；搜索、scope 下拉、排序各占一行；toggle 文字说明隐藏，只留开关图形。</p></div></div>
     </div>
   </section>
@@ -534,14 +516,6 @@ const builtins = [
   { name: 'skillRun',      group: 'skill',   tile: 'skill', enabled: true,  desc: '激活一个 Skill（技能包）。返回该 Skill 的完整指令内容，以及技能所在目录（技能目录绝对路径）。当判断用户需求匹配某个 Skill 时使用此工具获取详细指令，再按 Skill 执行。' },
 ];
 
-const mcps = [
-  { name: 'postgres__query',      server: 'postgres',      tile: 'other', enabled: true, bad: false, desc: '在已连接的 postgres 数据库中执行只读 SQL 查询。返回结果集或错误。' },
-  { name: 'postgres__list_tables',server: 'postgres',      tile: 'other', enabled: true, bad: false, desc: '列出 postgres 数据库当前 schema 下的所有数据表。' },
-  { name: 'github__search_code',  server: 'github',        tile: 'other', enabled: true, bad: false, desc: '在 GitHub 仓库中搜索代码，支持语言、分支、路径过滤。' },
-  { name: 'github__list_issues',  server: 'github',        tile: 'other', enabled: true, bad: false, desc: '列出指定仓库的 issue，支持状态与标签过滤。' },
-  { name: 'grafana__run_query',   server: 'grafana',       tile: 'other', enabled: false, bad: true,  desc: '在 Grafana 数据源上执行查询；MCP server 当前连接失败，工具不可用。' },
-];
-
 /* ===== 分组样式与图标 ===== */
 const GROUP_LABEL = { file:'文件', cmd:'命令', session:'会话', memory:'记忆', vision:'视觉', http:'HTTP', skill:'技能', other:'其他' };
 const GROUP_ORDER = ['file','cmd','session','memory','vision','http','skill','other'];
@@ -550,26 +524,23 @@ const GROUP_ORDER = ['file','cmd','session','memory','vision','http','skill','ot
 function buildList() {
   const list = [];
   for (const b of builtins) list.push({ ...b, kind: 'builtin', visionGated: b.group === 'vision' && VISION_OFF, icon: b.tile });
-  for (const m of mcps) list.push({ name: m.name, desc: m.desc, enabled: !m.bad, kind: 'mcp', mcpServer: m.server, mcpBad: m.bad, icon: 'other', tile: 'other' });
   return list;
 }
 
 function matches(t, q) {
   const s = q.trim().toLowerCase();
   if (!s) return true;
-  const hay = t.name + ' ' + (t.desc || '') + (t.kind === 'mcp' ? ' ' + t.mcpServer : '');
+  const hay = t.name + ' ' + (t.desc || '');
   return hay.toLowerCase().includes(s);
 }
 
 function filterAndSort(list) {
   const src = document.querySelector('#tl-src-seg button.on').dataset.src;
-  const disabledOnly = src === 'disabled';
   let arr = list.filter((t) => {
-    if (src === 'builtin') return t.kind === 'builtin';
-    if (src === 'mcp') return t.kind === 'mcp';
+    if (src === 'enabled') return t.enabled;
     if (src === 'disabled') return !t.enabled;
     return true;
-  }).filter((t) => !disabledOnly || !t.enabled);
+  });
   arr = arr.filter((t) => matches(t, document.getElementById('tl-search').value));
   const mode = document.getElementById('tl-sort').value;
   if (mode === 'name') arr.sort((a, b) => a.name.localeCompare(b.name));
@@ -607,12 +578,11 @@ function renderList() {
     const name = el.dataset.name;
     el.onclick = () => {
       const t = all.find((x) => x.name === name);
-      if (!t || t.visionGated || t.kind === 'mcp') return;
+      if (!t || t.visionGated) return;
       t.enabled = !t.enabled;
       el.classList.toggle('on', t.enabled);
       el.setAttribute('aria-pressed', String(t.enabled));
       toast(`${t.name} 已${t.enabled ? '启用' : '禁用'}（scope · ${document.getElementById('tl-scope').value}）`);
-      document.getElementById('tl-sum-disabled').querySelector('b, small, .v') ? null : null;
       refreshStats(all);
       renderList();
     };
@@ -630,52 +600,38 @@ function renderList() {
 
 function refreshStats(all) {
   document.getElementById('tl-sum-total').querySelector('small').parentElement.firstChild.textContent = all.length;
-  document.getElementById('tl-sum-builtin').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.kind === 'builtin').length;
-  document.getElementById('tl-sum-mcp').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.kind === 'mcp').length;
+  document.getElementById('tl-sum-enabled').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.enabled).length;
   document.getElementById('tl-sum-disabled').querySelector('small').parentElement.firstChild.textContent = all.filter(t => !t.enabled).length;
-  document.getElementById('tl-sum-mcpbad').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.kind === 'mcp' && t.mcpBad).length;
   document.getElementById('tl-foot-total').textContent = all.length;
   [...document.querySelectorAll('#tl-src-seg button')].forEach((b) => {
     const s = b.dataset.src;
     let n = 0;
     if (s === 'all') n = all.length;
+    else if (s === 'enabled') n = all.filter(t => t.enabled).length;
     else if (s === 'disabled') n = all.filter(t => !t.enabled).length;
-    else n = all.filter(t => t.kind === s).length;
     b.querySelector('.n').textContent = n;
   });
 }
 
 function cardHTML(t) {
   const disabled = !t.enabled;
-  const mcp = t.kind === 'mcp';
   const visionOff = !!t.visionGated;
   const tileCls = ['tile', t.icon || 'other'];
-  if (mcp && t.mcpBad) tileCls.push('mcp-off');
-  if (disabled && !mcp) tileCls.push('disabled');
+  if (disabled || visionOff) tileCls.push('disabled');
   const cardCls = ['tl-card'];
-  if (disabled && !mcp) cardCls.push('disabled');
-  if (mcp) cardCls.push('mcp');
-  if (mcp && t.mcpBad) cardCls.push('bad');
+  if (disabled) cardCls.push('disabled');
   if (visionOff) cardCls.push('vision-off');
 
-  const groupLabel = mcp ? `MCP · ${t.mcpServer}` : GROUP_LABEL[t.group || 'other'];
-  const groupMute = mcp ? 'tl-group mute' : 'tl-group';
-
-  let pillHTML = '';
-  if (mcp) pillHTML = t.mcpBad
-    ? '<span class="tl-pill err"><i></i>连接失败</span>'
-    : '<span class="tl-pill on"><i></i>已连接</span>';
-  else pillHTML = disabled
+  const groupLabel = GROUP_LABEL[t.group || 'other'];
+  const pillHTML = disabled
     ? '<span class="tl-pill off"><i></i>禁用</span>'
     : '<span class="tl-pill on"><i></i>启用</span>';
 
   const toggleHTML = visionOff
-    ? '<div class="tl-toggle mcp" title="vision.enabled=false，无法启用视觉工具" aria-disabled="true"></div>'
-    : mcp
-      ? `<button class="btn sm ghost" data-drawer="${t.name}">跳 MCP 页</button>`
-      : `<div class="tl-toggle ${disabled ? '' : 'on'}" data-name="${t.name}" role="switch" aria-checked="${disabled ? 'false' : 'true'}"></div>`;
+    ? '<div class="tl-toggle lock" title="vision.enabled=false，无法启用视觉工具" aria-disabled="true"></div>'
+    : `<div class="tl-toggle ${disabled ? '' : 'on'}" data-name="${t.name}" role="switch" aria-checked="${disabled ? 'false' : 'true'}"></div>`;
 
-  const family = mcp ? 'MCP' : GROUP_LABEL[t.group || 'other'];
+  const family = GROUP_LABEL[t.group || 'other'];
 
   return `
     <article class="${cardCls.join(' ')}">
@@ -684,7 +640,7 @@ function cardHTML(t) {
         <div class="tl-id">
           <div class="tl-title">
             <h3>${t.name}</h3>
-            <span class="${groupMute}">${groupLabel}</span>
+            <span class="tl-group">${groupLabel}</span>
             ${pillHTML}
           </div>
           <p class="tl-desc">${t.desc}</p>
@@ -697,7 +653,7 @@ function cardHTML(t) {
       <div class="tl-foot">
         <span class="tl-meta">${family}</span>
         <span class="sep">·</span>
-        <span class="tl-meta">${mcp ? 'MCP' : '内置'}</span>
+        <span class="tl-meta">内置</span>
         <span class="spacer"></span>
         ${toggleHTML}
         <button class="btn sm ghost" data-drawer="${t.name}">Schema</button>
@@ -716,7 +672,6 @@ function initials(name) {
 const MENU_ICONS = {
   schema: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h10v11H3z"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>',
   copy:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.2" y="5.2" width="6.8" height="8" rx="1.2"/><path d="M10.4 5.2V3.4H3.6v8h1.6"/></svg>',
-  jump:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M5 3h8v8"/></svg>',
   close:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg>',
 };
 
@@ -732,12 +687,8 @@ function openMenu(name, ev) {
   const items = [
     { id: 'schema', label: '查看 Schema', icon: MENU_ICONS.schema },
     { id: 'copy',   label: '复制工具名', icon: MENU_ICONS.copy },
+    { id: t.enabled ? 'disable' : 'enable', label: t.enabled ? '禁用' : '启用', icon: t.enabled ? MENU_ICONS.close : '✓', danger: t.enabled },
   ];
-  if (t.kind === 'mcp') {
-    items.push({ id: 'jump', label: '跳 MCP 页', icon: MENU_ICONS.jump });
-  } else {
-    items.push({ id: t.enabled ? 'disable' : 'enable', label: t.enabled ? '禁用' : '启用', icon: t.enabled ? MENU_ICONS.close : '✓', danger: !t.enabled });
-  }
 
   menu.style.display = 'block';
   menu.style.top = top + 'px';
@@ -759,9 +710,8 @@ function actMenu(id, name) {
   closeMenu();
   if (id === 'schema') { openDrawer(name); return; }
   if (id === 'copy') { navigator.clipboard?.writeText(name); toast('工具名已复制'); return; }
-  if (id === 'jump')  { toast('即将跳转到 MCP 页 / 服务器：' + t.mcpServer); return; }
   if (id === 'enable' || id === 'disable') {
-    if (!t || t.kind !== 'builtin') return;
+    if (!t) return;
     t.enabled = (id === 'enable');
     toast(`${t.name} 已${t.enabled ? '启用' : '禁用'}（scope · ${document.getElementById('tl-scope').value}）`);
     refreshStats(all);
@@ -821,15 +771,15 @@ function openDrawer(name) {
   const body = document.getElementById('tl-drv-body');
   const foot = document.getElementById('tl-drv-foot');
   const tileCls = ['tile', t.icon || 'other'];
-  if ((t.kind === 'builtin' && !t.enabled) || t.visionGated || (t.kind === 'mcp' && t.mcpBad)) tileCls.push('disabled');
-  const family = t.kind === 'mcp' ? `MCP · ${t.mcpServer}` : GROUP_LABEL[t.group || 'other'];
+  if (!t.enabled || t.visionGated) tileCls.push('disabled');
+  const family = GROUP_LABEL[t.group || 'other'];
   head.innerHTML = `
     <span class="${tileCls.join(' ')}">${initials(t.name)}</span>
     <div class="tl-drv-title">
       <h2>${t.name}</h2>
       <div class="tl-drv-sub">
-        <span class="tl-group ${t.kind === 'mcp' ? 'mute' : ''}">${family}</span>
-        ${t.kind === 'builtin' ? (t.enabled ? '<span class="tl-pill on"><i></i>启用</span>' : '<span class="tl-pill off"><i></i>禁用</span>') : (t.mcpBad ? '<span class="tl-pill err"><i></i>连接失败</span>' : '<span class="tl-pill on"><i></i>已连接</span>')}
+        <span class="tl-group">${family}</span>
+        ${t.enabled ? '<span class="tl-pill on"><i></i>启用</span>' : '<span class="tl-pill off"><i></i>禁用</span>'}
       </div>
     </div>
     <button class="tl-close-btn" type="button" onclick="closeDrawer()" aria-label="关闭">
@@ -851,10 +801,10 @@ function openDrawer(name) {
     <div class="tl-lab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/><path d="M8 5v3.5M8 11v.5"/></svg>基本信息</div>
     <table class="kv">
       <tbody>
-        <tr><td class="k">来源</td><td class="v">${t.kind === 'builtin' ? '内置工具' : 'MCP 工具'}</td></tr>
+        <tr><td class="k">来源</td><td class="v">内置工具</td></tr>
         <tr><td class="k">分组</td><td class="v">${family}</td></tr>
-        <tr><td class="k">启用状态</td><td class="v">${t.kind === 'mcp' ? (t.mcpBad ? '连接失败（不可调用）' : '由 MCP server 决定（不可手动开关）') : (t.enabled ? '启用' : '禁用（不在 prompt schema 中）')}</td></tr>
-        ${t.kind === 'builtin' ? `<tr><td class="k">配置层</td><td class="v"><code>${scopeVal}</code>（PATCH /tools/${t.name} 时写入）</td></tr>` : `<tr><td class="k">所属 Server</td><td class="v"><code>${t.mcpServer}</code></td></tr>`}
+        <tr><td class="k">启用状态</td><td class="v">${t.enabled ? '启用' : '禁用（不在 prompt schema 中）'}</td></tr>
+        <tr><td class="k">配置层</td><td class="v"><code>${scopeVal}</code>（PATCH /tools/${t.name} 时写入）</td></tr>
         ${t.visionGated ? `<tr><td class="k">门控</td><td class="v"><code>vision.enabled=false</code>（视觉四件套由全局配置控制）</td></tr>` : ''}
       </tbody>
     </table>
@@ -879,7 +829,7 @@ function openDrawer(name) {
   foot.innerHTML = `
     <button class="btn ghost sm" onclick="closeDrawer()">关闭</button>
     <span class="sp"></span>
-    ${t.kind === 'builtin' ? `<button class="btn sm" onclick="closeDrawer(); document.querySelector('.tl-toggle[data-name=${name}]')?.click()">${t.enabled ? '禁用' : '启用'}（${scopeVal}）</button>` : `<button class="btn sm ghost" onclick="toast('即将跳转到 MCP 页 / 服务器：${t.mcpServer}'); closeDrawer()">跳 MCP 页</button>`}
+    <button class="btn sm" onclick="closeDrawer(); document.querySelector('.tl-toggle[data-name=${name}]')?.click()">${t.enabled ? '禁用' : '启用'}（${scopeVal}）</button>
   `;
 
   document.getElementById('tl-backdrop').classList.add('show');
@@ -922,7 +872,7 @@ document.querySelectorAll('#tl-src-seg button').forEach((b) => b.addEventListene
 }));
 document.getElementById('tl-sort').addEventListener('change', renderList);
 document.getElementById('tl-refresh-btn').addEventListener('click', () => { toast('GET /tools（演示：本地 mock，跳过网络）'); renderList(); });
-document.getElementById('tl-reload-btn').addEventListener('click', () => { toast('已重载 25 个工具（POST /tools/reload）'); renderList(); });
+document.getElementById('tl-reload-btn').addEventListener('click', () => { toast('已重载 20 个工具（POST /tools/reload）'); renderList(); });
 document.querySelectorAll('.theme-btns button').forEach((b) => b.addEventListener('click', () => {
   document.documentElement.setAttribute('data-theme', b.dataset.theme);
   [...document.querySelectorAll('.theme-btns button')].forEach(x => x.classList.toggle('on', x === b));

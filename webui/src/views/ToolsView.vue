@@ -1,25 +1,24 @@
 <script setup lang="ts">
-// 工具管理视图（原型-20261109-003 · 卡片流 + 抽屉 + 分段/排序/toggle + MCP 状态合并 + 视觉门控）
+// 工具管理视图（原型-20261109-003 · 卡片流 + 抽屉 + 分段/排序/toggle + 视觉门控）
 // 端点：GET /tools · GET /tools/:name（schema）· PATCH /tools/:name {enabled, scope} · POST /tools/reload
-//      · GET /mcp/servers（合并取 server 连接态，用于 bad 判定）· GET /vision（门控视觉四件套）
+//      · GET /vision（门控视觉四件套）；仅展示内置工具，MCP 工具归 MCP 服务器页
 // 纯逻辑（家族/统计/筛选/排序/Schema 解析）见 ../tool-ui.ts
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { showToast } from '../toast';
 import { errText } from '../utils';
 import { highlightSegments, scopeLabel } from '../skills-ui';
-import JsonViewer from '../components/JsonViewer.vue';
 import {
-  canToggle,
+  builtinTools,
   classifyFamily,
   familyLabel,
   filterTools,
-  mergeMcpState,
   parseSchemaParams,
   sortTools,
   toolCounts,
   toolInitials,
-  type McpServerRow,
+  withFamily,
+  type FamilyTool,
   type ToolRow,
   type ToolSchema,
   type ToolSort,
@@ -28,7 +27,6 @@ import {
 
 /* ===== 状态 ===== */
 const tools = ref<ToolRow[]>([]);
-const mcpServers = ref<McpServerRow[]>([]);
 const visionAvailable = ref(true);
 const visionReason = ref('');
 const loading = ref(true);
@@ -40,30 +38,28 @@ const tab = ref<ToolTab>('all');
 const sortMode = ref<ToolSort>('name');
 const searchInput = ref<HTMLInputElement | null>(null);
 
-/* ===== 合并后的工具列表（含 family / mcpBad / mcpServer 补充字段） ===== */
-type MergedTool = ReturnType<typeof mergeMcpState>[number];
+/* ===== 工具列表（仅内置，含 family 补充字段） ===== */
 const visionGatedPrefixes = ['ask_image', 'describe_image', 'extract_json', 'ocr_image'];
 function isVisionTool(name: string): boolean {
   return visionGatedPrefixes.some((p) => name === p || name.startsWith(p + '__'));
 }
 
-const mergedList = computed<MergedTool[]>(() =>
-  mergeMcpState(tools.value, mcpServers.value),
+const allList = computed<FamilyTool[]>(() =>
+  withFamily(builtinTools(tools.value)),
 );
-const counts = computed(() => toolCounts(mergedList.value));
-const visibleList = computed<MergedTool[]>(() =>
-  sortTools(filterTools(mergedList.value, query.value, tab.value), sortMode.value),
+const counts = computed(() => toolCounts(allList.value));
+const visibleList = computed<FamilyTool[]>(() =>
+  sortTools(filterTools(allList.value, query.value, tab.value), sortMode.value),
 );
 
 const tabs = computed<{ key: ToolTab; label: string; count: number }[]>(() => [
   { key: 'all', label: '全部', count: counts.value.total },
-  { key: 'builtin', label: '内置', count: counts.value.builtin },
-  { key: 'mcp', label: 'MCP', count: counts.value.mcp },
+  { key: 'enabled', label: '已启用', count: counts.value.enabled },
   { key: 'disabled', label: '已禁用', count: counts.value.disabled },
 ]);
 
 /* ===== 卡片 ⋯ 菜单 ===== */
-const menuTool = ref<MergedTool | null>(null);
+const menuTool = ref<FamilyTool | null>(null);
 const menuPos = ref({ top: 0, left: 0 });
 
 /* ===== 详情抽屉 ===== */
@@ -72,7 +68,6 @@ const drawerName = ref<string | null>(null);
 const drawerDetail = ref<ToolDetail | null>(null);
 const drawerErr = ref('');
 const drawerLoading = ref(false);
-const drawerScope = computed(() => drawerDetail.value?.source ?? 'builtin');
 const drawerParams = computed(() => parseSchemaParams(drawerDetail.value?.schema));
 const drawerRawJson = computed(() =>
   drawerDetail.value?.schema ? JSON.stringify(drawerDetail.value.schema, null, 2) : '',
@@ -95,13 +90,11 @@ function isTyping(t: EventTarget | null): boolean {
 async function refresh(silent = false): Promise<void> {
   if (!silent) busy.value = true;
   try {
-    const [tRes, sRes, vRes] = await Promise.all([
+    const [tRes, vRes] = await Promise.all([
       api<{ tools: ToolRow[] }>('/tools').catch(() => ({ tools: [] as ToolRow[] })),
-      api<{ servers: McpServerRow[] }>('/mcp/servers').catch(() => ({ servers: [] as McpServerRow[] })),
       api<{ available: boolean; reason?: string }>('/vision').catch(() => ({ available: true, reason: undefined as string | undefined })),
     ]);
     tools.value = tRes.tools;
-    mcpServers.value = sRes.servers;
     visionAvailable.value = vRes.available !== false;
     visionReason.value = vRes.reason ?? '';
     loadErr.value = '';
@@ -131,10 +124,6 @@ async function reload(): Promise<void> {
 
 /* ===== toggle ===== */
 async function toggle(t: ToolRow): Promise<void> {
-  if (!canToggle(t)) {
-    showToast('MCP 工具不可在此处开关，请在 MCP 服务器页操作', 'error');
-    return;
-  }
   busy.value = true;
   const next = !t.enabled;
   try {
@@ -157,7 +146,7 @@ async function toggle(t: ToolRow): Promise<void> {
 }
 
 /* ===== 抽屉 ===== */
-async function openDrawer(t: MergedTool): Promise<void> {
+async function openDrawer(t: FamilyTool): Promise<void> {
   menuTool.value = null;
   drawerName.value = t.name;
   drawerDetail.value = null;
@@ -182,7 +171,7 @@ function closeDrawer(): void {
 }
 
 /* ===== 菜单 ===== */
-function openMenu(ev: MouseEvent, t: MergedTool): void {
+function openMenu(ev: MouseEvent, t: FamilyTool): void {
   if (menuTool.value?.name === t.name) {
     menuTool.value = null;
     return;
@@ -259,7 +248,7 @@ onBeforeUnmount(() => {
           Tool registry · 工具注册表
         </div>
         <h1>工具</h1>
-        <p>Agent 可调用的内置工具与 MCP 工具。禁用内置工具会从 prompt schema 中移除；MCP 工具的开关请前往 MCP 服务器页。</p>
+        <p>Agent 可调用的内置工具。禁用后会从 prompt schema 中移除，运行中的会话继续可用；重载影响新会话。</p>
       </div>
       <div class="tl-actions">
         <button class="tl-btn icon" type="button" title="刷新列表" aria-label="刷新列表" :disabled="busy" @click="refresh(false)">
@@ -275,20 +264,18 @@ onBeforeUnmount(() => {
     <!-- 统计条 -->
     <div class="tl-stats">
       <div class="tl-stat"><div class="k"><i class="on"></i>工具总数</div><div class="v">{{ counts.total }}<small>个</small></div></div>
-      <div class="tl-stat"><div class="k"><i class="on"></i>内置</div><div class="v">{{ counts.builtin }}<small>个</small></div></div>
-      <div class="tl-stat"><div class="k"><i></i>MCP</div><div class="v">{{ counts.mcp }}<small>个</small></div></div>
+      <div class="tl-stat"><div class="k"><i class="on"></i>已启用</div><div class="v">{{ counts.enabled }}<small>个</small></div></div>
       <div class="tl-stat"><div class="k"><i class="bad"></i>已禁用</div><div class="v bad">{{ counts.disabled }}<small>个</small></div></div>
-      <div class="tl-stat"><div class="k"><i class="bad"></i>MCP 异常</div><div class="v bad">{{ counts.mcpBad }}<small>个</small></div></div>
     </div>
 
     <!-- 工具条 -->
     <div class="tl-toolbar">
       <div class="tl-search">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
-        <input ref="searchInput" v-model="query" type="text" placeholder="搜索名称、描述或 MCP server" autocomplete="off" spellcheck="false">
+        <input ref="searchInput" v-model="query" type="text" placeholder="搜索名称或描述" autocomplete="off" spellcheck="false">
         <kbd>/</kbd>
       </div>
-      <div class="tl-seg" role="tablist" aria-label="按来源/状态筛选">
+      <div class="tl-seg" role="tablist" aria-label="按状态筛选">
         <button
           v-for="t in tabs"
           :key="t.key"
@@ -302,7 +289,7 @@ onBeforeUnmount(() => {
       <select v-model="sortMode" class="tl-sort" aria-label="排序方式">
         <option value="name">名称 A→Z</option>
         <option value="family">按家族分组</option>
-        <option value="disabled">异常优先</option>
+        <option value="disabled">禁用优先</option>
       </select>
       <select v-model="scope" class="tl-scope" aria-label="写入范围">
         <option value="workspace">写入：工作空间</option>
@@ -358,20 +345,16 @@ onBeforeUnmount(() => {
         :key="t.name"
         class="tl-card"
         :class="{
-          disabled: t.source === 'builtin' && !t.enabled,
-          mcp: t.source === 'mcp',
-          bad: t.source === 'mcp' && t.mcpBad,
-          'vision-off': t.source === 'builtin' && !visionAvailable && isVisionTool(t.name),
+          disabled: !t.enabled,
+          'vision-off': !visionAvailable && isVisionTool(t.name),
         }"
       >
         <div class="tl-top">
           <span
             class="tile"
             :class="[
-              classifyFamily(t.name, t.source),
-              t.source === 'mcp' && t.mcpBad ? 'disabled' : '',
-              t.source === 'builtin' && !t.enabled ? '' : '',
-              t.source === 'builtin' && !visionAvailable && isVisionTool(t.name) ? 'disabled' : '',
+              classifyFamily(t.name),
+              !t.enabled || (!visionAvailable && isVisionTool(t.name)) ? 'disabled' : '',
             ]"
           >{{ toolInitials(t.name) }}</span>
           <div class="tl-id">
@@ -383,25 +366,16 @@ onBeforeUnmount(() => {
               </h3>
               <span
                 class="tl-group"
-                :class="{ mute: t.source === 'builtin' && !t.enabled }"
-              >{{ familyLabel(classifyFamily(t.name, t.source)) }}</span>
+                :class="{ mute: !t.enabled }"
+              >{{ familyLabel(classifyFamily(t.name)) }}</span>
               <span
-                v-if="t.source === 'builtin'"
                 class="tl-pill"
                 :class="t.enabled ? 'on' : 'off'"
               ><i></i>{{ t.enabled ? '已启用' : '已禁用' }}</span>
-              <span
-                v-else
-                class="tl-pill"
-                :class="t.mcpBad ? 'err' : 'on'"
-              ><i></i>{{ t.mcpBad ? '连接失败' : '已连接' }}</span>
             </div>
             <p class="tl-desc">
-              <template v-if="t.source === 'builtin' && !visionAvailable && isVisionTool(t.name)">
+              <template v-if="!visionAvailable && isVisionTool(t.name)">
                 <span class="vision-warn">视觉未启用：{{ visionReason || '未检测到可用视觉 Provider' }}，</span>
-              </template>
-              <template v-if="t.source === 'mcp' && t.mcpBad">
-                <span class="vision-warn">所属 server 连接失败，</span>
               </template>
               {{ t.description || '（无描述）' }}
             </p>
@@ -412,20 +386,16 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="tl-foot">
-          <span v-if="t.source === 'builtin'" class="tl-meta">内置</span>
-          <span v-else class="tl-meta">MCP · {{ t.mcpServer || '未知 server' }}</span>
+          <span class="tl-meta">内置</span>
           <span class="sep">·</span>
-          <span class="tl-meta">{{ t.source === 'builtin' ? scopeLabel(scope) : '—' }}</span>
+          <span class="tl-meta">{{ scopeLabel(scope) }}</span>
           <span class="spring"></span>
           <button
             class="tl-toggle"
-            :class="{
-              on: t.source === 'builtin' && t.enabled,
-              mcp: t.source === 'mcp',
-            }"
-            :title="canToggle(t) ? (t.enabled ? '点击禁用' : '点击启用') : 'MCP 工具不可在此处开关'"
-            :aria-label="canToggle(t) ? (t.enabled ? '禁用工具' : '启用工具') : '不可操作'"
-            @click.stop="canToggle(t) && toggle(t)"
+            :class="{ on: t.enabled }"
+            :title="t.enabled ? '点击禁用' : '点击启用'"
+            :aria-label="t.enabled ? '禁用工具' : '启用工具'"
+            @click.stop="toggle(t)"
           ></button>
           <button class="tl-btn sm ghost" type="button" @click.stop="openDrawer(t)">Schema</button>
         </div>
@@ -457,7 +427,7 @@ onBeforeUnmount(() => {
       </button>
       <div class="hr"></div>
       <button
-        v-if="menuTool.source === 'builtin' && menuTool.enabled"
+        v-if="menuTool.enabled"
         type="button"
         role="menuitem"
         class="danger"
@@ -467,23 +437,13 @@ onBeforeUnmount(() => {
         禁用
       </button>
       <button
-        v-else-if="menuTool.source === 'builtin' && !menuTool.enabled"
+        v-else
         type="button"
         role="menuitem"
         @click="toggle(menuTool); menuTool = null"
       >
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M3 8h10"/></svg>
         启用
-      </button>
-      <button
-        v-else
-        type="button"
-        role="menuitem"
-        disabled
-        class="disabled-item"
-      >
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5"/><path d="M5.5 5.5 10.5 10.5"/></svg>
-        MCP 工具不可开关
       </button>
     </div>
 
@@ -495,28 +455,23 @@ onBeforeUnmount(() => {
           <span
             class="tile"
             :class="[
-              classifyFamily(drawerDetail.name, drawerDetail.source),
-              drawerDetail.source === 'mcp' && false ? 'disabled' : '',
+              classifyFamily(drawerDetail.name),
+              !drawerDetail.enabled ? 'disabled' : '',
             ]"
           >{{ toolInitials(drawerDetail.name) }}</span>
           <div class="tl-drv-title">
             <h2>
               {{ drawerDetail.name }}
-              <span class="tl-group">{{ familyLabel(classifyFamily(drawerDetail.name, drawerDetail.source)) }}</span>
+              <span class="tl-group">{{ familyLabel(classifyFamily(drawerDetail.name)) }}</span>
               <span
                 class="tl-pill"
-                :class="drawerDetail.source === 'builtin'
-                  ? (drawerDetail.enabled ? 'on' : 'off')
-                  : (false ? 'err' : 'on')"
-              ><i></i>{{ drawerDetail.source === 'builtin'
-                ? (drawerDetail.enabled ? '已启用' : '已禁用')
-                : 'MCP' }}</span>
+                :class="drawerDetail.enabled ? 'on' : 'off'"
+              ><i></i>{{ drawerDetail.enabled ? '已启用' : '已禁用' }}</span>
             </h2>
             <div class="tl-drv-sub">
-              <span>{{ drawerDetail.source === 'builtin' ? '内置工具' : 'MCP 工具' }}</span>
+              <span>内置工具</span>
               <span>·</span>
-              <span v-if="drawerDetail.source === 'builtin'">scope: {{ scopeLabel(scope) }}</span>
-              <span v-else>所属 Server：{{ drawerDetail.name.split('__')[0] }}</span>
+              <span>scope: {{ scopeLabel(scope) }}</span>
             </div>
           </div>
           <button class="tl-close-btn" type="button" aria-label="关闭详情" @click="closeDrawer">
@@ -535,19 +490,10 @@ onBeforeUnmount(() => {
           <table class="kv">
             <tbody>
               <tr><td class="k">名称</td><td class="v mono">{{ drawerDetail.name }}</td></tr>
-              <tr><td class="k">来源</td><td class="v">{{ drawerDetail.source === 'builtin' ? '内置工具' : 'MCP 工具' }}</td></tr>
+              <tr><td class="k">来源</td><td class="v">内置工具</td></tr>
               <tr><td class="k">启用</td><td class="v">{{ drawerDetail.enabled ? '是' : '否' }}</td></tr>
-              <tr v-if="drawerDetail.source === 'mcp'"><td class="k">所属 Server</td><td class="v">{{ drawerDetail.name.split('__')[0] }}</td></tr>
             </tbody>
           </table>
-
-          <div v-if="drawerDetail.source === 'mcp'" class="tl-alert warn" style="margin-top:14px">
-            <span class="ai">!</span>
-            <div>
-              <b>MCP 工具不可在此处开关</b>
-              <div>请前往 MCP 服务器页移除或重启该 server。这里只能查看 Schema。</div>
-            </div>
-          </div>
 
           <div class="tl-lab">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5 3.5 10h3L5.5 14l4.5-7h-3L8 2.5Z"/></svg>
@@ -582,19 +528,11 @@ onBeforeUnmount(() => {
           <button class="tl-btn ghost sm" type="button" @click="closeDrawer">关闭</button>
           <span class="sp"></span>
           <button
-            v-if="drawerDetail.source === 'builtin'"
             class="tl-btn sm"
             type="button"
             :disabled="busy"
             @click="toggle(drawerDetail); closeDrawer()"
           >{{ drawerDetail.enabled ? '禁用' : '启用' }}</button>
-          <button
-            v-else
-            class="tl-btn sm"
-            type="button"
-            disabled
-            title="MCP 工具不可在此处开关"
-          >不可开关</button>
         </div>
       </template>
     </aside>
@@ -635,7 +573,7 @@ onBeforeUnmount(() => {
 
 /* ===== 统计条 ===== */
 .tl-stats {
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(3, 1fr);
   margin-top: 20px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
 }
@@ -713,8 +651,6 @@ onBeforeUnmount(() => {
 .tl-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); transform: translateY(-1px); }
 .tl-card.disabled { border-left: 3px solid var(--muted); padding-left: 14px; background: linear-gradient(180deg, var(--panel) 0%, color-mix(in srgb, var(--muted) 3%, var(--panel)) 100%); }
 .tl-card.disabled::before { content: '禁用 · 不出现在 prompt schema'; position: absolute; right: 12px; top: -10px; font: 500 10px/1 var(--mono); color: var(--muted); background: var(--code-bg); border: 1px solid var(--line); padding: 3px 6px; border-radius: 999px; }
-.tl-card.mcp { border-left: 3px solid transparent; padding-left: 16px; }
-.tl-card.mcp.bad { border-left-color: var(--danger); padding-left: 14px; }
 .tl-card.vision-off::before { content: '视觉未启用'; position: absolute; right: 12px; top: -10px; font: 500 10px/1 var(--mono); color: var(--warn); background: var(--warn-weak); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); padding: 3px 6px; border-radius: 999px; }
 
 .tl-top { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
@@ -756,7 +692,6 @@ onBeforeUnmount(() => {
 .tl-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, .22); transition: transform .18s; }
 .tl-toggle.on { background: var(--brand); }
 .tl-toggle.on::after { transform: translateX(18px); }
-.tl-toggle.mcp { background: var(--line); cursor: not-allowed; opacity: .65; }
 
 .tl-more { width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: .6; }
 .tl-more svg { width: 15px; height: 15px; }
@@ -783,7 +718,6 @@ onBeforeUnmount(() => {
 .tl-menu button.danger { color: var(--danger); }
 .tl-menu button.danger svg { color: var(--danger); }
 .tl-menu button.danger:hover { background: var(--danger-weak); }
-.tl-menu button.disabled-item { opacity: .5; cursor: not-allowed; }
 
 /* ===== 遮罩 / 抽屉 ===== */
 .tl-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(16, 24, 40, .4); backdrop-filter: blur(2px); opacity: 0; pointer-events: none; transition: opacity .2s; }
@@ -845,8 +779,6 @@ onBeforeUnmount(() => {
 /* ===== 响应式 ===== */
 @media (max-width: 980px) {
   .tl-grid { grid-template-columns: 1fr; }
-  .tl-stats { grid-template-columns: repeat(3, 1fr); }
-  .tl-stat:nth-child(4), .tl-stat:nth-child(5) { border-left: none; border-top: 1px solid var(--line-soft); }
 }
 @media (max-width: 700px) {
   .tl-head { flex-direction: column; align-items: flex-start; gap: 14px; }
