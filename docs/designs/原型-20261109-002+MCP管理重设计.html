@@ -1,0 +1,2079 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · MCP 管理重设计 · 20261109-002</title>
+<!--
+  原型：WebUI MCP 服务器管理页（McpView）视觉与交互重设计
+  目标文件：webui/src/views/McpView.vue（模板 + 样式段）
+  端点不变：GET /mcp/servers · GET /mcp/servers/:name · POST /mcp/servers
+            POST /mcp/servers/:name/test · POST /mcp/reload · DELETE /mcp/servers/:name?scope=
+  唯一可选小改：GET /mcp/servers 增加每项 scope（D9），未提供则隐藏来源徽标
+  自包含：无 CDN、无外部字体、无外部图片，离线可开；图标全部为内联 SVG。
+-->
+<style>
+/* ============================================================
+   0. 主题令牌（与 webui/src/style.css 同名同值）
+   ============================================================ */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #22252a;
+  --muted: #6b7280;
+  --brand: #0e9f6e;
+  --brand-weak: #e6f6ef;
+  --brand-on: #ffffff;
+  --danger: #dc2626;
+  --danger-weak: #fdecec;
+  --warn: #b45309;
+  --warn-weak: #fef3c7;
+  --ok: #059669;
+  --ok-weak: #d1fae5;
+
+  --line-soft: #eef0f3;
+  --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055);
+  --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563;
+  --bar-bg: #fbfcfd;
+  --view-bg: #ffffff;
+  --radius-card: 12px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --line: #2b313a;
+  --text: #e6e8eb;
+  --muted: #9aa1ab;
+  --brand: #34d399;
+  --brand-weak: #143528;
+  --brand-on: #0b221a;
+  --danger: #f87171;
+  --danger-weak: #3b1a1a;
+  --warn: #fbbf24;
+  --warn-weak: #3a2e10;
+  --ok: #34d399;
+  --ok-weak: #143528;
+
+  --line-soft: #242a32;
+  --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07);
+  --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6;
+  --bar-bg: #1f242b;
+  --view-bg: #1b1f26;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 0 90px;
+  background: var(--bg); color: var(--text);
+  font: 14px/1.65 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+body.lock { overflow: hidden; }
+button { font-family: inherit; }
+
+/* ============================================================
+   1. 原型文档骨架
+   ============================================================ */
+.page { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 60;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 24px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+.topbar .tag {
+  font: 500 11px/1 var(--mono); color: var(--muted);
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px;
+  white-space: nowrap;
+}
+.topbar nav { display: flex; gap: 2px; margin-left: 6px; }
+.topbar nav a {
+  font-size: 12px; color: var(--muted); text-decoration: none;
+  padding: 5px 9px; border-radius: 6px; white-space: nowrap;
+}
+.topbar nav a:hover { background: var(--hover); color: var(--text); }
+.topbar .spring { flex: 1; }
+@media (max-width: 980px) { .topbar nav { display: none; } }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px;
+  font: 500 12px/1 var(--sans); color: var(--text-2); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.btn-ghost:hover { border-color: var(--line-strong); color: var(--text); }
+
+section { padding-top: 42px; scroll-margin-top: 64px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.sec-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+.sec-head .badge {
+  font: 500 11px/1 var(--mono); color: var(--brand);
+  background: var(--brand-weak); padding: 4px 7px; border-radius: 999px;
+}
+.sec-head .badge.mute { color: var(--muted); background: var(--code-bg); }
+.sec-desc { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; max-width: 84ch; }
+.sec-desc code, .note code, .kv td code, .no code, .d-item code {
+  font: 500 11.5px/1 var(--mono); color: var(--text-2);
+  background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
+}
+:root { --code-bg: #f1f3f5; }
+:root[data-theme="dark"] { --code-bg: #22272f; }
+
+/* 说明卡：现状问题 */
+.issue-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 860px) { .issue-grid { grid-template-columns: 1fr; } }
+.issue {
+  display: flex; gap: 11px; padding: 13px 15px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+}
+.issue .no {
+  width: 23px; height: 23px; flex: none; display: grid; place-items: center;
+  border-radius: 7px; background: var(--danger-weak); color: var(--danger);
+  font: 700 11px/1 var(--mono); margin-top: 1px;
+}
+.issue b { display: block; font-size: 12.5px; font-weight: 650; }
+.issue p { margin: 3px 0 0; font-size: 12px; color: var(--muted); line-height: 1.62; }
+
+/* 原型容器 */
+.ctx {
+  position: relative;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-card);
+  padding: 22px 22px 24px; overflow: hidden;
+}
+.ctx-tag {
+  position: absolute; top: 0; right: 0;
+  font: 500 10px/1 var(--mono); color: var(--muted);
+  background: var(--code-bg); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  padding: 5px 9px; border-bottom-left-radius: 8px;
+}
+.note {
+  margin-top: 12px; padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--panel);
+  font-size: 12px; color: var(--muted); line-height: 1.7;
+}
+.note b { color: var(--text); font-weight: 650; }
+</style>
+<style>
+/* ============================================================
+   2. MCP 页面：页头 / 统计 / 工具条
+   ============================================================ */
+.mcp-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+.mcp-head .lead { min-width: 0; }
+.eyebrow {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted);
+}
+.eyebrow svg { width: 12px; height: 12px; color: var(--brand); }
+.mcp-head h1 { margin: 3px 0 0; font-size: 24px; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; }
+.mcp-head p { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); max-width: 66ch; }
+.mcp-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 34px; padding: 0 13px;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel); color: var(--text-2);
+  font: 500 12.5px/1 var(--sans); cursor: pointer; white-space: nowrap;
+  transition: border-color .13s, background .13s, color .13s, filter .13s;
+}
+.btn:hover { border-color: var(--line-strong); color: var(--text); background: var(--bar-bg); }
+.btn svg { width: 15px; height: 15px; flex: none; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; box-shadow: 0 1px 2px rgba(14, 159, 110, .22); }
+.btn.primary:hover { filter: brightness(1.05); background: var(--brand); color: var(--brand-on); }
+.btn.icon { width: 34px; padding: 0; }
+.btn.sm { height: 27px; padding: 0 9px; font-size: 11.5px; border-radius: 7px; }
+.btn.ghost { background: transparent; }
+.btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.btn .spin { animation: rot .8s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+.stats {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  margin-top: 20px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+}
+.stat { padding: 11px 16px 12px; border-left: 1px solid var(--line-soft); min-width: 0; }
+.stat:first-child { border-left: none; }
+.stat .k { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.stat .k i { width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.stat .k i.on { background: var(--brand); }
+.stat .k i.bad { background: var(--danger); }
+.stat .v { font-size: 20px; font-weight: 650; line-height: 1.3; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.stat .v small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.stat .v.bad { color: var(--danger); }
+
+.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 13px; }
+.search {
+  flex: 1; min-width: 200px; max-width: 330px;
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  transition: border-color .13s, box-shadow .13s;
+}
+.search:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.search svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.search input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font: 400 12.5px/1 var(--sans); color: var(--text); }
+.search input::placeholder { color: var(--muted); }
+.search kbd { font: 500 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; }
+
+.seg { display: flex; gap: 2px; padding: 2px; background: var(--code-bg); border-radius: 9px; }
+.seg button {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 10px; border: none; border-radius: 7px;
+  background: transparent; color: var(--muted);
+  font: 500 12px/1 var(--sans); cursor: pointer;
+}
+.seg button:hover { color: var(--text-2); background: transparent; }
+.seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .09); }
+.seg .n { font: 600 10px/14px var(--mono); color: var(--muted); background: var(--panel); border-radius: 999px; padding: 0 5px; min-width: 16px; text-align: center; }
+.seg button.on .n { color: var(--brand); background: var(--brand-weak); }
+
+.sort {
+  height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center;
+  color: var(--text-2); font: 500 12px/1 var(--sans); cursor: pointer; appearance: none;
+}
+.count { font-size: 11px; color: var(--muted); white-space: nowrap; margin-left: auto; }
+
+.meta-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 27px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+  font: 500 11px/1 var(--sans); color: var(--muted); cursor: pointer;
+}
+.meta-pill:hover { border-color: var(--line-strong); color: var(--text); }
+.meta-pill b { color: var(--brand); font-weight: 650; font-family: var(--mono); }
+.meta-pill svg { width: 12px; height: 12px; }
+
+/* ============================================================
+   3. 服务器卡片
+   ============================================================ */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.srv {
+  position: relative; display: flex; flex-direction: column; gap: 9px;
+  padding: 14px 16px 11px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .03);
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+:root[data-theme="dark"] .srv { box-shadow: none; }
+.srv:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.srv.bad { border-left: 3px solid var(--danger); padding-left: 14px; }
+.srv.warn { border-left: 3px solid var(--warn); padding-left: 14px; }
+
+.srv-top { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.tile {
+  width: 42px; height: 42px; border-radius: 12px; flex: none;
+  display: grid; place-items: center; color: #fff;
+  font: 700 12px/1 var(--sans); letter-spacing: .04em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 2px 7px -3px rgba(16, 24, 40, .35);
+}
+.tile.stdio { background: linear-gradient(135deg, #10b981, #0d9488); }
+.tile.remote { background: linear-gradient(135deg, #6366f1, #4f46e5); }
+.tile.off { filter: grayscale(.65); opacity: .8; }
+.srv-id { flex: 1; min-width: 0; }
+.srv-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
+.srv-title h3 { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.srv-title mark, .srv-target mark { background: var(--warn-weak); color: var(--warn); border-radius: 3px; padding: 0 1px; }
+.scope {
+  display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 7px;
+  border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.scope i { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+.scope.ws { color: var(--brand); background: var(--brand-weak); }
+.scope.ws i { background: var(--brand); }
+.scope.gl { color: var(--muted); background: var(--code-bg); }
+.scope.gl i { background: var(--muted); }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 7px;
+  border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.pill i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.pill.ok { color: var(--ok); background: var(--ok-weak); }
+.pill.ok i { background: var(--ok); }
+.pill.warn { color: var(--warn); background: var(--warn-weak); }
+.pill.warn i { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+.pill.err { color: var(--danger); background: var(--danger-weak); }
+.pill.err i { background: var(--danger); }
+.pill.idle { color: var(--muted); background: var(--code-bg); }
+.pill.idle i { background: var(--muted); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+.srv-target {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 6px 8px; border-radius: 8px; background: var(--bar-bg); border: 1px solid var(--line-soft);
+  font: 400 11px/1.5 var(--mono); color: var(--text-2);
+}
+.srv-target > svg { width: 12px; height: 12px; flex: none; opacity: .7; }
+.srv-target span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-target .ic-btn { width: 22px; height: 22px; flex: none; margin: -2px -3px -2px 0; }
+
+.ic-btn {
+  display: grid; place-items: center; width: 26px; height: 26px;
+  border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.ic-btn:hover { background: var(--active); color: var(--text); }
+.ic-btn svg { width: 14px; height: 14px; }
+
+.srv-err {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 7px 10px; border-radius: 8px;
+  background: var(--danger-weak); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  font-size: 11px; line-height: 1.5; color: var(--danger);
+}
+.srv-err svg { width: 12px; height: 12px; flex: none; }
+.srv-err .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.srv-err .retry { font: 500 10.5px/1 var(--mono); white-space: nowrap; opacity: .9; }
+.srv-note { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); }
+.srv-note .mini-spin {
+  width: 11px; height: 11px; border-radius: 50%;
+  border: 1.5px solid var(--line-strong); border-top-color: var(--warn); animation: rot .8s linear infinite;
+}
+
+.srv-foot { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-top: 9px; border-top: 1px solid var(--line-soft); }
+.srv-foot .meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.srv-foot .sep { color: var(--line-strong); font-size: 10px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 7px;
+  border-radius: 5px; font: 500 10.5px/1 var(--mono);
+}
+.chip.ok { color: var(--ok); background: var(--ok-weak); }
+.chip.err { color: var(--danger); background: var(--danger-weak); }
+.chip.idle { color: var(--muted); background: var(--code-bg); }
+.srv-foot .spring { flex: 1; }
+.mini-spin.lg { width: 12px; height: 12px; }
+
+.more {
+  width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0;
+  display: grid; place-items: center; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer; opacity: .6;
+}
+.more svg { width: 15px; height: 15px; }
+.srv:hover .more { opacity: 1; }
+.more:hover { background: var(--active); color: var(--text); }
+
+/* 骨架 / 空态 */
+.skel {
+  display: flex; gap: 11px; padding: 15px 16px; min-height: 128px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+}
+.skel .t { width: 42px; height: 42px; flex: none; border-radius: 12px; background: var(--code-bg); animation: sk 1.2s ease-in-out infinite; }
+.skel .l { flex: 1; display: flex; flex-direction: column; gap: 9px; padding-top: 4px; }
+.skel .l i { display: block; height: 8px; border-radius: 4px; background: var(--code-bg); animation: sk 1.2s ease-in-out infinite; }
+.skel .l i:nth-child(2) { animation-delay: .1s; }
+.skel .l i:nth-child(3) { animation-delay: .2s; }
+.skel .l i:nth-child(4) { animation-delay: .3s; }
+@keyframes sk { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+.nothing {
+  grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center;
+  padding: 34px 20px; text-align: center;
+  border: 1px dashed var(--line-strong); border-radius: 14px; background: var(--panel);
+}
+.nothing .ico { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: var(--code-bg); color: var(--muted); margin-bottom: 11px; }
+.nothing .ico svg { width: 22px; height: 22px; }
+.nothing b { font-size: 13.5px; font-weight: 650; }
+.nothing p { margin: 5px 0 13px; font-size: 12px; color: var(--muted); max-width: 50ch; }
+
+.footline {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--line-soft);
+  font-size: 11px; color: var(--muted);
+}
+.footline .sp { flex: 1; }
+.footline code { font: 500 10.5px/1 var(--mono); color: var(--text-2); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+</style>
+<style>
+/* ============================================================
+   4. 浮层：菜单 / 抽屉 / 登记模态 / 移除确认
+   ============================================================ */
+.backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(16, 24, 40, .4); backdrop-filter: blur(2px);
+  opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+.backdrop.show { opacity: 1; pointer-events: auto; }
+
+.menu {
+  position: fixed; z-index: 96; width: 186px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+}
+.menu .m-head {
+  padding: 6px 9px 7px; font: 600 11px/1.3 var(--mono); color: var(--muted);
+  border-bottom: 1px solid var(--line-soft); margin-bottom: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu button {
+  display: flex; width: 100%; align-items: center; gap: 8px;
+  padding: 7px 9px; border: none; border-radius: 6px; background: transparent;
+  font: 400 12px/1.3 var(--sans); color: var(--text-2); text-align: left; cursor: pointer;
+}
+.menu button svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.menu button:hover { background: var(--hover); color: var(--text); }
+.menu .hr { height: 1px; background: var(--line-soft); margin: 4px 2px; }
+.menu button.danger { color: var(--danger); }
+.menu button.danger svg { color: var(--danger); }
+.menu button.danger:hover { background: var(--danger-weak); }
+
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 110;
+  width: min(500px, 100%); display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: -24px 0 64px -24px rgba(16, 24, 40, .45);
+  transform: translateX(102%); visibility: hidden;
+  transition: transform .26s cubic-bezier(.2, .8, .2, 1), visibility .26s;
+}
+.drawer.show { transform: none; visibility: visible; }
+.drv-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 16px; border-bottom: 1px solid var(--line-soft); }
+.drv-head .tile { width: 46px; height: 46px; border-radius: 13px; font-size: 13px; }
+.drv-title { flex: 1; min-width: 0; }
+.drv-title h2 { margin: 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 16px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.drv-sub { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.drv-sub .mono { font-family: var(--mono); }
+.close-btn {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  color: var(--muted); cursor: pointer; margin: -3px -4px 0 0;
+}
+.close-btn:hover { background: var(--code-bg); color: var(--text); }
+.close-btn svg { width: 14px; height: 14px; }
+
+.drv-body { flex: 1; overflow: auto; padding: 16px 20px 28px; }
+.lab { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted); margin: 17px 0 8px; }
+.lab:first-child { margin-top: 0; }
+.lab svg { width: 12px; height: 12px; }
+.lab .n { font: 600 10px/1 var(--mono); color: var(--brand); background: var(--brand-weak); padding: 3px 6px; border-radius: 999px; }
+
+.target-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 11px; border-radius: 9px; background: var(--bar-bg); border: 1px solid var(--line);
+  font: 400 11.5px/1.55 var(--mono); color: var(--text-2);
+}
+.target-card span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+.kv { width: 100%; border-collapse: collapse; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.kv tr + tr td { border-top: 1px solid var(--line-soft); }
+.kv td { padding: 7px 11px; font-size: 12px; vertical-align: top; }
+.kv td.k { width: 104px; color: var(--muted); font-size: 11.5px; background: var(--bar-bg); }
+.kv td.v { color: var(--text-2); }
+.kv code { font: 500 11px/1.5 var(--mono); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+
+.cfg {
+  border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
+  background: var(--bar-bg);
+}
+.cfg .row { display: grid; grid-template-columns: 84px 1fr; gap: 10px; padding: 7px 11px; font-size: 11.5px; }
+.cfg .row + .row { border-top: 1px solid var(--line-soft); }
+.cfg .k { font: 500 10.5px/1.7 var(--mono); color: var(--muted); }
+.cfg .v { font: 400 11px/1.65 var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
+
+.tools-head { display: flex; align-items: center; gap: 8px; margin: 18px 0 9px; }
+.tools-head .lab { margin: 0; }
+.tools-head .spring { flex: 1; }
+.tool-filter {
+  width: 150px; height: 27px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+  font: 400 11.5px/1 var(--sans); color: var(--text); outline: none;
+}
+.tool-filter:focus { border-color: var(--brand); }
+.tool-list { display: flex; flex-direction: column; gap: 7px; }
+.tool {
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+}
+.tool-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.tool-top b { font-size: 12.5px; font-weight: 650; }
+.tool-top .orig { font: 400 10.5px/1.4 var(--mono); color: var(--muted); }
+.tool-top .src {
+  font: 500 9.5px/1 var(--mono); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 5px; background: var(--code-bg);
+}
+.tool-top .src.z { color: var(--brand); background: var(--brand-weak); border-color: transparent; }
+.tool p { margin: 3px 0 0; font-size: 11.5px; color: var(--text-2); line-height: 1.6; }
+.tool .req { margin-top: 5px; font-size: 10.5px; color: var(--muted); display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.tool .req code { font: 500 10px/1.4 var(--mono); color: var(--text-2); background: var(--code-bg); padding: 1px 4px; border-radius: 3px; }
+.tool-err {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px;
+  border-radius: 9px; background: var(--danger-weak); color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  font-size: 11.5px; line-height: 1.6;
+}
+.tool-err b { display: block; font-weight: 650; }
+.tool-more { font-size: 11px; color: var(--muted); padding: 4px 2px 0; }
+.raw { margin-top: 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--bar-bg); }
+.raw summary { padding: 8px 11px; font-size: 11px; color: var(--muted); cursor: pointer; }
+.raw pre {
+  margin: 0; padding: 10px 12px; border-top: 1px solid var(--line-soft);
+  font: 400 10.5px/1.6 var(--mono); color: var(--text-2); overflow: auto; max-height: 260px;
+}
+.trans-fail {
+  margin-top: 14px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--bar-bg);
+  font-size: 11.5px; color: var(--muted); line-height: 1.6;
+}
+.trans-fail b { color: var(--warn); font-weight: 600; }
+.drv-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bar-bg);
+}
+.drv-foot .sp { flex: 1; }
+
+/* 登记模态 */
+.reg {
+  position: fixed; z-index: 120; left: 50%; top: 6vh;
+  width: min(570px, calc(100vw - 32px)); max-height: 88vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 30px 90px -24px rgba(16, 24, 40, .5);
+  opacity: 0; pointer-events: none;
+  transform: translate(-50%, -8px) scale(.985);
+  transition: opacity .18s, transform .18s;
+}
+.reg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0) scale(1); }
+.reg-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 0; }
+.reg-head .mh { flex: 1; min-width: 0; }
+.reg-head h2 { margin: 0; font-size: 17px; font-weight: 700; }
+.reg-head p { margin: 5px 0 0; font-size: 12px; color: var(--muted); }
+.reg-body { padding: 16px 20px 4px; }
+.field { margin-bottom: 14px; }
+.field > label { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.field > label .req { color: var(--brand); }
+.field > label .hint { font-size: 10.5px; font-weight: 400; color: var(--muted); margin-left: auto; }
+.inp, .ta {
+  width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  padding: 8px 10px; font: 400 12.5px/1.5 var(--sans); color: var(--text); outline: none;
+}
+.inp { height: 35px; padding: 0 10px; }
+.inp:focus, .ta:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.ta { min-height: 62px; resize: vertical; font-family: var(--mono); font-size: 11.5px; }
+.inp.script { font-family: var(--mono); font-size: 12px; }
+.inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sec { display: none; }
+.sec.on { display: block; }
+
+.reg .seg { width: fit-content; margin-bottom: 12px; }
+.reg .seg button { height: 30px; padding: 0 12px; font-size: 12px; }
+.reg .seg button svg { width: 13px; height: 13px; }
+
+.scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.scope-card {
+  position: relative; display: block; padding: 11px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  cursor: pointer; transition: border-color .12s, background .12s;
+}
+.scope-card:hover { border-color: var(--line-strong); }
+.scope-card.on { border-color: var(--brand); background: var(--brand-weak); box-shadow: 0 0 0 1px var(--brand) inset; }
+.scope-card input { position: absolute; opacity: 0; pointer-events: none; }
+.sc-t { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.sc-t i { font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--brand); background: var(--panel); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 6px; }
+.sc-d { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.sc-p { display: block; margin-top: 6px; font: 400 10.5px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+.chk-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.chk input { accent-color: var(--brand); cursor: pointer; }
+.chk-hint { font-size: 11px; color: var(--muted); }
+
+.alert {
+  display: flex; align-items: flex-start; gap: 9px; margin-top: 12px;
+  padding: 10px 12px; border-radius: 9px; font-size: 12px; line-height: 1.65;
+}
+.alert .ai { width: 17px; height: 17px; flex: none; display: grid; place-items: center; margin-top: 1px; border-radius: 50%; border: 1px solid currentColor; font: 700 10px/1 var(--mono); }
+.alert.err { color: var(--danger); background: var(--danger-weak); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); }
+.alert.warn { color: var(--warn); background: var(--warn-weak); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.alert.ok { color: var(--ok); background: var(--ok-weak); border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); }
+.alert b { font-weight: 650; }
+.alert .spring { flex: 1; }
+
+.reg-prog {
+  display: flex; align-items: center; gap: 9px; margin-top: 13px;
+  font-size: 11.5px; color: var(--muted);
+}
+.reg-prog .bar { flex: 1; height: 5px; border-radius: 999px; background: var(--code-bg); overflow: hidden; }
+.reg-prog .bar i { display: block; width: 38%; height: 100%; border-radius: inherit; background: var(--brand); animation: indet 1.1s ease-in-out infinite; }
+@keyframes indet { 0% { transform: translateX(-40%); } 100% { transform: translateX(300%); } }
+
+.reg-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 20px; margin-top: 14px;
+  border-top: 1px solid var(--line-soft); background: var(--bar-bg);
+  border-radius: 0 0 16px 16px;
+}
+.reg-foot .sp { flex: 1; }
+
+/* 移除确认 */
+.cfm {
+  position: fixed; z-index: 140; left: 50%; top: 50%;
+  width: min(430px, calc(100vw - 32px)); padding: 20px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 24px 70px -20px rgba(16, 24, 40, .5);
+  opacity: 0; pointer-events: none;
+  transform: translate(-50%, -48%) scale(.985); transition: opacity .16s, transform .16s;
+}
+.cfm.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.cfm-ico { width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 12px; border-radius: 11px; background: var(--danger-weak); color: var(--danger); }
+.cfm-ico svg { width: 18px; height: 18px; }
+.cfm h3 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.cfm p { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.65; }
+.cfm .scope-grid { margin-top: 13px; }
+.cfm .scope-card { padding: 9px 11px; }
+.cfm-err { display: none; margin-top: 11px; }
+.cfm-err.show { display: flex; }
+.cfm-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+/* ============================================================
+   5. 状态矩阵 / 决策 / 接口表
+   ============================================================ */
+.mx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 860px) { .mx-grid { grid-template-columns: 1fr; } }
+.mx {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 13px 15px 15px;
+}
+.mx-h { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 11.5px; font-weight: 650; }
+.mx-h .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--brand); }
+.mx-h .dot.bad { background: var(--danger); }
+.mx-h .dot.warn { background: var(--warn); }
+.mx-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.mx-note { margin: 9px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.65; }
+.mx-mini {
+  margin-top: 9px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--bar-bg);
+  font-size: 11.5px; color: var(--text-2); line-height: 1.6;
+}
+.mx-pills { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 12px; }
+.mx-pill-item { display: flex; flex-direction: column; gap: 5px; }
+.mx-pill-item small { font-size: 10.5px; color: var(--muted); }
+.mx-skel { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mx-skel .skel { min-height: 76px; padding: 11px 12px; border-radius: 10px; }
+.mx-skel .t { width: 32px; height: 32px; border-radius: 9px; }
+.mx-skel .l i { height: 7px; }
+.mx-empty { display: flex; gap: 9px; align-items: flex-start; padding: 11px; border: 1px dashed var(--line-strong); border-radius: 9px; }
+.mx-empty .ico { width: 30px; height: 30px; flex: none; border-radius: 9px; display: grid; place-items: center; background: var(--code-bg); color: var(--muted); }
+.mx-empty .ico svg { width: 15px; height: 15px; }
+.mx-empty b { display: block; font-size: 12px; font-weight: 650; }
+.mx-empty p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+
+.d-list { display: flex; flex-direction: column; gap: 10px; }
+.d-item {
+  display: flex; gap: 13px; padding: 13px 15px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+}
+.d-item .d-no {
+  width: 30px; height: 24px; flex: none; display: grid; place-items: center;
+  border-radius: 7px; background: var(--brand-weak); color: var(--brand);
+  font: 700 11px/1 var(--mono);
+}
+.d-body { flex: 1; min-width: 0; }
+.d-body .t { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.d-body b { font-size: 12.5px; font-weight: 650; }
+.d-body p { margin: 3px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.68; }
+.d-state {
+  font: 500 9.5px/1 var(--sans); padding: 3px 6px; border-radius: 999px;
+  color: var(--brand); background: var(--brand-weak); white-space: nowrap;
+}
+.d-state.confirm { color: var(--warn); background: var(--warn-weak); }
+.d-state.api { color: var(--text-2); background: var(--code-bg); }
+
+.tbl { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+.tbl th, .tbl td { padding: 9px 12px; text-align: left; font-size: 11.5px; border-top: 1px solid var(--line-soft); vertical-align: top; }
+.tbl th { background: var(--bar-bg); color: var(--muted); font-size: 10.5px; font-weight: 600; border-top: none; }
+.tbl td.mono, .tbl th.mono { font-family: var(--mono); font-size: 10.5px; }
+.tbl code { font: 500 10.5px/1.5 var(--mono); color: var(--text-2); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+
+/* 响应式示意 */
+.resp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .resp { grid-template-columns: 1fr; } }
+.wire {
+  border: 1px solid var(--line); border-radius: 11px; background: var(--panel); padding: 12px;
+}
+.wire-h { font: 500 10.5px/1 var(--mono); color: var(--muted); margin-bottom: 9px; }
+.wire-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.wire-grid1 { display: grid; grid-template-columns: 1fr; gap: 7px; }
+.wire-card { height: 52px; border: 1px solid var(--line); border-radius: 7px; background: var(--bar-bg); }
+.wire-drawer { margin-left: 46%; height: 100px; border: 1px solid var(--brand); border-radius: 7px; background: var(--brand-weak); }
+
+/* Toast */
+.toasts { position: fixed; right: 18px; bottom: 18px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+.toast {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 13px; border-radius: 9px; font-size: 12px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop); animation: tin .18s ease-out;
+}
+.toast i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.toast.ok i { background: var(--brand); }
+.toast.err i { background: var(--danger); }
+@keyframes tin { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+/* 页面响应式 */
+@media (max-width: 980px) {
+  .grid { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .stat:nth-child(3) { border-left: none; border-top: 1px solid var(--line-soft); }
+  .stat:nth-child(4) { border-top: 1px solid var(--line-soft); }
+  .ctx { padding: 18px 14px; }
+}
+@media (max-width: 700px) {
+  .mcp-head { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .mcp-actions { margin-left: 0; width: 100%; }
+  .mcp-actions .btn.primary { flex: 1; }
+  .search { max-width: none; flex-basis: 100%; }
+  .count { display: none; }
+  .inline-fields { grid-template-columns: 1fr; }
+  .scope-grid { grid-template-columns: 1fr; }
+  .mx-pills { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>MCP 管理页重设计 · 原型 20261109-002</h1>
+  <span class="tag">GET /mcp/servers</span>
+  <nav>
+    <a href="#issues">现状</a>
+    <a href="#page">主页面</a>
+    <a href="#matrix">状态矩阵</a>
+    <a href="#decisions">决策</a>
+    <a href="#api">接口</a>
+  </nav>
+  <span class="spring"></span>
+  <button class="btn-ghost" id="themeBtn">◐ 深色</button>
+</div>
+
+<div class="page">
+  <!-- ===== 现状问题 ===== -->
+  <section id="issues">
+    <div class="sec-head"><h2>现状问题</h2><span class="badge mute">McpView 旧版</span></div>
+    <p class="sec-desc">旧版把「运行状态 + 配置 + 工具元信息 + 登记表单」四件事平铺在一页：宽表格承担状态扫读，写入范围与删除范围混用一个下拉，元信息卡正文 5 行小字。重设计的目标是<strong>状态优先、一卡一 server、操作分层、配置可下钻</strong>。</p>
+    <div class="issue-grid">
+      <div class="issue"><span class="no">1</span><div><b>表格列被长命令挤压</b><p>command / URL 最长，名称与状态被推到视觉边缘；连接状态只是一个文字徽标，扫读成本高。</p></div></div>
+      <div class="issue"><span class="no">2</span><div><b>「写入 scope」语义不清且被复用</b><p>页头一个 scope 下拉同时决定登记与删除范围。全局 server 在默认工作空间范围下删除会返回 <code>deleted:false</code>，旧版仍提示成功。</p></div></div>
+      <div class="issue"><span class="no">3</span><div><b>工具名中文化占一整张卡片</b><p>正文五行小字说明翻译优先级与失败项，真正的服务器状态被挤到页面下方；失败详情无处展开。</p></div></div>
+      <div class="issue"><span class="no">4</span><div><b>测试、明细、删除等权平铺</b><p>行内三个按钮 + 行内展开原始 JSON，缺少「主要动作 / 次要动作 / 危险动作」分层。</p></div></div>
+      <div class="issue"><span class="no">5</span><div><b>无搜索、筛选、排序</b><p>server 变多后只能逐行肉眼查找；<code>state</code>、<code>lastError</code>、<code>nextRetryAt</code> 已由接口返回，但页面只显示 已连接/未连接。</p></div></div>
+      <div class="issue"><span class="no">6</span><div><b>空态与失败态缺少引导</b><p>空库只有一行文字；连接失败不展示原因和重试倒计时；登记 502 半态只有 toast，关了窗就不知道配置已落盘。</p></div></div>
+    </div>
+  </section>
+
+  <!-- ===== 主页面 ===== -->
+  <section id="page">
+    <div class="sec-head"><h2>主页面</h2><span class="badge">方案 B · 可交互</span></div>
+    <p class="sec-desc">页头 = 标题 + 说明 + 刷新 / 重载 / 登记；统计条 = 已登记 / 已连接 / 异常 / 工具总数；工具条 = 搜索 + 状态分段 + 排序 + 中文化徽标 + 计数；卡片 = 状态 pill、来源徽标、连接目标、失败原因与重试倒计时、上次测试结果、测试 / 明细 / ⋯ 菜单。搜索、筛选、测试、抽屉、登记、移除都可在下方直接操作。</p>
+
+    <div class="ctx">
+      <span class="ctx-tag">WebUI 主内容区 · 与技能页同族布局</span>
+
+      <div class="mcp-head">
+        <div class="lead">
+          <div class="eyebrow">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h4v5h-4z"/><path d="M9.5 5.5h4v5h-4z"/><path d="M6.5 8h3"/></svg>
+            MCP gateway · 模型上下文协议
+          </div>
+          <h1>MCP 服务器</h1>
+          <p>连接本地进程与远程端点，为 Agent 提供外部工具。登记即连接，失败由监测器按指数退避自动重试。</p>
+        </div>
+        <div class="mcp-actions">
+          <button class="btn icon" id="refreshBtn" type="button" title="刷新列表" aria-label="刷新列表">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.8V5h-2.2"/></svg>
+          </button>
+          <button class="btn" id="reloadBtn" type="button">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 8a5.6 5.6 0 0 1 9.6-4"/><path d="M13.6 8a5.6 5.6 0 0 1-9.6 4"/><path d="M12.4 1.8v2.8h-2.8M3.6 14.2v-2.8h2.8"/></svg>
+            重载
+          </button>
+          <button class="btn primary" id="regBtn" type="button">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v10M3 8h10"/></svg>
+            登记服务器
+          </button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="k"><i class="on"></i>已登记</div>
+          <div class="v" id="statTotal">—<small>个</small></div>
+        </div>
+        <div class="stat">
+          <div class="k"><i class="on"></i>已连接</div>
+          <div class="v" id="statOk">—<small>个</small></div>
+        </div>
+        <div class="stat">
+          <div class="k"><i class="bad"></i>异常</div>
+          <div class="v bad" id="statBad">—<small>个</small></div>
+        </div>
+        <div class="stat">
+          <div class="k"><i></i>工具总数</div>
+          <div class="v" id="statTools">—<small>个</small></div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
+          <input id="q" type="text" placeholder="搜索名称、command 或 URL" autocomplete="off" spellcheck="false">
+          <kbd>/</kbd>
+        </div>
+        <div class="seg" id="seg">
+          <button type="button" data-tab="all" class="on">全部 <span class="n" id="segAll">0</span></button>
+          <button type="button" data-tab="ok">已连接 <span class="n" id="segOk">0</span></button>
+          <button type="button" data-tab="bad">异常 <span class="n" id="segBad">0</span></button>
+        </div>
+        <select class="sort" id="sort" aria-label="排序方式">
+          <option value="status">状态优先</option>
+          <option value="name">名称 A→Z</option>
+          <option value="tools">工具数降序</option>
+        </select>
+        <button class="meta-pill" id="metaBtn" type="button">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 7.2v3.4M8 5.2v.2"/></svg>
+          工具名中文化 <b>30/30</b>
+        </button>
+        <span class="count" id="count">—</span>
+      </div>
+
+      <div class="grid" id="grid"></div>
+
+      <div class="footline">
+        <span>监测器每 30s 探活，失败按指数退避重试（30s → 5min）· 登记返回 502 为半态（配置已落盘但连接失败）</span>
+        <span class="sp"></span>
+        <span id="footTotal">共 0 个服务器</span>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>可试：</b>搜索 <code>postgres</code>、切「异常」分段、点卡片「测试」（模拟 600ms 后回写延迟与工具数）、点「明细」打开抽屉（含配置与工具列表）、点「登记服务器」走一遍 409 / 502 / 成功三种路径、点 ⋯ → 移除（移除弹窗可试范围不匹配提示）。
+    </div>
+  </section>
+  <!-- ===== 状态矩阵 ===== -->
+  <section id="matrix">
+    <div class="sec-head"><h2>状态矩阵</h2><span class="badge">四态 + 五种边界</span></div>
+    <p class="sec-desc">每一种服务器形态都有确定的视觉与文案，避免「看起来一样但语义不同」。以下组件与主页面共用同一套 class，落地时可直接抽成子组件。</p>
+    <div class="mx-grid">
+      <div class="mx">
+        <div class="mx-h"><span class="dot"></span>连接状态四态</div>
+        <div class="mx-pills">
+          <div class="mx-pill-item"><span class="pill idle"><i></i>待连接</span><small>刚登记，监测器尚未派发</small></div>
+          <div class="mx-pill-item"><span class="pill warn"><i></i>连接中</span><small>首次连接或按退避重试中</small></div>
+          <div class="mx-pill-item"><span class="pill ok"><i></i>已连接</span><small>工具已注册，可被 Agent 调用</small></div>
+          <div class="mx-pill-item"><span class="pill err"><i></i>连接失败</span><small>展示 lastError 与 nextRetryAt</small></div>
+        </div>
+        <p class="mx-note"><code>state</code> 直接映射 pill；待连接与连接中不计入「异常」统计，异常只统计 <code>failed</code>。</p>
+      </div>
+
+      <div class="mx">
+        <div class="mx-h"><span class="dot bad"></span>失败卡：原因 + 重试倒计时</div>
+        <div class="srv bad" style="box-shadow:none;">
+          <div class="srv-top">
+            <div class="tile stdio off">GF</div>
+            <div class="srv-id">
+              <div class="srv-title"><h3>grafana</h3><span class="pill err"><i></i>连接失败</span></div>
+              <div class="srv-target">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5 5.5 8 3 10.5"/><path d="M8 10.5h5"/></svg>
+                <span>npx -y mcp-grafana</span>
+              </div>
+            </div>
+          </div>
+          <div class="srv-err">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2 14.8 13.6H1.2L8 2.2Z"/><path d="M8 6v3.4M8 11.5v.2"/></svg>
+            <span class="msg">spawn npx ENOENT：未找到 npx，请检查 PATH</span>
+            <span class="retry">第 2 次 · 02:14 后重试</span>
+          </div>
+        </div>
+        <p class="mx-note">倒计时每秒刷新；归零后 pill 自动切到「连接中」。连续失败次数与退避由监测器给出（30s → 5min），前端只读。</p>
+      </div>
+
+      <div class="mx">
+        <div class="mx-h"><span class="dot"></span>测试结果三态（留在卡片）</div>
+        <div class="mx-row">
+          <span class="srv-note" style="gap:6px;"><span class="mini-spin"></span>测试中…</span>
+          <span class="chip ok">通过 · 214ms · 6 工具</span>
+          <span class="chip err">失败 · 超时 8s</span>
+          <span class="chip idle">未测试</span>
+        </div>
+        <p class="mx-note">测试只刷新结果，不改变连接状态。结果保留到下一次刷新或重载，不再只发一条 toast。</p>
+      </div>
+
+      <div class="mx">
+        <div class="mx-h"><span class="dot warn"></span>登记结果：成功 / 409 / 502</div>
+        <div class="alert ok" style="margin-top:0;"><span class="ai">✓</span><div><b>已登记并连接</b> · 6 个工具已注册，卡片已插入列表。</div></div>
+        <div class="alert err" style="margin-top:8px;"><span class="ai">✕</span><div><b>409 同名冲突</b> · 名称已存在，输入框下方内联提示，不关闭模态。</div></div>
+        <div class="alert warn" style="margin-top:8px;"><span class="ai">!</span><div><b>502 半态</b> · 配置已落盘但连接失败；模态内解释，并引导到列表中的异常卡。</div></div>
+      </div>
+
+      <div class="mx">
+        <div class="mx-h"><span class="dot bad"></span>移除：范围必须与登记范围一致</div>
+        <div class="alert warn" style="margin-top:0;"><span class="ai">!</span><div><b>deleted:false</b> · 该 server 登记在<strong>全局</strong>范围，当前选择的「工作空间」中没有可删除的配置。请切换范围后重试。</div></div>
+        <p class="mx-note">确认弹窗内单独选择范围（默认取卡片徽标所示范围）；只有删除成功才从列表移除并 toast。</p>
+      </div>
+
+      <div class="mx">
+        <div class="mx-h"><span class="dot"></span>空库 / 无匹配 / 骨架</div>
+        <div class="mx-empty">
+          <div class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h4v5h-4z"/><path d="M9.5 5.5h4v5h-4z"/><path d="M6.5 8h3"/></svg></div>
+          <div><b>还没有 MCP 服务器</b><p>登记第一个本地命令或远程端点，登记即连接。</p></div>
+        </div>
+        <div class="mx-empty" style="margin-top:8px;">
+          <div class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg></div>
+          <div><b>没有匹配的服务器</b><p>清空搜索，或切回「全部」分段。</p></div>
+        </div>
+        <div class="mx-skel" style="margin-top:9px;">
+          <div class="skel"><div class="t"></div><div class="l"><i></i><i></i><i></i><i></i></div></div>
+          <div class="skel"><div class="t"></div><div class="l"><i></i><i></i><i></i><i></i></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <!-- ===== 设计决策 ===== -->
+  <section id="decisions">
+    <div class="sec-head"><h2>设计决策</h2><span class="badge">D1–D9 · 待确认后落地</span></div>
+    <p class="sec-desc">除 D9 需要列表接口补一个字段外，其余决策都不改后端。标注「推荐」的项为原型默认方案；「待确认」的项落地前需要你点头。</p>
+    <div class="d-list">
+      <div class="d-item">
+        <div class="d-no">D1</div>
+        <div class="d-body">
+          <div class="t"><b>卡片流替代表格</b><span class="d-state">推荐</span></div>
+          <p>一卡一 server：名称、来源范围、连接状态、连接目标、工具数与测试结果处于同一视区。长 command / URL 单行省略并支持一键复制，不再挤压状态列；≥980px 两列，窄屏单列。连接目标来自 <code>GET /config</code> 的 <code>tools.mcpServers</code>。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D2</div>
+        <div class="d-body">
+          <div class="t"><b>状态成为首要信息</b><span class="d-state">推荐</span></div>
+          <p><code>state</code> 四态映射 pill；失败卡左侧色条 + <code>lastError</code> + <code>nextRetryAt</code> 倒计时；统计条汇总已登记 / 已连接 / 异常 / 工具总数。异常只统计 <code>failed</code>，连接中与待连接不制造额外焦虑。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D3</div>
+        <div class="d-body">
+          <div class="t"><b>测试结果留在卡片</b><span class="d-state">推荐</span></div>
+          <p>点击「测试」后 chip 依次显示 测试中 → 通过 / 失败，并带延迟与工具数（对应接口 <code>ok / latencyMs / tools / error</code>）。结果保留到下一次刷新或重载；toast 只做补充，不作为唯一反馈。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D4</div>
+        <div class="d-body">
+          <div class="t"><b>登记改为模态 + 条件字段</b><span class="d-state">推荐</span></div>
+          <p>transport 分段切换：stdio 显示命令 / 参数 / 环境变量，SSE 与 HTTP 显示 URL / 请求头；范围用两张 scope 卡（默认工作空间）；「登记后立即连接」可关。409 与 502 都在模态内解释，不靠 toast 承载关键信息。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D5</div>
+        <div class="d-body">
+          <div class="t"><b>移除确认带范围选择</b><span class="d-state">推荐</span></div>
+          <p>确认框内单独选 scope，默认等于卡片徽标所示范围。范围不匹配时展示 <code>deleted:false</code> 的原因并保持弹窗；只有删除成功才移除卡片并 toast。彻底移除旧版「页级 scope 同时决定登记与删除」的耦合。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D6</div>
+        <div class="d-body">
+          <div class="t"><b>中文化从主卡降级为徽标</b><span class="d-state">推荐</span></div>
+          <p>主页面只保留工具条右侧的「工具名中文化 已译/总数」徽标，点击弹出说明层；翻译失败项折叠在抽屉的工具区，正文不再占一整张卡抢走状态焦点。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D7</div>
+        <div class="d-body">
+          <div class="t"><b>搜索 / 状态筛选 / 排序</b><span class="d-state">推荐</span></div>
+          <p>搜索匹配名称、command 与 URL 并高亮命中；分段为 全部 / 已连接 / 异常；排序为 状态优先 / 名称 A→Z / 工具数降序；计数常显，空结果给出清空入口。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D8</div>
+        <div class="d-body">
+          <div class="t"><b>重载直接执行，不弹二次确认</b><span class="d-state">推荐</span></div>
+          <p>「重载」是页级幂等操作（<code>POST /mcp/reload</code>），失败不会破坏配置。执行后 toast 汇报成功数与失败名单，并刷新列表；二次确认只留给「移除」这类破坏性动作。</p>
+        </div>
+      </div>
+      <div class="d-item">
+        <div class="d-no">D9</div>
+        <div class="d-body">
+          <div class="t"><b>每卡显示来源 scope</b><span class="d-state api">依赖接口小改</span><span class="d-state confirm">待确认</span></div>
+          <p>需要 <code>GET /mcp/servers</code> 的每一项增加 <code>scope</code>（workspace / global，取自配置来源）。未提供时卡片隐藏徽标，移除确认默认工作空间并在弹窗内提示「请确认登记范围」。这是本轮唯一建议的接口改动。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 接口映射 ===== -->
+  <section id="api">
+    <div class="sec-head"><h2>接口映射</h2><span class="badge mute">端点零改动（D9 例外）</span></div>
+    <p class="sec-desc">每个视觉元素都能对应到现有响应字段；抽屉与卡片不额外造数据。登记失败的 409 / 502、移除的 <code>deleted:false</code> 都在对应位置解释。</p>
+    <div style="overflow-x:auto;">
+      <table class="tbl">
+        <thead>
+          <tr><th style="width:32%;">端点</th><th style="width:26%;">用途</th><th>对应展示</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /mcp/servers</td><td>列表 + 运行态</td><td>卡片、统计条、分段筛选、失败倒计时（<code>state / lastError / nextRetryAt / toolCount / transport</code>）</td></tr>
+          <tr><td class="mono">GET /config</td><td>合并生效配置</td><td>卡片连接目标、抽屉配置区（<code>tools.mcpServers[name]</code> 的 command / args / url / headers；secret 已遮蔽）</td></tr>
+          <tr><td class="mono">GET /mcp/servers/:name</td><td>详情 + 工具清单</td><td>抽屉的连接信息、工具列表、原始 JSON；失败时显示查询错误与重试时间</td></tr>
+          <tr><td class="mono">POST /mcp/servers</td><td>登记（502 = 半态）</td><td>登记模态内联 409 / 502；成功后插卡；502 后引导至异常卡并说明配置已落盘</td></tr>
+          <tr><td class="mono">POST /mcp/servers/:name/test</td><td>主动测试连接</td><td>卡片测试 chip：测试中 / 通过 / 失败 + 延迟 + 工具数（<code>ok / latencyMs / tools / error</code>）</td></tr>
+          <tr><td class="mono">POST /mcp/reload</td><td>重载全部连接</td><td>页级「重载」按钮；toast 汇报 <code>reconnected</code> 与 <code>failed[]</code>，随后刷新列表</td></tr>
+          <tr><td class="mono">DELETE /mcp/servers/:name?scope=</td><td>按范围移除</td><td>移除确认框的 scope 选择；<code>deleted:false</code> 时提示范围不匹配，不误报成功</td></tr>
+          <tr><td class="mono">GET /mcp/tool-meta</td><td>工具名中文化</td><td>工具条徽标（已译 / 总数）、抽屉工具名与中文参数、抽屉内翻译失败折叠</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <b>差异说明：</b>旧版忽略 <code>DELETE</code> 响应的 <code>deleted:false</code>，也只用 toast 承载 502；新版把两者都变成可留存的内联解释。<b>D9 可选：</b>列表项增加 <code>scope</code> 后，来源徽标与移除默认范围即可自动对齐；不增加时按上文降级。
+    </div>
+  </section>
+
+  <!-- ===== 响应式 ===== -->
+  <section id="responsive">
+    <div class="sec-head"><h2>响应式</h2><span class="badge mute">≥980 / ≤700</span></div>
+    <p class="sec-desc">与技能页同一套断点：宽屏双列卡片，≤980px 单列、统计条折成两行；≤700px 页头纵排，「登记服务器」占满一行，搜索框独占一行。</p>
+    <div class="resp">
+      <div class="wire">
+        <div class="wire-h">≥ 980px · 主页面</div>
+        <div class="wire-grid2">
+          <div class="wire-card"></div><div class="wire-card"></div>
+          <div class="wire-card"></div><div class="wire-card"></div>
+          <div class="wire-card"></div><div class="wire-card"></div>
+        </div>
+      </div>
+      <div class="wire">
+        <div class="wire-h">≤ 700px · 单列 + 抽屉占满宽</div>
+        <div class="wire-grid1">
+          <div class="wire-card"></div><div class="wire-card"></div><div class="wire-card"></div>
+        </div>
+        <div class="wire-drawer" style="margin:8px 0 0;"></div>
+        <div class="wire-h" style="margin:8px 0 0;">抽屉改为全宽，底部操作固定</div>
+      </div>
+    </div>
+    <div class="note">
+      <b>细节：</b>卡片标题与连接目标使用 <code>overflow-wrap:anywhere</code>，长包名不撑破卡片；状态 pill 使用 <code>white-space:nowrap</code> 防止「连接失败」被折行；抽屉工具筛选框在 ≤700px 时占满一行。
+    </div>
+  </section>
+</div>
+
+<!-- ===== 浮层：遮罩 / 卡片菜单 / 中文化说明 ===== -->
+<div class="backdrop" id="backdrop"></div>
+
+<div class="menu" id="menu" hidden>
+  <div class="m-head" id="menuHead">postgres</div>
+  <button type="button" data-act="detail">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h10v11H3z"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>
+    查看明细
+  </button>
+  <button type="button" data-act="copy">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.2" y="5.2" width="6.8" height="8" rx="1.2"/><path d="M10.4 5.2V3.4H3.6v8h1.6"/></svg>
+    复制连接目标
+  </button>
+  <button type="button" data-act="test">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 2 4 9h3.3L7 14l4.5-7H8.2L8.5 2Z"/></svg>
+    测试连接
+  </button>
+  <div class="hr"></div>
+  <button type="button" class="danger" data-act="remove">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.8h10.4M6 4.8V3.3h4v1.5M4.4 4.8l.6 8.4h6l.6-8.4"/></svg>
+    移除服务器
+  </button>
+</div>
+
+<div class="menu" id="metaPop" hidden style="width:268px;">
+  <div class="m-head">工具名中文化 · GET /mcp/tool-meta</div>
+  <div style="padding:7px 9px 9px;font-size:11.5px;color:var(--muted);line-height:1.7;">
+    展示名优先级：协议 title → 中文描述提炼 → LLM 翻译 → 名字美化。<br>
+    <span id="metaStats" style="color:var(--text-2);">已翻译 — · 失败 — · 原文 —</span><br>
+    失败项可在对应服务器的「明细 → 工具列表」查看原因。
+  </div>
+  <div class="hr"></div>
+  <button type="button" data-act="meta-help">知道了</button>
+</div>
+
+<!-- ===== 详情抽屉 ===== -->
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drv-head">
+    <div class="tile stdio" id="drvTile">PG</div>
+    <div class="drv-title">
+      <h2>
+        <span id="drvName">postgres</span>
+        <span class="scope ws" id="drvScope"><i></i>工作空间</span>
+        <span class="pill ok" id="drvPill"><i></i>已连接</span>
+      </h2>
+      <div class="drv-sub" id="drvSub">stdio</div>
+    </div>
+    <button class="close-btn" type="button" data-close="drawer" aria-label="关闭">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+    </button>
+  </div>
+  <div class="drv-body" id="drvBody"></div>
+  <div class="drv-foot">
+    <button class="btn ghost sm" type="button" data-close="drawer">关闭</button>
+    <span class="sp"></span>
+    <button class="btn sm" type="button" id="drvTestBtn">测试连接</button>
+  </div>
+</aside>
+
+<!-- ===== 登记模态 ===== -->
+<div class="reg" id="reg" role="dialog" aria-modal="true" aria-labelledby="regTitle">
+  <div class="reg-head">
+    <div class="mh">
+      <h2 id="regTitle">登记 MCP 服务器</h2>
+      <p>登记即连接；连接失败会保留配置，由监测器按指数退避自动重试。</p>
+    </div>
+    <button class="close-btn" type="button" data-close="reg" aria-label="关闭">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+    </button>
+  </div>
+  <div class="reg-body">
+    <div class="field">
+      <label>名称 <span class="req">*</span><span class="hint">不可含空格；同名返回 409</span></label>
+      <input class="inp" id="regName" placeholder="例如 postgres" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label>传输方式</label>
+      <div class="seg" id="regSeg">
+        <button type="button" data-tr="stdio" class="on">stdio</button>
+        <button type="button" data-tr="sse">SSE</button>
+        <button type="button" data-tr="http">HTTP</button>
+      </div>
+    </div>
+    <div class="sec on" id="secStdio">
+      <div class="field">
+        <label>命令 <span class="req">*</span><span class="hint">可执行文件或 npx</span></label>
+        <input class="inp script" id="regCommand" placeholder="npx" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>参数<span class="hint">每行一个</span></label>
+        <textarea class="ta" id="regArgs" placeholder="-y&#10;@modelcontextprotocol/server-postgres&#10;postgresql://localhost:5432/app"></textarea>
+      </div>
+      <div class="field">
+        <label>环境变量<span class="hint">每行 KEY=VALUE</span></label>
+        <textarea class="ta" id="regEnv" placeholder="PGPASSWORD=secret"></textarea>
+      </div>
+    </div>
+    <div class="sec" id="secRemote">
+      <div class="field">
+        <label>URL <span class="req">*</span></label>
+        <input class="inp script" id="regUrl" placeholder="https://example.com/mcp" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>请求头<span class="hint">每行 KEY=VALUE</span></label>
+        <textarea class="ta" id="regHeaders" placeholder="Authorization=Bearer …"></textarea>
+      </div>
+    </div>
+    <div class="field">
+      <label>写入范围</label>
+      <div class="scope-grid" id="regScope">
+        <label class="scope-card on">
+          <input type="radio" name="regScope" value="workspace" checked>
+          <span class="sc-t">工作空间 <i>默认</i></span>
+          <span class="sc-d">仅当前项目生效</span>
+          <span class="sc-p">.loop-agent/.agent-config.json</span>
+        </label>
+        <label class="scope-card">
+          <input type="radio" name="regScope" value="global">
+          <span class="sc-t">全局</span>
+          <span class="sc-d">所有项目共享</span>
+          <span class="sc-p">~/.loop-agent/config.json</span>
+        </label>
+      </div>
+    </div>
+    <div class="chk-row">
+      <label class="chk"><input type="checkbox" id="regConnect" checked> 登记后立即连接</label>
+      <span class="chk-hint">取消则等待监测器下一轮（≤30s）</span>
+    </div>
+    <div id="regAlerts"></div>
+    <div class="reg-prog" id="regProg" style="display:none;"><span>正在登记…</span><div class="bar"><i></i></div></div>
+  </div>
+  <div class="reg-foot">
+    <span class="sp"></span>
+    <button class="btn ghost" type="button" data-close="reg">取消</button>
+    <button class="btn primary" type="button" id="regSubmit">登记并连接</button>
+  </div>
+</div>
+
+<!-- ===== 移除确认 ===== -->
+<div class="cfm" id="cfm" role="dialog" aria-modal="true" aria-labelledby="cfmName">
+  <div class="cfm-ico">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.8h10.4M6 4.8V3.3h4v1.5M4.4 4.8l.6 8.4h6l.6-8.4"/></svg>
+  </div>
+  <h3 id="cfmName">移除 postgres</h3>
+  <p>将从配置中删除并断开连接。请选择该 server 的<strong>登记范围</strong>；范围不匹配时删除不会生效。</p>
+  <div class="scope-grid" id="cfmScope">
+    <label class="scope-card on">
+      <input type="radio" name="cfmScope" value="workspace" checked>
+      <span class="sc-t">工作空间</span>
+      <span class="sc-d">仅当前项目</span>
+    </label>
+    <label class="scope-card">
+      <input type="radio" name="cfmScope" value="global">
+      <span class="sc-t">全局</span>
+      <span class="sc-d">所有项目</span>
+    </label>
+  </div>
+  <div class="cfm-err" id="cfmErr">
+    <div class="alert err" style="margin:0;">
+      <span class="ai">✕</span>
+      <div><b>deleted:false</b> · 该 server 不在所选范围，配置未删除。请切换到「全局」后重试。</div>
+    </div>
+  </div>
+  <div class="cfm-btns">
+    <button class="btn ghost" type="button" data-close="cfm">取消</button>
+    <button class="btn primary" type="button" id="cfmOk" style="background:var(--danger);border-color:var(--danger);color:#fff;">移除</button>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script>
+/* ============================================================
+   原型数据层：与接口响应同构的演示数据（无网络请求）
+   ============================================================ */
+const now = () => Date.now();
+const TE = now();
+
+const CFG = {
+  postgres: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://localhost:5432/app'], scope: 'workspace' },
+  filesystem: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', 'C:\\work'], scope: 'global' },
+  github: { type: 'http', url: 'https://mcp.github.example/v1', headers: { Authorization: 'Bearer ••••' }, scope: 'global' },
+  grafana: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-grafana'], scope: 'workspace' },
+  sentry: { type: 'sse', url: 'https://sentry-mcp.example/sse', headers: {}, scope: 'global' }
+};
+
+const TOOLS = {
+  postgres: [
+    { zh: '执行查询', en: 'query', src: 'translate', desc: '在已连接的数据库中执行只读 SQL，返回列与行。', req: ['sql'] },
+    { zh: '列出数据表', en: 'list_tables', src: 'title', desc: '列出当前 schema 下的数据表与视图。', req: [] },
+    { zh: '描述表结构', en: 'describe_table', src: 'translate', desc: '读取指定表的列、类型与索引信息。', req: ['table'] },
+    { zh: '插入行', en: 'insert_row', src: 'translate', desc: '向指定表插入一行并返回主键。', req: ['table', 'values'] },
+    { zh: '创建数据表', en: 'create_table', src: 'title', desc: '按列定义创建新表，可指定幂等选项。', req: ['table', 'columns'] },
+    { zh: 'Explain Query', en: 'explain_query', src: 'none', desc: '返回 SQL 的执行计划与预估成本。', req: ['sql'], fail: 'LLM 翻译请求 30s 未返回，已回落协议原文' }
+  ],
+  filesystem: [
+    { zh: '读取文件', en: 'read_file', src: 'title', desc: '读取文本文件内容，可指定起止行。', req: ['path'] },
+    { zh: '写入文件', en: 'write_file', src: 'title', desc: '写入或覆盖文本文件。', req: ['path', 'content'] },
+    { zh: '列出目录', en: 'list_directory', src: 'translate', desc: '列出目录下的文件与子目录。', req: ['path'] },
+    { zh: '搜索文件', en: 'search_files', src: 'translate', desc: '按通配模式递归搜索文件名。', req: ['pattern'] },
+    { zh: '移动文件', en: 'move_file', src: 'translate', desc: '移动或重命名文件与目录。', req: ['from', 'to'] }
+  ],
+  github: [
+    { zh: '搜索仓库', en: 'search_repositories', src: 'title', desc: '按关键词搜索 GitHub 仓库。', req: ['query'] },
+    { zh: '获取 Issue', en: 'get_issue', src: 'translate', desc: '读取指定 Issue 的正文与评论。', req: ['owner', 'repo', 'number'] },
+    { zh: '创建 PR', en: 'create_pull_request', src: 'translate', desc: '从 head 分支向 base 分支创建 PR。', req: ['owner', 'repo', 'head', 'base'] },
+    { zh: '列出提交', en: 'list_commits', src: 'translate', desc: '列出仓库分支上的最近提交。', req: ['owner', 'repo'] },
+    { zh: 'Merge Pull Request', en: 'merge_pull_request', src: 'none', desc: '合并已就绪的 PR 并关闭源分支。', req: ['owner', 'repo', 'number'], fail: '接口 403：当前 token 缺少 pull_request:write 权限' }
+  ],
+  grafana: [
+    { zh: '列出仪表盘', en: 'list_dashboards', src: 'title', desc: '列出可访问的仪表盘与文件夹。', req: [] },
+    { zh: '搜索告警', en: 'search_alerts', src: 'translate', desc: '按状态与标签检索告警。', req: [] },
+    { zh: '获取数据源', en: 'get_datasource', src: 'translate', desc: '读取数据源类型与连接参数。', req: ['uid'] },
+    { zh: '查询指标', en: 'query_metrics', src: 'translate', desc: '按时间区间查询指标序列。', req: ['query', 'from'] }
+  ],
+  sentry: [
+    { zh: '列出错误', en: 'list_issues', src: 'translate', desc: '列出项目中的未解决错误。', req: ['project'] },
+    { zh: '获取事件', en: 'get_event', src: 'translate', desc: '读取单个事件的堆栈与上下文。', req: ['issueId'] },
+    { zh: '标记已解决', en: 'resolve_issue', src: 'title', desc: '将指定错误标记为已解决。', req: ['issueId'] }
+  ]
+};
+
+let SERVERS = [
+  { name: 'postgres', transport: 'stdio', state: 'connected', toolCount: 6, retries: 0, lastCheckAt: TE - 12000, scope: 'workspace', lastTest: null },
+  { name: 'filesystem', transport: 'stdio', state: 'connected', toolCount: 5, retries: 0, lastCheckAt: TE - 18000, scope: 'global', lastTest: null },
+  { name: 'github', transport: 'http', state: 'connected', toolCount: 5, retries: 0, lastCheckAt: TE - 9000, scope: 'global', lastTest: null },
+  { name: 'grafana', transport: 'stdio', state: 'failed', toolCount: 0, retries: 2, lastError: 'spawn npx ENOENT：未找到 npx，请检查 PATH', nextRetryAt: TE + 134000, scope: 'workspace', lastTest: null },
+  { name: 'sentry', transport: 'sse', state: 'connecting', toolCount: 0, retries: 0, scope: 'global', lastTest: null }
+];
+
+const ui = {
+  tab: 'all', q: '', sort: 'status', loading: false,
+  testing: new Set(), drawerName: null, menuName: null, cfmName: null,
+  regTr: 'stdio', submitting: false
+};
+
+/* ============================================================
+   工具函数
+   ============================================================ */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+
+function esc(v) {
+  return String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function hl(text, q) {
+  const e = esc(text);
+  const needle = String(q || '').trim();
+  if (!needle) return e;
+  const re = new RegExp('(' + needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+  return e.replace(re, '<mark>$1</mark>');
+}
+
+function abbrev(name) {
+  const clean = String(name).replace(/[^a-z0-9]/gi, '');
+  return (clean.slice(0, 2) || String(name).slice(0, 2)).toUpperCase();
+}
+
+function ago(ts) {
+  if (!ts) return '—';
+  const d = Math.floor((now() - ts) / 1000);
+  if (d < 5) return '刚刚';
+  if (d < 60) return `${d}s 前`;
+  if (d < 3600) return `${Math.floor(d / 60)}min 前`;
+  return `${Math.floor(d / 3600)}h 前`;
+}
+
+function cd(ts) {
+  if (!ts) return '00:00';
+  const s = Math.max(0, Math.ceil((ts - now()) / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function targetOf(name) {
+  const c = CFG[name];
+  if (!c) return '—';
+  return c.command ? [c.command, ...(c.args || [])].join(' ') : (c.url || '—');
+}
+
+const STATUS = {
+  pending: { cls: 'warn', pill: 'idle', text: '待连接' },
+  connecting: { cls: 'warn', pill: 'warn', text: '连接中' },
+  connected: { cls: '', pill: 'ok', text: '已连接' },
+  failed: { cls: 'bad', pill: 'err', text: '连接失败' }
+};
+
+const I = {
+  term: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5 5.5 8 3 10.5"/><path d="M8 10.5h5"/></svg>',
+  copy: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.2" y="5.2" width="6.8" height="8" rx="1.2"/><path d="M10.4 5.2V3.4H3.6v8h1.6"/></svg>',
+  warn: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2 14.8 13.6H1.2L8 2.2Z"/><path d="M8 6v3.4M8 11.5v.2"/></svg>',
+  mcp: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h4v5h-4z"/><path d="M9.5 5.5h4v5h-4z"/><path d="M6.5 8h3"/></svg>',
+  search: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>',
+  more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.2" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.8" cy="8" r="1.3"/></svg>',
+  link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6.4 9.6 9.6 6.4"/><path d="M7.6 4.4 8.8 3.2a2.6 2.6 0 0 1 3.7 3.7L11.2 8"/><path d="M8.4 11.6 7.2 12.8a2.6 2.6 0 0 1-3.7-3.7L4.8 8"/></svg>',
+  pulse: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 8h3l1.6-4.2L9.2 12l1.6-4H14.2"/></svg>',
+  gear: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 2v1.6M8 12.4V14M2 8h1.6M12.4 8H14M3.7 3.7l1.1 1.1M11.2 11.2l1.1 1.1M12.3 3.7l-1.2 1.1M4.8 11.2l-1.1 1.1"/></svg>',
+  tool: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.8 3.4a2.6 2.6 0 0 0 3.1 3.1L7.6 11.8l-3 1.1-1.1-3 5.3-5.4Z"/></svg>'
+};
+
+/* ============================================================
+   统计 / 筛选 / 卡片渲染
+   ============================================================ */
+function counts() {
+  return {
+    total: SERVERS.length,
+    connected: SERVERS.filter((s) => s.state === 'connected').length,
+    failed: SERVERS.filter((s) => s.state === 'failed').length,
+    tools: SERVERS.reduce((n, s) => n + (s.toolCount || 0), 0)
+  };
+}
+
+function metaSummary() {
+  const all = Object.values(TOOLS).flat();
+  const fail = all.filter((t) => t.fail).length;
+  const zh = all.filter((t) => t.zh && !t.fail).length;
+  return { total: all.length, zh, fail, raw: all.length - zh - fail };
+}
+
+function visible() {
+  let list = SERVERS.slice();
+  if (ui.tab === 'ok') list = list.filter((s) => s.state === 'connected');
+  if (ui.tab === 'bad') list = list.filter((s) => s.state === 'failed');
+  const q = ui.q.trim().toLowerCase();
+  if (q) list = list.filter((s) => s.name.toLowerCase().includes(q) || targetOf(s.name).toLowerCase().includes(q));
+  const rank = { failed: 0, connecting: 1, pending: 2, connected: 3 };
+  if (ui.sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
+  else if (ui.sort === 'tools') list.sort((a, b) => (b.toolCount || 0) - (a.toolCount || 0) || a.name.localeCompare(b.name));
+  else list.sort((a, b) => rank[a.state] - rank[b.state] || a.name.localeCompare(b.name));
+  return list;
+}
+
+function testChip(s) {
+  if (ui.testing.has(s.name)) {
+    return '<span class="srv-note" style="gap:6px;"><span class="mini-spin"></span>测试中…</span>';
+  }
+  if (!s.lastTest) return '';
+  return s.lastTest.ok
+    ? `<span class="chip ok">通过 · ${s.lastTest.latencyMs}ms · ${s.lastTest.tools} 工具</span>`
+    : `<span class="chip err">失败 · ${esc(s.lastTest.error || '未知错误')}</span>`;
+}
+
+function extraBlock(s) {
+  if (s.state === 'failed') {
+    return `<div class="srv-err">${I.warn}<span class="msg">${esc(s.lastError || '未知错误')}</span>
+      <span class="retry" data-retry="${s.nextRetryAt || 0}" data-retries="${s.retries || 0}">第 ${s.retries || 0} 次 · ${cd(s.nextRetryAt || 0)} 后重试</span></div>`;
+  }
+  if (s.state === 'connecting') {
+    return '<div class="srv-note"><span class="mini-spin"></span>正在连接' + (CFG[s.name] && CFG[s.name].type === 'stdio' ? '本地进程' : '远程端点') + '，工具尚未注册</div>';
+  }
+  if (s.state === 'pending') {
+    return '<div class="srv-note"><span class="mini-spin" style="animation:none;border-top-color:var(--line-strong)"></span>等待监测器下一轮处理（≤30s）</div>';
+  }
+  return '';
+}
+
+function cardHTML(s) {
+  const st = STATUS[s.state];
+  const cfg = CFG[s.name] || {};
+  const target = targetOf(s.name);
+  const scope = s.scope
+    ? (s.scope === 'global' ? '<span class="scope gl"><i></i>全局</span>' : '<span class="scope ws"><i></i>工作空间</span>')
+    : '';
+  return `<article class="srv ${st.cls}" data-name="${esc(s.name)}">
+    <div class="srv-top">
+      <div class="tile ${cfg.type === 'stdio' ? 'stdio' : 'remote'} ${s.state !== 'connected' ? 'off' : ''}">${esc(abbrev(s.name))}</div>
+      <div class="srv-id">
+        <div class="srv-title"><h3>${hl(s.name, ui.q)}</h3>${scope}<span class="pill ${st.pill}"><i></i>${st.text}</span></div>
+        <div class="srv-target">${I.term}<span title="${esc(target)}">${hl(target, ui.q)}</span>
+          <button class="ic-btn" type="button" data-act="copy" data-name="${esc(s.name)}" title="复制连接目标" aria-label="复制连接目标">${I.copy}</button>
+        </div>
+      </div>
+      <button class="more" type="button" data-act="menu" data-name="${esc(s.name)}" aria-label="更多操作">${I.more}</button>
+    </div>
+    ${extraBlock(s)}
+    <div class="srv-foot">
+      <span class="meta">${s.toolCount || 0} 工具</span><span class="sep">·</span><span class="meta">${esc(s.transport || cfg.type || '—')}</span>
+      ${testChip(s)}
+      <span class="spring"></span>
+      <button class="btn sm" type="button" data-act="test" data-name="${esc(s.name)}" ${ui.testing.has(s.name) ? 'disabled' : ''}>测试</button>
+      <button class="btn sm ghost" type="button" data-act="detail" data-name="${esc(s.name)}">明细</button>
+    </div>
+  </article>`;
+}
+
+const SKEL_ITEM = '<div class="skel"><div class="t"></div><div class="l"><i></i><i></i><i></i><i></i></div></div>';
+
+function render() {
+  const c = counts();
+  const m = metaSummary();
+  const list = visible();
+  $('#statTotal').innerHTML = `${c.total}<small>个</small>`;
+  $('#statOk').innerHTML = `${c.connected}<small>个</small>`;
+  $('#statBad').innerHTML = `${c.failed}<small>个</small>`;
+  $('#statBad').classList.toggle('bad', c.failed > 0);
+  $('#statTools').innerHTML = `${c.tools}<small>个</small>`;
+  $('#segAll').textContent = c.total;
+  $('#segOk').textContent = c.connected;
+  $('#segBad').textContent = c.failed;
+  $('#footTotal').textContent = `共 ${c.total} 个服务器`;
+  $('#count').textContent = ui.loading ? '正在刷新…' : `显示 ${list.length} / 共 ${c.total}`;
+  $('#metaBtn b').textContent = `${m.zh}/${m.total}`;
+  $('#metaStats').textContent = `已翻译 ${m.zh} · 失败 ${m.fail} · 原文 ${m.raw}`;
+  $$('#seg button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
+
+  const grid = $('#grid');
+  if (ui.loading) {
+    grid.innerHTML = SKEL_ITEM.repeat(4);
+    return;
+  }
+  if (SERVERS.length === 0) {
+    grid.innerHTML = `<div class="nothing"><div class="ico">${I.mcp}</div><b>还没有 MCP 服务器</b>
+      <p>登记第一个本地命令或远程端点，登记即连接；连接失败会保留配置并自动重试。</p>
+      <button class="btn primary" type="button" data-act="register">登记服务器</button></div>`;
+    return;
+  }
+  if (list.length === 0) {
+    grid.innerHTML = `<div class="nothing"><div class="ico">${I.search}</div><b>没有匹配的服务器</b>
+      <p>当前搜索或状态筛选没有命中。清空条件后再试。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
+        <button class="btn" type="button" data-act="clear">清空搜索</button>
+        <button class="btn ghost" type="button" data-act="tab-all">查看全部</button>
+      </div></div>`;
+    return;
+  }
+  grid.innerHTML = list.map(cardHTML).join('');
+}
+
+render();
+</script>
+<script>
+/* ============================================================
+   浮层与动作
+   ============================================================ */
+function syncBackdrop() {
+  const open = $('#drawer').classList.contains('show') || $('#reg').classList.contains('show') || $('#cfm').classList.contains('show');
+  $('#backdrop').classList.toggle('show', open);
+  document.body.classList.toggle('lock', open);
+}
+
+function toast(msg, kind = 'ok', ms = 2600) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind === 'err' ? 'err' : 'ok');
+  el.innerHTML = `<i></i>${esc(msg)}`;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+function showPop(el, anchor) {
+  el.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const w = el.offsetWidth || 200;
+  const h = el.offsetHeight || 160;
+  let left = r.right - w;
+  let top = r.bottom + 6;
+  if (left < 10) left = 10;
+  if (left + w > window.innerWidth - 10) left = window.innerWidth - w - 10;
+  if (top + h > window.innerHeight - 10) top = Math.max(10, r.top - h - 6);
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+}
+
+function closeMenu() { $('#menu').hidden = true; ui.menuName = null; }
+function closeMeta() { $('#metaPop').hidden = true; }
+
+function openMenu(anchor, name) {
+  ui.menuName = name;
+  $('#menuHead').textContent = name;
+  closeMeta();
+  showPop($('#menu'), anchor);
+}
+
+/* ---------- 详情抽屉 ---------- */
+function toolHTML(t) {
+  const zh = t.zh || t.en;
+  const badge = t.fail ? '原文' : t.src === 'title' ? 'title' : t.src === 'translate' ? '译' : '原文';
+  const req = t.req && t.req.length
+    ? `<div class="req">必填 ${t.req.map((r) => `<code>${esc(r)}</code>`).join('')}</div>`
+    : '';
+  return `<div class="tool"><div class="tool-top"><b>${esc(zh)}</b><span class="orig">${esc(t.en)}</span>
+    <span class="src ${t.zh && !t.fail ? 'z' : ''}">${badge}</span></div>
+    <p>${esc(t.desc)}</p>${req}</div>`;
+}
+
+function paintTools() {
+  const box = $('#toolList');
+  if (!box) return;
+  const s = SERVERS.find((x) => x.name === ui.drawerName);
+  if (!s) return;
+  const kw = ($('#toolFilter') && $('#toolFilter').value ? $('#toolFilter').value : '').trim().toLowerCase();
+  const items = (TOOLS[s.name] || []).filter((t) => !kw || t.en.toLowerCase().includes(kw) || String(t.zh || '').toLowerCase().includes(kw));
+  box.innerHTML = items.length
+    ? items.map(toolHTML).join('')
+    : '<div class="tool-more">没有匹配的工具</div>';
+}
+
+function rawDetail(s) {
+  return {
+    name: s.name,
+    transport: s.transport,
+    status: s.state === 'connected' ? 'connected' : 'disconnected',
+    state: s.state,
+    toolCount: s.toolCount,
+    ...(s.lastError ? { lastError: s.lastError } : {}),
+    ...(s.nextRetryAt ? { nextRetryAt: new Date(s.nextRetryAt).toISOString() } : {}),
+    tools: s.state === 'failed' ? [] : (TOOLS[s.name] || []).map((t) => ({ name: t.en, description: t.zh }))
+  };
+}
+
+function drawerBody(s) {
+  const cfg = CFG[s.name] || {};
+  const st = STATUS[s.state];
+  const target = targetOf(s.name);
+  const rows = [
+    ['type', cfg.type || s.transport || '—'],
+    ...(cfg.command ? [['command', cfg.command]] : []),
+    ...(cfg.args && cfg.args.length ? [['args', cfg.args.join(' ')]] : []),
+    ...(cfg.url ? [['url', cfg.url]] : []),
+    ...(cfg.headers && Object.keys(cfg.headers).length ? [['headers', Object.entries(cfg.headers).map(([k, v]) => `${k}: ${v}`).join('\n')]] : []),
+    ['scope', s.scope === 'global' ? 'global · ~/.loop-agent/config.json' : 'workspace · .loop-agent/.agent-config.json']
+  ];
+  const cfgHTML = rows.map(([k, v]) => `<div class="row"><span class="k">${esc(k)}</span><span class="v" style="white-space:pre-wrap">${esc(v)}</span></div>`).join('');
+  const tools = TOOLS[s.name] || [];
+  const toolSection = s.state === 'connected'
+    ? `<div class="tools-head"><div class="lab">${I.tool}工具列表 <span class="n">${tools.length}</span></div>
+        <span class="spring"></span>
+        <input class="tool-filter" id="toolFilter" type="search" placeholder="筛选工具…" autocomplete="off"></div>
+       <div class="tool-list" id="toolList"></div>`
+    : s.state === 'failed'
+      ? `<div class="lab">${I.tool}工具列表 <span class="n">0</span></div>
+         <div class="tool-err">${I.warn}<div><b>工具查询失败</b>${esc(s.lastError || '未知错误')}<br>监测器将在 ${cd(s.nextRetryAt || 0)} 后重试；配置仍可在上方查看。</div></div>`
+      : `<div class="lab">${I.tool}工具列表</div>
+         <div class="trans-fail">连接完成后可查看工具列表。当前状态：<b>${st.text}</b>，工具尚未注册。</div>`;
+  return `<div class="lab">${I.link}连接目标</div>
+    <div class="target-card">${I.term}<span>${esc(target)}</span>
+      <button class="ic-btn" type="button" data-act="copy-detail" data-name="${esc(s.name)}" aria-label="复制连接目标">${I.copy}</button></div>
+    <div class="lab">${I.pulse}运行状态</div>
+    <table class="kv">
+      <tr><td class="k">状态</td><td class="v"><span class="pill ${st.pill}"><i></i>${st.text}</span></td></tr>
+      <tr><td class="k">工具数</td><td class="v">${s.toolCount || 0} 个${s.state === 'connected' ? '' : '（连接后注册）'}</td></tr>
+      <tr><td class="k">连续失败</td><td class="v">${s.retries || 0} 次</td></tr>
+      <tr><td class="k">上次探活</td><td class="v">${ago(s.lastCheckAt)}</td></tr>
+      <tr><td class="k">下次重试</td><td class="v">${s.state === 'failed' ? `<span data-retry="${s.nextRetryAt}" data-retries="${s.retries || 0}">第 ${s.retries || 0} 次 · ${cd(s.nextRetryAt || 0)} 后重试</span>` : '—'}</td></tr>
+      <tr><td class="k">来源范围</td><td class="v">${s.scope === 'global' ? '全局（所有项目共享）' : '工作空间（仅当前项目）'}</td></tr>
+    </table>
+    <div class="lab">${I.gear}配置（GET /config · secret 已遮蔽）</div>
+    <div class="cfg">${cfgHTML}</div>
+    ${toolSection}
+    <details class="raw"><summary>原始响应 · GET /mcp/servers/${esc(s.name)}</summary>
+      <pre>${esc(JSON.stringify(rawDetail(s), null, 2))}</pre></details>`;
+}
+
+function openDrawer(name) {
+  const s = SERVERS.find((x) => x.name === name);
+  if (!s) return;
+  closeMenu();
+  closeMeta();
+  ui.drawerName = name;
+  const cfg = CFG[name] || {};
+  const st = STATUS[s.state];
+  $('#drvTile').className = 'tile ' + (cfg.type === 'stdio' ? 'stdio' : 'remote');
+  $('#drvTile').textContent = abbrev(name);
+  $('#drvName').textContent = name;
+  $('#drvPill').className = 'pill ' + st.pill;
+  $('#drvPill').innerHTML = '<i></i>' + st.text;
+  $('#drvScope').className = 'scope ' + (s.scope === 'global' ? 'gl' : 'ws');
+  $('#drvScope').innerHTML = '<i></i>' + (s.scope === 'global' ? '全局' : '工作空间');
+  $('#drvSub').textContent = `${s.transport} · ${s.toolCount || 0} 个工具` + (s.state === 'connected' ? ' · 上次探活 ' + ago(s.lastCheckAt) : '');
+  $('#drvBody').innerHTML = drawerBody(s);
+  paintTools();
+  $('#drawer').classList.add('show');
+  $('#drawer').setAttribute('aria-hidden', 'false');
+  syncBackdrop();
+}
+
+function closeDrawer() {
+  $('#drawer').classList.remove('show');
+  $('#drawer').setAttribute('aria-hidden', 'true');
+  ui.drawerName = null;
+  syncBackdrop();
+}
+
+/* ---------- 测试 / 刷新 / 重载 ---------- */
+function runTest(name) {
+  if (ui.testing.has(name)) return;
+  const s = SERVERS.find((x) => x.name === name);
+  if (!s) return;
+  ui.testing.add(name);
+  render();
+  setTimeout(() => {
+    ui.testing.delete(name);
+    if (!SERVERS.includes(s)) { render(); return; }
+    const ok = s.state === 'connected';
+    s.lastTest = ok
+      ? { ok: true, latencyMs: 120 + Math.floor(Math.random() * 180), tools: s.toolCount || 0, at: now() }
+      : { ok: false, latencyMs: 8000, tools: 0, error: '超时 8s', at: now() };
+    render();
+    toast(ok
+      ? `${name} 测试通过：${s.lastTest.latencyMs}ms · ${s.lastTest.tools} 个工具`
+      : `${name} 测试失败：${s.lastTest.error}`, ok ? 'ok' : 'err');
+  }, 650);
+}
+
+function retryServer(s) {
+  s.state = 'connecting';
+  s.nextRetryAt = undefined;
+  render();
+  toast(`${s.name} 重试中…`, 'ok', 1500);
+  setTimeout(() => {
+    if (s.state !== 'connecting') return;
+    if (s.name === 'grafana') {
+      s.state = 'connected';
+      s.retries = 0;
+      s.lastError = undefined;
+      s.toolCount = (TOOLS.grafana || []).length;
+      s.lastCheckAt = now();
+      render();
+      toast('grafana 已恢复：4 个工具', 'ok');
+    } else {
+      s.state = 'failed';
+      s.retries = (s.retries || 0) + 1;
+      s.nextRetryAt = now() + 30000;
+      render();
+      toast(`${s.name} 重试失败，30s 后再次尝试`, 'err');
+    }
+  }, 1800);
+}
+
+function refreshAll() {
+  if (ui.loading) return;
+  ui.loading = true;
+  render();
+  setTimeout(() => {
+    ui.loading = false;
+    SERVERS.forEach((s) => { if (s.state === 'connected') s.lastCheckAt = now(); });
+    render();
+    toast('列表已刷新', 'ok', 1600);
+  }, 600);
+}
+
+function reloadAll() {
+  const btn = $('#reloadBtn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.querySelector('svg').classList.add('spin');
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.querySelector('svg').classList.remove('spin');
+    const failed = SERVERS.filter((s) => s.state === 'failed');
+    const okCount = SERVERS.filter((s) => s.state === 'connected').length;
+    if (failed.length === 0) {
+      toast(`MCP 已重载：成功 ${okCount}`, 'ok');
+      return;
+    }
+    toast(`MCP 已重载：成功 ${okCount}，失败 ${failed.map((s) => s.name).join('、')}`, 'err', 4000);
+    failed.forEach((s) => { s.state = 'connecting'; s.nextRetryAt = undefined; });
+    render();
+    setTimeout(() => {
+      failed.forEach((s) => {
+        if (s.state !== 'connecting') return;
+        s.state = 'connected';
+        s.retries = 0;
+        s.lastError = undefined;
+        s.toolCount = (TOOLS[s.name] || []).length;
+        s.lastCheckAt = now();
+      });
+      render();
+      toast('MCP 重载完成：grafana 已连接（4 个工具）', 'ok');
+    }, 1800);
+  }, 800);
+}
+
+async function copyTarget(name) {
+  const text = targetOf(name);
+  try {
+    if (!(navigator.clipboard && navigator.clipboard.writeText)) throw new Error('no-clipboard');
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (err) { /* 原型环境忽略 */ }
+    ta.remove();
+  }
+  toast('已复制连接目标', 'ok', 1600);
+}
+
+/* ---------- 登记 ---------- */
+function regAlert(kind, html) {
+  const mark = kind === 'ok' ? '✓' : kind === 'warn' ? '!' : '✕';
+  $('#regAlerts').innerHTML = `<div class="alert ${kind}" style="margin-top:12px;"><span class="ai">${mark}</span><div>${html}</div></div>`;
+}
+
+function resetReg() {
+  $('#regName').value = '';
+  $('#regCommand').value = '';
+  $('#regArgs').value = '';
+  $('#regEnv').value = '';
+  $('#regUrl').value = '';
+  $('#regHeaders').value = '';
+  $('#regConnect').checked = true;
+  $('#regAlerts').innerHTML = '';
+  $('#regProg').style.display = 'none';
+  $('#regSubmit').disabled = false;
+  $('#regSubmit').textContent = '登记并连接';
+  ui.regTr = 'stdio';
+  ui.submitting = false;
+  $$('#regSeg button').forEach((b) => b.classList.toggle('on', b.dataset.tr === 'stdio'));
+  $('#secStdio').classList.add('on');
+  $('#secRemote').classList.remove('on');
+  $$('#regScope .scope-card').forEach((c) => {
+    const r = c.querySelector('input');
+    r.checked = r.value === 'workspace';
+    c.classList.toggle('on', r.checked);
+  });
+}
+
+function openReg() {
+  closeMenu();
+  closeMeta();
+  resetReg();
+  $('#reg').classList.add('show');
+  syncBackdrop();
+  setTimeout(() => $('#regName').focus(), 80);
+}
+
+function closeReg() {
+  $('#reg').classList.remove('show');
+  syncBackdrop();
+}
+
+function lines(v) {
+  return String(v || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+}
+
+function kv(v) {
+  const out = {};
+  lines(v).forEach((line) => {
+    const i = line.indexOf('=');
+    if (i > 0 && line.slice(0, i).trim()) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+function submitReg() {
+  if (ui.submitting) return;
+  const name = $('#regName').value.trim();
+  if (!name || /\s/.test(name)) {
+    regAlert('err', '<b>名称不合法</b> · 名称必填且不能包含空白。');
+    return;
+  }
+  if (SERVERS.some((s) => s.name === name)) {
+    regAlert('err', `<b>409 同名冲突</b> · 已存在名为 <code>${esc(name)}</code> 的 server，请更换名称。`);
+    return;
+  }
+  const tr = ui.regTr;
+  const command = $('#regCommand').value.trim();
+  const url = $('#regUrl').value.trim();
+  const probe = tr === 'stdio' ? command : url;
+  if (!probe) {
+    regAlert('err', tr === 'stdio' ? '<b>缺少命令</b> · stdio 传输必须提供 command。' : '<b>缺少 URL</b> · 远程传输必须提供 url。');
+    return;
+  }
+  const scope = $('#regScope input:checked').value;
+  const cfg = { type: tr, scope };
+  if (tr === 'stdio') {
+    cfg.command = command;
+    const args = lines($('#regArgs').value);
+    if (args.length) cfg.args = args;
+    const env = kv($('#regEnv').value);
+    if (env) cfg.env = env;
+  } else {
+    cfg.url = url;
+    const headers = kv($('#regHeaders').value);
+    if (headers) cfg.headers = headers;
+  }
+  ui.submitting = true;
+  $('#regSubmit').disabled = true;
+  $('#regProg').style.display = 'flex';
+  setTimeout(() => {
+    $('#regProg').style.display = 'none';
+    $('#regSubmit').disabled = false;
+    ui.submitting = false;
+    const connect = $('#regConnect').checked;
+    const shouldFail = /bad|broken|fail/i.test(name) || /bad|broken|fail/i.test(probe);
+    if (shouldFail) {
+      CFG[name] = cfg;
+      SERVERS.push({
+        name, transport: tr, state: 'failed', toolCount: 0, retries: 1,
+        lastError: '连接超时：初始化握手 8s 未完成', nextRetryAt: now() + 30000,
+        scope, lastTest: null
+      });
+      render();
+      regAlert('warn', `<b>502 半态 · 配置已落盘</b> · 连接失败，异常卡已加入列表；监测器将在 30s 后重试。<br>
+        <button class="btn sm" type="button" data-close="reg" style="margin-top:7px;">查看异常卡片</button>`);
+      return;
+    }
+    CFG[name] = cfg;
+    const n = connect ? 2 + Math.floor(Math.random() * 3) : 0;
+    if (connect) {
+      TOOLS[name] = Array.from({ length: n }, (_, i) => ({
+        zh: '示例工具' + (i ? ' ' + (i + 1) : ''), en: 'demo_tool_' + (i + 1),
+        src: 'translate', desc: '原型示例：登记成功后由 MCP server 实际返回。', req: []
+      }));
+    }
+    SERVERS.push({
+      name, transport: tr, state: connect ? 'connected' : 'pending', toolCount: n,
+      retries: 0, lastCheckAt: connect ? now() : undefined, scope, lastTest: null
+    });
+    render();
+    toast(`MCP server 已登记${connect ? '并连接' : ''}：${name}（${scope === 'global' ? '全局' : '工作空间'}）`, 'ok');
+    closeReg();
+    setTimeout(() => {
+      const card = $$('#grid .srv').find((el) => el.dataset.name === name);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  }, 650);
+}
+
+/* ---------- 移除 ---------- */
+function openCfm(name) {
+  const s = SERVERS.find((x) => x.name === name);
+  if (!s) return;
+  closeMenu();
+  ui.cfmName = name;
+  $('#cfmName').textContent = `移除 ${name}`;
+  $('#cfmErr').classList.remove('show');
+  const scope = s.scope || 'workspace';
+  $$('#cfmScope input').forEach((i) => { i.checked = i.value === scope; });
+  $$('#cfmScope .scope-card').forEach((c) => c.classList.toggle('on', c.querySelector('input').checked));
+  $('#cfm').classList.add('show');
+  syncBackdrop();
+}
+
+function closeCfm() {
+  $('#cfm').classList.remove('show');
+  ui.cfmName = null;
+  syncBackdrop();
+}
+
+function confirmRemove() {
+  const s = SERVERS.find((x) => x.name === ui.cfmName);
+  if (!s) return;
+  const sel = $('#cfmScope input:checked').value;
+  if ((s.scope || 'workspace') !== sel) {
+    $('#cfmErr').classList.add('show');
+    $('#cfmErr .alert').innerHTML = `<span class="ai">✕</span><div><b>deleted:false</b> · 该 server 登记在「${s.scope === 'global' ? '全局' : '工作空间'}」范围，当前所选范围没有可删除的配置。请切换后重试。</div>`;
+    return;
+  }
+  const name = s.name;
+  const scopeText = s.scope === 'global' ? '全局' : '工作空间';
+  SERVERS.splice(SERVERS.indexOf(s), 1);
+  delete CFG[name];
+  delete TOOLS[name];
+  closeCfm();
+  render();
+  toast(`MCP server 已断连并移除：${name}（${scopeText}）`, 'ok');
+}
+</script>
+<script>
+/* ============================================================
+   事件绑定与初始化
+   ============================================================ */
+$('#q').addEventListener('input', (e) => { ui.q = e.target.value; render(); });
+
+$('#seg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tab]');
+  if (!b) return;
+  ui.tab = b.dataset.tab;
+  render();
+});
+
+$('#sort').addEventListener('change', (e) => {
+  ui.sort = e.target.value;
+  render();
+});
+
+$('#grid').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const act = b.dataset.act;
+  const name = b.dataset.name;
+  if (act === 'menu') openMenu(b, name);
+  else if (act === 'copy') copyTarget(name);
+  else if (act === 'test') runTest(name);
+  else if (act === 'detail') openDrawer(name);
+  else if (act === 'register') openReg();
+  else if (act === 'clear') { ui.q = ''; $('#q').value = ''; ui.tab = 'all'; render(); }
+  else if (act === 'tab-all') { ui.tab = 'all'; render(); }
+});
+
+$('#menu').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const name = ui.menuName;
+  closeMenu();
+  if (!name) return;
+  const act = b.dataset.act;
+  if (act === 'detail') openDrawer(name);
+  else if (act === 'copy') copyTarget(name);
+  else if (act === 'test') runTest(name);
+  else if (act === 'remove') openCfm(name);
+});
+
+$('#metaPop').addEventListener('click', (e) => {
+  if (e.target.closest('[data-act="meta-help"]')) closeMeta();
+});
+
+$('#metaBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!$('#metaPop').hidden) { closeMeta(); return; }
+  closeMenu();
+  showPop($('#metaPop'), $('#metaBtn'));
+});
+
+$('#refreshBtn').addEventListener('click', refreshAll);
+$('#reloadBtn').addEventListener('click', reloadAll);
+$('#regBtn').addEventListener('click', openReg);
+$('#drvTestBtn').addEventListener('click', () => { if (ui.drawerName) runTest(ui.drawerName); });
+
+$('#drvBody').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act="copy-detail"]');
+  if (b) copyTarget(b.dataset.name);
+});
+$('#drvBody').addEventListener('input', (e) => {
+  if (e.target.id === 'toolFilter') paintTools();
+});
+
+$('#regSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tr]');
+  if (!b) return;
+  ui.regTr = b.dataset.tr;
+  $$('#regSeg button').forEach((x) => x.classList.toggle('on', x === b));
+  $('#secStdio').classList.toggle('on', ui.regTr === 'stdio');
+  $('#secRemote').classList.toggle('on', ui.regTr !== 'stdio');
+});
+
+$('#regSubmit').addEventListener('click', submitReg);
+$('#cfmOk').addEventListener('click', confirmRemove);
+$('#backdrop').addEventListener('click', () => {
+  if ($('#cfm').classList.contains('show')) closeCfm();
+  else if ($('#reg').classList.contains('show')) closeReg();
+  else if ($('#drawer').classList.contains('show')) closeDrawer();
+});
+
+['#regScope', '#cfmScope'].forEach((id) => {
+  const box = $(id);
+  $$('.scope-card input', box).forEach((inp) => inp.addEventListener('change', () => {
+    $$('.scope-card', box).forEach((c) => c.classList.toggle('on', c.querySelector('input').checked));
+    if (id === '#cfmScope') $('#cfmErr').classList.remove('show');
+  }));
+});
+
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-close]');
+  if (!b) return;
+  const which = b.dataset.close;
+  if (which === 'drawer') closeDrawer();
+  else if (which === 'reg') closeReg();
+  else if (which === 'cfm') closeCfm();
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#menu') && !e.target.closest('[data-act="menu"]')) closeMenu();
+  if (!e.target.closest('#metaPop') && !e.target.closest('#metaBtn')) closeMeta();
+});
+
+document.addEventListener('keydown', (e) => {
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+    e.preventDefault();
+    $('#q').focus();
+    return;
+  }
+  if (e.key !== 'Escape') return;
+  if (!$('#menu').hidden) closeMenu();
+  else if (!$('#metaPop').hidden) closeMeta();
+  else if ($('#cfm').classList.contains('show')) closeCfm();
+  else if ($('#reg').classList.contains('show')) closeReg();
+  else if ($('#drawer').classList.contains('show')) closeDrawer();
+});
+
+window.addEventListener('resize', () => { closeMenu(); closeMeta(); });
+window.addEventListener('scroll', () => closeMenu(), true);
+
+$('#themeBtn').addEventListener('click', () => {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+  $('#themeBtn').textContent = dark ? '◐ 深色' : '◑ 浅色';
+});
+
+setTimeout(() => {
+  const s = SERVERS.find((x) => x.name === 'sentry');
+  if (s && s.state === 'connecting') {
+    s.state = 'connected';
+    s.toolCount = (TOOLS.sentry || []).length;
+    s.lastCheckAt = now();
+    render();
+    toast('sentry 已连接：3 个工具', 'ok');
+  }
+}, 2600);
+
+setInterval(() => {
+  $$('[data-retry]').forEach((el) => {
+    const ts = Number(el.dataset.retry);
+    if (!ts) return;
+    const n = Number(el.dataset.retries) || 0;
+    el.textContent = `第 ${n} 次 · ${cd(ts)} 后重试`;
+  });
+  const due = SERVERS.find((s) => s.state === 'failed' && s.nextRetryAt && now() >= s.nextRetryAt);
+  if (due) retryServer(due);
+}, 1000);
+</script>
+</body>
+</html>

@@ -126,11 +126,11 @@ Three auth modes:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/mcp/servers` | Server list `{servers: [{name, transport, status, toolCount}]}` |
+| GET | `/mcp/servers` | Server list `{servers: [{name, transport, status, toolCount, state, lastError?, nextRetryAt?, scope}]}` (`scope` = registration layer workspace/global, 20261109-002 D9) |
 | GET | `/mcp/tool-meta` | MCP tool display metadata `{tools: McpToolMeta[], summary}` (requirement 20261104-001: localized names, parameter labels, translation status; returns an empty list instead of 404 when no server is connected, never part of `toOpenAITools()`) |
 | GET | `/mcp/servers/:name` | Server detail (with tool list) |
 | POST | `/mcp/servers` | Register & connect `{name, transport, command?/url?, ...}` → 201 (duplicate name 409; connect failure 502 but config persisted) |
-| DELETE | `/mcp/servers/:name?scope=` | Disconnect first, then delete config `{deleted}` |
+| DELETE | `/mcp/servers/:name?scope=` | Disconnect first, then delete config `{name, scope, deleted}` (`deleted:false` when the selected scope has no such key — no disconnect) |
 | POST | `/mcp/reload` | Reconnect all `{reconnected, failed}` |
 | POST | `/mcp/servers/:name/test` | Connection test `{ok, latencyMs, tools, error?}` |
 

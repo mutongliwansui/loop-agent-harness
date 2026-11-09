@@ -125,11 +125,11 @@ HTTP API 服务已启动
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/mcp/servers` | 服务器列表 `{servers: [{name, transport, status, toolCount}]}` |
+| GET | `/mcp/servers` | 服务器列表 `{servers: [{name, transport, status, toolCount, state, lastError?, nextRetryAt?, scope}]}`（`scope` 为登记范围 workspace/global，20261109-002 D9） |
 | GET | `/mcp/tool-meta` | MCP 工具展示元信息 `{tools: McpToolMeta[], summary}`（需求 20261104-001：中文展示名、参数标签、翻译状态；无 server 连接时返回空表而非 404，不参与 `toOpenAITools()`） |
 | GET | `/mcp/servers/:name` | 服务器详情（含工具清单） |
 | POST | `/mcp/servers` | 登记并连接 `{name, transport, command?/url?, ...}` → 201（同名 409；连接失败 502 但配置已落盘） |
-| DELETE | `/mcp/servers/:name?scope=` | 先断连再删配置 `{deleted}` |
+| DELETE | `/mcp/servers/:name?scope=` | 先断连再删配置 `{name, scope, deleted}`（所选范围没有该配置时返回 `deleted:false` 且不断连） |
 | POST | `/mcp/reload` | 全量重连 `{reconnected, failed}` |
 | POST | `/mcp/servers/:name/test` | 连接测试 `{ok, latencyMs, tools, error?}` |
 
