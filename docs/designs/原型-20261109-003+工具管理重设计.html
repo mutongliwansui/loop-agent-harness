@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · 工具管理重设计 · 20261109-003</title>
+<!--
+  原型：WebUI 工具管理页（ToolsView）视觉与交互重设计
+  目标文件：webui/src/views/ToolsView.vue
+  端点不变：GET /tools · GET /tools/:name（schema 详情）· PATCH /tools/:name {enabled, scope}
+            POST /tools/reload
+  后端事实：内置工具可 enabled/disabled（落盘 + registry 同步）；MCP 工具不可关（PATCH 会 400），需去 MCP 页断连
+  自包含：无 CDN、无外部字体、无外部图片，离线可开；图标全部为内联 SVG。
+-->
+<style>
+/* ====== 0. 主题令牌 ====== */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --text: #22252a;
+  --muted: #6b7280; --brand: #0e9f6e; --brand-weak: #e6f6ef; --brand-on: #ffffff;
+  --danger: #dc2626; --danger-weak: #fdecec; --warn: #b45309; --warn-weak: #fef3c7;
+  --ok: #059669; --ok-weak: #d1fae5;
+  --line-soft: #eef0f3; --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055); --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563; --bar-bg: #fbfcfd; --code-bg: #f1f3f5;
+  --radius-card: 12px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+:root[data-theme="dark"] {
+  --bg: #14171c; --panel: #1b1f26; --line: #2b313a; --text: #e6e8eb;
+  --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528; --brand-on: #0b221a;
+  --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24; --warn-weak: #3a2e10;
+  --ok: #34d399; --ok-weak: #143528;
+  --line-soft: #242a32; --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07); --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6; --bar-bg: #1f242b; --code-bg: #22272f;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0 0 90px; background: var(--bg); color: var(--text); font: 14px/1.65 var(--sans); -webkit-font-smoothing: antialiased; }
+body.lock { overflow: hidden; }
+button { font-family: inherit; }
+
+/* ====== 1. 原型骨架 ====== */
+.page { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+.topbar { position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 12px; padding: 11px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+.topbar .tag { font: 500 11px/1 var(--mono); color: var(--muted); padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap; }
+.topbar nav { display: flex; gap: 2px; margin-left: 6px; }
+.topbar nav a { font-size: 12px; color: var(--muted); text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; cursor: pointer; }
+.topbar nav a:hover { background: var(--hover); color: var(--text); }
+.topbar nav a.on { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.topbar .spring { flex: 1; }
+.theme-btns { display: flex; gap: 4px; }
+.theme-btns button { height: 24px; padding: 0 9px; font-size: 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.theme-btns button.on { background: var(--brand); border-color: var(--brand); color: var(--brand-on); }
+@media (max-width: 980px) { .topbar nav { display: none; } }
+
+section { padding-top: 42px; scroll-margin-top: 64px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.sec-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+.sec-head .badge { font: 500 11px/1 var(--mono); color: var(--brand); background: var(--brand-weak); padding: 4px 7px; border-radius: 999px; }
+.sec-head .badge.mute { color: var(--muted); background: var(--code-bg); }
+.sec-desc { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; max-width: 84ch; }
+.sec-desc code, .issue code, .kv td code, .d-item code { font: 500 11.5px/1 var(--mono); color: var(--text-2); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+
+.issue-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 860px) { .issue-grid { grid-template-columns: 1fr; } }
+.issue { display: flex; gap: 11px; padding: 13px 15px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
+.issue .no { width: 23px; height: 23px; flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--danger-weak); color: var(--danger); font: 700 11px/1 var(--mono); margin-top: 1px; }
+.issue b { display: block; font-size: 12.5px; font-weight: 650; }
+.issue p { margin: 3px 0 0; font-size: 12px; color: var(--muted); line-height: 1.62; }
+
+.ctx { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 22px 22px 24px; overflow: hidden; }
+.ctx-tag { position: absolute; top: 0; right: 0; font: 500 10px/1 var(--mono); color: var(--muted); background: var(--code-bg); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 5px 9px; border-bottom-left-radius: 8px; }
+.note { margin-top: 12px; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); line-height: 1.7; }
+.note b { color: var(--text); font-weight: 650; }
+
+/* ====== 2. 工具页面：页头 / 统计 / 工具条 ====== */
+.tl-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+.tl-head .lead { min-width: 0; }
+.eyebrow { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.eyebrow svg { width: 12px; height: 12px; color: var(--brand); }
+.tl-head h1 { margin: 3px 0 0; font-size: 24px; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; }
+.tl-head p { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); max-width: 66ch; }
+.tl-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text-2); font: 500 12.5px/1 var(--sans); cursor: pointer; white-space: nowrap; transition: border-color .13s, background .13s, color .13s, filter .13s; }
+.btn:hover { border-color: var(--line-strong); color: var(--text); background: var(--bar-bg); }
+.btn svg { width: 15px; height: 15px; flex: none; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; box-shadow: 0 1px 2px rgba(14, 159, 110, .22); }
+.btn.primary:hover { filter: brightness(1.05); background: var(--brand); color: var(--brand-on); }
+.btn.icon { width: 34px; padding: 0; }
+.btn.sm { height: 27px; padding: 0 9px; font-size: 11.5px; border-radius: 7px; }
+.btn.ghost { background: transparent; }
+.btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger:hover { filter: brightness(1.06); }
+
+.tl-stats { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.tl-stat { padding: 11px 16px 12px; border-left: 1px solid var(--line-soft); min-width: 0; }
+.tl-stat:first-child { border-left: none; }
+.tl-stat .k { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.tl-stat .k i { width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.tl-stat .k i.on { background: var(--brand); }
+.tl-stat .k i.bad { background: var(--danger); }
+.tl-stat .k i.warn { background: var(--warn); }
+.tl-stat .v { font-size: 20px; font-weight: 650; line-height: 1.3; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.tl-stat .v small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.tl-stat .v.bad { color: var(--danger); }
+.tl-stat .v.warn { color: var(--warn); }
+
+.tl-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 13px; }
+.tl-search { flex: 1; min-width: 200px; max-width: 330px; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; transition: border-color .13s, box-shadow .13s; }
+.tl-search:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.tl-search svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.tl-search input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font: 400 12.5px/1 var(--sans); color: var(--text); }
+.tl-search kbd { font: 500 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; }
+
+.tl-seg { display: flex; gap: 2px; padding: 2px; background: var(--code-bg); border-radius: 9px; }
+.tl-seg button { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: transparent; color: var(--muted); font: 500 12px/1 var(--sans); cursor: pointer; }
+.tl-seg button:hover { color: var(--text-2); }
+.tl-seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .09); }
+.tl-seg .n { font: 600 10px/14px var(--mono); color: var(--muted); background: var(--panel); border-radius: 999px; padding: 0 5px; min-width: 16px; text-align: center; }
+.tl-seg button.on .n { color: var(--brand); background: var(--brand-weak); }
+
+.tl-sort { height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center; color: var(--text-2); font: 500 12px/1 var(--sans); cursor: pointer; appearance: none; }
+.tl-scope { height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text-2); font: 500 12px/1 var(--sans); cursor: pointer; appearance: none; margin-left: auto; }
+.tl-count { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* ====== 3. 工具卡片 ====== */
+.tl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.tl-card {
+  position: relative; display: flex; flex-direction: column; gap: 9px;
+  padding: 14px 16px 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .03);
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.tl-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.tl-card.disabled { border-left: 3px solid var(--muted); padding-left: 14px; background: linear-gradient(180deg, var(--panel) 0%, color-mix(in srgb, var(--muted) 3%, var(--panel)) 100%); }
+.tl-card.disabled::before { content: '禁用 · 不出现在 prompt schema'; position: absolute; right: 12px; top: -10px; font: 500 10px/1 var(--mono); color: var(--muted); background: var(--code-bg); border: 1px solid var(--line); padding: 3px 6px; border-radius: 999px; }
+.tl-card.mcp { border-left: 3px solid transparent; padding-left: 16px; }
+.tl-card.mcp.bad { border-left-color: var(--danger); padding-left: 14px; }
+.tl-card.vision-off::before { content: '视觉未启用'; position: absolute; right: 12px; top: -10px; font: 500 10px/1 var(--mono); color: var(--warn); background: var(--warn-weak); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); padding: 3px 6px; border-radius: 999px; }
+
+.tl-top { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.tile { width: 42px; height: 42px; border-radius: 12px; flex: none; display: grid; place-items: center; color: #fff; font: 700 12px/1 var(--sans); letter-spacing: .04em; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 2px 7px -3px rgba(16, 24, 40, .35); }
+.tile.file     { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+.tile.cmd      { background: linear-gradient(135deg, #7c3aed, #6d28d9); }
+.tile.session  { background: linear-gradient(135deg, #0891b2, #0e7490); }
+.tile.memory   { background: linear-gradient(135deg, #be185d, #9d174d); }
+.tile.vision   { background: linear-gradient(135deg, #ca8a04, #a16207); }
+.tile.http     { background: linear-gradient(135deg, #ea580c, #c2410c); }
+.tile.skill    { background: linear-gradient(135deg, #059669, #047857); }
+.tile.other    { background: linear-gradient(135deg, #6b7280, #4b5563); }
+.tile.mcp-off  { filter: grayscale(1) opacity(.75); }
+.tile.disabled { filter: grayscale(1) opacity(.65); }
+
+.tl-id { flex: 1; min-width: 0; }
+.tl-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
+.tl-title h3 { margin: 0; font: 650 14px/1.35 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.tl-card.disabled .tl-title h3 { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent); }
+.tl-group { font: 500 10.5px/1 var(--sans); color: var(--brand); background: var(--brand-weak); padding: 3px 7px; border-radius: 999px; white-space: nowrap; }
+.tl-group.mute { color: var(--muted); background: var(--code-bg); }
+.tl-pill { display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 7px; border-radius: 999px; font: 600 10.5px/1 var(--sans); white-space: nowrap; }
+.tl-pill i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.tl-pill.on { color: var(--ok); background: var(--ok-weak); }
+.tl-pill.on i { background: var(--ok); }
+.tl-pill.off { color: var(--muted); background: var(--code-bg); }
+.tl-pill.off i { background: var(--muted); }
+.tl-pill.err { color: var(--danger); background: var(--danger-weak); }
+.tl-pill.err i { background: var(--danger); }
+
+.tl-desc { margin: 3px 0 0; font-size: 12px; color: var(--text-2); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.tl-foot { display: flex; align-items: center; gap: 7px; padding-top: 9px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+.tl-foot .tl-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.tl-foot .sep { color: var(--line-strong); font-size: 10px; }
+.tl-foot .spring { flex: 1; }
+.tl-foot .spacer { flex: 1; }
+
+.tl-toggle { position: relative; width: 40px; height: 22px; flex: none; border-radius: 999px; cursor: pointer; background: var(--line-strong); transition: background .18s; }
+.tl-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, .22); transition: transform .18s; }
+.tl-toggle.on { background: var(--brand); }
+.tl-toggle.on::after { transform: translateX(18px); }
+.tl-toggle.mcp { background: var(--line); cursor: not-allowed; opacity: .65; }
+
+.tl-more { width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: .6; }
+.tl-more svg { width: 15px; height: 15px; }
+.tl-card:hover .tl-more { opacity: 1; }
+.tl-more:hover { background: var(--active); color: var(--text); }
+
+/* ====== 4. 骨架 / 空态 / 无匹配 ====== */
+.tl-skel { display: flex; gap: 11px; padding: 15px 16px; min-height: 110px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; }
+.tl-skel .t { width: 42px; height: 42px; flex: none; border-radius: 12px; background: var(--code-bg); animation: sk 1.2s ease-in-out infinite; }
+.tl-skel .l { flex: 1; display: flex; flex-direction: column; gap: 9px; padding-top: 4px; }
+.tl-skel .l i { display: block; height: 8px; border-radius: 4px; background: var(--code-bg); animation: sk 1.2s ease-in-out infinite; }
+.tl-skel .l i:nth-child(2) { animation-delay: .1s; width: 80%; }
+.tl-skel .l i:nth-child(3) { animation-delay: .2s; width: 55%; }
+@keyframes sk { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+.tl-nothing { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; padding: 34px 20px; text-align: center; border: 1px dashed var(--line-strong); border-radius: 14px; background: var(--panel); }
+.tl-nothing .nt-ico { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: var(--code-bg); color: var(--muted); margin-bottom: 11px; }
+.tl-nothing .nt-ico svg { width: 22px; height: 22px; }
+.tl-nothing b { font-size: 13.5px; font-weight: 650; }
+.tl-nothing p { margin: 5px 0 13px; font-size: 12px; color: var(--muted); max-width: 56ch; line-height: 1.65; }
+
+.tl-footline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--line-soft); font-size: 11px; color: var(--muted); }
+.tl-footline .sp { flex: 1; }
+
+/* ====== 5. 卡片 ⋯ 菜单 / 提示条 ====== */
+.tl-menu { position: fixed; z-index: 96; width: 186px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-pop); }
+.tl-menu .m-head { padding: 6px 9px 7px; font: 600 11px/1.3 var(--mono); color: var(--muted); border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-menu button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px 9px; border: none; border-radius: 6px; background: transparent; font-size: 12px; color: var(--text-2); text-align: left; cursor: pointer; }
+.tl-menu button svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.tl-menu button:hover { background: var(--hover); color: var(--text); }
+.tl-menu .hr { height: 1px; background: var(--line-soft); margin: 4px 2px; }
+.tl-menu button.danger { color: var(--danger); }
+.tl-menu button.danger svg { color: var(--danger); }
+.tl-menu button.danger:hover { background: var(--danger-weak); }
+
+.tl-alert { display: flex; align-items: flex-start; gap: 9px; margin-top: 12px; padding: 10px 12px; border-radius: 9px; font-size: 12px; line-height: 1.65; border: 1px solid transparent; }
+.tl-alert .ai { width: 17px; height: 17px; flex: none; display: grid; place-items: center; margin-top: 1px; border-radius: 50%; border: 1px solid currentColor; font: 700 10px/1 var(--mono); }
+.tl-alert .spring { flex: 1; }
+.tl-alert b { font-weight: 650; }
+.tl-alert.warn { color: var(--warn); background: var(--warn-weak); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.tl-alert.ok { color: var(--ok); background: var(--ok-weak); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.tl-alert.err { color: var(--danger); background: var(--danger-weak); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+
+/* ====== 6. 遮罩 / 抽屉 ====== */
+.tl-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(16, 24, 40, .4); backdrop-filter: blur(2px); opacity: 0; pointer-events: none; transition: opacity .2s; }
+.tl-backdrop.show { opacity: 1; pointer-events: auto; }
+.tl-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 110;
+  width: min(520px, 100%); display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: -24px 0 64px -24px rgba(16, 24, 40, .45);
+  transform: translateX(102%); visibility: hidden;
+  transition: transform .26s cubic-bezier(.2, .8, .2, 1), visibility .26s;
+}
+.tl-drawer.show { transform: none; visibility: visible; }
+.tl-drv-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 16px; border-bottom: 1px solid var(--line-soft); }
+.tl-drv-head .tile { width: 46px; height: 46px; border-radius: 13px; font-size: 13px; }
+.tl-drv-title { flex: 1; min-width: 0; }
+.tl-drv-title h2 { margin: 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font: 650 16px/1.35 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.tl-drv-sub { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.tl-close-btn { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; margin: -3px -4px 0 0; }
+.tl-close-btn:hover { background: var(--code-bg); color: var(--text); }
+.tl-close-btn svg { width: 14px; height: 14px; }
+
+.tl-drv-body { flex: 1; overflow: auto; padding: 16px 20px 28px; }
+.tl-lab { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted); margin: 17px 0 8px; }
+.tl-lab:first-child { margin-top: 0; }
+.tl-lab svg { width: 12px; height: 12px; }
+
+.tl-desc-card { padding: 10px 12px; border-radius: 9px; background: var(--bar-bg); border: 1px solid var(--line); font-size: 12.5px; color: var(--text-2); line-height: 1.75; }
+
+.kv { width: 100%; border-collapse: collapse; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.kv tr + tr td { border-top: 1px solid var(--line-soft); }
+.kv td { padding: 7px 11px; font-size: 12px; vertical-align: top; }
+.kv td.k { width: 104px; color: var(--muted); font-size: 11.5px; background: var(--bar-bg); }
+.kv td.v { color: var(--text-2); overflow-wrap: anywhere; }
+.kv code { font: 500 11px/1.5 var(--mono); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+
+.param-tbl { width: 100%; border-collapse: collapse; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; font-size: 11.5px; }
+.param-tbl th { text-align: left; padding: 7px 10px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600; border-bottom: 1px solid var(--line-soft); }
+.param-tbl td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.param-tbl tr:last-child td { border-bottom: none; }
+.param-tbl td.n { font-family: var(--mono); color: var(--brand); white-space: nowrap; }
+.param-tbl td.t { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+.param-tbl td.r { color: var(--muted); }
+.param-tbl td.r.yes { color: var(--danger); font-weight: 600; }
+.param-tbl td.d { color: var(--text-2); line-height: 1.55; }
+
+.raw-schema { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.raw-schema summary { padding: 8px 11px; font-size: 11px; color: var(--muted); cursor: pointer; background: var(--bar-bg); }
+.raw-schema pre { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line-soft); font: 400 10.5px/1.6 var(--mono); color: var(--text-2); overflow: auto; max-height: 260px; }
+
+.example-card { border: 1px solid var(--line); border-radius: 9px; background: var(--bar-bg); padding: 10px 12px; font: 400 11.5px/1.7 var(--mono); color: var(--text-2); overflow: auto; max-height: 180px; white-space: pre; }
+
+.tl-drv-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bar-bg); }
+.tl-drv-foot .sp { flex: 1; }
+
+/* ====== 响应式 & 深色微调 ====== */
+@media (max-width: 980px) {
+  .tl-grid { grid-template-columns: 1fr; }
+  .tl-stats { grid-template-columns: repeat(3, 1fr); }
+  .tl-stat:nth-child(4), .tl-stat:nth-child(5) { border-left: none; border-top: 1px solid var(--line-soft); }
+}
+@media (max-width: 700px) {
+  .tl-head { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .tl-actions { margin-left: 0; width: 100%; }
+  .tl-actions .btn.primary { flex: 1; }
+  .tl-search { max-width: none; flex-basis: 100%; }
+  .tl-scope { margin-left: 0; width: 100%; }
+}
+:root[data-theme="dark"] .tl-card, :root[data-theme="dark"] .tl-skel { box-shadow: none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tl-card, :root:not([data-theme="light"]) .tl-skel { box-shadow: none; } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>loop-agent · 原型</h1>
+  <span class="tag">20261109-003 · 工具管理重设计</span>
+  <nav>
+    <a class="on">设计决策</a>
+    <a>原型预览</a>
+    <a>接口映射</a>
+    <a>响应式</a>
+  </nav>
+  <div class="spring"></div>
+  <div class="theme-btns">
+    <button data-theme="light">浅色</button>
+    <button data-theme="dark">深色</button>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- ======= A. 现状问题 ======= -->
+  <section>
+    <div class="sec-head"><h2>A. 现状问题</h2><span class="badge mute">先问为什么改</span></div>
+    <p class="sec-desc">当前工具管理页（ToolsView）是一张扁平表格 + 页头 scope 下拉 + 行内 JsonViewer 展开。按 20261109-001 / 20261109-002 已经确立的「卡片流 + 抽屉」新范式，对照 MCP 与技能页，这里有 6 个具体问题：</p>
+    <div class="issue-grid">
+      <div class="issue"><div class="no">1</div><div><b>表格信息密度不均</b><p>内置工具 20+ 行全部挤进一张表，行内描述被挤窄无法换行，视觉四件套（describe_image/ask_image/extract_json/ocr_image）直接消失（vision.enabled=false 时），用户不知道有这能力。</p></div></div>
+      <div class="issue"><div class="no">2</div><div><b>启用/禁用视觉语义弱</b><p>一个 toggle 开关直接决定 prompt schema 是否注入，属于「影响 Agent 核心能力」的高影响操作，但旧版只有一行文字说明，没有禁用态提醒。</p></div></div>
+      <div class="issue"><div class="no">3</div><div><b>MCP 工具从这里消失</b><p>GET /tools 同时返回 builtin + mcp 两类，旧版只展示 builtin，让用户误以为 MCP 工具只是「不在」而不是「归 MCP 页管」，信息割裂。</p></div></div>
+      <div class="issue"><div class="no">4</div><div><b>Schema 查看是行内展开</b><p>JSON schema 可能上百行，展开后把整个表格撑得面目全非，且跟在所属工具行紧挨着，视觉无法区分是哪个工具的 schema。</p></div></div>
+      <div class="issue"><div class="no">5</div><div><b>scope 写在页头影响面模糊</b><p>所有开关共用一个 scope 下拉。用户禁用 fileRead（workspace）后，可能忘记切回 global 就去禁用 commandRun，导致多个工具在两个层被拆解得支离破碎。</p></div></div>
+      <div class="issue"><div class="no">6</div><div><b>没有分类 / 搜索 / 筛选</b><p>20 个内置工具分属文件 / 命令 / 会话 / 记忆 / 视觉 / HTTP / 技能 7 个家族，旧版不展示家族，用户要找 editFile 或 grep 只能盯着表格扫。</p></div></div>
+    </div>
+  </section>
+
+  <!-- ======= B. 设计决策 D1-D9 ======= -->
+  <section>
+    <div class="sec-head"><h2>B. 设计决策</h2><span class="badge">D1–D9</span></div>
+    <p class="sec-desc">沿用 20261109-001（技能）和 20261109-002（MCP）已经建立的「卡片流 + 统计条 + 工具条 + 抽屉 + 弹层」范式，避免每一页重新发明一套。后端接口保持不变，无需改动。</p>
+    <div class="issue-grid" style="grid-template-columns: 1fr; gap: 10px;">
+
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D1</div><div><b>卡片流两列，桌面优先，窄屏自动单列</b><p>每卡：工具名（等宽） + 分组图标 tile（按家族染色：文件蓝、命令紫、会话青、记忆玫红、视觉琥珀、HTTP 橙、技能绿） + 简述（2 行截断） + 启用 pill + toggle + ⋯ 菜单 + scope 默认写入下拉（工具条）。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D2</div><div><b>来源分段：内置 / MCP 各自成组</b><p>工具条第一分段「全部 / 内置 / MCP / 仅禁用」，MCP 工具卡不显示 toggle（PATCH 会 400），改用「跳 MCP 页」按钮；内置禁用卡灰色底 + 红色斜条 + 标题删除线，突出「不出现在 prompt schema」。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D3</div><div><b>视觉四件套单独提醒</b><p>vision.enabled=false 时，describe_image / ask_image / extract_json / ocr_image 仍在卡片流里，tile 灰化 + 右上角「视觉未启用」徽标 + toggle 禁用 + 简述前加「vision.enabled=false，打开后即可调用」，让用户一眼知道「能力存在但被配置挡住」。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D4</div><div><b>详情抽屉替代行内 JsonViewer</b><p>点卡片或「Schema」菜单项打开右侧抽屉：名称 + 来源 + 分组 + 启用 pill + 简短说明 + 参数明细表（name / type / required / description）+ 原始 Schema JSON（折叠）+ 示例调用（从描述里提取第一行代码片段）+ scope 信息 + 底部「禁用 / 关闭」按钮。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D5</div><div><b>切换开关直接生效 + 可选重载</b><p>点 toggle 直接 PATCH /tools/:name，落盘 + registry 同步 + toast「已禁用 fileRead（workspace），运行中的会话继续可用；重载后新会话生效」。不弹确认模态（同技能页 uninstall 的「一次确认」思路：禁用后果可逆且可见，但需提示影响面）。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D6</div><div><b>搜索 / 来源分段 / 状态分段 / 排序</b><p>搜索按名称 + 简述匹配（含 server__tool 的 server 前缀命中）；第二分段「启用 / 禁用 / MCP 失败」；排序「名称 A→Z / 家族优先（文件 → 命令 → 会话 → 记忆 → 视觉 → HTTP → 技能 → 其他）/ 禁用优先（禁用顶到最上）」。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D7</div><div><b>统计条：总工具 / 内置 / MCP / 已禁用 / MCP 失败</b><p>五项统计，禁用计数红色，MCP 失败计数红色；分段 Tab 右侧的「N 个」实时同步统计。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D8</div><div><b>后端零改动</b><p>沿用 GET /tools + GET /tools/:name + PATCH /tools/:name + POST /tools/reload。唯一约束：MCP 工具卡不调用 PATCH（后端会 400），改为引导去 MCP 页。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D9</div><div><b>键盘 & 无障碍</b><p>Esc 关闭抽屉与菜单；`/` 聚焦搜索；菜单 `role=menu` / `role=menuitem`；Toggle 可键盘触发；抽屉 `aria-modal`。骨架 / 空态 / 无匹配态与 MCP / 技能页同构。</p></div></div>
+
+    </div>
+  </section>
+
+  <!-- ======= C. 原型预览 ======= -->
+  <section>
+    <div class="sec-head"><h2>C. 原型预览</h2><span class="badge">状态矩阵 · 交互</span></div>
+    <p class="sec-desc">点击搜索框、分段 Tab、排序、scope 下拉、卡片 toggle、⋯ 菜单、Schema 抽屉、Esc 关闭、深色切换。演示数据含 20 个内置工具（vision.enabled=false 导致 4 个视觉工具灰化）+ 5 个 MCP 工具（其中 postgres__query 已连接、grafana__run 对应 server 失败）。</p>
+
+    <div class="ctx">
+      <div class="ctx-tag">工具管理 · 20261109-003</div>
+
+      <!-- 页头 -->
+      <div class="tl-head">
+        <div class="lead">
+          <div class="eyebrow">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M3 12h10M4.5 8h7"/></svg>
+            内置 & MCP · 协议工具
+          </div>
+          <h1>工具</h1>
+          <p>内置工具直接改变 prompt schema；MCP 工具由服务器连接决定。禁用后运行中的会话继续可用，重载会影响新会话。</p>
+        </div>
+        <div class="tl-actions">
+          <button class="btn icon" title="刷新列表" aria-label="刷新列表" id="tl-refresh-btn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.8V5h-2.2"/></svg>
+          </button>
+          <button class="btn" id="tl-reload-btn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 8a5.6 5.6 0 0 1 9.6-4"/><path d="M13.6 8a5.6 5.6 0 0 1-9.6 4"/><path d="M12.4 1.8v2.8h-2.8M3.6 14.2v-2.8h2.8"/></svg>
+            重载
+          </button>
+        </div>
+      </div>
+
+      <!-- 统计条 -->
+      <div class="tl-stats">
+        <div class="tl-stat"><div class="k"><i class="on"></i>总工具</div><div class="v" id="tl-sum-total">25<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="on"></i>内置</div><div class="v" id="tl-sum-builtin">20<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="on"></i>MCP 工具</div><div class="v" id="tl-sum-mcp">5<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="warn"></i>已禁用</div><div class="v warn" id="tl-sum-disabled">3<small>个</small></div></div>
+        <div class="tl-stat"><div class="k"><i class="bad"></i>MCP 失败</div><div class="v bad" id="tl-sum-mcpbad">1<small>个</small></div></div>
+      </div>
+
+      <!-- 工具条 -->
+      <div class="tl-toolbar">
+        <div class="tl-search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
+          <input id="tl-search" type="text" placeholder="搜索工具名、简述或 server" autocomplete="off" spellcheck="false">
+          <kbd>/</kbd>
+        </div>
+        <div class="tl-seg" role="tablist" aria-label="按来源筛选" id="tl-src-seg">
+          <button type="button" class="on" data-src="all">全部 <span class="n">25</span></button>
+          <button type="button" data-src="builtin">内置 <span class="n">20</span></button>
+          <button type="button" data-src="mcp">MCP <span class="n">5</span></button>
+          <button type="button" data-src="disabled">禁用 <span class="n">3</span></button>
+        </div>
+        <select class="tl-sort" id="tl-sort" aria-label="排序">
+          <option value="name">名称 A→Z</option>
+          <option value="family">家族优先</option>
+          <option value="disabled">禁用优先</option>
+        </select>
+        <select class="tl-scope" id="tl-scope" aria-label="写入 scope（禁用/启用）">
+          <option value="workspace">scope · workspace</option>
+          <option value="global">scope · global</option>
+        </select>
+        <span class="tl-count" id="tl-count">显示 25 / 25 个</span>
+      </div>
+
+      <!-- 卡片流 -->
+      <div class="tl-grid" id="tl-grid"></div>
+
+      <div class="tl-footline">
+        <span>禁用内置工具 = 从 prompt schema 移除；运行中的会话不影响。MCP 工具不可在此处关闭，请去 MCP 页。</span>
+        <span class="sp"></span>
+        <span>共 <b id="tl-foot-total" style="color:var(--text);font-weight:600">25</b> 个工具</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======= D. 状态矩阵 ======= -->
+  <section>
+    <div class="sec-head"><h2>D. 状态矩阵</h2><span class="badge mute">卡片如何呈现</span></div>
+    <p class="sec-desc">8 种状态在一张矩阵里，避免实现时又回到「条件判断漏分支」。</p>
+    <div style="display:grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 1px; background: var(--line); border-radius: 9px; overflow: hidden; border: 1px solid var(--line);">
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">状态</div>
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">启用 pill</div>
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">卡片视觉</div>
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">操作 / 约束</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">内置 · 启用</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill on"><i></i>启用</span></div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">白底 + 家族 tile 正常</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle 可点；PATCH 成功 → toast</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">内置 · 禁用</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill off"><i></i>禁用</span></div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">灰底 + 左边 3px 灰色条 + 标题删除线 + 右上角禁用徽标</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle 可点；PATCH 成功 → toast</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">内置 · 视觉家族被门控</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill off"><i></i>禁用</span></div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">tile 灰化 + 右上角「视觉未启用」徽标 + toggle 禁用 + 简述前置提醒</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle disabled；门控源头是 vision.enabled，不是 tools.disabled</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">MCP · server 已连接</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill on"><i></i>已连接</span></div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">白底 + MCP tile + 工具名含 server__ 前缀 + 底部 server 徽标</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle disabled（PATCH 会 400）；「跳 MCP 页」按钮</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">MCP · server 失败</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="tl-pill err"><i></i>连接失败</span></div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">左边 3px 红色条 + tile 灰化 + 底部 server 名</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">toggle disabled；「跳 MCP 页」按钮</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">骨架加载</div>
+      <div style="padding: 9px 11px; background: var(--panel);">—</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">4 个骨架卡，tile + 3 行文字占位</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">loading=true 时渲染；刷新按钮禁用</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">空库</div>
+      <div style="padding: 9px 11px; background: var(--panel);">—</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">虚线框 + 标题「没有工具」</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">提示检查配置；不直接加「添加」按钮（后端静态）</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">搜索无匹配</div>
+      <div style="padding: 9px 11px; background: var(--panel);">—</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">虚线框 + 标题「没有匹配」</div>
+      <div style="padding: 9px 11px; background: var(--panel); font-size: 12px;">「清空筛选」按钮</div>
+    </div>
+  </section>
+
+  <!-- ======= E. 接口映射 ======= -->
+  <section>
+    <div class="sec-head"><h2>E. 接口映射</h2><span class="badge">后端零改动</span></div>
+    <div style="display:grid; gap:10px;">
+      <div class="d-item"><b>GET /tools</b> → <code>{ tools: [{name, description, enabled, source}] }</code>（内置 + MCP 快照，原样使用；前端按 source 分两组；MCP 失败判定从 <code>GET /mcp/servers</code> 合并）</div>
+      <div class="d-item"><b>PATCH /tools/:name</b> <code>{ enabled, scope }</code> → 内置工具 toggle（前端按 D5 直接调用；MCP 工具卡不调用，后端会 400）</div>
+      <div class="d-item"><b>GET /tools/:name</b> → <code>{ name, description, enabled, source, schema }</code>（抽屉正文，参数表 + 原始 JSON 都来自 schema）</div>
+      <div class="d-item"><b>POST /tools/reload</b> → <code>{ reloaded }</code>（页头「重载」按钮；抽屉底部也可调用）</div>
+      <div class="d-item"><b>GET /mcp/servers</b>（合并读取）→ 决定 MCP 工具的 server 来源 + 失败态，用于 MCP 工具卡的 tile 灰化 + 红色条</div>
+    </div>
+    <p class="note">后端没有工具登记/删除/改名端点（静态注册），所以原型不设计「新建」「删除」「改名」等模态。视觉四件套的门控由 <code>vision.enabled</code> 决定，不是 <code>tools.disabled</code>，前端渲染时要额外读取 <code>GET /config</code> 判断是否灰化。</p>
+  </section>
+
+  <!-- ======= F. 响应式 ======= -->
+  <section>
+    <div class="sec-head"><h2>F. 响应式</h2><span class="badge mute">三个断点</span></div>
+    <div class="issue-grid">
+      <div class="issue"><div class="no">≥ 980</div><div><b>桌面 · 双列</b><p>卡片两列；统计条 5 项均分；搜索 max-width 330px；scope 下拉在工具条最右侧。</p></div></div>
+      <div class="issue"><div class="no">860–980</div><div><b>平板 · 单列</b><p>卡片变单列；统计条变 3+2 两行；搜索保持 max-width；分段 Tab 折行。</p></div></div>
+      <div class="issue"><div class="no">≤ 700</div><div><b>手机 · 堆叠</b><p>页头纵排，主按钮 flex:1；搜索、scope 下拉、排序各占一行；toggle 文字说明隐藏，只留开关图形。</p></div></div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ======= 卡片 ⋯ 菜单 ======= -->
+<div class="tl-menu" id="tl-menu" style="display:none;"></div>
+
+<!-- ======= 详情抽屉 ======= -->
+<div class="tl-backdrop" id="tl-backdrop" onclick="closeDrawer()"></div>
+<aside class="tl-drawer" id="tl-drawer">
+  <div class="tl-drv-head" id="tl-drv-head"></div>
+  <div class="tl-drv-body" id="tl-drv-body"></div>
+  <div class="tl-drv-foot" id="tl-drv-foot"></div>
+</aside>
+
+<script>
+/* ===== 演示数据 ===== */
+const VISION_OFF = true;
+const builtins = [
+  { name: 'commandRun',    group: 'cmd',     tile: 'cmd',   enabled: true,  desc: '在本地执行 shell 命令，返回 stdout 与 stderr。长任务（dev server、watch、测试）传 background:true 后台运行；立即返回 taskId，随后用 commandStatus 查询状态、commandLogs 增量读日志、commandStop 终止。' },
+  { name: 'commandStatus', group: 'cmd',     tile: 'cmd',   enabled: true,  desc: '查询后台命令任务状态。返回 status（running/exited/killed/orphaned）、退出码、耗时与摘要。不带 taskId 时返回最近 5 个后台任务摘要，可用于回找 taskId。与 commandLogs 配套使用。' },
+  { name: 'commandLogs',   group: 'cmd',     tile: 'cmd',   enabled: true,  desc: '读取后台命令任务的日志（增量）。不带 sinceOffset 时返回【上次读到处】之后的新增内容并推进游标；传 sinceOffset 可读任意区间。tail=true 仅读最近 2KB 尾部（不推进游标）；单次上限 8KB，超出请续读。' },
+  { name: 'commandStop',   group: 'cmd',     tile: 'cmd',   enabled: true,  desc: '终止后台命令任务。杀进程组（Windows taskkill /F /PID 等实现）。幂等：已结束（running/exited/orphaned-exited）时返回当前状态不重复杀。会话停止不会连带终止后台任务，必须显式调用本工具。' },
+  { name: 'fileRead',      group: 'file',    tile: 'file',  enabled: true,  desc: '读取文件内容，支持全文读取或按行范围分段。默认在每行前加 "行号:" 前缀以便定位与引用；需原始内容（如读写一段）可设置 lineNumbers=false。默认读取上限：大文件用 startLine / endLine 分段读取。二进制文件会被拒绝。' },
+  { name: 'fileWrite',     group: 'file',    tile: 'file',  enabled: true,  desc: '写入文件，只支持整文件一次性写入。需要局部修改已有文件请改用 editFile。mode=overwrite（默认）是用 content 完整替换文件的全部内容——文件中未被 content 包含的内容将会永久丢失，它只能整体覆盖，不支持只覆盖某一段。自动创建目录。已存在的文件会自动追踪其关联代码（如 CR LF），新文件保持自动换行。' },
+  { name: 'editFile',      group: 'file',    tile: 'file',  enabled: false, desc: '在已有文件中替换内容。三种用法：①默认按字面量精确匹配 oldText（要求唯一，多处匹配会报错以免误改，可用 replaceAll 替换全部）；②regex-oldTest 替换（flags 指定 g/s 等自动补全，newText 支持 $1& 占位符），配合 startLine/endLine 进行整段替换；③ast-struct 行级整体重写（oldText 可选，提供作用校验）。匹配与校验按规范化换行（\n 与 \r\n 等价）。' },
+  { name: 'grep',          group: 'file',    tile: 'file',  enabled: true,  desc: '在文件或目录中搜索内容（模仿 grep）。支持正则表达式、忽略大小写、递归目录。搜索返回「路径:行号:匹配行内容」格式的系列列表，便于后续定位。文件路径返回相对于工作空间的可引用格式。' },
+  { name: 'listFiles',     group: 'file',    tile: 'file',  enabled: true,  desc: '列出文件或目录（模仿 ls -la）。按路径递归，返回目录树结构、每个条目的大小/修改时间/类型。可用于构建项目文件索引、查找相关文件、查看结构。' },
+  { name: 'createFile',    group: 'file',    tile: 'file',  enabled: true,  desc: '创建新文件。自动创建必要的父目录。不覆盖已存在的文件；要覆盖请使用 fileWrite。可写入初始内容。' },
+  { name: 'deleteFile',    group: 'file',    tile: 'file',  enabled: false, desc: '删除指定文件或目录（递归）。危险操作：删除后不可恢复。对工作空间外路径进行严格校验（resolveInWs + assertRealInside 双校验防穿越）。' },
+  { name: 'ask_image',     group: 'vision',  tile: 'vision',enabled: true,  desc: '对图片提出具体问题。描述图像内容、识别其中的文字、提取结构化数据、对比差异等。支持多图输入；每图 < 20MB；可提供参考文本 / 任务描述提升准确度。' },
+  { name: 'describe_image',group: 'vision',  tile: 'vision',enabled: true,  desc: '生成图像的详细自然语言描述。物体 / 场景 / 文字 / 图表 / 关系都能描述；适合构建图片索引、对比多图差异、向模型注入视觉信息。' },
+  { name: 'extract_json',  group: 'vision',  tile: 'vision',enabled: true,  desc: '从图片中提取结构化数据为 JSON。表格、表单字段、列表等尤其适用；参数中给出 JSON schema。结果直接用于 Agent 后续处理。' },
+  { name: 'ocr_image',     group: 'vision',  tile: 'vision',enabled: true,  desc: '识别图片里的文字，原样返回。多场景：扫描件、截图、照片；支持多语言；可指定区域裁剪。' },
+  { name: 'memoryWrite',   group: 'memory',  tile: 'memory',enabled: true,  desc: '写入一条记忆条目。支持 curated（长期偏好 / 规则 / 规范）与 episodic（近期上下文）两层。自动打标签；可指定分类与重要性。记忆在对话间持续存在。' },
+  { name: 'memoryRead',    group: 'memory',  tile: 'memory',enabled: true,  desc: '读取记忆条目。按层 / 标签 / 关键词过滤；返回最近 N 条。记忆检索结果会自动注入下一轮系统提示。' },
+  { name: 'memorySearch',  group: 'memory',  tile: 'memory',enabled: true,  desc: '在记忆库中语义检索。输入一段文本，返回最相关的 N 条记忆，按相关性排序。语义搜索比关键词更能跨语言、跨表达形式命中。' },
+  { name: 'sessionHistory',group: 'session', tile: 'session',enabled: true, desc: '读取会话历史（消息列表 / 摘要）。用于「继续」「回滚到」或回顾本轮做了什么；可指定窗口大小与是否只返回摘要。' },
+  { name: 'skillRun',      group: 'skill',   tile: 'skill', enabled: true,  desc: '激活一个 Skill（技能包）。返回该 Skill 的完整指令内容，以及技能所在目录（技能目录绝对路径）。当判断用户需求匹配某个 Skill 时使用此工具获取详细指令，再按 Skill 执行。' },
+];
+
+const mcps = [
+  { name: 'postgres__query',      server: 'postgres',      tile: 'other', enabled: true, bad: false, desc: '在已连接的 postgres 数据库中执行只读 SQL 查询。返回结果集或错误。' },
+  { name: 'postgres__list_tables',server: 'postgres',      tile: 'other', enabled: true, bad: false, desc: '列出 postgres 数据库当前 schema 下的所有数据表。' },
+  { name: 'github__search_code',  server: 'github',        tile: 'other', enabled: true, bad: false, desc: '在 GitHub 仓库中搜索代码，支持语言、分支、路径过滤。' },
+  { name: 'github__list_issues',  server: 'github',        tile: 'other', enabled: true, bad: false, desc: '列出指定仓库的 issue，支持状态与标签过滤。' },
+  { name: 'grafana__run_query',   server: 'grafana',       tile: 'other', enabled: false, bad: true,  desc: '在 Grafana 数据源上执行查询；MCP server 当前连接失败，工具不可用。' },
+];
+
+/* ===== 分组样式与图标 ===== */
+const GROUP_LABEL = { file:'文件', cmd:'命令', session:'会话', memory:'记忆', vision:'视觉', http:'HTTP', skill:'技能', other:'其他' };
+const GROUP_ORDER = ['file','cmd','session','memory','vision','http','skill','other'];
+
+/* ===== 排序 / 筛选 ===== */
+function buildList() {
+  const list = [];
+  for (const b of builtins) list.push({ ...b, kind: 'builtin', visionGated: b.group === 'vision' && VISION_OFF, icon: b.tile });
+  for (const m of mcps) list.push({ name: m.name, desc: m.desc, enabled: !m.bad, kind: 'mcp', mcpServer: m.server, mcpBad: m.bad, icon: 'other', tile: 'other' });
+  return list;
+}
+
+function matches(t, q) {
+  const s = q.trim().toLowerCase();
+  if (!s) return true;
+  const hay = t.name + ' ' + (t.desc || '') + (t.kind === 'mcp' ? ' ' + t.mcpServer : '');
+  return hay.toLowerCase().includes(s);
+}
+
+function filterAndSort(list) {
+  const src = document.querySelector('#tl-src-seg button.on').dataset.src;
+  const disabledOnly = src === 'disabled';
+  let arr = list.filter((t) => {
+    if (src === 'builtin') return t.kind === 'builtin';
+    if (src === 'mcp') return t.kind === 'mcp';
+    if (src === 'disabled') return !t.enabled;
+    return true;
+  }).filter((t) => !disabledOnly || !t.enabled);
+  arr = arr.filter((t) => matches(t, document.getElementById('tl-search').value));
+  const mode = document.getElementById('tl-sort').value;
+  if (mode === 'name') arr.sort((a, b) => a.name.localeCompare(b.name));
+  else if (mode === 'family') arr.sort((a, b) => {
+    const ia = GROUP_ORDER.indexOf(a.group || 'other');
+    const ib = GROUP_ORDER.indexOf(b.group || 'other');
+    if (ia !== ib) return ia - ib;
+    return a.name.localeCompare(b.name);
+  });
+  else if (mode === 'disabled') arr.sort((a, b) => Number(a.enabled) - Number(b.enabled) || a.name.localeCompare(b.name));
+  return arr;
+}
+
+/* ===== 渲染 ===== */
+const MENU_POS = { top: 0, left: 0, forName: null };
+function renderList() {
+  const all = buildList();
+  const arr = filterAndSort(all);
+  const grid = document.getElementById('tl-grid');
+  document.getElementById('tl-count').textContent = `显示 ${arr.length} / ${all.length} 个`;
+  if (arr.length === 0) {
+    grid.innerHTML = `
+      <div class="tl-nothing">
+        <span class="nt-ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg></span>
+        <b>没有匹配的工具</b><p>清空搜索，或切回「全部」分段。</p>
+        <button class="btn sm primary" id="tl-clear-filter">清空筛选</button>
+      </div>`;
+    const btn = document.getElementById('tl-clear-filter');
+    if (btn) btn.onclick = () => { document.getElementById('tl-search').value = ''; [...document.querySelectorAll('#tl-src-seg button')].forEach(b => b.classList.toggle('on', b.dataset.src === 'all')); renderList(); };
+    return;
+  }
+
+  grid.innerHTML = arr.map((t) => cardHTML(t)).join('');
+  grid.querySelectorAll('.tl-toggle').forEach((el) => {
+    const name = el.dataset.name;
+    el.onclick = () => {
+      const t = all.find((x) => x.name === name);
+      if (!t || t.visionGated || t.kind === 'mcp') return;
+      t.enabled = !t.enabled;
+      el.classList.toggle('on', t.enabled);
+      el.setAttribute('aria-pressed', String(t.enabled));
+      toast(`${t.name} 已${t.enabled ? '启用' : '禁用'}（scope · ${document.getElementById('tl-scope').value}）`);
+      document.getElementById('tl-sum-disabled').querySelector('b, small, .v') ? null : null;
+      refreshStats(all);
+      renderList();
+    };
+  });
+  grid.querySelectorAll('.tl-more').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      openMenu(el.dataset.name, e);
+    };
+  });
+  grid.querySelectorAll('[data-drawer]').forEach((el) => {
+    el.onclick = () => openDrawer(el.dataset.drawer);
+  });
+}
+
+function refreshStats(all) {
+  document.getElementById('tl-sum-total').querySelector('small').parentElement.firstChild.textContent = all.length;
+  document.getElementById('tl-sum-builtin').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.kind === 'builtin').length;
+  document.getElementById('tl-sum-mcp').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.kind === 'mcp').length;
+  document.getElementById('tl-sum-disabled').querySelector('small').parentElement.firstChild.textContent = all.filter(t => !t.enabled).length;
+  document.getElementById('tl-sum-mcpbad').querySelector('small').parentElement.firstChild.textContent = all.filter(t => t.kind === 'mcp' && t.mcpBad).length;
+  document.getElementById('tl-foot-total').textContent = all.length;
+  [...document.querySelectorAll('#tl-src-seg button')].forEach((b) => {
+    const s = b.dataset.src;
+    let n = 0;
+    if (s === 'all') n = all.length;
+    else if (s === 'disabled') n = all.filter(t => !t.enabled).length;
+    else n = all.filter(t => t.kind === s).length;
+    b.querySelector('.n').textContent = n;
+  });
+}
+
+function cardHTML(t) {
+  const disabled = !t.enabled;
+  const mcp = t.kind === 'mcp';
+  const visionOff = !!t.visionGated;
+  const tileCls = ['tile', t.icon || 'other'];
+  if (mcp && t.mcpBad) tileCls.push('mcp-off');
+  if (disabled && !mcp) tileCls.push('disabled');
+  const cardCls = ['tl-card'];
+  if (disabled && !mcp) cardCls.push('disabled');
+  if (mcp) cardCls.push('mcp');
+  if (mcp && t.mcpBad) cardCls.push('bad');
+  if (visionOff) cardCls.push('vision-off');
+
+  const groupLabel = mcp ? `MCP · ${t.mcpServer}` : GROUP_LABEL[t.group || 'other'];
+  const groupMute = mcp ? 'tl-group mute' : 'tl-group';
+
+  let pillHTML = '';
+  if (mcp) pillHTML = t.mcpBad
+    ? '<span class="tl-pill err"><i></i>连接失败</span>'
+    : '<span class="tl-pill on"><i></i>已连接</span>';
+  else pillHTML = disabled
+    ? '<span class="tl-pill off"><i></i>禁用</span>'
+    : '<span class="tl-pill on"><i></i>启用</span>';
+
+  const toggleHTML = visionOff
+    ? '<div class="tl-toggle mcp" title="vision.enabled=false，无法启用视觉工具" aria-disabled="true"></div>'
+    : mcp
+      ? `<button class="btn sm ghost" data-drawer="${t.name}">跳 MCP 页</button>`
+      : `<div class="tl-toggle ${disabled ? '' : 'on'}" data-name="${t.name}" role="switch" aria-checked="${disabled ? 'false' : 'true'}"></div>`;
+
+  const family = mcp ? 'MCP' : GROUP_LABEL[t.group || 'other'];
+
+  return `
+    <article class="${cardCls.join(' ')}">
+      <div class="tl-top">
+        <span class="${tileCls.join(' ')}">${initials(t.name)}</span>
+        <div class="tl-id">
+          <div class="tl-title">
+            <h3>${t.name}</h3>
+            <span class="${groupMute}">${groupLabel}</span>
+            ${pillHTML}
+          </div>
+          <p class="tl-desc">${t.desc}</p>
+        </div>
+        <button class="tl-more" type="button" aria-label="更多操作" data-name="${t.name}">
+          <svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12.5" cy="8" r="1.2"/></svg>
+        </button>
+      </div>
+      ${visionOff ? '<div style="font-size:11px;color:var(--warn);">vision.enabled=false，打开后即可调用视觉四件套</div>' : ''}
+      <div class="tl-foot">
+        <span class="tl-meta">${family}</span>
+        <span class="sep">·</span>
+        <span class="tl-meta">${mcp ? 'MCP' : '内置'}</span>
+        <span class="spacer"></span>
+        ${toggleHTML}
+        <button class="btn sm ghost" data-drawer="${t.name}">Schema</button>
+      </div>
+    </article>
+  `;
+}
+
+function initials(name) {
+  const clean = String(name).replace(/[^0-9A-Za-z]/g, '');
+  if (clean) return clean.slice(0, 2).toUpperCase();
+  return String(name).slice(0, 2) || '?';
+}
+
+/* ===== 菜单 ===== */
+const MENU_ICONS = {
+  schema: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h10v11H3z"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>',
+  copy:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.2" y="5.2" width="6.8" height="8" rx="1.2"/><path d="M10.4 5.2V3.4H3.6v8h1.6"/></svg>',
+  jump:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M5 3h8v8"/></svg>',
+  close:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg>',
+};
+
+function openMenu(name, ev) {
+  const t = buildList().find((x) => x.name === name);
+  if (!t) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.right - 178, window.innerWidth - 186));
+  const top = Math.min(r.bottom + 6, window.innerHeight - 186);
+  const menu = document.getElementById('tl-menu');
+  MENU_POS.top = top; MENU_POS.left = left; MENU_POS.forName = name;
+
+  const items = [
+    { id: 'schema', label: '查看 Schema', icon: MENU_ICONS.schema },
+    { id: 'copy',   label: '复制工具名', icon: MENU_ICONS.copy },
+  ];
+  if (t.kind === 'mcp') {
+    items.push({ id: 'jump', label: '跳 MCP 页', icon: MENU_ICONS.jump });
+  } else {
+    items.push({ id: t.enabled ? 'disable' : 'enable', label: t.enabled ? '禁用' : '启用', icon: t.enabled ? MENU_ICONS.close : '✓', danger: !t.enabled });
+  }
+
+  menu.style.display = 'block';
+  menu.style.top = top + 'px';
+  menu.style.left = left + 'px';
+  menu.innerHTML = `
+    <div class="m-head">${t.name}</div>
+    ${items.map((it) => `<button data-a="${it.id}" class="${it.danger ? 'danger' : ''}">${it.icon} ${it.label}</button>`).join('')}
+  `;
+  [...menu.querySelectorAll('button')].forEach((b) => {
+    b.onclick = () => actMenu(b.dataset.a, name);
+  });
+}
+
+function closeMenu() { document.getElementById('tl-menu').style.display = 'none'; MENU_POS.forName = null; }
+
+function actMenu(id, name) {
+  const all = buildList();
+  const t = all.find((x) => x.name === name);
+  closeMenu();
+  if (id === 'schema') { openDrawer(name); return; }
+  if (id === 'copy') { navigator.clipboard?.writeText(name); toast('工具名已复制'); return; }
+  if (id === 'jump')  { toast('即将跳转到 MCP 页 / 服务器：' + t.mcpServer); return; }
+  if (id === 'enable' || id === 'disable') {
+    if (!t || t.kind !== 'builtin') return;
+    t.enabled = (id === 'enable');
+    toast(`${t.name} 已${t.enabled ? '启用' : '禁用'}（scope · ${document.getElementById('tl-scope').value}）`);
+    refreshStats(all);
+    renderList();
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('tl-menu');
+  if (menu.style.display !== 'none' && !menu.contains(e.target) && !e.target.closest('.tl-more')) closeMenu();
+});
+window.addEventListener('scroll', closeMenu, true);
+
+/* ===== 抽屉 ===== */
+const SCHEMA_DEMO = {
+  fileRead: {
+    type: 'object', properties: {
+      path:    { type: 'string', description: '相对于工作空间的文件路径' },
+      startLine: { type: 'integer', description: '起始行，默认 1' },
+      endLine:   { type: 'integer', description: '结束行；不传则读到文件末尾' },
+      lineNumbers: { type: 'boolean', description: '是否在每行前加行号（默认 true）' },
+    }, required: ['path']
+  },
+  commandRun: {
+    type: 'object', properties: {
+      command:    { type: 'string', description: '要执行的命令（不含 args）' },
+      args:       { type: 'array', items: { type: 'string' }, description: '命令参数列表' },
+      cwd:        { type: 'string', description: '工作目录，不传默认为当前工作空间根' },
+      background: { type: 'boolean', description: 'true → 立即返回 taskId，后台运行；长任务（dev server / watch）务必传 true' },
+      timeoutMs:  { type: 'integer', description: '前台运行时的最大等待毫秒数；超时后返回 taskId' },
+      env:        { type: 'object', additionalProperties: { type: 'string' }, description: '附加环境变量' },
+    }, required: ['command']
+  },
+  grep: {
+    type: 'object', properties: {
+      path:       { type: 'string', description: '文件或目录；目录会递归搜索' },
+      pattern:    { type: 'string', description: '要匹配的正则表达式' },
+      ignoreCase: { type: 'boolean', description: '忽略大小写' },
+    }, required: ['pattern']
+  },
+};
+function schemaFor(name) {
+  if (SCHEMA_DEMO[name]) return SCHEMA_DEMO[name];
+  return {
+    type: 'object', properties: {
+      arg1: { type: 'string', description: '主要参数' },
+      arg2: { type: 'boolean', description: '可选布尔开关' },
+      n:    { type: 'integer', description: '数值参数' },
+    }, required: ['arg1']
+  };
+}
+
+function openDrawer(name) {
+  const t = buildList().find((x) => x.name === name);
+  if (!t) return;
+  const head = document.getElementById('tl-drv-head');
+  const body = document.getElementById('tl-drv-body');
+  const foot = document.getElementById('tl-drv-foot');
+  const tileCls = ['tile', t.icon || 'other'];
+  if ((t.kind === 'builtin' && !t.enabled) || t.visionGated || (t.kind === 'mcp' && t.mcpBad)) tileCls.push('disabled');
+  const family = t.kind === 'mcp' ? `MCP · ${t.mcpServer}` : GROUP_LABEL[t.group || 'other'];
+  head.innerHTML = `
+    <span class="${tileCls.join(' ')}">${initials(t.name)}</span>
+    <div class="tl-drv-title">
+      <h2>${t.name}</h2>
+      <div class="tl-drv-sub">
+        <span class="tl-group ${t.kind === 'mcp' ? 'mute' : ''}">${family}</span>
+        ${t.kind === 'builtin' ? (t.enabled ? '<span class="tl-pill on"><i></i>启用</span>' : '<span class="tl-pill off"><i></i>禁用</span>') : (t.mcpBad ? '<span class="tl-pill err"><i></i>连接失败</span>' : '<span class="tl-pill on"><i></i>已连接</span>')}
+      </div>
+    </div>
+    <button class="tl-close-btn" type="button" onclick="closeDrawer()" aria-label="关闭">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+    </button>
+  `;
+
+  const sch = schemaFor(name);
+  const paramsRows = Object.entries(sch.properties || {}).map(([k, v]) => {
+    const req = (sch.required || []).includes(k);
+    return `<tr><td class="n">${k}</td><td class="t">${v.type}</td><td class="r ${req ? 'yes' : ''}">${req ? '必填' : '可选'}</td><td class="d">${v.description || ''}</td></tr>`;
+  }).join('');
+
+  const scopeVal = document.getElementById('tl-scope').value;
+  body.innerHTML = `
+    <div class="tl-lab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13V3h10v10H3ZM5 7h6M5 10h6"/></svg>简短说明</div>
+    <div class="tl-desc-card">${t.desc}</div>
+
+    <div class="tl-lab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/><path d="M8 5v3.5M8 11v.5"/></svg>基本信息</div>
+    <table class="kv">
+      <tbody>
+        <tr><td class="k">来源</td><td class="v">${t.kind === 'builtin' ? '内置工具' : 'MCP 工具'}</td></tr>
+        <tr><td class="k">分组</td><td class="v">${family}</td></tr>
+        <tr><td class="k">启用状态</td><td class="v">${t.kind === 'mcp' ? (t.mcpBad ? '连接失败（不可调用）' : '由 MCP server 决定（不可手动开关）') : (t.enabled ? '启用' : '禁用（不在 prompt schema 中）')}</td></tr>
+        ${t.kind === 'builtin' ? `<tr><td class="k">配置层</td><td class="v"><code>${scopeVal}</code>（PATCH /tools/${t.name} 时写入）</td></tr>` : `<tr><td class="k">所属 Server</td><td class="v"><code>${t.mcpServer}</code></td></tr>`}
+        ${t.visionGated ? `<tr><td class="k">门控</td><td class="v"><code>vision.enabled=false</code>（视觉四件套由全局配置控制）</td></tr>` : ''}
+      </tbody>
+    </table>
+
+    <div class="tl-lab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" rx="2"/><path d="M6 7h4M6 9.5h4"/></svg>参数表</div>
+    ${paramsRows ? `
+      <table class="param-tbl">
+        <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>描述</th></tr></thead>
+        <tbody>${paramsRows}</tbody>
+      </table>
+    ` : '<p class="note" style="margin:0">该工具无参数。</p>'}
+
+    <div class="tl-lab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12h10M3 4h10M6 8h4"/></svg>示例调用</div>
+    <div class="example-card">${JSON.stringify({ tool: name, arguments: Object.fromEntries(Object.keys(sch.properties || {}).map((k) => [k, `示例值: ${k}`])) }, null, 2)}</div>
+
+    <details class="raw-schema">
+      <summary>原始 Schema · GET /tools/${name}</summary>
+      <pre>${JSON.stringify(sch, null, 2)}</pre>
+    </details>
+  `;
+
+  foot.innerHTML = `
+    <button class="btn ghost sm" onclick="closeDrawer()">关闭</button>
+    <span class="sp"></span>
+    ${t.kind === 'builtin' ? `<button class="btn sm" onclick="closeDrawer(); document.querySelector('.tl-toggle[data-name=${name}]')?.click()">${t.enabled ? '禁用' : '启用'}（${scopeVal}）</button>` : `<button class="btn sm ghost" onclick="toast('即将跳转到 MCP 页 / 服务器：${t.mcpServer}'); closeDrawer()">跳 MCP 页</button>`}
+  `;
+
+  document.getElementById('tl-backdrop').classList.add('show');
+  document.getElementById('tl-drawer').classList.add('show');
+}
+
+function closeDrawer() {
+  document.getElementById('tl-backdrop').classList.remove('show');
+  document.getElementById('tl-drawer').classList.remove('show');
+}
+
+/* ===== toast（轻量） ===== */
+function toast(text) {
+  let wrap = document.getElementById('tl-toasts');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'tl-toasts';
+    wrap.style.cssText = 'position:fixed;z-index:200;right:16px;bottom:24px;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    document.body.appendChild(wrap);
+  }
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 13px;font-size:12px;color:var(--text);box-shadow:var(--shadow-pop);pointer-events:none;transform:translateY(6px);opacity:0;transition:opacity .18s, transform .18s;min-width:180px;max-width:320px;line-height:1.55;';
+  wrap.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
+  setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; setTimeout(() => el.remove(), 220); }, 2400);
+}
+
+/* ===== 初始化 ===== */
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeDrawer(); closeMenu(); }
+  if (e.key === '/' && ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+  if (e.key === '/') { e.preventDefault(); document.getElementById('tl-search').focus(); }
+});
+document.getElementById('tl-search').addEventListener('input', () => renderList());
+document.getElementById('tl-search').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.target.value = ''; renderList(); } });
+document.querySelectorAll('#tl-src-seg button').forEach((b) => b.addEventListener('click', () => {
+  [...document.querySelectorAll('#tl-src-seg button')].forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); renderList();
+}));
+document.getElementById('tl-sort').addEventListener('change', renderList);
+document.getElementById('tl-refresh-btn').addEventListener('click', () => { toast('GET /tools（演示：本地 mock，跳过网络）'); renderList(); });
+document.getElementById('tl-reload-btn').addEventListener('click', () => { toast('已重载 25 个工具（POST /tools/reload）'); renderList(); });
+document.querySelectorAll('.theme-btns button').forEach((b) => b.addEventListener('click', () => {
+  document.documentElement.setAttribute('data-theme', b.dataset.theme);
+  [...document.querySelectorAll('.theme-btns button')].forEach(x => x.classList.toggle('on', x === b));
+}));
+renderList();
+refreshStats(buildList());
+</script>
+
+</body>
+</html>
