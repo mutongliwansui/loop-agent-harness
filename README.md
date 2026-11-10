@@ -33,17 +33,17 @@
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE / Streamable HTTP）；工具展示名与参数说明自动中文化（展示元信息 → 中文描述提炼 → 后台异步 LLM 翻译，结果按内容指纹缓存，`enabled:false` 可完全关闭、不调 LLM） |
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
-| 🧠 **三层记忆管理** | L1 Working（token 超阈值压缩：flush 提取笔记写 L2，再以 `kind=summary` 摘要占位替代旧窗口；截尾按「工具组整体」取舍，不切开 `tool_calls`/`tool` 配对，当前轮 user 锚点无条件保留，摘要长度由提示词约束 500 字）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入）；会话上下文三视图统一：磁盘全量历史为唯一真源，内存压缩与磁盘恢复共用同一 `buildCompactedView` 生成器，恢复即得最近 N 轮 + 摘要 |
+| 🧠 **三层记忆管理** | L1 Working（token 超阈值压缩：flush 提取笔记写 L2，再以 `kind=summary` 摘要占位替代旧窗口；截尾按「工具组整体」取舍，不切开 `tool_calls`/`tool` 配对，当前轮 user 锚点无条件保留，摘要长度由提示词约束 500 字）/ L2 Episodic（按天日记）/ L3 Curated（常驻注入）；会话上下文三视图统一：磁盘全量历史为唯一真源，内存压缩与磁盘恢复共用同一 `buildCompactedView` 生成器，恢复即得最近 N 次模型调用 + 摘要；**混合检索**：BM25 全文 + 向量语义经 RRF 融合排序（`episodic.vectorSearch` 开启后生效，embedding 失败自动降级为纯 FTS / 文件关键词匹配）；**Dreaming 定时晋升**：`schedule.cron` 5 字段表达式（默认 `0 3 * * *`，服务器本地时区，「日」与「周」同时受限取并集），写盘即热生效无需重启，非法表达式拒绝且不打断现有排期，输入期可预览未来触发时刻 |
 | 🔧 **分层配置系统** | CLI > 工作空间 > 全局 > .env > 默认值，多层覆盖，来源可追溯 |
 | 🧭 **首次启动引导** | 启动时自动检测模型配置与全局/工作空间目录：缺配置进入交互式向导（baseUrl → apiKey 遮蔽输入 → 模型名 → 连通性校验 → 选择写入层级），目录按默认结构补建；`--no-setup` 跳过，REPL 内 `/setup` 重跑、`/doctor` 只读体检 |
-| 🎛️ **运行时配置管理** | CLI 内置 `/config`、`/model`、`/mcp`、`/tools`、`/skill`、`/memory`、`/vision`、`/upload`、`/setup`、`/doctor` 命令，支持热修改与只读体检 |
-| 🖥️ **Web UI** | 浏览器打开即用：多会话聊天（SSE 流式 / 停止生成 / 对话内上传）+ 配置/模型/工具/MCP/技能/记忆/诊断/**开发者中心**管理台，与 `--serve` 同端口托管，全部复用 REST 端点；工具调用以卡片呈现（线性图标 + 中文名 + 参数摘要，完成/失败/执行中/已中断四态，失败原因直写副标题，一次工具调用一张卡，原始 JSON 收进 `{ }` 浮层）；后台任务渲染为专属卡片（状态 pill、耗时、退出码、可展开日志尾部、二次确认停止，运行中轮询、结束态收敛），后台完成通知渲染为系统通知卡片（注入前剥离 ANSI 与 `\r` 覆写，日志默认折叠）；**后台子任务（delegate background）全程可感知**——输入坞上方常驻「运行中 N」指示器与任务列表（数据源为 2s 轮询快照，不依赖 SSE，会话加载/刷新页面即自动恢复），运行期过程轨迹按 8s 节流增量落盘并显示实时「已运行 Xs · N 轮」，完成后结果卡片自动写回时间线并弹提示（仅本端正在看该会话时不打扰其它会话），主 run 结束、SSE 断开或刷新页面都不再丢卡片与过程；对话输入坞为一体卡片（无边框自增高 44→200px、纯内联图标工具行、附件 pill、快捷键常驻提示），支持**会话级模型选择**（在输入坞内切换本次对话所用模型，写入会话元数据、重进会话自动还原，不改全局激活、不影响其它会话）；对话底部操作栏展示**上下文用量百分比环**（悬浮含手动压缩入口，预判可压缩历史）与**本轮 Token chip**（悬浮展开总输入/总输出/总 Token/平均缓存命中率，随会话持久化、刷新后自动还原）；**开发者中心**（`#/dev`）首模块即 API 接口文档——端点全集由后端运行时反射 `createRoutes()` 得到并叠加代码内元数据，缺说明的端点显式标「说明待补」且被单测拦下，页面支持分组浏览 / 三路搜索 / 方法筛选 / 参数表与 curl 一键复制，另含「鉴权与通用约定」与「SSE 事件」两模块 |
+| 🎛️ **运行时配置管理** | CLI 内置基础命令 `/help`、`/reset`、`/clear`、`/status`，以及管理命令 `/config`、`/model`、`/mcp`、`/tools`、`/skill`、`/memory`、`/vision`、`/upload`、`/session`、`/setup`、`/doctor`，支持热修改与只读体检 |
+| 🖥️ **Web UI** | 浏览器打开即用：多会话聊天（SSE 流式 / 停止生成 / 对话内上传）+ 配置/模型/工具/MCP/技能/记忆/诊断/**开发者中心**管理台，与 `--serve` 同端口托管，全部复用 REST 端点；工具 / 技能 / MCP 服务器三页统一为「卡片流 + 详情抽屉」形态（技能页带安装模态与状态矩阵，MCP 页带登记模态与移除范围确认），工具页只展示内置工具、MCP 工具统一归 MCP 服务器页；工具调用以卡片呈现（线性图标 + 中文名 + 参数摘要，完成/失败/执行中/已中断四态，失败原因直写副标题，一次工具调用一张卡，原始 JSON 收进 `{ }` 浮层）；后台任务渲染为专属卡片（状态 pill、耗时、退出码、可展开日志尾部、二次确认停止，运行中轮询、结束态收敛），后台完成通知渲染为系统通知卡片（注入前剥离 ANSI 与 `\r` 覆写，日志默认折叠）；**后台子任务（delegate background）全程可感知**——输入坞上方常驻「运行中 N」指示器与任务列表（数据源为 2s 轮询快照，不依赖 SSE，会话加载/刷新页面即自动恢复），运行期过程轨迹按 8s 节流增量落盘并显示实时「已运行 Xs · N 轮」，完成后结果卡片自动写回时间线并弹提示（仅本端正在看该会话时不打扰其它会话），主 run 结束、SSE 断开或刷新页面都不再丢卡片与过程；对话输入坞为一体卡片（无边框自增高 44→200px、纯内联图标工具行、附件 pill、快捷键常驻提示），支持**会话级模型选择**（在输入坞内切换本次对话所用模型，写入会话元数据、重进会话自动还原，不改全局激活、不影响其它会话）；对话底部操作栏展示**上下文用量百分比环**（悬浮含手动压缩入口，预判可压缩历史）与**本轮 Token chip**（悬浮展开总输入/总输出/总 Token/平均缓存命中率，随会话持久化、刷新后自动还原）；**开发者中心**（`#/dev`）首模块即 API 接口文档——端点全集由后端运行时反射 `createRoutes()` 得到并叠加代码内元数据，缺说明的端点显式标「说明待补」且被单测拦下，页面支持分组浏览 / 三路搜索 / 方法筛选 / 参数表与 curl 一键复制，另含「鉴权与通用约定」与「SSE 事件」两模块；**文件预览区终端**（xterm 全屏 PTY，默认开启、`webui.terminal=false` 可关闭，关闭后 WS 握手 403；每会话保留 256KB 环形缓冲、断连 60s 内重连回放，关页签立即释放并发名额，`terminalDeny` 拒绝名单服务端生效并审计） |
 | 🧵 **跨工作空间并行** | HTTP 服务模式下每个工作空间持有独立的会话存储、配置、技能、记忆与 Agent 池，多个空间可同时运行互不阻塞；进程级工作目录切换（`process.chdir`）已移除 |
 | ⌨️ **Tab 自动补全** | REPL 输入 `/con` 按 Tab 补全为 `/config`，命令与子命令均可补全，多候选自动列出 |
 | ⏹️ **Ctrl+C 两态中断** | 回答中按 Ctrl+C 只中断本次回答（流式请求真正取消、工具子进程树被清理、已生成内容保留到会话可继续追问），进程不退出；空闲时 3 秒内连按两次才退出（防误触）；y/N 确认中视为取消、Dreaming 晋升中立即强退 |
 | 💾 **会话持久化** | 对话历史 AES-256-GCM 加密存储，跨进程自动保存 / 手动恢复；transcript 全量归档 + 节流快照 + 临时文件 rename 原子写，压缩前强制快照，进程异常退出也不丢工具调用与窗口消息 |
 | 📝 **调试日志** | 文件日志记录 LLM 请求/响应、工具调用、Agent 迭代，自动轮转 |
-| 🎯 **事件监听** | 参考 LangChain callbacks 设计，16 个生命周期钩子便于扩展 |
+| 🎯 **事件监听** | 参考 LangChain callbacks 设计，16 个生命周期钩子便于扩展；另有 4 个 run 级回调（`onSnapshot` 节流快照、`onSubAgentStart` / `onSubAgentEvent` / `onSubAgentComplete` 后台子任务） |
 | 💬 **多轮对话** | 跨 `run()` 调用持久化消息历史，支持上下文续接 |
 | ⚡ **同轮多工具** | 支持 LLM 单轮返回多个 `tool_calls`，`Promise.all` 并发执行 |
 | 🛡️ **失败隔离** | 单个工具失败不影响其他工具，工具不存在时返回错误 Observation 让 Agent 继续推理 |
@@ -103,6 +103,10 @@ OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://api.openai.com/v1
 
 # 模型名称（可选，默认 gpt-4o-mini）
+# 注意：MODEL_NAME 必须与上面的 OPENAI_BASE_URL 属于同一家服务商
+#   OpenAI   -> gpt-4o-mini
+#   DeepSeek -> deepseek-chat（Base URL 需改为 https://api.deepseek.com/v1）
+#   Moonshot -> moonshot-v1-8k（Base URL 需改为 https://api.moonshot.cn/v1）
 MODEL_NAME=gpt-4o-mini
 
 # Agent 最大迭代次数（可选，默认 100）
@@ -121,10 +125,16 @@ npm start
 # ⏭️ 跳过初始化检测与引导
 npm start -- --no-setup
 
+# 🌐 启动 HTTP 服务 + Web UI（同端口托管，浏览器打开 http://127.0.0.1:3000/）
+npm run serve
+
+# 🔁 源码监听开发模式（改代码自动重启）
+npm run dev
+
 # 📝 编程式调用示例
 npx tsx examples/run.ts
 
-# 🧪 测试（unit 层：157 个测试文件 / 1919 个用例，并行执行）
+# 🧪 测试（unit 层：160 个测试文件 / 2010 个用例，并行执行）
 npm test
 
 # 🧪 集成测试（真实 PTY 等慢用例，串行执行）
@@ -160,7 +170,7 @@ npm run build:webui
 
 | 文档 | 说明 |
 |---|---|
-| [📖 CLI 使用](docs/readme/zh/cli-usage.md) | REPL 交互与 `/config` `/mcp` `/tools` `/session` `/skill` `/memory` `/vision` `/model` `/upload` `/setup` `/doctor` 内置命令详解 |
+| [📖 CLI 使用](docs/readme/zh/cli-usage.md) | REPL 交互与基础命令 `/help` `/reset` `/clear` `/status`，以及管理命令 `/config` `/mcp` `/tools` `/session` `/skill` `/memory` `/vision` `/model` `/upload` `/setup` `/doctor` 详解 |
 | [💻 编程式调用](docs/readme/zh/programmatic-usage.md) | `agent.run()` 单轮/多轮对话、会话持久化与自定义事件监听示例 |
 | [🌐 HTTP API 服务（--serve）](docs/readme/zh/http-api.md) | HTTP 服务启动方式、鉴权配置、REST 端点与 SSE 事件流 |
 | [🖥️ Web UI](docs/readme/zh/web-ui.md) | 浏览器图形界面：启动方式、token 鉴权、九视图功能总览（含开发者中心）与前端开发 |
@@ -169,7 +179,7 @@ npm run build:webui
 | [🧩 工具扩展](docs/readme/zh/tool-extension.md) | 自定义工具编写与 MCP 外部工具接入（五种方式） |
 | [🎯 Skill 技能包](docs/readme/zh/skills.md) | SKILL.md 规范、目录结构与渐进式加载工作流 |
 | [⚙️ 配置管理](docs/readme/zh/configuration.md) | 配置层级、完整配置结构、环境变量与运行时 `/config` 命令 |
-| [🎧 事件监听器](docs/readme/zh/event-listeners.md) | 16 个生命周期钩子与多监听器叠加示例 |
+| [🎧 事件监听器](docs/readme/zh/event-listeners.md) | 16 个生命周期钩子、4 个 run 级回调（节流快照 / 子 Agent 过程）与多监听器叠加示例 |
 | [💬 多轮对话](docs/readme/zh/multi-turn-conversation.md) | 跨 `run()` 消息历史持久化规则与示例 |
 | [💾 会话持久化](docs/readme/zh/session-persistence.md) | 加密存储结构、自动保存/恢复与密钥管理 |
 | [🧠 记忆管理](docs/readme/zh/memory-management.md) | L1/L2/L3 三层记忆架构、Promotion Gate 与 Dreaming |

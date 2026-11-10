@@ -57,3 +57,22 @@ const result = await agent.run('Help me search files', {
 ```
 
 > **Note**: An error thrown by a single listener is caught and does not affect other listeners or the main loop.
+
+### Run-level callbacks (passed alongside `events`)
+
+Besides the `events` array, the second argument of `agent.run()` also accepts 4 **run-level callbacks**. Their semantics differ from lifecycle hooks: they carry no iteration context and only serve two scenarios — snapshot persistence and bridging sub-agent progress.
+
+| Callback | When it fires | Arguments | Typical use |
+|---|---|---|---|
+| `onSnapshot` | After each tool iteration inside a run, throttled to a window (3 iterations or 30s); also forced once before compaction | `snapshot: AgentSnapshot` | Keep generated messages alive on a process crash (throttled transcript persistence); a failing callback is only logged and never affects the main flow |
+| `onSubAgentStart` | When a background sub-task (`delegate` background) is submitted | `info: SubAgentStartInfo` | The API layer persists a "running" card immediately, still visible after refresh/restart |
+| `onSubAgentEvent` | On progress events while a background sub-task runs | `info: SubAgentEventInfo` | The WebUI forwards it as the SSE `subagent_event`; the CLI does not inject it (it uses indented console logs instead) |
+| `onSubAgentComplete` | When a background sub-task finishes | `info: SubAgentCompleteInfo` | Updates the result card and pushes a notification; without injection in the CLI it is printed straight to the terminal |
+
+```typescript
+await agent.run('Analyze these files', {
+  onSnapshot: async (snap) => { await store.save(snap); },
+  onSubAgentStart: (info) => { console.log(`sub-task started: ${info.taskId}`); },
+  onSubAgentComplete: (info) => { console.log(`sub-task done: ${info.taskId}`); },
+});
+```

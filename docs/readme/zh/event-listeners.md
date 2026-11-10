@@ -57,3 +57,22 @@ const result = await agent.run('帮我搜索文件', {
 ```
 
 > **注意**：单个监听器抛错会被捕获，不影响其他监听器与主循环。
+
+### run 级回调（与 events 并列传参）
+
+除 `events` 数组外，`agent.run()` 的第二个参数还支持 4 个 **run 级回调**，语义与用途和生命周期钩子不同：它们不带迭代上下文，只服务于「快照落盘」与「子 Agent 过程桥接」两类场景。
+
+| 回调 | 触发时机 | 参数 | 典型用途 |
+|---|---|---|---|
+| `onSnapshot` | run 内每个工具迭代结束后按节流窗口（3 次迭代或 30s）调用；压缩前强制调用一次 | `snapshot: AgentSnapshot` | 进程崩溃时保留已产生的消息（transcript 节流落盘）；回调失败只记日志，不影响主流程 |
+| `onSubAgentStart` | 后台子任务（`delegate` background）提交时 | `info: SubAgentStartInfo` | API 层立即落盘「运行中」卡片，刷新/重启后仍可见 |
+| `onSubAgentEvent` | 后台子任务运行过程中的过程事件 | `info: SubAgentEventInfo` | WebUI 转发为 SSE `subagent_event`；CLI 不注入（走缩进控制台日志） |
+| `onSubAgentComplete` | 后台子任务完成时 | `info: SubAgentCompleteInfo` | 更新结果卡片并推送通知；CLI 未注入时直接打印到终端 |
+
+```typescript
+await agent.run('分析这批文件', {
+  onSnapshot: async (snap) => { await store.save(snap); },
+  onSubAgentStart: (info) => { console.log(`子任务开始: ${info.taskId}`); },
+  onSubAgentComplete: (info) => { console.log(`子任务完成: ${info.taskId}`); },
+});
+```
