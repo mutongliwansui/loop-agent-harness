@@ -92,11 +92,11 @@ HTTP API 服务已启动
 - **断连不丢画面**：每会话保留最近 256KB 输出环形缓冲，重连后先回放再续流；WS 断开后 PTY 保留 60s 宽限期供重连，超时才回收（Windows 用 `taskkill /T /F /PID` 清进程树，连 `conhost.exe` 一起收）。
 - **关页签即释放**：点页签 `✕` 会立即通知服务端 kill PTY 并释放并发名额（与「网络闪断保留 60s 供重连」是两回事）；页面刷新/关闭走 `pagehide` 同样主动释放，最多 60s 兜底回收。因此反复开关终端不会出现「界面上没有终端却提示已达上限」。
 
-**默认关闭，须显式开启**：终端等于「当前用户权限下的任意命令执行」，因此 `webui.terminal` 默认 `false`，未开启时 WS 握手直接 403（前端显示配置提示，不静默失败）。
+**默认开启，可按需关闭**：终端等于「当前用户权限下的任意命令执行」，因此 `webui.terminal` 默认 `true`；如需收紧可在配置中显式置 `false`，此时 WS 握手直接 403（前端显示配置提示，不静默失败）。
 
 ```bash
-# 开启终端（重启服务生效）
-npm run cli -- /config set webui.terminal true
+# 关闭终端（重启服务生效）
+npm run cli -- /config set webui.terminal false
 
 # 可选：拒绝名单（服务端生效，命中即拒绝并审计）、并发上限、空闲回收
 npm run cli -- /config set webui.terminalDeny '["shutdown","format"]'

@@ -235,11 +235,12 @@ export interface ApiConfig {
  *
  * 设计要点：
  * - 仅在 `--serve`（WebUI）模式下生效，REPL 模式完全忽略
- * - `terminal` **默认关闭**：终端 = 当前用户权限下的任意命令执行，必须显式开启（D7）
+ * - `terminal` **默认开启**：终端 = 当前用户权限下的任意命令执行，需要收紧时显式设为 false
+ *   （2026-11-09 由默认 false 调整为 true；关闭后 WS 握手直接 403）
  * - `terminalDeny` 在**服务端**生效（前端确认框可被绕过，不算安全边界，D10）
  */
 export interface WebuiConfig {
-  /** 是否启用文件预览区终端（默认 false） */
+  /** 是否启用文件预览区终端（默认 true；置 false 可关闭，关闭后 WS 握手 403） */
   terminal: boolean;
   /** 终端拒绝执行的命令关键字（大小写不敏感子串匹配，命中即拒） */
   terminalDeny: string[];
@@ -379,7 +380,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     webRoot: '',
   },
   webui: {
-    terminal: false,
+    terminal: true,
     terminalDeny: [],
     terminalMax: 4,
     terminalIdleMs: 30 * 60 * 1000,

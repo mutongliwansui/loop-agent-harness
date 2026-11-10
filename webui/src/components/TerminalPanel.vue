@@ -196,7 +196,7 @@ function maybeAutoConnect(): void {
   const i = info.value;
   if (!i) return;
   if (!i.enabled) {
-    applyState('denied', { message: '终端未启用：请在配置中设置 webui.terminal = true 后重启服务' });
+    applyState('denied', { message: '终端已关闭：当前配置 webui.terminal = false，如需启用请设为 true 后重启服务' });
     return;
   }
   if (!i.ptyAvailable) {

@@ -92,11 +92,11 @@ The top of the file preview area is a tab strip: `📄 filename` sits side by si
 - **Reconnect without losing the screen**: each session keeps a 256KB ring buffer of recent output and replays it before resuming the stream; after a WS disconnect the PTY is kept for a 60s grace period for reconnection, then reclaimed (Windows uses `taskkill /T /F /PID` to clear the process tree including `conhost.exe`).
 - **Closing a tab frees the slot**: clicking the tab `✕` immediately tells the server to kill the PTY and release the concurrency slot — this is distinct from "keep 60s for reconnect after a network blip". Page reload/close also releases via `pagehide`, with a 60s reclaim as backstop. Repeatedly opening and closing terminals therefore never produces "no terminal on screen yet the limit is reported".
 
-**Off by default, must be enabled explicitly**: a terminal means arbitrary command execution with the current user's privileges, so `webui.terminal` defaults to `false`; while disabled the WS handshake returns 403 (the front end shows a configuration hint instead of failing silently).
+**On by default, can be turned off**: a terminal means arbitrary command execution with the current user's privileges, so `webui.terminal` defaults to `true`; set it to `false` explicitly to lock it down, in which case the WS handshake returns 403 (the front end shows a configuration hint instead of failing silently).
 
 ```bash
-# Enable the terminal (takes effect after restart)
-npm run cli -- /config set webui.terminal true
+# Disable the terminal (takes effect after restart)
+npm run cli -- /config set webui.terminal false
 
 # Optional: deny list (enforced server-side, denied and audited), concurrency cap, idle reclaim
 npm run cli -- /config set webui.terminalDeny '["shutdown","format"]'

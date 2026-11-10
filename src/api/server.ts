@@ -262,9 +262,9 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
         scheduleBackgroundWake(ctx, sessionId);
       });
 
-      // ---- 终端（Task-20261027-001）：仅在 webui.terminal 显式开启时挂载 ----
-      // 默认关闭：终端 = 当前用户权限下的任意命令执行（D7）。
-      // 会话表懒建，避免默认关闭时白起一个 30s 回收定时器。
+      // ---- 终端（Task-20261027-001）：仅在 webui.terminal 开启时挂载 ----
+      // 默认开启（2026-11-09 调整）：终端 = 当前用户权限下的任意命令执行，可用 webui.terminal=false 关闭。
+      // 会话表懒建，避免关闭时白起一个 30s 回收定时器。
       if (cfg.webui?.terminal) {
         const tcfg = cfg.webui;
         terminalManager = new TerminalManager({

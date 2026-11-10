@@ -1,5 +1,7 @@
 /**
- * agent.loading 配置默认值测试（Task-20260930-001 P1 4.5）
+ * 配置默认值测试：
+ * - agent.loading（Task-20260930-001 P1 4.5）
+ * - webui.terminal（2026-11-09 由默认 false 调整为 true）
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/config/schema.js';
@@ -12,6 +14,18 @@ describe('agent.loading（P1 4.5）', () => {
 
   it('字段存在于 agent 配置结构', () => {
     expect(Object.prototype.hasOwnProperty.call(DEFAULT_CONFIG.agent, 'loading')).toBe(true);
+  });
+});
+
+describe('webui.terminal 默认值（2026-11-09 调整）', () => {
+  it('默认开启终端', () => {
+    expect(DEFAULT_CONFIG.webui.terminal).toBe(true);
+  });
+
+  it('其余终端参数默认值不变', () => {
+    expect(DEFAULT_CONFIG.webui.terminalDeny).toEqual([]);
+    expect(DEFAULT_CONFIG.webui.terminalMax).toBe(4);
+    expect(DEFAULT_CONFIG.webui.terminalIdleMs).toBe(30 * 60 * 1000);
   });
 });
 

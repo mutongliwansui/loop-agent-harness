@@ -161,9 +161,9 @@ export function attachTerminalWs(server: Server, deps: TerminalWsDeps): () => vo
     }
 
     const cfg = deps.getConfig();
-    // D7：默认关闭——未显式开启时直接拒绝（不是静默失败，前端可据此显示配置提示）
+    // D7（2026-11-09 调整为默认开启）：仅在显式置 webui.terminal=false 时拒绝
     if (!cfg.webui?.terminal) {
-      rejectUpgrade(socket, 403, '终端未启用：请在配置中设置 webui.terminal = true');
+      rejectUpgrade(socket, 403, '终端已关闭：配置中 webui.terminal = false，如需启用请设为 true');
       return;
     }
     if (!checkOrigin(req)) {
