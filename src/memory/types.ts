@@ -9,7 +9,7 @@ export interface WorkingMemoryConfig {
   maxTokens: number;
   /** 压缩阈值（0.8 = 80% 时触发） */
   compactionThreshold: number;
-  /** 压缩后保留最近 N 轮对话（每轮 = user + assistant） */
+  /** 压缩后保留最近 N 次模型调用（每条 assistant 消息 = 1 次，其前导 user 与后续 tool 归入该次） */
   keepRecentTurns: number;
   /**
    * Task-17：压缩提取（pre-compaction flush）失败时的兜底策略
@@ -22,7 +22,7 @@ export interface WorkingMemoryConfig {
 export const DEFAULT_WORKING_CONFIG: WorkingMemoryConfig = {
   maxTokens: 102400,
   compactionThreshold: 0.8,
-  keepRecentTurns: 3,
+  keepRecentTurns: 10,
   flushFailure: 'skip',
 };
 
@@ -211,7 +211,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
   working: {
     maxTokens: 102400,
     compactionThreshold: 0.8,
-    keepRecentTurns: 3,
+    keepRecentTurns: 10,
     flushFailure: 'skip',
   },
   episodic: {

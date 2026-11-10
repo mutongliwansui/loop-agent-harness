@@ -861,8 +861,8 @@ function applyEvent(id: string, ev: SseEvent): void {
         percent: maxTokens > 0
           ? Math.min(100, Math.round((contextTokens / maxTokens) * 1000) / 10)
           : 0,
-        // 保留窗口只在 GET /context 返回；实时事件沿用已知值（未知时按默认 3 轮）
-        keepRecentTurns: st.context?.keepRecentTurns ?? 3,
+        // 保留窗口只在 GET /context 返回；实时事件沿用已知值（未知时按默认 10 次调用）
+        keepRecentTurns: st.context?.keepRecentTurns ?? 10,
         source: 'stats',
       };
       // 本轮 token 累计（需求 20261106-006）：iteration===1 视为新一轮，清零后累加；

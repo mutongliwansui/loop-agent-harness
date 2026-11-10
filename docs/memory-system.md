@@ -72,7 +72,7 @@
 {
   maxTokens: 102400,          // 最大 token 数（估算值）
   compactionThreshold: 0.8,   // 80% 时触发压缩
-  keepRecentTurns: 3,         // 压缩后保留最近 3 轮
+  keepRecentTurns: 10,        // 压缩后保留最近 10 次模型调用（assistant 消息数）
 }
 ```
 
@@ -353,7 +353,7 @@ Dreaming 晋升写 L3 前，用 LLM 对候选事实与现有内容做**语义合
   working: {
     maxTokens: 102400,
     compactionThreshold: 0.8,
-    keepRecentTurns: 3,
+    keepRecentTurns: 10,
   },
   episodic: {
     dir: 'memory',            // L2 存储目录

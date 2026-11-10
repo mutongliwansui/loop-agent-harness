@@ -95,8 +95,8 @@ describe('Session 分层存储和恢复', () => {
     const meta = await store.createSession('压缩恢复测试', messages);
     await store.updateSession(meta.id, messages);
 
-    // 模拟 L1 压缩：system + 摘要占位（is_show=false）+ 最近 3 轮
-    const wm = new WorkingMemory();
+    // 模拟 L1 压缩：system + 摘要占位（is_show=false）+ 最近 3 次模型调用
+    const wm = new WorkingMemory({ maxTokens: 102400, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const view = wm.compact(
       [{ role: 'system', content: '你是一个测试助手' }, ...messages],
       '早前的决定：store 采用合并写',
@@ -138,7 +138,7 @@ describe('Session 分层存储和恢复', () => {
     const meta = await store.createSession('静态恢复测试', messages);
     await store.updateSession(meta.id, messages);
 
-    const wm = new WorkingMemory();
+    const wm = new WorkingMemory({ maxTokens: 102400, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const view = wm.compact(
       [{ role: 'system', content: '系统提示' }, ...messages],
       '本次摘要文本',
@@ -400,8 +400,8 @@ describe('Session 分层存储和恢复', () => {
     const meta = await store.createSession('超大 Session 测试', messages);
     await store.updateSession(meta.id, messages);
 
-    // 模拟 L1 压缩：折叠头部，只保留最近 3 轮 + 摘要占位
-    const wm = new WorkingMemory();
+    // 模拟 L1 压缩：折叠头部，只保留最近 3 次模型调用 + 摘要占位
+    const wm = new WorkingMemory({ maxTokens: 102400, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const view = wm.compact(
       [{ role: 'system', content: '系统提示' }, ...messages],
       '前 247 轮的关键结论',
@@ -418,7 +418,7 @@ describe('Session 分层存储和恢复', () => {
     const agent = new ReActAgent();
     agent.restoreSession(data, '系统提示');
 
-    // 关键断言：只恢复未折叠部分（最近 3 轮 + 总结），不加载全部 500 条
+    // 关键断言：只恢复未折叠部分（最近 3 次调用 + 总结），不加载全部 500 条
     const restored = agent.getSessionMessages();
     expect(restored.length).toBeLessThan(messages.length);
     expect(restored.length).toBeLessThanOrEqual(8);
@@ -445,7 +445,7 @@ describe('Session 分层存储和恢复', () => {
     await store.updateSession(meta.id, base);
 
     // 模拟 L1 压缩：产出含摘要占位（is_show=false）的视图
-    const wm = new WorkingMemory();
+    const wm = new WorkingMemory({ maxTokens: 102400, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const view = wm.compact(base, '早前的决定：store 采用合并写');
     expect(view.some((m) => isSummaryPlaceholder(m))).toBe(true);
     await store.updateSession(meta.id, view);

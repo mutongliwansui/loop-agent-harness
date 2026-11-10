@@ -381,7 +381,7 @@ export async function handleGetSessionContext(
     percent,
     source,
     updatedAt,
-    // 前端预判「是否还有可压缩历史」：保留窗口之外的轮次才可被丢弃（需求 20261106-005）
+    // 前端预判「是否还有可压缩历史」：保留窗口（最近 N 次模型调用）之外的历史才可被丢弃（需求 20261106-005）
     keepRecentTurns: wm.keepRecentTurns,
   });
 }

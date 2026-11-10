@@ -239,7 +239,7 @@ export interface SessionContextUsage {
   threshold: number;
   /** 0–100，1 位小数 */
   percent: number;
-  /** 压缩保留窗口（最近 N 轮不压缩），前端据此预判是否还有可压缩历史；旧版服务端无此字段，前端按默认 3 兜底 */
+  /** 压缩保留窗口（最近 N 次模型调用不压缩），前端据此预判是否还有可压缩历史；旧版服务端无此字段，前端按默认 10 兜底 */
   keepRecentTurns?: number;
   source: 'stats' | 'estimate';
   /** source='stats' 的采集时间（ISO） */

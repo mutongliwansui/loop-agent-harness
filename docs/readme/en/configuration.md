@@ -95,7 +95,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
     "working": {
       "maxTokens": 102400,
       "compactionThreshold": 0.8,
-      "keepRecentTurns": 3
+      "keepRecentTurns": 10
     },
     "episodic": {
       "dir": "memory",

@@ -272,7 +272,7 @@ flowchart TB
     subgraph L1["🥅 L1 Working Memory · 进程内"]
         W1["messages 数组<br/>当前会话上下文窗口"]
         W2["estimateTokens / needsCompaction"]
-        W3["preCompactionFlush → compact<br/>保留 system + keepRecentTurns 轮"]
+        W3["preCompactionFlush → compact<br/>保留 system + keepRecentTurns 次调用"]
     end
 
     subgraph L2["📔 L2 Episodic Memory · 按天追加"]

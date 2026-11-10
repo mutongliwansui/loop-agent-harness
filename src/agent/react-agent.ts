@@ -1037,7 +1037,7 @@ export class ReActAgent {
               `L1 超阈值，触发 pre-compaction flush` +
                 `（contextTokens=${this._lastContextTokens ?? '未知'}, messages=${messages.length}条, ` +
                 `消息=${messageTokens}/${messageBudget} tokens（阈值${threshold} - 固定开销${this._promptOverheadTokens}）, ` +
-                `keepRecentTurns=${wmConfig.keepRecentTurns}）`,
+                `keepRecentTurns=${wmConfig.keepRecentTurns}（次调用））`,
             );
             // C4-a：进入压缩流程前——压缩含额外 LLM 调用，最易"停不下来"
             throwIfAborted(i);
@@ -1055,7 +1055,7 @@ export class ReActAgent {
               });
               if (plan.droppedCount === 0) {
                 debug.log(
-                  `本次压缩无可丢弃消息（keepRecentTurns=${wmConfig.keepRecentTurns} 已覆盖全部 ${messages.length} 条），` +
+                  `本次压缩无可丢弃消息（保留窗口 ${wmConfig.keepRecentTurns} 次调用已覆盖全部 ${messages.length} 条），` +
                     `跳过压缩（不调用 LLM、不写 L2）`,
                 );
                 await safeEvents.onCompaction?.({

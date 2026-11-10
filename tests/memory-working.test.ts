@@ -26,7 +26,7 @@ function msg(role: ChatMessage['role'], content: string): ChatMessage {
   return { role, content } as ChatMessage;
 }
 
-/** 4 轮历史：默认 keepRecentTurns=3 时第 1 轮会被丢弃（flush 才有内容可总结） */
+/** 4 次模型调用：keepRecentTurns=3 时第 1 次调用会被丢弃（flush 才有内容可总结） */
 function historyWithDroppable(): ChatMessage[] {
   return [
     msg('user', 'q1'),
@@ -110,7 +110,7 @@ describe('L1 WorkingMemory', () => {
   });
 
   it('2.1b preCompactionFlush：请求固定 2 条消息（system + 将被丢弃消息的 JSON）', async () => {
-    const wm = new WorkingMemory();
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 3 });
     let calledWith: ChatMessage[] = [];
     const fakeLLM: ILLMClient = {
       async chat(messages: ChatMessage[]) {
@@ -138,7 +138,7 @@ describe('L1 WorkingMemory', () => {
   });
 
   it('2.1c preCompactionFlush 失败时返回空串（不阻塞主流程）', async () => {
-    const wm = new WorkingMemory();
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const failingLLM: ILLMClient = {
       async chat() {
         throw new Error('LLM 不可用');
@@ -149,7 +149,7 @@ describe('L1 WorkingMemory', () => {
   });
 
   it('2.1d preCompactionFlush：adapter 提供 chatViaStream 时优先走流式', async () => {
-    const wm = new WorkingMemory();
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 3 });
     let chatCalled = false;
     let streamCalled = false;
     const fakeLLM: ILLMClient = {
@@ -190,31 +190,35 @@ describe('L1 WorkingMemory', () => {
     expect(called).toBe(false);
   });
 
-  it('2.1f 单轮内 token 截尾：切轮丢弃为 0 时按消息预算保留尾部', () => {
+  it('2.1f 单轮长任务：按模型调用保留，不再被 user 数量挡住压缩', () => {
     const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const history = singleTurnHistory();
-    // 只有一个 user：切轮窗口必然装下全部消息，默认计划不丢弃任何消息
-    expect(wm.planCompaction(history).droppedCount).toBe(0);
+    const nonSystemCount = history.length - 1;
 
-    const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
-    expect(plan.withinTurnTrim).toBe(true);
+    // 1 条 user 触发 4 次模型调用：保留最近 3 次，当前轮 user 作为锚点 pin 回保留区
+    const plan = wm.planCompaction(history);
     expect(plan.droppedCount).toBeGreaterThan(0);
-    // 丢弃 + 保留 = 全部非 system 消息，二者不重不漏
-    expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
-    // 当前轮 user 作为任务锚点固定保留，其后仍是完整的 assistant/tool 配对
+    expect(plan.withinTurnTrim).toBe(false);
     expect(plan.kept[0].content).toBe('任务开始');
     expect(plan.kept[1].role).toBe('assistant');
-    expect(plan.droppable[plan.droppable.length - 1].role).toBe('tool');
+    // 丢弃 + 保留 = 全部非 system 消息，二者不重不漏
+    expect(plan.droppable.length + plan.kept.length).toBe(nonSystemCount);
 
-    // compact 使用 plan.kept 作为后缀，而不是重新按 user 切轮
+    // 预算更小时继续少留一次调用，直到 1 次（仍不走单次内截尾）
+    const tight = wm.planCompaction(history, { messageTokensBudget: 10 });
+    expect(tight.withinTurnTrim).toBe(false);
+    expect(tight.droppedCount).toBeGreaterThan(plan.droppedCount);
+    expect(tight.droppable.length + tight.kept.length).toBe(nonSystemCount);
+
+    // compact 直接采用 plan.kept，与 droppable 严格互补
     const compacted = wm.compact(history, '- 摘要', plan);
     expect(compacted[0]).toEqual(msg('system', 'sys'));
     expect(isSummaryPlaceholder(compacted[1])).toBe(true);
     expect(compacted.slice(2)).toEqual(plan.kept);
   });
 
-  it('2.1i 单轮内截尾（工具循环中触发）：原始 user 锚点不被摘要吞掉', () => {
-    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+  it('2.1i 工具循环中压缩：原始 user 锚点不被摘要吞掉', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 2 });
     const toolCall = (id: string): ChatMessage => ({
       role: 'assistant',
       content: '',
@@ -232,8 +236,8 @@ describe('L1 WorkingMemory', () => {
       { role: 'tool', tool_call_id: 'c3', content: 'r'.repeat(40) },
     ];
 
-    const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
-    expect(plan.withinTurnTrim).toBe(true);
+    const plan = wm.planCompaction(history, { messageTokensBudget: 10 });
+    expect(plan.withinTurnTrim).toBe(false);
     // 锚点 pin 在保留区最前，且不再出现在丢弃区（不重复进入摘要）
     expect(plan.kept[0].content).toBe('实现 A 功能，改 store.ts');
     expect(plan.kept[1].role).toBe('assistant');
@@ -262,7 +266,7 @@ describe('L1 WorkingMemory', () => {
     ];
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
-    expect(plan.withinTurnTrim).toBe(true);
+    expect(plan.withinTurnTrim).toBe(false);
     // 锚点强制保留：不再因为超过保留预算一半而退回摘要
     expect(plan.kept[0].content).toBe('u'.repeat(400));
     expect(plan.droppable.some((m) => m.role === 'user')).toBe(false);
@@ -290,7 +294,7 @@ describe('L1 WorkingMemory', () => {
     ];
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 1228 });
-    expect(plan.withinTurnTrim).toBe(true);
+    expect(plan.withinTurnTrim).toBe(false);
     // 当前轮 user 锚点必须留下
     expect(plan.kept[0].content).toBe('帮我看下项目结构');
     // 大工具组被整组丢弃（而不是整组回退），保留区只留最后一组
@@ -351,10 +355,11 @@ describe('L1 WorkingMemory', () => {
     expect(plan.withinTurnTrim).toBe(false);
   });
 
-  it('2.1h 多轮历史优先按轮切分，即使消息超预算也不走单轮截尾', () => {
+  it('2.1h 多轮历史按调用切分；仍超预算时继续减少保留次数（不走单次内截尾）', () => {
     const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 2 });
-    const plan = wm.planCompaction(historyWithDroppable(), { messageTokensBudget: 1 });
-    expect(plan.droppedCount).toBe(4);
+    const plan = wm.planCompaction(historyWithDroppable(), { messageTokensBudget: 3 });
+    // 预算 3 tokens 只够最后 1 次调用（q4+a4）→ 丢弃 6 条，且不触发单次内截尾
+    expect(plan.droppedCount).toBe(6);
     expect(plan.withinTurnTrim).toBe(false);
   });
 });
@@ -462,5 +467,83 @@ describe('buildCompactedView 统一压缩视图', () => {
       summaryText: summary,
     });
     expect(viaCompact).toEqual(viaGenerator);
+  });
+});
+
+describe('keepRecentTurns = 最近 N 次模型调用', () => {
+  const toolCall = (id: string): ChatMessage => ({
+    role: 'assistant',
+    content: '',
+    tool_calls: [{ id, type: 'function', function: { name: 'readFile', arguments: '{}' } }],
+  });
+
+  it('一次调用 + 多条 tool 结果整组计数，保留区不从 tool 中间开始', () => {
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 2 });
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', 'q1'),
+      toolCall('c1'),
+      { role: 'tool', tool_call_id: 'c1', content: 'r1' },
+      { role: 'tool', tool_call_id: 'c1', content: 'r2' },
+      msg('assistant', 'done'),
+      msg('user', 'q2'),
+      msg('assistant', 'a2'),
+    ];
+    const plan = wm.planCompaction(history);
+    // 3 次调用（toolCall / done / a2），保留最近 2 次
+    expect(plan.kept.map((m) => m.content)).toEqual(['done', 'q2', 'a2']);
+    expect(plan.droppable.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'tool']);
+  });
+
+  it('调用次数未超过窗口：不产生任何丢弃', () => {
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 10 });
+    const plan = wm.planCompaction(historyWithDroppable());
+    expect(plan.droppedCount).toBe(0);
+    expect(plan.droppable).toEqual([]);
+  });
+
+  it('尾部未回复的 user 不占调用名额，且永远不被丢弃', () => {
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', 'q1'),
+      msg('assistant', 'a1'),
+      msg('user', 'q2'),
+    ];
+    const result = buildCompactedView(history, { keepRecentTurns: 1 });
+    expect(result.map((m) => m.content)).toEqual(['sys', 'q1', 'a1', 'q2']);
+  });
+
+  it('预算收缩：保留次数逐级减少，直到装进预算或只剩 1 次', () => {
+    const wm = new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 10 });
+    // 4 次调用各 2 token（q/a 各 1 token）
+    const loose = wm.planCompaction(historyWithDroppable(), { messageTokensBudget: 5 });
+    expect(loose.droppedCount).toBe(4);
+    const tight = wm.planCompaction(historyWithDroppable(), { messageTokensBudget: 3 });
+    expect(tight.droppedCount).toBe(6);
+  });
+
+  it('单次调用自身超预算：才退回单次内 token 截尾', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 1 });
+    const history: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('user', 'q'),
+      toolCall('c1'),
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(400) },
+      { role: 'tool', tool_call_id: 'c1', content: 'r'.repeat(40) },
+    ];
+    const plan = wm.planCompaction(history, { messageTokensBudget: 40 });
+    expect(plan.withinTurnTrim).toBe(true);
+    // 截尾起点回退到 assistant，保留区仍以 user 锚点开头
+    expect(plan.kept[0].content).toBe('q');
+    expect(plan.kept[1].role).toBe('assistant');
+  });
+
+  it('planCompaction 与 compact 严格互补（kept 即最终保留区）', () => {
+    const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
+    const history = singleTurnHistory();
+    const plan = wm.planCompaction(history);
+    const compacted = wm.compact(history, '- 摘要', plan);
+    expect(compacted.slice(2)).toEqual(plan.kept);
+    expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
   });
 });

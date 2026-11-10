@@ -157,7 +157,7 @@ WebUI「记忆」页按数据维度重组为四个标签页（`#/memory?tab=<key
 
 自动压缩仍只在 run 内按阈值触发；以下端点面向「空闲会话的主动操作」，不改变自动压缩策略：
 
-- **`GET /sessions/:id/context`**：返回 `{contextTokens, maxTokens, threshold, percent, keepRecentTurns, source}`。有真实 `llm_stats` 时用最近一次 `prompt_tokens`（`source=stats`），历史会话按消息本地估算（`source=estimate`）；用量仅在内存，不落盘。`keepRecentTurns` 供前端预判「是否还有可压缩历史」——可见轮次不超过保留窗口且未越过压缩阈值时，压缩按钮直接置灰并说明原因。
+- **`GET /sessions/:id/context`**：返回 `{contextTokens, maxTokens, threshold, percent, keepRecentTurns, source}`。有真实 `llm_stats` 时用最近一次 `prompt_tokens`（`source=stats`），历史会话按消息本地估算（`source=estimate`）；用量仅在内存，不落盘。`keepRecentTurns` 供前端预判「是否还有可压缩历史」——可见模型调用次数不超过保留窗口且未越过压缩阈值时，压缩按钮直接置灰并说明原因。
 - **`POST /sessions/:id/compact`**：空闲时强制一次 L1 压缩（运行中 409）。无可丢弃消息返回 `{ok:false, reason:'nothing_to_compact'}` 且**不调用 LLM**；成功后复用压缩轮次的归档重建，被丢弃消息写入 L2（`tag=compaction`）。
 - **`POST /sessions/:id/retry {seq}`**：替换式重试。`seq` 指向会话恢复视图中的助手回答，后端向前找该轮用户原文、截断其后全部消息（存储覆盖写入）并重新生成；中间轮次会删除后续对话，WebUI 要求二次确认。
 

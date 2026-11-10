@@ -444,7 +444,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     expect(wm.needsCompaction(compacted)).toBe(false);
   });
 
-  it('8. #1 单轮内压缩：整段历史只有一个 user 时按 token 预算截尾', async () => {
+  it('8. #1 单轮长任务：按模型调用保留（keepRecentTurns=1）', async () => {
     const wsDir = join(BASE, 't8');
     const episodicDir = writeWorkspaceConfig(wsDir, 'skip', 0);
     mocks.chat.mockImplementation(async () => ({ content: null }));
@@ -458,8 +458,8 @@ describe('Task-17 压缩信息丢失修复', () => {
 
     const compactionEvents: CompactionInfo[] = [];
     // 单轮形态：40 个 assistant/tool 迭代，整段历史没有 user；
-    // 本轮输入「请继续」是唯一 user（且位于末尾，pickRecentTurns 不会选中它切轮）
-    // 每条 assistant 100 字（25 token）+ tool 19 字（5 token）→ 1200 token，远超阈值 400
+    // 本轮输入「请继续」是唯一 user（位于末尾，并入最后一次调用组）
+    // 每条 assistant 100 字（25 token）+ tool 19 字（5 token）→ 1200 token，远超消息预算 350
     const history: ChatMessage[] = [msg('system', 'sys')];
     for (let i = 0; i < 40; i++) {
       const callId = `call_hist_${i}`;
@@ -477,23 +477,22 @@ describe('Task-17 压缩信息丢失修复', () => {
       events: [{ onCompaction: (info) => { compactionEvents.push(info); } }],
     });
 
-    // 按 user 切轮丢弃 0 条 → 兜底按 token 截尾：keepBudget = floor(400×0.6) = 240
+    // keepRecentTurns=1 → 只保留最后 1 次调用（assistant + tool + 本轮 user）
     expect(mainCalls()).toBe(1);
     expect(compactionEvents.length).toBe(1);
     expect(compactionEvents[0].failed).toBe(false);
     expect(compactionEvents[0].flushedChars).toBeGreaterThan(0);
-    // 压缩后：system + 占位 + 保留后缀 15 条（7 对 assistant/tool + 本轮 user）
-    // 起点落在 tool 上时按「工具组整体」丢弃，故比按 token 粗略累加少一对
-    expect(compactionEvents[0].keptMessages).toBe(17);
-    expect(result.messages.length).toBe(18);
+    // 压缩后：system + 占位 + 最后 1 次调用 3 条 = 5 条
+    expect(compactionEvents[0].keptMessages).toBe(5);
+    expect(result.messages.length).toBe(6);
     expect(result.messages.length).toBeLessThan(history.length + 2);
     // 占位为 role=user & is_show=false；保留后缀起点落在 assistant，不能以 tool 开头
     expect(result.messages[1].role).toBe('user');
     expect(result.messages[1].is_show).toBe(false);
     expect(result.messages[2].role).toBe('assistant');
     // 保留的最后一条是本轮输入，最终回答追加在其后
-    expect(result.messages[16].role).toBe('user');
-    expect(result.messages[17].content).toBe('任务完成');
+    expect(result.messages[4].role).toBe('user');
+    expect(result.messages[5].content).toBe('任务完成');
     // flush 内容写入 L2
     expect(readTodayL2(episodicDir)).toContain('[tag: compaction]');
   });

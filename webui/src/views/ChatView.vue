@@ -152,21 +152,21 @@ function fmtTokens(n: number): string {
 }
 /**
  * 可压缩性预判（与后端 planCompaction 同口径）：
- * - 轮次 ≤ 保留窗口时按轮切分丢不出任何消息；
- * - 仅当总占用已越过压缩阈值（= 消息 token 越过「阈值 − 固定开销」预算）才走单轮截尾。
+ * - 模型调用次数 ≤ 保留窗口时按调用切分丢不出任何消息；
+ * - 仅当总占用已越过压缩阈值（= 消息 token 越过「阈值 − 固定开销」预算）才走单次调用内截尾。
  * 两者都不满足 → 后端必然返回 nothing_to_compact，按钮直接置灰并给出说明。
  */
-const turnCount = computed(() => messages.value.filter((m) => m.role === 'user').length);
+const callCount = computed(() => messages.value.filter((m) => m.role === 'assistant').length);
 const compactable = computed(() => {
   const c = context.value;
   if (!c) return false;
-  const keep = c.keepRecentTurns && c.keepRecentTurns > 0 ? c.keepRecentTurns : 3;
-  return turnCount.value > keep || c.contextTokens >= c.threshold;
+  const keep = c.keepRecentTurns && c.keepRecentTurns > 0 ? c.keepRecentTurns : 10;
+  return callCount.value > keep || c.contextTokens >= c.threshold;
 });
 function fmtCtxCompactHint(c: SessionContextUsage): string {
-  // 旧版服务端 /context 不带 keepRecentTurns，按默认 3 轮兜底
-  const keep = c.keepRecentTurns && c.keepRecentTurns > 0 ? c.keepRecentTurns : 3;
-  return `当前 ${turnCount.value} 轮对话均在保留窗口内（最近 ${keep} 轮不参与压缩），暂无可压缩的历史`;
+  // 旧版服务端 /context 不带 keepRecentTurns，按默认 10 次调用兜底
+  const keep = c.keepRecentTurns && c.keepRecentTurns > 0 ? c.keepRecentTurns : 10;
+  return `当前 ${callCount.value} 次模型调用均在保留窗口内（最近 ${keep} 次不参与压缩），暂无可压缩的历史`;
 }
 /** 最后一条助手消息：只有它显示百分比环，避免长会话重复出现 */
 const lastAssistantId = computed(() => {

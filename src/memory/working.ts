@@ -29,54 +29,83 @@ export interface CompactionPlan {
   /** 将被丢弃的消息数；0 表示本次压缩是空操作，不应调用 LLM */
   droppedCount: number;
   /**
-   * 是否走了「单轮内按 token 预算截尾」：
-   * 按 user 切轮无法丢弃任何消息（整段历史只有一个 user）时启用，
-   * 此时 compact 必须用 kept 作为保留后缀，不能再用 keepRecentTurns 重新切轮。
+   * 是否走了「单次调用内按 token 预算截尾」：
+   * 只剩 1 次模型调用仍超预算（单次调用内工具输出过大）时启用，
+   * 此时 compact 必须用 kept 作为保留后缀，不能再用 keepRecentTurns 重新切分。
    * 该模式下当前轮的原始 user 消息会作为任务锚点被固定保留（见 planCompaction）。
    */
   withinTurnTrim?: boolean;
 }
 
 export interface CompactedViewOptions {
-  /** 保留最近多少轮（每轮 = 一条 user 及其后的 assistant/tool 消息） */
+  /** 保留最近多少次模型调用（每条 assistant 消息 = 1 次，其前导 user 与后续 tool 归入同一次） */
   keepRecentTurns: number;
   /** 头部被裁剪部分的摘要文本；为空则不注入占位 */
   summaryText?: string;
   /** 消息里没有 system 时的兜底 system prompt */
   systemPrompt?: string;
   /**
-   * 显式指定保留的消息后缀（单轮内按 token 截尾时使用）。
-   * 提供时忽略 keepRecentTurns 切轮，直接以该数组作为保留部分。
+   * 显式指定保留的消息后缀（单次调用内按 token 截尾时使用）。
+   * 提供时忽略 keepRecentTurns 切分，直接以该数组作为保留部分。
    */
   keptMessages?: ChatMessage[];
 }
 
-/**
- * 从后向前按 user 切轮，返回保留的轮次与被丢弃的消息数。
- * 与旧 compact() 语义一致：凑满 keepRecentTurns 轮即停止（头部轮次丢弃）；
- * 循环自然结束时剩余的头部残片保留（头部可能以 tool 开头），避免丢消息。
- */
-function pickRecentTurns(
-  messages: ChatMessage[],
-  keepRecentTurns: number,
-): { turns: ChatMessage[][]; droppedCount: number } {
-  const turns: ChatMessage[][] = [];
-  let currentTurn: ChatMessage[] = [];
+/** 一次模型调用组：前导 user（若有）+ assistant + 其后连续 tool 结果 */
+interface CallGroup {
+  start: number;
+  end: number;
+}
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    currentTurn.unshift(messages[i]);
-    if (messages[i].role === 'user' && currentTurn.length > 1) {
-      turns.unshift(currentTurn);
-      currentTurn = [];
-      if (turns.length >= keepRecentTurns) break;
+/**
+ * 按「模型调用」切分消息：每条 assistant 消息 = 1 次调用，
+ * 其前导 user 归入该次调用，其后连续的 tool 结果整组跟随。
+ * 组边界永远「assistant 起、tool 止」，保证 tool_calls / tool 配对不被截断。
+ */
+function segmentCallGroups(messages: ChatMessage[]): CallGroup[] {
+  const groups: CallGroup[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < messages.length) {
+    if (messages[i].role === 'assistant') {
+      let end = i;
+      while (end + 1 < messages.length && messages[end + 1].role === 'tool') end++;
+      groups.push({ start, end });
+      start = end + 1;
+      i = end + 1;
+    } else {
+      // user / 孤立 tool：作为下一次调用的前缀
+      i++;
     }
   }
-  if (currentTurn.length > 0) {
-    turns.unshift(currentTurn);
+  // 尾部残留（最后一条 user 尚未被回复）并入最后一组：它不构成一次模型调用，
+  // 不应占用 keepRecentTurns 名额，且必须始终保留
+  if (start < messages.length) {
+    if (groups.length > 0) {
+      groups[groups.length - 1].end = messages.length - 1;
+    } else {
+      groups.push({ start, end: messages.length - 1 });
+    }
   }
+  return groups;
+}
 
-  const keptCount = turns.reduce((n, t) => n + t.length, 0);
-  return { turns, droppedCount: messages.length - keptCount };
+/**
+ * 保留最近 keepCalls 次模型调用，返回保留区起点。
+ * 调用次数不足时整段保留（keptStart = 0）。
+ */
+function pickRecentCallGroups(
+  messages: ChatMessage[],
+  keepCalls: number,
+): { groups: CallGroup[]; keptGroups: number; keptStart: number } {
+  const groups = segmentCallGroups(messages);
+  if (groups.length === 0) return { groups, keptGroups: 0, keptStart: 0 };
+  const keptGroups = Math.max(1, Math.min(keepCalls, groups.length));
+  return {
+    groups,
+    keptGroups,
+    keptStart: groups[groups.length - keptGroups].start,
+  };
 }
 
 /**
@@ -135,7 +164,7 @@ function trimTailByTokenBudget(
 
 /**
  * 统一压缩视图：内存压缩与磁盘恢复共用同一形态。
- * 输出 = [system, (摘要占位 · kind='summary'、is_show=false), 最近 N 轮]
+ * 输出 = [system, (摘要占位 · kind='summary'、is_show=false), 最近 N 次模型调用]
  *
  * 单一出处的意义：避免「L1 压缩结果」与「磁盘恢复视图」两套参数、两种形态。
  */
@@ -151,24 +180,32 @@ export function buildCompactedView(
   //    否则落盘链路（updateSession 靠 kind='summary' 识别压缩轮次）会漏写总结消息
   const existingPlaceholder = messages.find((m) => isSummaryPlaceholder(m));
 
-  // 清掉旧占位与旧总结消息（由本次新摘要取代），system 不参与切轮
+  // 清掉旧占位与旧总结消息（由本次新摘要取代），system 不参与切分
   const nonSystem = messages.filter(
     (m) => m.role !== 'system' && m.is_show !== false,
   );
 
-  // 2) 确定保留部分：优先用调用方显式给定的后缀（单轮内 token 截尾），
-  //    否则从后向前按 user 切轮，保留最近 N 轮
+  // 2) 确定保留部分：优先用调用方显式给定的后缀（单次调用内 token 截尾），
+  //    否则保留最近 N 次模型调用
   let kept: ChatMessage[];
   let droppedCount: number;
-  let turnCount = 0;
+  let callCount = 0;
   if (opts.keptMessages) {
     kept = opts.keptMessages;
     droppedCount = Math.max(0, nonSystem.length - kept.length);
   } else {
-    const picked = pickRecentTurns(nonSystem, opts.keepRecentTurns);
-    kept = picked.turns.flat();
-    droppedCount = picked.droppedCount;
-    turnCount = picked.turns.length;
+    const picked = pickRecentCallGroups(nonSystem, opts.keepRecentTurns);
+    kept = nonSystem.slice(picked.keptStart);
+    callCount = picked.keptGroups;
+    // 任务锚点：当前轮原始 user 若落在丢弃区，pin 回保留区头部（与 planCompaction 同口径）
+    const lastUserIdx = nonSystem.reduceRight(
+      (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
+      -1,
+    );
+    if (lastUserIdx >= 0 && lastUserIdx < picked.keptStart) {
+      kept = [nonSystem[lastUserIdx], ...kept];
+    }
+    droppedCount = nonSystem.length - kept.length;
   }
 
   const result: ChatMessage[] = [];
@@ -195,10 +232,10 @@ export function buildCompactedView(
   }
 
   result.push(...kept);
-  // 关键排查信息：丢弃为 0 说明切轮窗口装下了全部消息，此时压缩是空操作（只有占位被沿用）
+  // 关键排查信息：丢弃为 0 说明切分窗口装下了全部消息，此时压缩是空操作（只有占位被沿用）
   debug.log(
-    `[L1 buildCompactedView] 输入=${messages.length}条 参与切轮=${nonSystem.length}条 ` +
-      `保留=${kept.length}条${opts.keptMessages ? '(显式后缀)' : `/${turnCount}轮`} 丢弃=${droppedCount}条 ` +
+    `[L1 buildCompactedView] 输入=${messages.length}条 参与切分=${nonSystem.length}条 ` +
+      `保留=${kept.length}条${opts.keptMessages ? '(显式后缀)' : `/${callCount}次调用`} 丢弃=${droppedCount}条 ` +
       `已有占位=${existingPlaceholder ? '有' : '无'} 新摘要=${opts.summaryText ? `${opts.summaryText.length}字` : '无'} ` +
       `注入占位=${(droppedCount > 0 || existingPlaceholder) && summary ? '是' : '否'} 输出=${result.length}条`,
   );
@@ -223,15 +260,14 @@ export class WorkingMemory {
   }
 
   /**
-   * 计算本次压缩计划：按与 compact() 完全一致的切轮规则，
-   * 得出「本次将被丢弃的消息」和已有摘要。
+   * 计算本次压缩计划。
    *
-   * 单轮内兜底：整段历史只有一个 user（切轮窗口必然装下全部消息）但消息 token 已超
-   * messageTokensBudget 时，改从尾部按 token 预算截尾，避免单轮长任务永远无法压缩。
+   * 保留粒度 = 一次模型调用（每条 assistant 消息 = 1 次调用，其前导 user 与后续 tool 归入该次），
+   * 先保留最近 keepRecentTurns 次调用；若仍超 messageTokensBudget 则继续减少保留次数（保底 1 次），
+   * 只有「单次调用自身就超预算」（如超大工具输出）时才退回单次内按 token 截尾兜底。
    *
-   * 任务锚点：单轮截尾最容易先裁掉当前轮的原始 user 消息（多轮工具调用时它位于头部），
-   * 只靠摘要（有损且限长）会让剩余迭代丢失精确约束，故把最后一条真实 user 从 droppable
-   * 移到 kept 最前无条件保留（锚点过大时允许轻微超预算）。
+   * 任务锚点：当前轮的原始 user 消息若落在丢弃区，无条件 pin 回保留区头部
+   * （只靠摘要会让剩余迭代丢失精确约束，锚点过大时允许轻微超预算）。
    */
   planCompaction(
     messages: ChatMessage[],
@@ -241,53 +277,78 @@ export class WorkingMemory {
     const nonSystem = messages.filter(
       (m) => m.role !== 'system' && m.is_show !== false,
     );
-    const { droppedCount } = pickRecentTurns(nonSystem, this.config.keepRecentTurns);
-    // 保留部分是原数组的连续后缀，故被丢弃的恰好是头部 droppedCount 条
-    let droppable = nonSystem.slice(0, droppedCount);
-    let kept = nonSystem.slice(droppedCount);
+    const budget = opts?.messageTokensBudget;
+    const picked = pickRecentCallGroups(nonSystem, this.config.keepRecentTurns);
+    let keptGroups = picked.keptGroups;
+    let keptStart = picked.keptStart;
+
+    // 按调用次数保留后若仍超预算，继续少留一次调用（保底 1 次，交给下面的单次截尾兜底）
+    if (budget !== undefined && budget > 0) {
+      while (
+        keptGroups > 1 &&
+        estimateMessageTokens(nonSystem.slice(keptStart)) > budget
+      ) {
+        keptGroups--;
+        keptStart = picked.groups[picked.groups.length - keptGroups].start;
+      }
+    }
+
+    // 保留预算取消息预算的 60%，给压缩后重新注入的摘要占位留出余量
+    const keepBudget = Math.max(1, Math.floor((budget ?? 0) * 0.6));
     let withinTurnTrim = false;
 
-    const budget = opts?.messageTokensBudget;
+    // 最后兜底：只剩 1 次调用仍超预算 → 单次调用内按 token 截尾
     if (
-      droppedCount === 0 &&
       budget !== undefined &&
       budget > 0 &&
-      estimateMessageTokens(nonSystem) > budget
+      keptGroups === 1 &&
+      estimateMessageTokens(nonSystem.slice(keptStart)) > budget
     ) {
-      // 保留预算取消息预算的 60%，给压缩后重新注入的摘要占位留出余量
-      const keepBudget = Math.max(1, Math.floor(budget * 0.6));
       const trimmed = trimTailByTokenBudget(nonSystem, keepBudget);
       if (trimmed.start > 0) {
         withinTurnTrim = true;
-        // 当前轮的原始 user 即最后一条 user：它若落在丢弃区，则作为任务锚点 pin 回来
-        const lastUserIdx = nonSystem.reduceRight(
-          (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
-          -1,
-        );
-        const anchorTokens =
-          lastUserIdx >= 0 ? Math.ceil((nonSystem[lastUserIdx].content ?? '').length / 4) : 0;
-        // 锚点无条件保留：丢失精确的原始问题比多占 token 更严重，允许因此轻微超预算
-        const canPin = lastUserIdx >= 0 && lastUserIdx < trimmed.start;
-        if (canPin) {
-          // 扣掉锚点 token 重新截尾，尽量让「锚点 + 后缀」仍控制在原保留预算的量级
-          const retrim = trimTailByTokenBudget(nonSystem, Math.max(1, keepBudget - anchorTokens));
-          const anchor = nonSystem[lastUserIdx];
-          const head = nonSystem.slice(0, retrim.start);
-          droppable = head.filter((m) => m !== anchor);
-          kept = [anchor, ...retrim.kept.filter((m) => m !== anchor)];
-          debug.log(
-            `[L1 planCompaction] 固定保留当前轮 user 锚点（${anchorTokens} tokens），` +
-              `摘要覆盖其余 ${droppable.length} 条`,
-          );
-        } else {
-          droppable = nonSystem.slice(0, trimmed.start);
-          kept = trimmed.kept;
-        }
-        debug.log(
-          `[L1 planCompaction] 单轮内 token 截尾：消息 ${estimateMessageTokens(nonSystem)} tokens > 预算 ${budget}，` +
-            `保留后缀 ${kept.length} 条（约 ${estimateMessageTokens(kept)} tokens）、丢弃 ${droppable.length} 条`,
-        );
+        keptStart = trimmed.start;
       }
+    }
+
+    let droppable = nonSystem.slice(0, keptStart);
+    let kept = nonSystem.slice(keptStart);
+
+    // 任务锚点：当前轮的原始 user 即最后一条 user，它若落在丢弃区则 pin 回保留区头部
+    const lastUserIdx = nonSystem.reduceRight(
+      (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
+      -1,
+    );
+    if (lastUserIdx >= 0 && lastUserIdx < keptStart) {
+      const anchor = nonSystem[lastUserIdx];
+      const anchorTokens = Math.ceil((anchor.content ?? '').length / 4);
+      if (withinTurnTrim) {
+        // 扣掉锚点 token 重新截尾，尽量让「锚点 + 后缀」仍控制在原保留预算的量级
+        const retrim = trimTailByTokenBudget(
+          nonSystem,
+          Math.max(1, keepBudget - anchorTokens),
+        );
+        keptStart = retrim.start;
+      }
+      // 锚点无条件保留：丢失精确的原始问题比多占 token 更严重，允许因此轻微超预算
+      droppable = nonSystem.slice(0, keptStart).filter((m) => m !== anchor);
+      kept = [anchor, ...nonSystem.slice(keptStart).filter((m) => m !== anchor)];
+      debug.log(
+        `[L1 planCompaction] 固定保留当前轮 user 锚点（${anchorTokens} tokens），` +
+          `摘要覆盖其余 ${droppable.length} 条`,
+      );
+    }
+
+    if (withinTurnTrim) {
+      debug.log(
+        `[L1 planCompaction] 单次调用内 token 截尾：消息 ${estimateMessageTokens(nonSystem)} tokens > 预算 ${budget}，` +
+          `保留后缀 ${kept.length} 条（约 ${estimateMessageTokens(kept)} tokens）、丢弃 ${droppable.length} 条`,
+      );
+    } else if (budget !== undefined && budget > 0 && keptStart > 0) {
+      debug.log(
+        `[L1 planCompaction] 按模型调用保留：消息 ${estimateMessageTokens(nonSystem)} tokens / 预算 ${budget}，` +
+          `保留最近 ${keptGroups} 次调用（${kept.length} 条、约 ${estimateMessageTokens(kept)} tokens）、丢弃 ${droppable.length} 条`,
+      );
     }
 
     const placeholder = messages.find((m) => isSummaryPlaceholder(m));
@@ -363,11 +424,11 @@ export class WorkingMemory {
   }
 
   /**
-   * 压缩：保留 system + 最近 N 轮对话
-   * 每轮 = user 消息及其对应的 assistant/tool 消息
+   * 压缩：保留 system + 最近 N 次模型调用
+   * 每次调用 = 前导 user（若有）+ assistant + 其后的 tool 结果
    *
-   * 传入 plan 且走了单轮内 token 截尾时，保留部分直接用 plan.kept
-   * （当前轮 user 锚点 + 尾部后缀），与 planCompaction 算出的 droppable 严格互补。
+   * 传入 plan 时保留部分直接用 plan.kept（含任务锚点与预算收缩后的结果），
+   * 与 planCompaction 算出的 droppable 严格互补，避免「摘要了却仍留在上下文」。
    */
   compact(
     messages: ChatMessage[],
@@ -377,7 +438,7 @@ export class WorkingMemory {
     return buildCompactedView(messages, {
       keepRecentTurns: this.config.keepRecentTurns,
       summaryText,
-      keptMessages: plan?.withinTurnTrim ? plan.kept : undefined,
+      keptMessages: plan?.kept,
     });
   }
 
