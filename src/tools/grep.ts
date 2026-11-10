@@ -14,6 +14,29 @@ import {
 /** 跳过这些目录，避免递归过深或读取依赖 */
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
 
+/** 匹配行展示窗口半径：超长行（如 minified 单行）只保留匹配点前后各这么多字符 */
+const SPAN_RADIUS = 500;
+/** 行长度超过该值才触发窗口截取（短行原样返回，保持输出干净） */
+const MAX_MATCH_LINE_CHARS = 2 * SPAN_RADIUS + 200;
+
+/**
+ * 围绕正则匹配位置截取超长行：保留匹配点前后各 SPAN_RADIUS 字符，
+ * 两端标注被省略的字符数，保证 minified 单行不会原样进入上下文打爆 token，
+ * 同时让 LLM 始终能看到命中处的局部上下文。
+ */
+function clipMatchLine(line: string, matchIndex: number, matchLength: number): string {
+  if (line.length <= MAX_MATCH_LINE_CHARS) return line;
+  const center = matchIndex + Math.floor(matchLength / 2);
+  const start = Math.max(0, center - SPAN_RADIUS);
+  const end = Math.min(line.length, center + SPAN_RADIUS);
+  const prefix = start > 0 ? `… [省略前 ${start} 字符] ` : '';
+  const suffix =
+    end < line.length
+      ? ` … [省略后 ${line.length - end} 字符，该行共 ${line.length} 字符]`
+      : ` [该行共 ${line.length} 字符]`;
+  return prefix + line.slice(start, end) + suffix;
+}
+
 export const grep: Tool = {
   name: 'grep',
   description:
@@ -54,8 +77,13 @@ export const grep: Tool = {
         const content = await readFile(filePath, 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
-          if (regex.test(lines[i])) {
-            matches.push(`${filePath}:${i + 1}: ${lines[i]}`);
+          // 用 exec 取匹配位置（regex 无 g 标志，lastIndex 不会被污染），
+          // 供超长行围绕命中点截取窗口
+          const m = regex.exec(lines[i]);
+          if (m) {
+            matches.push(
+              `${filePath}:${i + 1}: ${clipMatchLine(lines[i], m.index, m[0].length)}`,
+            );
           }
         }
       } catch {
