@@ -10,6 +10,7 @@
 //   "model": "deepseek-chat",
 //   "temperature": 0,
 //   "toolsCount": 5,
+//   "tools": [...],           // 完整 function calling tools schema（含 description、parameters）
 //   "maxTokens": 8192,
 //   "durationMs": 2340,
 //   "messages": [...],        // 完整输入报文（normalize 后）
@@ -23,6 +24,7 @@ import { join } from 'node:path';
 import { config } from './config.js';
 import { loopAgentHome } from './user-home.js';
 import type { ChatMessage, LLMResponse } from './types.js';
+import type { OpenAIToolDef } from './types.js';
 
 /** 日志目录（惰性求值：支持测试经 LOOP_AGENT_HOME 重定向） */
 function logDir(): string {
@@ -42,6 +44,7 @@ interface PendingCall {
   model: string;
   temperature: number;
   toolsCount: number;
+  tools?: OpenAIToolDef[];
   maxTokens?: number;
   messages: ChatMessage[];
   startedAt: number; // Date.now()，用于超时清理
@@ -119,6 +122,8 @@ export interface LLMCallRequest {
   model: string;
   temperature: number;
   toolsCount: number;
+  /** 完整 function calling tools schema（含 description、parameters） */
+  tools?: OpenAIToolDef[];
   maxTokens?: number;
   /** normalize 后实际发送给 API 的 messages */
   messages: ChatMessage[];
@@ -206,6 +211,7 @@ function buildRecord(
     model: pc.model,
     temperature: pc.temperature,
     toolsCount: pc.toolsCount,
+    ...(pc.tools && pc.tools.length > 0 ? { tools: pc.tools } : {}),
     ...(pc.maxTokens !== undefined ? { maxTokens: pc.maxTokens } : {}),
     durationMs: elapsed,
     requestMessagesCount: pc.messages.length,

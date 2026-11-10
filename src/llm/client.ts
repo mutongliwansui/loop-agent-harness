@@ -202,6 +202,7 @@ export class LLMClient {
       model,
       temperature,
       toolsCount: tools?.length ?? 0,
+      tools,
       maxTokens: options.maxTokens,
       messages: LLMClient.normalizeMessages(messages),
     });
@@ -406,6 +407,7 @@ export class LLMClient {
       model,
       temperature,
       toolsCount: tools?.length ?? 0,
+      tools,
       maxTokens: options.maxTokens,
       messages: LLMClient.normalizeMessages(messages),
     });
