@@ -86,4 +86,71 @@ describe('grep 超长行窗口截取', () => {
     expect(out).toContain('省略前');
     expect(out).not.toContain('z'.repeat(2400));
   });
+
+  it('流式扫描：CRLF 文件行尾 \\r 被剥离，行号正确', async () => {
+    await writeFile(join(WS, 'crlf.txt'), 'alpha\r\nbeta needle\r\ngamma\r\n', 'utf-8');
+    const out = await grep.execute(
+      { pattern: 'needle', path: 'crlf.txt' },
+      { workspaceRoot: WS },
+    );
+    expect(out).toContain('crlf.txt:2: beta needle');
+    expect(out).not.toContain('\r');
+  });
+
+  it('流式扫描：多行大文件逐行命中且行号连续正确', async () => {
+    // 1 万行，命中分散在头/中/尾三处，验证流式路径行号累计不错位
+    const total = 10000;
+    const lines = Array.from({ length: total }, (_, i) =>
+      [0, 4999, 9999].includes(i) ? `line${i + 1} needle` : `line${i + 1}`,
+    );
+    await writeFile(join(WS, 'big.log'), lines.join('\n'), 'utf-8');
+    const out = await grep.execute(
+      { pattern: 'needle', path: 'big.log' },
+      { workspaceRoot: WS },
+    );
+    expect(out).toContain('big.log:1: line1 needle');
+    expect(out).toContain('big.log:5000: line5000 needle');
+    expect(out).toContain('big.log:10000: line10000 needle');
+    expect(out).toContain('找到 3 处匹配');
+  });
+});
+
+describe('grep 扫描防护（二进制嗅探 + 匹配硬上限）', () => {
+  it('二进制嗅探：前 8000 字节含 NUL 的文件直接跳过', async () => {
+    const buf = Buffer.concat([Buffer.from('prefix needle ', 'utf-8'), Buffer.alloc(64)]);
+    await writeFile(join(WS, 'bin.dat'), buf);
+    const out = await grep.execute(
+      { pattern: 'needle', path: 'bin.dat' },
+      { workspaceRoot: WS },
+    );
+    expect(out).toContain('未在');
+  });
+
+  it('匹配风暴：达硬上限 2000 提前停止，如实声明结果非完整', async () => {
+    // 2500 行全部命中，默认 maxResults=50 → 硬上限 2000 触发提前停止
+    const lines = Array.from({ length: 2500 }, (_, i) => `row${i} storm`);
+    await writeFile(join(WS, 'storm.log'), lines.join('\n'), 'utf-8');
+    const out = await grep.execute(
+      { pattern: 'storm', path: 'storm.log' },
+      { workspaceRoot: WS },
+    );
+    expect(out).toContain('找到 2000 处匹配（已达上限 50）');
+    expect(out).toContain('提前停止');
+    expect(out).toContain('不完整');
+    // 头部只展示前 50 条
+    expect(out).toContain('storm.log:50:');
+    expect(out).not.toContain('storm.log:51:');
+  });
+
+  it('maxResults 大于硬上限时上限跟随：2100 条全部返回不提前停止', async () => {
+    const lines = Array.from({ length: 2100 }, (_, i) => `row${i} storm`);
+    await writeFile(join(WS, 'storm2.log'), lines.join('\n'), 'utf-8');
+    const out = await grep.execute(
+      { pattern: 'storm', path: 'storm2.log', maxResults: 3000 },
+      { workspaceRoot: WS },
+    );
+    expect(out).toContain('找到 2100 处匹配');
+    expect(out).not.toContain('已达上限');
+    expect(out).not.toContain('提前停止');
+  });
 });
