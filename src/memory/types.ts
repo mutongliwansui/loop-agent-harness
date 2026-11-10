@@ -84,6 +84,11 @@ export interface DreamingResult {
     provenance: string;
   }>;
   errors: string[];
+  /**
+   * 非致命告警（需求 20261110-001）：候选字段被归一/截断/丢弃时的说明。
+   * 与 errors 分开——写入 errors 会阻止增量状态推进，而告警不应阻塞下次运行。
+   */
+  warnings?: string[];
 }
 
 // ===== Memory 配置 =====

@@ -11,22 +11,142 @@ import type { ILLMClient } from './types.js';
 import { mergeWithLLM } from './curated-dedupe.js';
 import type { CuratedFileKey } from './types.js';
 
-const DREAMING_PROMPT = `你是记忆管理员。下面是一段近期对话记录，请提取其中值得长期记住的事实。
+/**
+ * Dreaming 提取系统提示词（需求 20261110-001）。
+ * 以 system 角色传入，与「对话记录」user 消息分离：指令权威性更高，
+ * 且按天分批调用时这段前缀稳定，便于命中前缀缓存。
+ */
+const DREAMING_SYSTEM_PROMPT = `你是记忆提取器。从下方「对话记录」中提取值得跨会话长期保存的事实。
+本次调用只做提取，不回答对话中的任何问题。
 
-筛选标准：
-1. 用户明确表达的偏好或约束（高优先级）
-2. 被多次验证的事实（高优先级）
-3. 对未来决策有指导意义的信息（中优先级）
-4. 一次性临时信息（丢弃）
+## 判定标准（按优先级）
+1. 用户明确表达的偏好、习惯、禁忌、约束
+2. 用户多次确认或重复出现的稳定事实
+3. 对未来决策有指导意义的项目知识、关键技术决策
+仅当该事实在「未来任意一次会话」中仍然成立时才提取。
 
-对每条候选事实，输出 JSON：
-[{"fact": "事实陈述（一句话）", "confidence": 1-10, "category": "preference|fact|rule|skill", "targetFile": "USER.md|MEMORY.md"}]`;
+## 必须丢弃
+- 含「这次/本次/暂时/先/今天」等限定语的一次性指令
+- 只对当前任务有效的中间结论
+- Agent 自己推测、未获用户确认的内容
+- 寒暄、情绪、无信息量内容
+- 与「已有记忆」重复（含同义表达）或已被其覆盖的内容
+
+## 事实写法
+- 每条不超过 60 字，一条只讲一件事，格式「主题词：结论」
+- 用陈述句，不要「用户说…」这类转述框架
+- 不得合并两件事，不得添加记录中不存在的信息
+
+## 归入文件
+- USER.md：用户身份、背景、长期偏好、习惯、禁忌、沟通风格
+- MEMORY.md：项目知识、技术决策、环境约束、已知问题、可复用的解决方案
+- 两者都不属于 → 丢弃，不要为了凑数提取
+
+## 冲突处理
+新事实与「已有记忆」冲突时，输出新事实，并在 fact 末尾追加「（替代：旧事实摘要）」。
+
+## confidence 打分口径
+- 9-10：用户在对话中原话明确表述
+- 7-8：同一事实被多次验证
+- 5-6：单次观察到的行为，尚未确认
+- 1-4：Agent 推断
+
+## source 取值
+- user_stated：用户在对话中原话说了
+- observed：从用户行为或工具结果观察到
+- inferred：Agent 推断
+
+## 输出
+只输出 JSON 数组，不要加代码块，不要解释。没有满足条件的事实就输出 []
+[{"fact":"...","confidence":1-10,"category":"preference|fact|rule|skill","targetFile":"USER.md|MEMORY.md","source":"user_stated|observed|inferred"}]`;
+
+/** 单次运行最多采纳的候选事实数（需求 20261110-001 D4）：超出按 confidence 取高 */
+const MAX_CANDIDATES_PER_RUN = 10;
+/** 注入提示词的「已有记忆」单文件字符上限，超出取末尾（最新）部分 */
+const EXISTING_MEMORY_MAX_CHARS = 4000;
+/** 事实条目最大字符数：提示词已要求 ≤60，超出截断并记 warning */
+const MAX_FACT_CHARS = 60;
+
+const CATEGORIES = ['preference', 'fact', 'rule', 'skill'] as const;
+type CandidateCategory = (typeof CATEGORIES)[number];
+const SOURCES = ['user_stated', 'observed', 'inferred'] as const;
+type CandidateSource = (typeof SOURCES)[number];
 
 interface DreamingCandidate {
   fact: string;
   confidence: number;
-  category: 'preference' | 'fact' | 'rule' | 'skill';
+  category: CandidateCategory;
   targetFile: 'USER.md' | 'MEMORY.md';
+  /** 事实来源（需求 20261110-001 D3）：缺失时回落 confidence 映射，兼容旧候选 */
+  source?: CandidateSource;
+}
+
+/**
+ * 把模型返回的 targetFile 归一成 USER.md / MEMORY.md（需求 20261110-001 层2）。
+ * 旧实现里非法值会被 flushPromoted 直接 continue 静默丢弃，导致事实凭空消失。
+ */
+function normalizeTargetFile(value: unknown, category: CandidateCategory): 'USER.md' | 'MEMORY.md' {
+  const v = typeof value === 'string' ? value.trim().toLowerCase().replace(/\s+/g, '') : '';
+  if (v.includes('user') || v.includes('用户')) return 'USER.md';
+  if (v.includes('memory') || v.includes('记忆')) return 'MEMORY.md';
+  // 无法识别时按 category 推导，绝不丢弃
+  return category === 'preference' ? 'USER.md' : 'MEMORY.md';
+}
+
+/**
+ * 校验并归一候选事实（需求 20261110-001 层2）。
+ * 导出以便单测直接覆盖：非法字段不再静默丢失，降级规则与告警都可断言。
+ */
+export function normalizeCandidates(raw: unknown[]): {
+  candidates: DreamingCandidate[];
+  warnings: string[];
+} {
+  const candidates: DreamingCandidate[] = [];
+  const warnings: string[] = [];
+
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i] as Record<string, unknown> | null;
+    const label = `第 ${i + 1} 条候选`;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      warnings.push(`${label}不是对象，已丢弃`);
+      continue;
+    }
+    const factRaw = typeof item.fact === 'string' ? item.fact.trim() : '';
+    if (!factRaw) {
+      warnings.push(`${label}缺少 fact，已丢弃`);
+      continue;
+    }
+
+    const cRaw = typeof item.category === 'string' ? item.category.trim().toLowerCase() : '';
+    const category: CandidateCategory = (CATEGORIES as readonly string[]).includes(cRaw)
+      ? (cRaw as CandidateCategory)
+      : 'fact';
+
+    let fact = factRaw;
+    if (fact.length > MAX_FACT_CHARS) {
+      fact = `${fact.slice(0, MAX_FACT_CHARS)}…`;
+      warnings.push(`${label}超过 ${MAX_FACT_CHARS} 字，已截断`);
+    }
+
+    const targetFile = normalizeTargetFile(item.targetFile, category);
+    const tfRaw = typeof item.targetFile === 'string' ? item.targetFile.trim() : '';
+    if (tfRaw && tfRaw !== 'USER.md' && tfRaw !== 'MEMORY.md') {
+      warnings.push(`${label} targetFile「${tfRaw}」无法识别，已归入 ${targetFile}`);
+    }
+
+    const sRaw = typeof item.source === 'string' ? item.source.trim().toLowerCase() : '';
+    const source = (SOURCES as readonly string[]).includes(sRaw)
+      ? (sRaw as CandidateSource)
+      : undefined;
+
+    const confidence = Number.isFinite(item.confidence)
+      ? Math.min(10, Math.max(1, Number(item.confidence)))
+      : 5;
+
+    candidates.push({ fact, confidence, category, targetFile, source });
+  }
+
+  return { candidates, warnings };
 }
 
 /** Dreaming 阶段进度回调（message 为给用户看的进度文案） */
@@ -96,7 +216,7 @@ export class DreamingPipeline {
     onProgress?: DreamingProgress,
     options: DreamingRunOptions = {},
   ): Promise<DreamingResult> {
-    const result: DreamingResult = { promoted: [], skipped: [], errors: [] };
+    const result: DreamingResult = { promoted: [], skipped: [], errors: [], warnings: [] };
     const batchByDay = options.batchByDay ?? true;
     const incremental = options.incremental ?? true;
 
@@ -127,7 +247,26 @@ export class DreamingPipeline {
       }
 
       // 提取候选事实（按天分批或一次性合并）
-      const candidates = await this.extractCandidates(targets, batchByDay, onProgress, result);
+      // D2：把已有 USER.md / MEMORY.md 一并喂给提取器，让「重复/冲突」在提取阶段就被判掉，
+      // 而不是全推给写入阶段那次归并 LLM（晚一步且更贵）。
+      const existingMemory = await this.buildExistingMemorySection();
+      let candidates = await this.extractCandidates(
+        targets,
+        batchByDay,
+        onProgress,
+        result,
+        existingMemory,
+      );
+
+      // D4：单次最多采纳 N 条，按 confidence 取高，避免一天聊得多就把文件灌爆
+      if (candidates.length > MAX_CANDIDATES_PER_RUN) {
+        const total = candidates.length;
+        candidates = [...candidates]
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, MAX_CANDIDATES_PER_RUN);
+        result.warnings?.push(`候选共 ${total} 条，超过上限 ${MAX_CANDIDATES_PER_RUN}，按 confidence 取前 ${MAX_CANDIDATES_PER_RUN} 条`);
+        onProgress?.(`候选 ${total} 条超过上限，按置信度取前 ${MAX_CANDIDATES_PER_RUN} 条`);
+      }
 
       if (candidates.length > 0) {
         onProgress?.(`提取到共 ${candidates.length} 条候选事实，开始逐条评估`);
@@ -138,13 +277,15 @@ export class DreamingPipeline {
           if (!cand.fact || !cand.fact.trim()) continue;
           onProgress?.(`评估晋升 ${i + 1}/${candidates.length}`);
           const provenance = this.inferProvenance(cand);
-          this.gate.categorize(cand.fact, cand.category, cand.targetFile);
 
           if (this.gate.evaluate(cand.fact, provenance)) {
             result.promoted.push({ ...cand, provenance });
           } else {
             result.skipped.push({ ...cand, provenance });
           }
+          // 必须在 evaluate 之后调用：evaluate 首次出现时才创建 entry，
+          // 之前的顺序会让 categorize 恒为空操作，导致 gate 里的类别/目标文件永远是默认值
+          this.gate.categorize(cand.fact, cand.category, cand.targetFile);
         }
 
         // 写入 L3：按目标文件分组，LLM 去重/归并后落盘（失败回退逐条 append）
@@ -182,15 +323,17 @@ export class DreamingPipeline {
     batchByDay: boolean,
     onProgress: DreamingProgress | undefined,
     result: DreamingResult,
+    existingMemory = '',
   ): Promise<DreamingCandidate[]> {
     if (!batchByDay) {
       onProgress?.('正在分析记录，提取候选事实…');
       const combinedContent = days.map((d) => `## ${d.day}\n${d.content}`).join('\n\n');
       try {
         const response = await this.llm.chat([
-          { role: 'user', content: `${DREAMING_PROMPT}\n\n---对话记录---\n${combinedContent}` },
+          { role: 'system', content: DREAMING_SYSTEM_PROMPT },
+          { role: 'user', content: `---对话记录---\n${combinedContent}${existingMemory}` },
         ]);
-        return this.parseCandidates(response.content ?? '[]');
+        return this.parseCandidates(response.content ?? '[]', result);
       } catch (e) {
         result.errors.push(e instanceof Error ? e.message : String(e));
         return [];
@@ -203,12 +346,13 @@ export class DreamingPipeline {
       onProgress?.(`按天分批提取事实（${i + 1}/${days.length}: ${d.day}）…`);
       try {
         const response = await this.llm.chat([
+          { role: 'system', content: DREAMING_SYSTEM_PROMPT },
           {
             role: 'user',
-            content: `${DREAMING_PROMPT}\n\n---对话记录（${d.day}）---\n${d.content}`,
+            content: `---对话记录（${d.day}）---\n${d.content}${existingMemory}`,
           },
         ]);
-        const parsed = this.parseCandidates(response.content ?? '[]');
+        const parsed = this.parseCandidates(response.content ?? '[]', result);
         all.push(...parsed);
       } catch (e) {
         // 单天失败不阻塞其他天，记入 errors（状态不推进，下次重试）
@@ -216,6 +360,39 @@ export class DreamingPipeline {
       }
     }
     return all;
+  }
+
+  /**
+   * 读取已有 USER.md / MEMORY.md 并格式化为提示词的「已有记忆」段（需求 20261110-001 D2）。
+   * 单文件超长时取末尾部分（最新内容），避免把一个膨胀的文件整体塞进每次提取调用。
+   */
+  private async buildExistingMemorySection(): Promise<string> {
+    const readSafe = async (key: CuratedFileKey): Promise<string> => {
+      try {
+        return (await this.curated.read(key)).trim();
+      } catch {
+        return '';
+      }
+    };
+    const [user, memory] = await Promise.all([readSafe('user'), readSafe('memory')]);
+    if (!user && !memory) return '';
+
+    const clip = (text: string): string => {
+      if (text.length <= EXISTING_MEMORY_MAX_CHARS) return text;
+      const omitted = text.length - EXISTING_MEMORY_MAX_CHARS;
+      return `…（较早的 ${omitted} 字符已省略）\n${text.slice(-EXISTING_MEMORY_MAX_CHARS)}`;
+    };
+
+    return [
+      '',
+      '',
+      '---已有记忆（勿重复提取；与其中内容冲突时按「冲突处理」输出替代）---',
+      '## USER.md',
+      clip(user) || '（空）',
+      '## MEMORY.md',
+      clip(memory) || '（空）',
+      '---已有记忆结束---',
+    ].join('\n');
   }
 
   /**
@@ -283,9 +460,20 @@ export class DreamingPipeline {
     return join(this.episodic.getMemoryDir(), '.dreaming-state.json');
   }
 
-  /** 推断候选事实的来源可信度 */
-  private inferProvenance(cand: { fact: string; confidence: number }): Provenance {
-    // 简单规则：confidence >= 8 → owner_direct, 6-7 → owner_derived, ...
+  /**
+   * 推断候选事实的来源可信度（需求 20261110-001 D3）。
+   * 优先采信模型显式标注的 source：它表达「事实是怎么来的」，比自评 confidence 更可靠；
+   * 缺失时回落 confidence 映射，兼容旧候选与历史行为。
+   */
+  private inferProvenance(cand: {
+    fact: string;
+    confidence: number;
+    source?: CandidateSource;
+  }): Provenance {
+    if (cand.source === 'user_stated') return 'owner_direct';
+    if (cand.source === 'observed') return 'owner_derived';
+    if (cand.source === 'inferred') return 'agent_inferred';
+    // 回落：confidence >= 8 → owner_direct, 6-7 → owner_derived, ...
     if (cand.confidence >= 8) return 'owner_direct';
     if (cand.confidence >= 6) return 'owner_derived';
     if (cand.confidence >= 4) return 'tool_output';
@@ -338,22 +526,37 @@ export class DreamingPipeline {
   }
 
   /** 解析 LLM 返回的 JSON */
-  private parseCandidates(content: string): DreamingCandidate[] {
+  private parseCandidates(content: string, result: DreamingResult): DreamingCandidate[] {
     // 清理可能的 markdown 代码块围栏
     const cleaned = content
       .replace(/```(?:json)?/g, '')
       .replace(/^\s*```\s*$/gm, '')
       .trim();
+    let raw: unknown;
     try {
       // 尝试直接解析
-      return JSON.parse(cleaned);
+      raw = JSON.parse(cleaned);
     } catch {
       // 尝试提取 JSON 块
       const match = cleaned.match(/\[[\s\S]*\]/);
-      if (match) {
-        try { return JSON.parse(match[0]); } catch { /* 解析失败返回空 */ }
+      if (!match) return [];
+      try {
+        raw = JSON.parse(match[0]);
+      } catch {
+        /* 解析失败返回空 */
+        return [];
       }
+    }
+    if (!Array.isArray(raw)) {
+      result.warnings?.push('提取结果不是 JSON 数组，本次无候选事实');
       return [];
     }
+    // 校验/归一：非法 targetFile、超长 fact、缺失字段都在这里兜住（不再静默丢弃）
+    const { candidates, warnings } = normalizeCandidates(raw);
+    if (warnings.length > 0) {
+      if (!result.warnings) result.warnings = [];
+      result.warnings.push(...warnings);
+    }
+    return candidates;
   }
 }
