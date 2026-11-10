@@ -62,25 +62,28 @@ describe('buildSystemPrompt 的环境信息区块', () => {
 });
 
 describe('buildSystemPrompt 的视觉能力区块', () => {
-  it('visionEnabled=true 时注入图片理解能力段与四个视觉工具名', () => {
+  it('visionEnabled=true 时注入图片理解段与四个视觉工具选择规则', () => {
     const p = buildSystemPrompt([], 'D:\\work', true);
-    expect(p).toContain('## 图片理解能力');
+    expect(p).toContain('## 图片理解');
+    // 四个工具名作为裸文本出现（不再加反引号——反引号由 function calling schema 负责）
     for (const name of ['ask_image', 'describe_image', 'extract_json', 'ocr_image']) {
-      expect(p).toContain(`\`${name}\``);
+      expect(p).toContain(name);
     }
-    expect(p).toContain('无法直接');
+    // 选择规则压缩在一行里
+    expect(p).toContain('定向提问 ask_image');
+    expect(p).toContain('整体描述 describe_image');
   });
 
   it('visionEnabled 未传或 false 时不注入（prompt 字节级一致，保护前缀缓存）', () => {
     const base = buildSystemPrompt([], 'D:\\work');
-    expect(base).not.toContain('## 图片理解能力');
+    expect(base).not.toContain('## 图片理解');
     expect(buildSystemPrompt([], 'D:\\work', false)).toBe(base);
     expect(buildSystemPrompt([], 'D:\\work', undefined)).toBe(base);
   });
 
   it('视觉段位于 Skill 区块之前（能力说明 → 技能包 → 环境信息）', () => {
     const p = buildSystemPrompt([meta('alpha', '处理甲事务', 'global')], 'D:\\work', true);
-    expect(p.indexOf('## 图片理解能力')).toBeLessThan(p.indexOf('## 可用 Skill（技能包）'));
+    expect(p.indexOf('## 图片理解')).toBeLessThan(p.indexOf('## 可用 Skill（技能包）'));
     expect(p.indexOf('## 可用 Skill（技能包）')).toBeLessThan(p.indexOf('## 环境信息'));
   });
 });

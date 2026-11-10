@@ -28,17 +28,26 @@ const FILE_MAP: Record<CuratedFileKey, string> = {
 /** 归属全局用户目录的文件（SOUL/USER 跨项目共享），其余（MEMORY）归属项目目录 */
 const GLOBAL_KEYS: CuratedFileKey[] = ['soul', 'user'];
 
+/**
+ * 注入 system prompt 时各文件的字符上限（需求 20261110-002 层 2 B 方案）。
+ * 超过上限时保留末尾部分（最新条目），而非全量塞入。这样既能把 CURATED 段
+ * 压到可控 token 数，又不打散前缀缓存——截断规则固定、截断后的 section 固定。
+ * 注：磁盘上的文件仍全量保存，截断只发生在 system prompt 注入时。
+ */
+const SYSTEM_MAX_CHARS: Record<CuratedFileKey, number> = {
+  soul: 300,   // SOUL 固定人格，几乎不会膨胀
+  user: 800,   // USER.md 约 15 条 60 字事实
+  memory: 3000,// MEMORY.md 约 50 条 60 字事实
+};
+
+/** 截断 marker：加在被截断的 section 末尾，告诉模型「前面省略了较早条目」 */
+const TRUNCATION_NOTE = '\n…（较早内容因 token 预算已省略，以上为最新条目）';
+
 const DEFAULT_CONTENT: Record<CuratedFileKey, string> = {
   soul: `# SOUL - Agent 人格
 
 ## 核心身份
 你是一个基于 ReAct 框架的智能 Agent，擅长通过工具调用解决复杂问题。
-
-## 行为准则
-- 优先使用工具获取准确信息，不凭空臆造
-- 在调用工具前，先用自然语言简要说明意图
-- 得到足够信息后直接给出最终答案，不继续调用工具
-- 面对失败时尝试换思路，不重复同样的失败调用
 
 ## 沟通风格
 - 使用中文回答
@@ -149,17 +158,37 @@ export class CuratedMemory {
     return this.read(key);
   }
 
-  /** 读取全部 Curated 文件，返回 system prompt 片段 */
+  /** 读取全部 Curated 文件，返回 system prompt 片段（注入时做软上限截断） */
   async buildSystemPrompt(): Promise<string> {
     const sections: string[] = [];
     for (const key of Object.keys(FILE_MAP) as CuratedFileKey[]) {
       const content = await this.read(key);
       if (content && content.trim()) {
         const title = FILE_MAP[key].replace('.md', '');
-        sections.push(`# ${title}\n${content.trim()}`);
+        sections.push(`# ${title}\n${this.clipForSystem(content.trim(), key)}`);
       }
     }
     return sections.join('\n\n');
+  }
+
+  /**
+   * 把文件内容裁剪到 SYSTEM_MAX_CHARS 上限（需求 20261110-002 层 2 B 方案）。
+   * 保留末尾部分（最新条目），前面加上截断 marker。
+   * 纯函数，方便单测。
+   */
+  clipForSystem(content: string, key: CuratedFileKey): string {
+    const max = SYSTEM_MAX_CHARS[key];
+    if (content.length <= max) return content;
+    // 截断时在「- 」起始处断，避免把一条事实切在中间
+    const tailStart = Math.max(0, content.length - max);
+    let cutIndex = content.indexOf('\n- ', tailStart);
+    if (cutIndex === -1 || cutIndex < tailStart) {
+      cutIndex = tailStart;
+    } else {
+      cutIndex += 1; // 跳过开头的 \n
+    }
+    const clipped = content.slice(cutIndex).replace(/^[^\n]*\n-/, '-');
+    return `${TRUNCATION_NOTE}\n${clipped}`;
   }
 
   /**
@@ -202,7 +231,9 @@ export class CuratedMemory {
         const content = (await readFile(filepath, 'utf-8')).trim();
         if (content) {
           const title = FILE_MAP[key].replace('.md', '');
-          section = `# ${title}\n${content}`;
+          // 需求 20261110-002 层 2：注入 system 时做软上限截断，
+          // 磁盘文件仍全量保存，截断只发生在注入环节
+          section = `# ${title}\n${this.clipForSystem(content, key)}`;
           sections.push(section);
         }
       } catch {

@@ -87,6 +87,109 @@ function makeStats(iteration: number, promptTokens: number, cacheHitTokens?: num
   };
 }
 
+describe('20261110-002 层2B：clipForSystem 软上限截断', () => {
+  let curated: CuratedMemory;
+
+  beforeEach(() => {
+    // clipForSystem 是纯函数，不依赖文件系统，随便传个路径就行
+    curated = new CuratedMemory('.', null, null);
+  });
+
+  it('短于 SYSTEM_MAX_CHARS 的内容原样返回', () => {
+    const short = '# MEMORY - 精炼事实\n\n- 条目A\n- 条目B\n';
+    const result = curated.clipForSystem(short.trim(), 'memory');
+    expect(result).toBe(short.trim());
+    expect(result).not.toContain('因 token 预算已省略');
+  });
+
+  it('超过上限时保留末尾条目、加 TRUNCATION_NOTE', () => {
+    // 构造一条超长 MEMORY.md（> 3000 字符）
+    const lines: string[] = ['# MEMORY - 精炼事实', ''];
+    for (let i = 1; i <= 80; i++) {
+      lines.push(`- 条目 ${i}：这是一条用于测试截断逻辑的示例事实，字符数大概控制在 60 个左右`);
+    }
+    const long = lines.join('\n');
+    expect(long.length).toBeGreaterThan(3000);
+
+    const clipped = curated.clipForSystem(long, 'memory');
+    expect(clipped).toContain('因 token 预算已省略');
+    expect(clipped.length).toBeLessThanOrEqual(3000 + 80); // 略宽限
+    // 最新条目保留
+    expect(clipped).toContain('条目 80');
+    expect(clipped).toContain('条目 79');
+    // 较早条目被裁
+    expect(clipped).not.toContain('条目 1：');
+  });
+
+  it('截断点对齐到 "- " 边界，不会把一条事实切在中间', () => {
+    const lines: string[] = ['# MEMORY', ''];
+    for (let i = 1; i <= 100; i++) {
+      lines.push(`- 事实 ${i}：内容填充填充填充填充填充填充填充填充填充填充填充`);
+    }
+    const long = lines.join('\n');
+    const clipped = curated.clipForSystem(long, 'memory');
+
+    // TRUNCATION_NOTE = "\n…（较早内容因 token 预算已省略，以上为最新条目）"
+    // 所以完整 marker 之后应该紧跟 "- "
+    const fullNote = '以上为最新条目）\n';
+    const tailIdx = clipped.lastIndexOf(fullNote);
+    expect(tailIdx).toBeGreaterThan(-1);
+    const afterNote = clipped.slice(tailIdx + fullNote.length);
+    // 必须以 "- " 开头，说明截断对齐到了条目边界
+    expect(afterNote.startsWith('- ')).toBe(true);
+  });
+
+  it('多次调用相同输入返回相同输出（纯函数、保护前缀缓存）', () => {
+    const lines: string[] = ['# USER', ''];
+    for (let i = 1; i <= 30; i++) {
+      lines.push(`- 用户偏好 ${i}：填充内容填充内容填充内容填充内容填充`);
+    }
+    const content = lines.join('\n');
+    // user 上限 800，30 条 × 约 50 字 ≈ 1500 字，会触发截断
+    expect(content.length).toBeGreaterThan(800);
+
+    const a = curated.clipForSystem(content, 'user');
+    const b = curated.clipForSystem(content, 'user');
+    const c = curated.clipForSystem(content, 'user');
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    // 关键：输出稳定 = 前缀缓存可复用
+    expect(a.length).toBe(b.length);
+  });
+
+  it('不同 key 应用各自的上限（soul=300, user=800, memory=3000）', () => {
+    // 用数组 join，构造多行列表（clipForSystem 依赖 "\n- " 边界截断）
+    const makeLines = (title: string, count: number, filler: string) => {
+      const arr = [`# ${title}`, ''];
+      for (let i = 1; i <= count; i++) arr.push(`- ${filler} ${i}`);
+      return arr.join('\n');
+    };
+    // soul 上限 300 → ~50 条足够
+    const soulBig = makeLines('SOUL', 50, '人格特质填充填充填充填充');
+    // user 上限 800 → ~80 条
+    const userBig = makeLines('USER', 80, '用户偏好填充填充填充填充填充填充填充');
+    // memory 上限 3000 → ~200 条
+    const memBig = makeLines('MEMORY', 200, '记忆事实填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充填充');
+
+    expect(soulBig.length).toBeGreaterThan(300);
+    expect(userBig.length).toBeGreaterThan(800);
+    expect(memBig.length).toBeGreaterThan(3000);
+
+    const outS = curated.clipForSystem(soulBig, 'soul');
+    const outU = curated.clipForSystem(userBig, 'user');
+    const outM = curated.clipForSystem(memBig, 'memory');
+
+    expect(outS.length).toBeLessThanOrEqual(300 + 80);
+    expect(outU.length).toBeLessThanOrEqual(800 + 80);
+    expect(outM.length).toBeLessThanOrEqual(3000 + 80);
+
+    // 三者都含截断标记
+    expect(outS).toContain('因 token 预算已省略');
+    expect(outU).toContain('因 token 预算已省略');
+    expect(outM).toContain('因 token 预算已省略');
+  });
+});
+
 describe('20261021-008 R5：summary 首轮/后续命中率拆分', () => {
   it('首轮与后续口径按 token 加权拆分正确', () => {
     const summary = buildLLMStatsSummary([
