@@ -2,11 +2,11 @@
 //
 // 直调 buildUsePartial / readLayerRaw / validAlias / maskKey（D3 补导出复用）+
 // defaultCheckConnectivity（连通性测试），CLI 命令层零改动。
-// 响应字段以实际 schema 为准：ModelProfile = {name, baseUrl, apiKey, temperature?}（apiKey 遮蔽输出）。
+// 响应字段以实际 schema 为准：ModelProfile = {name, baseUrl, apiKey, temperature?, advanced?}（apiKey 遮蔽输出）。
 // D6 动词即确认：PUT /model 替代 CLI use；DELETE 删当前激活 → 409（比 CLI 确认更严格）。
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ModelProfile, PartialAgentConfig } from '../../config/schema.js';
+import type { ModelAdvanced, ModelProfile, PartialAgentConfig } from '../../config/schema.js';
 import { defaultCheckConnectivity } from '../../llm/connectivity.js';
 import {
   buildUsePartial,
@@ -23,7 +23,84 @@ function scopeName(scope: string): string {
   return scope === 'workspace' ? '工作空间' : '全局';
 }
 
-/** 校验请求体中的 profile：name/baseUrl/apiKey 必填非空字符串，temperature 可选数字 */
+/** advanced 允许的键（未知键视为拼写错误，直接 400 而不是静默丢弃） */
+const ADVANCED_KEYS = ['maxTokens', 'topP', 'topK', 'frequencyPenalty', 'timeoutMs', 'headers'];
+/** 由系统/传输层管理的请求头，不允许用户覆盖 */
+const RESERVED_HEADERS = new Set(['authorization', 'content-type', 'content-length', 'host']);
+
+/**
+ * 校验 advanced 对象（POST / PATCH 共用）。
+ * - null 或 {}：返回 null，语义 = 删除该模型的高级配置
+ * - 对象：校验后返回新对象（整体替换，未出现的键不使用服务商默认值）
+ */
+function parseAdvanced(raw: unknown): ModelAdvanced | null {
+  if (raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ApiHttpError('bad_request', 'profile.advanced 必须为对象或 null');
+  }
+  const a = raw as Record<string, unknown>;
+  const unknownKey = Object.keys(a).find((k) => !ADVANCED_KEYS.includes(k));
+  if (unknownKey) {
+    throw new ApiHttpError('bad_request', `profile.advanced 存在未知字段 ${unknownKey}`);
+  }
+
+  const out: ModelAdvanced = {};
+  if (a.maxTokens !== undefined) {
+    if (typeof a.maxTokens !== 'number' || !Number.isInteger(a.maxTokens) || a.maxTokens < 1) {
+      throw new ApiHttpError('bad_request', 'profile.advanced.maxTokens 必须为 ≥1 的整数');
+    }
+    out.maxTokens = a.maxTokens;
+  }
+  if (a.topP !== undefined) {
+    if (typeof a.topP !== 'number' || !Number.isFinite(a.topP) || a.topP < 0 || a.topP > 1) {
+      throw new ApiHttpError('bad_request', 'profile.advanced.topP 需在 0 ~ 1 之间');
+    }
+    out.topP = a.topP;
+  }
+  if (a.topK !== undefined) {
+    if (typeof a.topK !== 'number' || !Number.isInteger(a.topK) || a.topK < 0) {
+      throw new ApiHttpError('bad_request', 'profile.advanced.topK 必须为 ≥0 的整数');
+    }
+    out.topK = a.topK;
+  }
+  if (a.frequencyPenalty !== undefined) {
+    if (typeof a.frequencyPenalty !== 'number' || !Number.isFinite(a.frequencyPenalty)
+      || a.frequencyPenalty < -2 || a.frequencyPenalty > 2) {
+      throw new ApiHttpError('bad_request', 'profile.advanced.frequencyPenalty 需在 -2 ~ 2 之间');
+    }
+    out.frequencyPenalty = a.frequencyPenalty;
+  }
+  if (a.timeoutMs !== undefined) {
+    if (typeof a.timeoutMs !== 'number' || !Number.isInteger(a.timeoutMs) || a.timeoutMs < 1000) {
+      throw new ApiHttpError('bad_request', 'profile.advanced.timeoutMs 必须为 ≥1000 的整数');
+    }
+    out.timeoutMs = a.timeoutMs;
+  }
+  if (a.headers !== undefined) {
+    if (typeof a.headers !== 'object' || a.headers === null || Array.isArray(a.headers)) {
+      throw new ApiHttpError('bad_request', 'profile.advanced.headers 必须为对象');
+    }
+    const headers: Record<string, string> = {};
+    for (const [rawName, rawValue] of Object.entries(a.headers as Record<string, unknown>)) {
+      const name = rawName.trim();
+      if (!/^[A-Za-z0-9-]+$/.test(name)) {
+        throw new ApiHttpError('bad_request', `请求头名「${rawName}」不合法：仅允许字母、数字与连字符`);
+      }
+      if (RESERVED_HEADERS.has(name.toLowerCase())) {
+        throw new ApiHttpError('bad_request', `请求头 ${name} 由系统管理，不可覆盖`);
+      }
+      if (typeof rawValue !== 'string' || rawValue.trim() === '') {
+        throw new ApiHttpError('bad_request', `请求头 ${name} 的值必须为非空字符串`);
+      }
+      headers[name] = rawValue.trim();
+    }
+    if (Object.keys(headers).length > 0) out.headers = headers;
+  }
+
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** 校验请求体中的 profile：name/baseUrl/apiKey 必填非空字符串，temperature/advanced 可选 */
 function parseProfileBody(raw: unknown): ModelProfile {
   if (typeof raw !== 'object' || raw === null) {
     throw new ApiHttpError('bad_request', '请求体必须包含 profile 对象（name/baseUrl/apiKey）');
@@ -37,11 +114,13 @@ function parseProfileBody(raw: unknown): ModelProfile {
   if (p.temperature !== undefined && typeof p.temperature !== 'number') {
     throw new ApiHttpError('bad_request', 'profile.temperature 必须为数字');
   }
+  const advanced = p.advanced === undefined ? undefined : parseAdvanced(p.advanced);
   return {
     name: (p.name as string).trim(),
     baseUrl: (p.baseUrl as string).trim(),
     apiKey: (p.apiKey as string).trim(),
     ...(p.temperature !== undefined ? { temperature: p.temperature } : {}),
+    ...(advanced ? { advanced } : {}),
   };
 }
 
@@ -66,6 +145,7 @@ async function handleGetCurrentModel(ctx: HandlerContext, _req: IncomingMessage,
       baseUrl: cfg.model.baseUrl,
       apiKey: maskKey(cfg.model.apiKey),
       ...(cfg.model.temperature !== undefined ? { temperature: cfg.model.temperature } : {}),
+      ...(cfg.model.advanced !== undefined ? { advanced: cfg.model.advanced } : {}),
     },
     active: cfg.models.active ?? null,
   });
@@ -124,16 +204,22 @@ async function handleCreateModel(
       baseUrl: profile.baseUrl,
       apiKey: maskKey(profile.apiKey),
       ...(profile.temperature !== undefined ? { temperature: profile.temperature } : {}),
+      ...(profile.advanced !== undefined ? { advanced: profile.advanced } : {}),
     },
   });
 }
 
-/** 编辑请求体中的 profile 增量：字段缺省 = 不变；apiKey 空串 = 保持；temperature null = 删除该键 */
+/**
+ * 编辑请求体中的 profile 增量：
+ * 字段缺省 = 不变；apiKey 空串 = 保持；temperature null = 删除该键；
+ * advanced null / {} = 删除整组，传对象 = 整体替换
+ */
 interface ProfilePatch {
   name?: string;
   baseUrl?: string;
   apiKey?: string;
   temperature?: number | null;
+  advanced?: ModelAdvanced | null;
 }
 
 /** 校验 PATCH profile 增量（只校验出现的字段，未出现即不改） */
@@ -160,6 +246,9 @@ function parseProfilePatch(raw: unknown): ProfilePatch {
       throw new ApiHttpError('bad_request', 'profile.temperature 必须为数字或 null');
     }
     patch.temperature = p.temperature as number | null;
+  }
+  if (p.advanced !== undefined) {
+    patch.advanced = parseAdvanced(p.advanced);
   }
   return patch;
 }
@@ -198,22 +287,33 @@ async function handleUpdateModel(
   let nextTemp: number | undefined;
   if (patch.temperature === null) nextTemp = undefined;
   else nextTemp = patch.temperature !== undefined ? patch.temperature : existing.temperature;
+  const removeAdvanced = patch.advanced === null;
+  const nextAdvanced = patch.advanced === null
+    ? undefined
+    : patch.advanced !== undefined
+      ? patch.advanced
+      : existing.advanced;
   // 以生效配置中的完整 profile 为基线写入目标层，保证回读结果与页面提交一致
   const next: ModelProfile = {
     name: patch.name ?? existing.name,
     baseUrl: patch.baseUrl ?? existing.baseUrl,
     apiKey: patch.apiKey ? patch.apiKey : existing.apiKey,
     ...(nextTemp !== undefined ? { temperature: nextTemp } : {}),
+    ...(nextAdvanced !== undefined ? { advanced: nextAdvanced } : {}),
   };
 
   await ctx.configWriter.updateScope(scope, { models: { profiles: { [alias]: next } } });
   if (removeTemp) {
     await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias, 'temperature']);
   }
+  if (removeAdvanced) {
+    await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias, 'advanced']);
+  }
   const syncedActive = alias === cfg.models.active;
   if (syncedActive) {
     await ctx.configWriter.updateScope(scope, buildUsePartial(alias, next));
     if (removeTemp) await ctx.configWriter.deleteScopeKey(scope, ['model', 'temperature']);
+    if (removeAdvanced) await ctx.configWriter.deleteScopeKey(scope, ['model', 'advanced']);
   }
   ctx.log(`[api] 已更新模型（${scope}）: ${alias}${syncedActive ? '（同步 model.* 快照）' : ''}`);
   sendJson(res, 200, {
@@ -225,6 +325,7 @@ async function handleUpdateModel(
       baseUrl: next.baseUrl,
       apiKey: maskKey(next.apiKey),
       ...(next.temperature !== undefined ? { temperature: next.temperature } : {}),
+      ...(next.advanced !== undefined ? { advanced: next.advanced } : {}),
     },
   });
 }

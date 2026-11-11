@@ -327,6 +327,29 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
 .with-suffix input { padding-right: 54px; }
 .with-suffix button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 11px; cursor: pointer; }
 .field-sep { height: 1px; background: var(--line-soft); margin: 4px 0 14px; }
+
+/* ====== 8.1 高级设置（默认收起） ====== */
+.adv { margin: 2px 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bar-bg); }
+.adv-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border: 0; border-radius: 10px; background: none; color: var(--text); font: 600 12.5px/1.5 var(--sans); text-align: left; cursor: pointer; }
+.adv-head:hover { background: var(--hover); }
+.adv-head .chev { flex: none; width: 13px; height: 13px; color: var(--muted); transition: transform .16s; }
+.adv.open .adv-head .chev { transform: rotate(90deg); }
+.adv-head .sum { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 10.5px; font-weight: 400; color: var(--muted); }
+.adv-badge { padding: 1px 7px; border-radius: 999px; background: var(--brand-weak); color: var(--brand); font-size: 10px; font-weight: 600; white-space: nowrap; }
+.adv-body { padding: 2px 12px 4px; border-top: 1px solid var(--line-soft); }
+.adv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; margin-top: 12px; }
+.adv-grid .field { margin-bottom: 12px; }
+.adv-grid .field input { max-width: none; }
+.adv-grid .field .hint { margin-top: 4px; font-size: 10.5px; }
+.hdr-rows { display: flex; flex-direction: column; gap: 6px; }
+.hdr-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 28px; gap: 6px; }
+.hdr-row input { height: 32px; }
+.hdr-row .del { display: grid; place-items: center; width: 28px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.hdr-row .del:hover { border-color: var(--danger); color: var(--danger); }
+.hdr-row .del svg { width: 12px; height: 12px; }
+.adv-add { margin-top: 7px; height: 28px; padding: 0 10px; border: 1px dashed var(--line-strong); border-radius: 7px; background: none; color: var(--text-2); font-size: 11.5px; cursor: pointer; }
+.adv-add:hover { border-color: var(--brand); color: var(--brand); }
+.adv-note { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
 .scope-line { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; background: var(--bar-bg); border: 1px solid var(--line-soft); font-size: 12px; }
 .scope-line .t { color: var(--muted); white-space: nowrap; }
 .scope-line .sp { flex: 1; }
@@ -412,10 +435,11 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D4</div><div><b>工具条：搜索 + 状态分段 + 排序 + 写入位置</b><p>搜索匹配别名 / 型号 / 主机；分段「全部 / 生效中 / 需关注」；排序「生效优先 / 别名 A→Z / TTFT 升序」。写入位置收进工具条右侧，并在添加抽屉、详情抽屉底部就地同步。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D5</div><div><b>详情抽屉承载配置与性能</b><p>点卡片或「查看详情」打开右侧抽屉：接入配置（KV 表）→ 连通性（就地重测）→ 性能（TTFT / 吞吐 / 稳定性 + 历史 + 抽屉内测速）→ 危险区（移除）。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D6</div><div><b>测速在抽屉内闭环</b><p>「开始测速」→ 进度条 + 四项实时指标 → 完成后结果与历史即时回流到卡片 pill。真实实现复用 BenchDrawer 的四态，原型只演示入口、运行态与结果回流。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D7</div><div><b>添加 / 编辑共用右侧表单抽屉</b><p>字段与后端一致（别名 / 型号 / Base URL / API Key / temperature），实时行内校验；编辑时别名只读、Key 留空不改。写入位置在提交区就地可见，不再只存在于页头。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D7</div><div><b>添加 / 编辑共用右侧表单抽屉</b><p>基础字段（别名 / 型号 / Base URL / API Key / temperature）常驻可见；其余采样与传输参数收进「高级设置」折叠区，默认收起。实时行内校验；编辑时别名只读、Key 留空不改。写入位置在提交区就地可见，不再只存在于页头。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D8</div><div><b>异常前置</b><p>失败卡片红色左条 + 「连通失败 / 测速全失败」红 pill；顶部出现汇总告警条，一键直达第一个异常模型的详情。</p></div></div>
       <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D9</div><div><b>中性状态降噪</b><p>未测试 / 未测速用中性灰 pill，不再用黄色暗示「有问题」；绿色只给成功，红色只给真实失败。</p></div></div>
-      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D10</div><div><b>编辑信息：新增 PATCH /models/:alias（需后端配套）</b><p>别名是登记簿主键，编辑时只读；可改型号 / Base URL / API Key / temperature。Key 留空表示保持原值，填写则整体替换并重新遮蔽。保存后清空连通性结果并提示重新测试；改名仍走「移除 → 重新登记」。删除当前生效模型继续由后端 409 兜底。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D10</div><div><b>编辑信息：新增 PATCH /models/:alias（需后端配套）</b><p>别名是登记簿主键，编辑时只读；可改型号 / Base URL / API Key / temperature，另有「高级设置」折叠区（max_tokens、top_p、top_k、frequency_penalty、自定义请求头、请求超时），默认收起、留空即不下发。上下文窗口不在模型页配置。Key 留空表示保持原值，填写则整体替换并重新遮蔽。保存后清空连通性结果并提示重新测试；改名仍走「移除 → 重新登记」。删除当前生效模型继续由后端 409 兜底。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D11</div><div><b>高级设置默认收起</b><p>展开前只在折叠头显示「已配置 N 项」，避免长表单吓退普通用户；校验失败落在折叠区时自动展开并聚焦红框。请求头以「名 = 值」成对维护，Authorization / Content-Type 等系统头拒绝覆盖。</p></div></div>
     </div>
   </section>
 
@@ -553,12 +577,12 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
       <div class="d-item"><b>GET /model</b> → 当前生效快照；无激活但存在登记时，页面提示“正在使用配置文件 model.* 快照”</div>
       <div class="d-item"><b>PUT /model</b> <code>{ alias, scope }</code> → 「设置为默认」；成功后同步 models.active 与 model.* 快照</div>
       <div class="d-item"><b>POST /models</b> <code>{ alias, scope, profile }</code> → 添加抽屉提交；同名返回 409，前端在别名字段行内提示</div>
-      <div class="d-item"><b>PATCH /models/:alias</b> <code>{ scope, profile }</code> → 编辑抽屉保存；仅更新型号 / Base URL / API Key / temperature，别名不可改。若编辑的是当前生效模型，后端需同步刷新 model.* 快照 <span class="md-pill warn" style="vertical-align:1px">新增端点，待后端实现</span></div>
+      <div class="d-item"><b>PATCH /models/:alias</b> <code>{ scope, profile: { name, baseUrl?, apiKey?, temperature?, advanced? } }</code> → 编辑抽屉保存；别名不可改；<code>advanced</code> 内为 maxTokens / topP / topK / frequencyPenalty / timeoutMs / headers（留空即删除该键，不下发）。若编辑的是当前生效模型，后端需同步刷新 model.* 快照 <span class="md-pill warn" style="vertical-align:1px">新增端点，待后端实现</span></div>
       <div class="d-item"><b>POST /models/:alias/test</b> → 连通性测试，返回 <code>{ ok, latencyMs, error? }</code>；卡片与详情抽屉的状态胶囊就地更新</div>
       <div class="d-item"><b>DELETE /models/:alias?scope=</b> → 移除；删除当前激活模型返回 409，前端在生效卡片上禁用删除并说明</div>
       <div class="d-item"><b>POST /models/bench · GET /models/bench/:id/stream · POST /models/bench/:id/stop · GET /models/bench/history</b> → 测速入口、进度、中断与历史；抽屉内“性能”区复用它</div>
     </div>
-    <p class="note"><b>编辑接口是新增需求：</b>现有后端没有更新 profile 的端点，本设计新增 <code>PATCH /models/:alias { scope, profile }</code>，只更新型号 / Base URL / API Key / temperature。别名是登记簿主键，不可修改；重命名仍走「移除 → 重新登记」。落地前需后端补该端点，并在编辑生效模型时同步 model.* 快照。</p>
+    <p class="note"><b>编辑接口是新增需求：</b>现有后端没有更新 profile 的端点，本设计新增 <code>PATCH /models/:alias { scope, profile }</code>，更新型号 / Base URL / API Key / temperature，以及高级设置里的 max_tokens、top_p、top_k、frequency_penalty、自定义请求头、请求超时。高级项留空即删除该键（回到服务商默认），不写 null。上下文窗口仍由全局 <code>context.*</code> 管理，不进模型配置。别名是登记簿主键，不可修改；重命名仍走「移除 → 重新登记」。落地前需后端补该端点，并在编辑生效模型时同步 model.* 快照。</p>
   </section>
 
   <!-- ======= F. 响应式 ======= -->
@@ -639,6 +663,54 @@ section { padding-top: 42px; scroll-margin-top: 64px; }
       <p class="err" data-err="temperature" hidden></p>
     </div>
 
+    <!-- 高级设置：默认收起，留空即不下发 -->
+    <div class="adv" id="md-adv">
+      <button type="button" class="adv-head" id="md-adv-toggle" aria-expanded="false" aria-controls="md-adv-body">
+        <svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.6l4.4 4.4L6 12.4"/></svg>
+        <span>高级设置</span>
+        <span class="sum"><span class="adv-badge" id="md-adv-badge" hidden></span><span id="md-adv-sum">可选 · 默认收起</span></span>
+      </button>
+      <div class="adv-body" id="md-adv-body" hidden>
+        <div class="adv-grid">
+          <div class="field">
+            <label for="f-max-tokens">max_tokens <span class="opt">可选</span></label>
+            <input id="f-max-tokens" class="mono" inputmode="numeric" placeholder="如 2048" autocomplete="off" spellcheck="false">
+            <p class="err" data-err="maxTokens" hidden></p>
+          </div>
+          <div class="field">
+            <label for="f-top-p">top_p <span class="opt">可选</span></label>
+            <input id="f-top-p" class="mono" inputmode="decimal" placeholder="0 ~ 1，缺省 1" autocomplete="off" spellcheck="false">
+            <p class="err" data-err="topP" hidden></p>
+          </div>
+          <div class="field">
+            <label for="f-top-k">top_k <span class="opt">可选</span></label>
+            <input id="f-top-k" class="mono" inputmode="numeric" placeholder="如 40，留空不下发" autocomplete="off" spellcheck="false">
+            <p class="err" data-err="topK" hidden></p>
+          </div>
+          <div class="field">
+            <label for="f-freq-penalty">frequency_penalty <span class="opt">可选</span></label>
+            <input id="f-freq-penalty" class="mono" inputmode="decimal" placeholder="-2 ~ 2，缺省 0" autocomplete="off" spellcheck="false">
+            <p class="err" data-err="frequencyPenalty" hidden></p>
+          </div>
+          <div class="field">
+            <label for="f-timeout">请求超时 <span class="opt">毫秒</span></label>
+            <input id="f-timeout" class="mono" inputmode="numeric" placeholder="如 120000，缺省沿用全局" autocomplete="off" spellcheck="false">
+            <p class="err" data-err="timeoutMs" hidden></p>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>自定义请求头 <span class="opt">可选</span></label>
+          <div class="hdr-rows" id="f-header-rows"></div>
+          <button type="button" class="adv-add" id="f-header-add">＋ 添加请求头</button>
+          <p class="err" data-err="headers" hidden></p>
+          <p class="adv-note">用于 <code>OpenAI-Organization</code>、Azure 的 <code>api-version</code> 这类租户/网关标识；留空即不下发。Authorization 由 API Key 自动生成，不允许覆盖。</p>
+        </div>
+
+        <p class="adv-note">高级项留空表示「不下发」，使用服务商默认值；填写后仅在该模型被调用时生效，切换模型互不影响。</p>
+      </div>
+    </div>
+
     <div class="scope-line">
       <span class="t">写入位置</span>
       <div class="seg" id="md-add-scope" role="group" aria-label="写入位置">
@@ -676,6 +748,10 @@ const MODELS = [
   {
     alias: 'deepseek-flash', name: 'deepseek-chat', provider: 'deepseek',
     baseUrl: 'https://api.deepseek.com/v1', key: 'sk-****c4c3', temp: 0, active: true,
+    adv: {
+      maxTokens: 4096, topP: 0.95, timeoutMs: 120000,
+      headers: [['OpenAI-Organization', 'org_9f3k2']],
+    },
     test: { ok: true, ms: 328, at: '今天 10:42' },
     perf: {
       ttft: 542, tps: 38.2, okCount: 3, total: 3, at: '2 小时前',
@@ -1290,6 +1366,105 @@ function setScope(scope) {
   if (sel) sel.value = scope;
 }
 
+/* ====== 高级设置（默认收起；留空=不下发） ====== */
+const ADV_NUM_FIELDS = [
+  { id: 'f-max-tokens', key: 'maxTokens' },
+  { id: 'f-top-p', key: 'topP' },
+  { id: 'f-top-k', key: 'topK' },
+  { id: 'f-freq-penalty', key: 'frequencyPenalty' },
+  { id: 'f-timeout', key: 'timeoutMs' },
+];
+/** 错误键 → 输入框 id（含基础字段） */
+const FIELD_INPUTS = {
+  alias: 'f-alias', name: 'f-name', baseUrl: 'f-base', apiKey: 'f-key', temperature: 'f-temp',
+  maxTokens: 'f-max-tokens', topP: 'f-top-p', topK: 'f-top-k',
+  frequencyPenalty: 'f-freq-penalty', timeoutMs: 'f-timeout',
+};
+
+function setAdvOpen(open) {
+  document.getElementById('md-adv').classList.toggle('open', open);
+  document.getElementById('md-adv-body').hidden = !open;
+  document.getElementById('md-adv-toggle').setAttribute('aria-expanded', String(open));
+}
+
+function headerRow(k = '', v = '') {
+  const row = document.createElement('div');
+  row.className = 'hdr-row';
+  row.innerHTML = `<input class="mono hd-k" placeholder="Header 名，如 api-version" value="${esc(k)}" autocomplete="off" spellcheck="false">`
+    + `<input class="mono hd-v" placeholder="值，如 2024-10-21" value="${esc(v)}" autocomplete="off" spellcheck="false">`
+    + '<button type="button" class="del" title="删除该请求头"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/></svg></button>';
+  row.querySelector('.del').onclick = () => { row.remove(); syncAdvSummary(); };
+  row.querySelectorAll('input').forEach((el) => el.addEventListener('input', syncAdvSummary));
+  return row;
+}
+
+function renderHeaders(list) {
+  const box = document.getElementById('f-header-rows');
+  box.innerHTML = '';
+  (list || []).forEach(([k, v]) => box.appendChild(headerRow(k, v)));
+}
+
+function readHeaders() {
+  return [...document.querySelectorAll('#f-header-rows .hdr-row')]
+    .map((row) => [row.querySelector('.hd-k').value.trim(), row.querySelector('.hd-v').value.trim()])
+    .filter(([k, v]) => k || v);
+}
+
+function syncAdvSummary() {
+  const n = ADV_NUM_FIELDS.filter(({ id }) => document.getElementById(id).value.trim() !== '').length
+    + readHeaders().length;
+  const badge = document.getElementById('md-adv-badge');
+  badge.hidden = n === 0;
+  badge.textContent = `已配置 ${n} 项`;
+  document.getElementById('md-adv-sum').textContent = n === 0 ? '可选 · 默认收起' : '';
+}
+
+/** 把 m.adv 回填到表单；打开抽屉时始终收起，只在折叠头显示「已配置 N 项」 */
+function fillAdv(m) {
+  const adv = (m && m.adv) || {};
+  ADV_NUM_FIELDS.forEach(({ id, key }) => {
+    const v = adv[key];
+    document.getElementById(id).value = v === undefined || v === null ? '' : String(v);
+  });
+  renderHeaders(adv.headers);
+  setAdvOpen(false);
+  syncAdvSummary();
+}
+
+/** 读取并校验高级项；返回 { adv } 并写入 errs */
+function readAdv(errs) {
+  const adv = {};
+  const num = (id, key, label, opt = {}) => {
+    const raw = document.getElementById(id).value.trim();
+    if (raw === '') return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) { errs[key] = `${label} 必须为数字`; return; }
+    if (opt.int && !Number.isInteger(n)) { errs[key] = `${label} 必须为整数`; return; }
+    if ((opt.min !== undefined && n < opt.min) || (opt.max !== undefined && n > opt.max)) {
+      errs[key] = `${label} 需在 ${opt.min ?? '-∞'} ~ ${opt.max ?? '∞'} 之间`;
+      return;
+    }
+    adv[key] = n;
+  };
+  num('f-max-tokens', 'maxTokens', 'max_tokens', { min: 1, int: true });
+  num('f-top-p', 'topP', 'top_p', { min: 0, max: 1 });
+  num('f-top-k', 'topK', 'top_k', { min: 0, int: true });
+  num('f-freq-penalty', 'frequencyPenalty', 'frequency_penalty', { min: -2, max: 2 });
+  num('f-timeout', 'timeoutMs', '请求超时', { min: 1000, int: true });
+
+  const headers = readHeaders();
+  for (const [k, v] of headers) {
+    if (!k) { errs.headers = '请求头名称不能为空'; break; }
+    if (!/^[A-Za-z0-9-]+$/.test(k)) { errs.headers = `请求头名「${k}」不合法：仅字母、数字与连字符`; break; }
+    if (/^(authorization|content-type|content-length|host)$/i.test(k)) {
+      errs.headers = `${k} 由系统管理，不可覆盖`; break;
+    }
+    if (!v) { errs.headers = `请求头 ${k} 缺少值`; break; }
+  }
+  if (headers.length > 0) adv.headers = headers;
+  return adv;
+}
+
 /** 打开表单抽屉：mode = add | edit */
 function openForm(mode, alias) {
   const editing = mode === 'edit';
@@ -1304,6 +1479,7 @@ function openForm(mode, alias) {
   document.getElementById('f-base').value = m ? m.baseUrl : '';
   document.getElementById('f-key').value = '';
   document.getElementById('f-temp').value = m && m.temp !== null && m.temp !== undefined ? String(m.temp) : '';
+  fillAdv(m);
 
   document.querySelectorAll('#md-form input').forEach((el) => el.classList.remove('bad'));
   document.querySelectorAll('#md-form [data-err]').forEach((el) => { el.hidden = true; el.textContent = ''; });
@@ -1358,7 +1534,7 @@ function closeAdd() {
 function showFieldErr(name, msg) {
   const p = document.querySelector(`#md-form [data-err="${name}"]`);
   if (p) { p.textContent = msg; p.hidden = !msg; }
-  const input = { alias: 'f-alias', name: 'f-name', baseUrl: 'f-base', apiKey: 'f-key', temperature: 'f-temp' }[name];
+  const input = FIELD_INPUTS[name];
   const el = input && document.getElementById(input);
   if (el) el.classList.toggle('bad', !!msg);
 }
@@ -1392,11 +1568,20 @@ function submitForm() {
     else if (n < 0 || n > 2) errs.temperature = 'temperature 需在 0 ~ 2 之间';
   }
 
-  ['alias', 'name', 'baseUrl', 'apiKey', 'temperature'].forEach((k) => showFieldErr(k, errs[k] || ''));
+  // 高级项：全部留空 = 不下发
+  const adv = readAdv(errs);
+
+  ['alias', 'name', 'baseUrl', 'apiKey', 'temperature',
+    'maxTokens', 'topP', 'topK', 'frequencyPenalty', 'timeoutMs', 'headers']
+    .forEach((k) => showFieldErr(k, errs[k] || ''));
 
   if (Object.keys(errs).length > 0) {
     const first = Object.keys(errs)[0];
-    const input = { alias: 'f-alias', name: 'f-name', baseUrl: 'f-base', apiKey: 'f-key', temperature: 'f-temp' }[first];
+    // 错误落在折叠区时自动展开，避免用户找不到红框
+    if (first !== 'alias' && first !== 'name' && first !== 'baseUrl' && first !== 'apiKey' && first !== 'temperature') {
+      setAdvOpen(true);
+    }
+    const input = FIELD_INPUTS[first];
     if (input) document.getElementById(input).focus();
     return;
   }
@@ -1411,6 +1596,7 @@ function submitForm() {
     m.baseUrl = baseUrl;
     m.provider = guessProvider(baseUrl);
     m.temp = temp;
+    if (Object.keys(adv).length > 0) m.adv = adv; else delete m.adv;
     if (apiKey) m.key = 'sk-****' + apiKey.slice(-4);
     if (endpointChanged) m.test = null;
     const savedAlias = m.alias;
@@ -1422,10 +1608,12 @@ function submitForm() {
     return;
   }
 
-  MODELS.push({
+  const created = {
     alias, name, provider: guessProvider(baseUrl), baseUrl, key: 'sk-****' + Math.random().toString(16).slice(2, 6),
     temp, active: false, test: null, perf: null,
-  });
+  };
+  if (Object.keys(adv).length > 0) created.adv = adv;
+  MODELS.push(created);
   closeAdd();
   renderAll();
   toast(`已登记模型 ${alias}（${scopeName(state.scope)}）`, 'success');
@@ -1461,6 +1649,14 @@ document.getElementById('f-key-toggle').onclick = () => {
   el.type = show ? 'text' : 'password';
   document.getElementById('f-key-toggle').textContent = show ? '隐藏' : '显示';
 };
+
+// 高级设置：展开/收起 + 新增请求头 + 实时刷新「已配置 N 项」
+document.getElementById('md-adv-toggle').onclick = () => setAdvOpen(document.getElementById('md-adv-body').hidden);
+document.getElementById('f-header-add').onclick = () => {
+  document.getElementById('f-header-rows').appendChild(headerRow());
+  syncAdvSummary();
+};
+ADV_NUM_FIELDS.forEach(({ id }) => document.getElementById(id).addEventListener('input', syncAdvSummary));
 
 document.querySelectorAll('#md-add-scope button').forEach((b) => {
   b.onclick = () => setScope(b.dataset.scope);

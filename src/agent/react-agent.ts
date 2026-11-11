@@ -12,6 +12,7 @@ import { buildLLMStatsSummary } from './stats.js';
 import { createToolCallGenTracker, dispatchStreamChunk } from './stream-forward.js';
 import { debug } from '../debug.js';
 import { configLoader, type ConfigLoader, type PartialAgentConfig } from '../config/index.js';
+import type { ModelAdvanced } from '../config/schema.js';
 import { loopAgentHome } from '../user-home.js';
 import { skillLoader } from '../skill/loader.js';
 import { SessionStore, workspaceId } from '../session/store.js';
@@ -621,6 +622,12 @@ export class ReActAgent {
       options.baseUrl && options.apiKey
         ? { baseUrl: options.baseUrl, apiKey: options.apiKey }
         : {};
+    // 单模型高级参数（需求 20261111-001）：
+    // 会话级覆盖时只用该 profile 自己的 advanced（绝不把激活模型的请求头/超时套到别的供应商），
+    // 未覆盖时用生效快照 model.advanced。
+    const advanced: ModelAdvanced | undefined = creds.baseUrl
+      ? options.advanced
+      : options.advanced ?? cfg.model.advanced;
     // 辅助调用（L1 压缩/摘要/记忆去重）固定用「全局」模型名（D6）。
     // 关键：会话选了别的供应商时，cfg.model.name 已被 options.model 覆盖成对方的模型名，
     // 若辅助调用继续用它、却配的是全局 baseUrl/apiKey，就会因模型不存在而 404。
@@ -773,6 +780,8 @@ export class ReActAgent {
           baseUrl: creds.baseUrl,
           apiKey: creds.apiKey,
           temperature,
+          // 子 Agent 继承父级本次 run 的高级参数（同一模型口径）
+          advanced,
           maxIterations: subOpts.maxIterations ?? maxIterations,
           signal,
           sessionId: sessionId ?? undefined,
@@ -1264,7 +1273,7 @@ export class ReActAgent {
         const resp = await this.streamLLM(
           llmMessages,
           openaiTools,
-          { model, temperature, ...creds, signal: options.signal },
+          { model, temperature, advanced, ...creds, signal: options.signal },
           events,
           streamedText,
         );
@@ -1548,6 +1557,8 @@ export class ReActAgent {
       temperature: number;
       baseUrl?: string;
       apiKey?: string;
+      /** 单模型高级参数（需求 20261111-001）：按需映射为 top_p/top_k/请求头/超时 */
+      advanced?: ModelAdvanced;
       /** run 级取消信号（Task-20261029-001）：透传给 SDK，使流式请求可被中断 */
       signal?: AbortSignal;
     },

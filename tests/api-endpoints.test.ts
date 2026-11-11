@@ -524,6 +524,66 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     expect((await req('PATCH', '/models/ghost-model', { profile: { name: 'x' } })).status).toBe(404);
   });
 
+  it('advanced：POST 可携带；PATCH 整体替换 / null 删除 / 生效快照同步；非法值 400', async () => {
+    const advanced = {
+      maxTokens: 2048,
+      topP: 0.7,
+      topK: 40,
+      frequencyPenalty: 0.2,
+      timeoutMs: 120000,
+      headers: { 'api-version': '2024-10-21' },
+    };
+    const created = await req('POST', '/models', {
+      alias: 'adv-model',
+      profile: {
+        name: 'gpt-adv',
+        baseUrl: 'http://127.0.0.1:9/v1',
+        apiKey: 'sk-adv-0001',
+        advanced,
+      },
+    });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as { profile: { advanced: unknown } }).profile.advanced).toEqual(advanced);
+
+    // 生效模型：整体替换（未提交的键消失）
+    const replaced = await req('PATCH', '/models/test-model', { profile: { advanced: { topP: 0.3 } } });
+    expect(replaced.status).toBe(200);
+    expect(((await replaced.json()) as { profile: { advanced: unknown } }).profile.advanced).toEqual({ topP: 0.3 });
+    const cur = (await (await req('GET', '/model')).json()) as { model: { advanced?: unknown } };
+    expect(cur.model.advanced).toEqual({ topP: 0.3 });
+
+    // 列表回读带 advanced
+    const list = (await (await req('GET', '/models')).json()) as { profiles: Record<string, unknown>[] };
+    expect(list.profiles.find((p) => p.alias === 'test-model')?.advanced).toEqual({ topP: 0.3 });
+
+    // null / {} → 从 profile 与生效快照中删除整组
+    const cleared = await req('PATCH', '/models/test-model', { profile: { advanced: null } });
+    expect(cleared.status).toBe(200);
+    expect(((await cleared.json()) as { profile: Record<string, unknown> }).profile.advanced).toBeUndefined();
+    expect(((await (await req('GET', '/model')).json()) as { model: Record<string, unknown> }).model.advanced).toBeUndefined();
+    const emptied = await req('PATCH', '/models/test-model', { profile: { advanced: {} } });
+    expect(emptied.status).toBe(200);
+    expect(((await emptied.json()) as { profile: Record<string, unknown> }).profile.advanced).toBeUndefined();
+
+    // 非法值逐项拒绝
+    for (const bad of [
+      { maxTokens: 0 },
+      { maxTokens: 1.5 },
+      { topP: 1.1 },
+      { topK: -1 },
+      { frequencyPenalty: -2.1 },
+      { timeoutMs: 999 },
+      { headers: { Authorization: 'x' } },
+      { headers: { 'bad name': 'x' } },
+      { headers: { 'X-Test': '' } },
+      { bogus: 1 },
+    ]) {
+      expect((await req('PATCH', '/models/test-model', { profile: { advanced: bad } })).status).toBe(400);
+    }
+
+    expect((await req('DELETE', '/models/adv-model')).status).toBe(200);
+  });
+
   it('DELETE 当前激活 → 409；跨层归属 → 404 提示 scope；目标层存在 → 200', async () => {
     expect((await req('DELETE', '/models/test-model')).status).toBe(409);
 

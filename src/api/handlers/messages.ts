@@ -181,6 +181,7 @@ export async function runMessageTurn(
     runOptions.baseUrl = profile.baseUrl;
     runOptions.apiKey = profile.apiKey;
     if (profile.temperature !== undefined) runOptions.temperature = profile.temperature;
+    if (profile.advanced !== undefined) runOptions.advanced = profile.advanced;
 
     // 兜底落盘（D7）：前端在「新建会话还没 id」时选了模型 → selectModel 的 PUT 无处可写，
     // 此处补写一次，保证重进会话能还原。best-effort，失败不影响本轮对话。

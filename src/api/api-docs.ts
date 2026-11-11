@@ -440,11 +440,12 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'alias', in: 'body', type: 'string', required: true, desc: '别名（唯一）' },
-      { name: 'profile', in: 'body', type: 'object', required: true, desc: '模型配置（model / baseUrl / apiKey 等）' },
+      { name: 'profile', in: 'body', type: 'object', required: true, desc: '模型配置（name / baseUrl / apiKey / temperature? / advanced?）' },
+      { name: 'profile.advanced', in: 'body', type: 'object', desc: '高级参数：maxTokens / topP / topK / frequencyPenalty / timeoutMs / headers，留空不下发' },
       { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
     ],
-    body: '{ "alias": "string", "profile": { "model": "string", "baseUrl": "string", "apiKey": "string" } }',
-    example: 'curl -X POST /models -H "Content-Type: application/json" -d \'{"alias":"ds","profile":{"model":"deepseek-chat"}}\'',
+    body: '{ "alias": "string", "profile": { "name": "string", "baseUrl": "string", "apiKey": "string", "temperature?": "number", "advanced?": { "maxTokens?": "number", "topP?": "number", "topK?": "number", "frequencyPenalty?": "number", "timeoutMs?": "number", "headers?": { "api-version": "string" } } } }',
+    example: 'curl -X POST /models -H "Content-Type: application/json" -d \'{"alias":"ds","profile":{"name":"deepseek-chat","baseUrl":"<baseUrl>","apiKey":"sk-..."}}\'',
   },
   'PATCH /models/:alias': {
     summary: '编辑模型 profile（缺省字段不变；alias 不可改；生效模型同步 model.* 快照）。',
@@ -452,9 +453,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'alias', in: 'path', type: 'string', required: true, desc: '模型别名（不可修改）' },
       { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
-      { name: 'profile', in: 'body', type: 'object', required: true, desc: '字段增量；apiKey 空串 = 保持，temperature null = 删除该键' },
+      { name: 'profile', in: 'body', type: 'object', required: true, desc: '字段增量；apiKey 空串 = 保持，temperature null = 删除该键，advanced null / {} = 删除整组' },
     ],
-    body: '{ "scope?": "workspace", "profile": { "name?": "string", "baseUrl?": "string", "apiKey?": "string", "temperature?": "number | null" } }',
+    body: '{ "scope?": "workspace", "profile": { "name?": "string", "baseUrl?": "string", "apiKey?": "string", "temperature?": "number | null", "advanced?": "object | null" } }',
     example: 'curl -X PATCH /models/ds -H "Content-Type: application/json" -d \'{"profile":{"temperature":0.7}}\'',
   },
   'POST /models/:alias/test': {

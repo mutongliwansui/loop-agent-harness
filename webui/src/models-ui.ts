@@ -62,6 +62,16 @@ export function modelIconSvg(key: ModelIconKey, strokeWidth = 1.6, size = 16): s
   );
 }
 
+/** 单模型高级参数（与后端 schema 同构；未配置的键不下发） */
+export interface ModelAdvanced {
+  maxTokens?: number;
+  topP?: number;
+  topK?: number;
+  frequencyPenalty?: number;
+  timeoutMs?: number;
+  headers?: Record<string, string>;
+}
+
 /** 行卡所需的最小 profile 形状（与 GET /models 响应同构） */
 export interface ProfileLike {
   alias: string;
@@ -69,6 +79,7 @@ export interface ProfileLike {
   baseUrl: string;
   apiKey: string;
   temperature?: number;
+  advanced?: ModelAdvanced;
   isCurrent: boolean;
 }
 
@@ -232,6 +243,12 @@ export function isFailedModel(input: { test?: TestLike | null; perf?: PerfLike |
   return !!pf && (pf.ttft === null || pf.ttft === undefined);
 }
 
+/** 请求头表单行（名 / 值成对，空行提交前过滤） */
+export interface HeaderRowInput {
+  key: string;
+  value: string;
+}
+
 /** 登记表单原始输入（全部为字符串，便于与 input v-model 直连） */
 export interface ModelFormInput {
   alias: string;
@@ -239,6 +256,13 @@ export interface ModelFormInput {
   baseUrl: string;
   apiKey: string;
   temperature: string;
+  /** 高级设置（留空 / 缺省 = 不下发，使用服务商默认值） */
+  maxTokens?: string;
+  topP?: string;
+  topK?: string;
+  frequencyPenalty?: string;
+  timeoutMs?: string;
+  headers?: HeaderRowInput[];
 }
 
 /** 字段级错误（空对象 = 通过；键名与表单字段一一对应） */
@@ -248,6 +272,12 @@ export interface ModelFormErrors {
   baseUrl?: string;
   apiKey?: string;
   temperature?: string;
+  maxTokens?: string;
+  topP?: string;
+  topK?: string;
+  frequencyPenalty?: string;
+  timeoutMs?: string;
+  headers?: string;
 }
 
 /**
@@ -283,7 +313,92 @@ export function validateModelForm(
     else if (n < 0 || n > 2) errs.temperature = 'temperature 需在 0 ~ 2 之间';
   }
 
+  const num = (
+    field: 'maxTokens' | 'topP' | 'topK' | 'frequencyPenalty' | 'timeoutMs',
+    label: string,
+    rule: { int?: boolean; min?: number; max?: number },
+  ): void => {
+    const raw = (input[field] ?? '').trim();
+    if (raw === '') return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) errs[field] = `${label} 必须为数字`;
+    else if (rule.int && !Number.isInteger(n)) errs[field] = `${label} 必须为整数`;
+    else if ((rule.min !== undefined && n < rule.min) || (rule.max !== undefined && n > rule.max)) {
+      errs[field] = `${label} 需在 ${rule.min ?? '-∞'} ~ ${rule.max ?? '∞'} 之间`;
+    }
+  };
+  num('maxTokens', 'max_tokens', { int: true, min: 1 });
+  num('topP', 'top_p', { min: 0, max: 1 });
+  num('topK', 'top_k', { int: true, min: 0 });
+  num('frequencyPenalty', 'frequency_penalty', { min: -2, max: 2 });
+  num('timeoutMs', '请求超时', { int: true, min: 1000 });
+
+  for (const row of input.headers ?? []) {
+    const key = (row.key ?? '').trim();
+    const value = (row.value ?? '').trim();
+    // 整行为空视为未填写，提交前直接忽略（不报错）
+    if (!key && !value) continue;
+    if (!key) { errs.headers = '请求头名称不能为空'; break; }
+    if (!/^[A-Za-z0-9-]+$/.test(key)) { errs.headers = `请求头名「${key}」不合法：仅字母、数字与连字符`; break; }
+    if (/^(authorization|content-type|content-length|host)$/i.test(key)) {
+      errs.headers = `${key} 由系统管理，不可覆盖`;
+      break;
+    }
+    if (!value) { errs.headers = `请求头 ${key} 缺少值`; break; }
+  }
+
   return errs;
+}
+
+/**
+ * 把表单值收敛为后端 advanced（需求 20261111-001）：
+ * 空项不写入；请求头过滤整行空白；全部为空返回 undefined（POST 不下发）。
+ */
+export function buildAdvanced(input: ModelFormInput): ModelAdvanced | undefined {
+  const adv: ModelAdvanced = {};
+  const num = (field: 'maxTokens' | 'topP' | 'topK' | 'frequencyPenalty' | 'timeoutMs'): void => {
+    const raw = (input[field] ?? '').trim();
+    if (raw !== '') adv[field] = Number(raw);
+  };
+  num('maxTokens');
+  num('topP');
+  num('topK');
+  num('frequencyPenalty');
+  num('timeoutMs');
+
+  const headers: Record<string, string> = {};
+  for (const row of input.headers ?? []) {
+    const key = (row.key ?? '').trim();
+    const value = (row.value ?? '').trim();
+    // 名或值任一为空都不下发（校验阶段已拦截，这里再兜一层）
+    if (!key || !value) continue;
+    headers[key] = value;
+  }
+  if (Object.keys(headers).length > 0) adv.headers = headers;
+
+  return Object.keys(adv).length > 0 ? adv : undefined;
+}
+
+/** 高级设置已配置项数（折叠头徽标；数字项非空 + 有效请求头行） */
+export function advancedCount(input: ModelFormInput): number {
+  const n = ([
+    input.maxTokens,
+    input.topP,
+    input.topK,
+    input.frequencyPenalty,
+    input.timeoutMs,
+  ] as string[]).filter((v) => (v ?? '').trim() !== '').length;
+  const h = (input.headers ?? []).filter(
+    (r) => (r.key ?? '').trim() !== '' && (r.value ?? '').trim() !== '',
+  ).length;
+  return n + h;
+}
+
+/** 高级设置区是否含校验错误（用于提交失败时自动展开折叠区） */
+export function hasAdvancedErrors(errs: ModelFormErrors): boolean {
+  return Boolean(
+    errs.maxTokens || errs.topP || errs.topK || errs.frequencyPenalty || errs.timeoutMs || errs.headers,
+  );
 }
 
 /** 错误对象是否含任一字段错误 */

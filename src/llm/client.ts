@@ -1,5 +1,6 @@
 // LLM 客户端封装：基于 OpenAI SDK，兼容任意 OpenAI 协议服务商
 import OpenAI from 'openai';
+import type { ModelAdvanced } from '../config/schema.js';
 import { config } from '../config.js';
 import { debug } from '../debug.js';
 import { llmLogger, beginLLMCall } from '../llm-logger.js';
@@ -34,6 +35,8 @@ export interface ChatOptions {
   baseUrl?: string;
   /** 覆盖本次调用的 API Key（与 baseUrl 成对；缺一则回落全局 config） */
   apiKey?: string;
+  /** 单模型高级参数（需求 20261111-001）：未定义的键不下发，maxTokens 仅在调用方未显式传入时生效 */
+  advanced?: ModelAdvanced;
   /**
    * 取消信号（Task-20261021-002-01）：
    * 透传给 SDK（create(params, { signal })）；aborted 后抛 AgentAbortedError，
@@ -58,6 +61,42 @@ export interface VisionChatResult {
   content: string;
   usage?: LLMResponse['usage'];
   elapsedMs: number;
+}
+
+/**
+ * 把单模型高级参数写入请求体（需求 20261111-001）：
+ * 仅下发已定义的键，未定义交给服务商默认值；top_k 属兼容扩展字段。
+ * explicitMaxTokens 优先于 advanced.maxTokens，避免模型默认值覆盖压缩/测速等显式值。
+ */
+function applyAdvancedParams(
+  params: OpenAI.Chat.ChatCompletionCreateParams,
+  advanced: ModelAdvanced | undefined,
+  explicitMaxTokens: number | undefined,
+): void {
+  if (!advanced) {
+    if (explicitMaxTokens !== undefined) params.max_tokens = explicitMaxTokens;
+    return;
+  }
+  if (advanced.topP !== undefined) params.top_p = advanced.topP;
+  if (advanced.topK !== undefined) {
+    (params as unknown as Record<string, unknown>).top_k = advanced.topK;
+  }
+  if (advanced.frequencyPenalty !== undefined) params.frequency_penalty = advanced.frequencyPenalty;
+  const maxTokens = explicitMaxTokens ?? advanced.maxTokens;
+  if (maxTokens !== undefined) params.max_tokens = maxTokens;
+}
+
+/** 组装按次请求选项：仅在有 headers / timeout / signal 时返回对象（无则沿用 SDK 默认） */
+function buildRequestOptions(options: ChatOptions): OpenAI.RequestOptions | undefined {
+  const headers = options.advanced?.headers;
+  const timeout = options.advanced?.timeoutMs;
+  const hasHeaders = headers !== undefined && Object.keys(headers).length > 0;
+  if (!options.signal && !hasHeaders && timeout === undefined) return undefined;
+  return {
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(hasHeaders ? { headers } : {}),
+    ...(timeout !== undefined ? { timeout } : {}),
+  };
 }
 
 /**
@@ -224,15 +263,10 @@ export class LLMClient {
           params.tools = tools as OpenAI.Chat.ChatCompletionTool[];
           params.tool_choice = 'auto';
         }
-        if (options.maxTokens !== undefined) {
-          params.max_tokens = options.maxTokens;
-        }
+        applyAdvancedParams(params, options.advanced, options.maxTokens);
 
-        // signal 透传：SDK 层取消请求（Task-20261021-002-01）
-        const resp = await client.chat.completions.create(
-          params,
-          options.signal ? { signal: options.signal } : undefined,
-        );
+        // signal / 自定义请求头 / 单模型超时透传（需求 20261021-002-01 / 20261111-001）
+        const resp = await client.chat.completions.create(params, buildRequestOptions(options));
         const choice = resp.choices[0];
         if (!choice) {
           throw new Error('LLM 返回为空：choices 为空数组');
@@ -429,9 +463,7 @@ export class LLMClient {
       params.tools = tools as OpenAI.Chat.ChatCompletionTool[];
       params.tool_choice = 'auto';
     }
-    if (options.maxTokens !== undefined) {
-      params.max_tokens = options.maxTokens;
-    }
+    applyAdvancedParams(params, options.advanced, options.maxTokens);
 
     const client = this.getClientFor(options.apiKey, options.baseUrl);
 
@@ -443,11 +475,8 @@ export class LLMClient {
     let streamUsage: LLMResponse['usage'] | undefined;
 
     try {
-      // signal 透传：SDK 层取消流式请求（Task-20261021-002-01）
-      const stream = await client.chat.completions.create(
-        params,
-        options.signal ? { signal: options.signal } : undefined,
-      );
+      // signal / 自定义请求头 / 单模型超时透传（需求 20261021-002-01 / 20261111-001）
+      const stream = await client.chat.completions.create(params, buildRequestOptions(options));
 
       for await (const chunk of stream) {
         const choice = chunk.choices[0];

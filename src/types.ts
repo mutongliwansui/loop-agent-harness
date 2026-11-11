@@ -1,5 +1,6 @@
 // ReAct Agent 核心类型定义
 import type { Spinner } from './ui/spinner.js';
+import type { ModelAdvanced } from './config/schema.js';
 
 // ===== 工具相关 =====
 
@@ -464,6 +465,11 @@ export interface AgentOptions {
   baseUrl?: string;
   /** 会话级模型覆盖的 API Key（与 baseUrl 成对；缺一则回落全局 config） */
   apiKey?: string;
+  /**
+   * 单模型高级参数（需求 20261111-001）：
+   * 会话级覆盖时由 API 层传入对应 profile 的 advanced；缺省回落实效快照 model.advanced。
+   */
+  advanced?: ModelAdvanced;
   /** 是否打印 Thought/Action/Observation 日志，默认 true */
   verbose?: boolean;
   /** 事件监听器数组（参考 langchain callbacks 设计），每个钩子按顺序调用 */

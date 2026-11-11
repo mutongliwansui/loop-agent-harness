@@ -14,7 +14,10 @@ import { describe, it, expect } from 'vitest';
 import {
   MODEL_ICON_PATHS,
   MODEL_PROVIDERS,
+  advancedCount,
+  buildAdvanced,
   filterProfiles,
+  hasAdvancedErrors,
   hasErrors,
   hostOf,
   isFailedModel,
@@ -194,6 +197,74 @@ describe('validateModelForm', () => {
     // 型号 / Base URL / temperature 仍照常校验
     expect(validateModelForm({ ...ok, name: '', apiKey: '' }, { editing: true }).name).toBe('型号必填');
     expect(validateModelForm({ ...ok, baseUrl: 'x', apiKey: '' }, { editing: true }).baseUrl).toBeTruthy();
+  });
+});
+
+describe('advanced 表单（需求 20261111-001）', () => {
+  const base = { alias: 'x', name: 'n', baseUrl: 'https://a.example.com', apiKey: 'sk', temperature: '' };
+
+  it('全部留空不产生错误，且不下发 advanced', () => {
+    const input = { ...base, headers: [] };
+    expect(validateModelForm(input)).toEqual({});
+    expect(buildAdvanced(input)).toBeUndefined();
+    expect(advancedCount(input)).toBe(0);
+  });
+
+  it('数值越界 / 非整数逐项报错', () => {
+    expect(validateModelForm({ ...base, maxTokens: '0' }).maxTokens).toBeTruthy();
+    expect(validateModelForm({ ...base, maxTokens: '1.5' }).maxTokens).toBeTruthy();
+    expect(validateModelForm({ ...base, topP: '1.1' }).topP).toBeTruthy();
+    expect(validateModelForm({ ...base, topK: '-1' }).topK).toBeTruthy();
+    expect(validateModelForm({ ...base, topK: '2.5' }).topK).toBeTruthy();
+    expect(validateModelForm({ ...base, frequencyPenalty: '-2.1' }).frequencyPenalty).toBeTruthy();
+    expect(validateModelForm({ ...base, timeoutMs: '999' }).timeoutMs).toBeTruthy();
+    // 边界值通过
+    expect(validateModelForm({ ...base, maxTokens: '1' }).maxTokens).toBeUndefined();
+    expect(validateModelForm({ ...base, topP: '0' }).topP).toBeUndefined();
+    expect(validateModelForm({ ...base, topP: '1' }).topP).toBeUndefined();
+    expect(validateModelForm({ ...base, topK: '0' }).topK).toBeUndefined();
+    expect(validateModelForm({ ...base, frequencyPenalty: '-2' }).frequencyPenalty).toBeUndefined();
+    expect(validateModelForm({ ...base, frequencyPenalty: '2' }).frequencyPenalty).toBeUndefined();
+    expect(validateModelForm({ ...base, timeoutMs: '1000' }).timeoutMs).toBeUndefined();
+  });
+
+  it('请求头校验：空名 / 非法字符 / 系统头 / 缺值', () => {
+    expect(validateModelForm({ ...base, headers: [{ key: '', value: 'x' }] }).headers).toBeTruthy();
+    expect(validateModelForm({ ...base, headers: [{ key: 'bad name', value: 'x' }] }).headers).toBeTruthy();
+    expect(validateModelForm({ ...base, headers: [{ key: 'Authorization', value: 'x' }] }).headers).toBeTruthy();
+    expect(validateModelForm({ ...base, headers: [{ key: 'X-Test', value: '' }] }).headers).toBeTruthy();
+    // 整行空白忽略；合法头部通过
+    expect(validateModelForm({ ...base, headers: [{ key: '', value: '' }] }).headers).toBeUndefined();
+    expect(validateModelForm({ ...base, headers: [{ key: 'api-version', value: '2024-10-21' }] }).headers).toBeUndefined();
+  });
+
+  it('buildAdvanced：有效项转为数字，空项与空白请求头丢弃', () => {
+    const input = {
+      ...base,
+      maxTokens: ' 2048 ',
+      topP: '0.7',
+      topK: '',
+      frequencyPenalty: '',
+      timeoutMs: '120000',
+      headers: [
+        { key: ' api-version ', value: ' 2024-10-21 ' },
+        { key: '', value: '' },
+        { key: 'X-Empty', value: '' },
+      ],
+    };
+    expect(buildAdvanced(input)).toEqual({
+      maxTokens: 2048,
+      topP: 0.7,
+      timeoutMs: 120000,
+      headers: { 'api-version': '2024-10-21' },
+    });
+    expect(advancedCount(input)).toBe(4);
+  });
+
+  it('hasAdvancedErrors 只认高级字段', () => {
+    expect(hasAdvancedErrors({ name: 'x' })).toBe(false);
+    expect(hasAdvancedErrors({ headers: 'x' })).toBe(true);
+    expect(hasAdvancedErrors({ timeoutMs: 'x' })).toBe(true);
   });
 });
 

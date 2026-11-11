@@ -29,7 +29,10 @@ import {
   type BenchHistoryEntryVM,
 } from '../bench-format';
 import {
+  advancedCount,
+  buildAdvanced,
   filterProfiles,
+  hasAdvancedErrors,
   hasErrors,
   hostOf,
   isFailedModel,
@@ -38,6 +41,7 @@ import {
   providerMetaOf,
   sortProfiles,
   validateModelForm,
+  type ModelAdvanced,
   type ModelFormErrors,
   type ModelFormInput,
   type ModelIconKey,
@@ -54,13 +58,14 @@ interface ProfileRow {
   baseUrl: string;
   apiKey: string;
   temperature?: number;
+  advanced?: ModelAdvanced;
   isCurrent: boolean;
 }
 
 type Tab = 'all' | 'active' | 'attention';
 
 const profiles = ref<ProfileRow[]>([]);
-const current = ref<{ model: { name: string; baseUrl: string; apiKey: string; temperature?: number }; active: string | null } | null>(null);
+const current = ref<{ model: { name: string; baseUrl: string; apiKey: string; temperature?: number; advanced?: ModelAdvanced }; active: string | null } | null>(null);
 const scope = ref<'workspace' | 'global'>('workspace');
 const busy = ref(false);
 /** 首屏是否已加载完成（区分骨架与空态） */
@@ -91,9 +96,28 @@ const editingAlias = ref<string | null>(null);
 const showKey = ref(false);
 /** 提交后开启实时校验，避免一打开就飘红 */
 const touched = ref(false);
-const form = ref<ModelFormInput>({ alias: '', name: '', baseUrl: '', apiKey: '', temperature: '' });
+const form = ref<ModelFormInput>(emptyForm());
 const errors = ref<ModelFormErrors>({});
 const submitErr = ref('');
+/** 高级设置折叠区（默认收起；校验失败自动展开） */
+const advOpen = ref(false);
+
+/** 空白表单（新增 / 关闭后复位共用） */
+function emptyForm(): ModelFormInput {
+  return {
+    alias: '',
+    name: '',
+    baseUrl: '',
+    apiKey: '',
+    temperature: '',
+    maxTokens: '',
+    topP: '',
+    topK: '',
+    frequencyPenalty: '',
+    timeoutMs: '',
+    headers: [],
+  };
+}
 
 /** 删除确认弹层 */
 const confirmAlias = ref<string | null>(null);
@@ -312,7 +336,7 @@ function closeDetail(): void {
 function openAdd(): void {
   formMode.value = 'add';
   editingAlias.value = null;
-  form.value = { alias: '', name: '', baseUrl: '', apiKey: '', temperature: '' };
+  form.value = emptyForm();
   beginForm();
 }
 
@@ -326,12 +350,19 @@ function openEdit(alias: string): void {
   menu.value = null;
   formMode.value = 'edit';
   editingAlias.value = alias;
+  const adv = p.advanced;
   form.value = {
     alias,
     name: p.name,
     baseUrl: p.baseUrl,
     apiKey: '',
     temperature: p.temperature !== undefined ? String(p.temperature) : '',
+    maxTokens: adv?.maxTokens !== undefined ? String(adv.maxTokens) : '',
+    topP: adv?.topP !== undefined ? String(adv.topP) : '',
+    topK: adv?.topK !== undefined ? String(adv.topK) : '',
+    frequencyPenalty: adv?.frequencyPenalty !== undefined ? String(adv.frequencyPenalty) : '',
+    timeoutMs: adv?.timeoutMs !== undefined ? String(adv.timeoutMs) : '',
+    headers: Object.entries(adv?.headers ?? {}).map(([key, value]) => ({ key, value })),
   };
   beginForm();
 }
@@ -341,7 +372,20 @@ function beginForm(): void {
   submitErr.value = '';
   touched.value = false;
   showKey.value = false;
+  // 打开抽屉时始终收起，只在折叠头显示「已配置 N 项」
+  advOpen.value = false;
   formOpen.value = true;
+}
+
+/** 请求头行：新增时展开折叠区，删除后立即复校验 */
+function addHeaderRow(): void {
+  form.value.headers.push({ key: '', value: '' });
+  advOpen.value = true;
+}
+
+function removeHeaderRow(index: number): void {
+  form.value.headers.splice(index, 1);
+  revalidate();
 }
 
 function closeForm(): void {
@@ -354,7 +398,10 @@ function closeForm(): void {
 }
 
 function revalidate(): void {
-  if (touched.value) errors.value = validateModelForm(form.value, { editing: formMode.value === 'edit' });
+  if (!touched.value) return;
+  errors.value = validateModelForm(form.value, { editing: formMode.value === 'edit' });
+  // 错误落在折叠区时自动展开，否则用户看不到红框
+  if (hasAdvancedErrors(errors.value)) advOpen.value = true;
 }
 
 async function submit(): Promise<void> {
@@ -363,6 +410,7 @@ async function submit(): Promise<void> {
   errors.value = errs;
   touched.value = true;
   submitErr.value = '';
+  if (hasAdvancedErrors(errs)) advOpen.value = true;
   if (hasErrors(errs)) return;
 
   busy.value = true;
@@ -371,11 +419,14 @@ async function submit(): Promise<void> {
     const name = form.value.name.trim();
     const baseUrl = form.value.baseUrl.trim();
     const apiKey = form.value.apiKey.trim();
+    const advanced = buildAdvanced(form.value);
 
     if (editing) {
       const alias = editingAlias.value as string;
       const old = profiles.value.find((p) => p.alias === alias);
-      const changed = !!old && (old.name !== name || old.baseUrl !== baseUrl || apiKey !== '');
+      // 高级参数（请求头/超时）也会影响连通性，变更后同样作废旧结论
+      const advancedChanged = JSON.stringify(old?.advanced ?? null) !== JSON.stringify(advanced ?? null);
+      const changed = !!old && (old.name !== name || old.baseUrl !== baseUrl || apiKey !== '' || advancedChanged);
       await api(`/models/${encodeURIComponent(alias)}`, {
         method: 'PATCH',
         json: {
@@ -386,6 +437,8 @@ async function submit(): Promise<void> {
             ...(apiKey ? { apiKey } : {}),
             // 空 = 删除该配置，交回服务商默认值
             temperature: tempRaw === '' ? null : Number(tempRaw),
+            // 高级设置整组提交：全部留空 = 删除该模型的 advanced
+            advanced: advanced ?? null,
           },
         },
       });
@@ -408,6 +461,7 @@ async function submit(): Promise<void> {
             baseUrl,
             apiKey,
             ...(temperature !== undefined ? { temperature } : {}),
+            ...(advanced ? { advanced } : {}),
           },
         },
       });
@@ -1052,6 +1106,126 @@ onBeforeUnmount(() => {
             >
             <p v-if="errors.temperature" class="err"><span v-html="icon('alert')"></span>{{ errors.temperature }}</p>
             <p v-else-if="formMode === 'edit'" class="hint">清空表示删除该配置，交回服务商默认值。</p>
+          </div>
+
+          <!-- 高级设置：默认收起，留空即不下发 -->
+          <div class="mv-adv" :class="{ open: advOpen }">
+            <button
+              type="button"
+              class="mv-adv-head"
+              :aria-expanded="advOpen"
+              aria-controls="mv-adv-body"
+              @click="advOpen = !advOpen"
+            >
+              <span class="chev" v-html="icon('caret')"></span>
+              <span>高级设置</span>
+              <span class="sum">
+                <span v-if="advancedCount(form) > 0" class="mv-adv-badge">已配置 {{ advancedCount(form) }} 项</span>
+                <span v-else>可选 · 默认收起</span>
+              </span>
+            </button>
+            <div v-show="advOpen" id="mv-adv-body" class="mv-adv-body">
+              <div class="mv-adv-grid">
+                <div class="field">
+                  <label for="mv-f-max-tokens">max_tokens <span class="opt">可选</span></label>
+                  <input
+                    id="mv-f-max-tokens"
+                    v-model="form.maxTokens"
+                    class="mono"
+                    inputmode="numeric"
+                    placeholder="如 2048"
+                    :class="{ bad: errors.maxTokens }"
+                    @input="revalidate"
+                  >
+                  <p v-if="errors.maxTokens" class="err"><span v-html="icon('alert')"></span>{{ errors.maxTokens }}</p>
+                </div>
+                <div class="field">
+                  <label for="mv-f-top-p">top_p <span class="opt">可选</span></label>
+                  <input
+                    id="mv-f-top-p"
+                    v-model="form.topP"
+                    class="mono"
+                    inputmode="decimal"
+                    placeholder="0 ~ 1，缺省 1"
+                    :class="{ bad: errors.topP }"
+                    @input="revalidate"
+                  >
+                  <p v-if="errors.topP" class="err"><span v-html="icon('alert')"></span>{{ errors.topP }}</p>
+                </div>
+                <div class="field">
+                  <label for="mv-f-top-k">top_k <span class="opt">可选</span></label>
+                  <input
+                    id="mv-f-top-k"
+                    v-model="form.topK"
+                    class="mono"
+                    inputmode="numeric"
+                    placeholder="如 40，留空不下发"
+                    :class="{ bad: errors.topK }"
+                    @input="revalidate"
+                  >
+                  <p v-if="errors.topK" class="err"><span v-html="icon('alert')"></span>{{ errors.topK }}</p>
+                </div>
+                <div class="field">
+                  <label for="mv-f-freq-penalty">frequency_penalty <span class="opt">可选</span></label>
+                  <input
+                    id="mv-f-freq-penalty"
+                    v-model="form.frequencyPenalty"
+                    class="mono"
+                    inputmode="decimal"
+                    placeholder="-2 ~ 2，缺省 0"
+                    :class="{ bad: errors.frequencyPenalty }"
+                    @input="revalidate"
+                  >
+                  <p v-if="errors.frequencyPenalty" class="err"><span v-html="icon('alert')"></span>{{ errors.frequencyPenalty }}</p>
+                </div>
+                <div class="field">
+                  <label for="mv-f-timeout">请求超时 <span class="opt">毫秒</span></label>
+                  <input
+                    id="mv-f-timeout"
+                    v-model="form.timeoutMs"
+                    class="mono"
+                    inputmode="numeric"
+                    placeholder="如 120000，缺省沿用全局"
+                    :class="{ bad: errors.timeoutMs }"
+                    @input="revalidate"
+                  >
+                  <p v-if="errors.timeoutMs" class="err"><span v-html="icon('alert')"></span>{{ errors.timeoutMs }}</p>
+                </div>
+              </div>
+
+              <div class="field">
+                <label>自定义请求头 <span class="opt">可选</span></label>
+                <div class="mv-hdr-rows">
+                  <div v-for="(row, i) in form.headers" :key="i" class="mv-hdr-row">
+                    <input
+                      v-model="row.key"
+                      class="mono"
+                      placeholder="Header 名，如 api-version"
+                      :class="{ bad: errors.headers }"
+                      @input="revalidate"
+                    >
+                    <input
+                      v-model="row.value"
+                      class="mono"
+                      placeholder="值，如 2024-10-21"
+                      :class="{ bad: errors.headers }"
+                      @input="revalidate"
+                    >
+                    <button type="button" class="del" title="删除该请求头" @click="removeHeaderRow(i)">
+                      <span v-html="icon('close')"></span>
+                    </button>
+                  </div>
+                </div>
+                <button type="button" class="mv-adv-add" @click="addHeaderRow">＋ 添加请求头</button>
+                <p v-if="errors.headers" class="err"><span v-html="icon('alert')"></span>{{ errors.headers }}</p>
+                <p v-else class="mv-adv-note">
+                  用于 <code class="mono">OpenAI-Organization</code>、Azure 的 <code class="mono">api-version</code>
+                  这类租户/网关标识；留空即不下发。Authorization 由 API Key 自动生成，不允许覆盖。
+                </p>
+              </div>
+
+              <p class="mv-adv-note">高级项留空表示「不下发」，使用服务商默认值；填写后仅在该模型被调用时生效，切换模型互不影响。</p>
+            </div>
           </div>
 
           <div class="scope-line">

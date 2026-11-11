@@ -46,6 +46,7 @@ export function buildUsePartial(alias: string, profile: ModelProfile): PartialAg
       baseUrl: profile.baseUrl,
       apiKey: profile.apiKey,
       ...(profile.temperature !== undefined ? { temperature: profile.temperature } : {}),
+      ...(profile.advanced !== undefined ? { advanced: profile.advanced } : {}),
     },
   };
 }

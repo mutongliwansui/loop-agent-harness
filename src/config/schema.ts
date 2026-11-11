@@ -26,6 +26,31 @@ export interface ModelConfig {
   baseUrl: string;
   apiKey: string;
   temperature: number;
+  /** 单模型高级参数（需求 20261111-001；未设置时按服务商默认） */
+  advanced?: ModelAdvanced;
+}
+
+/**
+ * 单模型高级参数（需求 20261111-001）
+ *
+ * 设计要点：
+ * - 全部可选，未定义的键不下发（留空 = 用服务商默认值）
+ * - 仅在该模型被调用时生效，切换模型互不影响
+ * - maxTokens 只作为缺省值：调用方显式传入 maxTokens（压缩/测速等）时优先用显式值
+ */
+export interface ModelAdvanced {
+  /** 单次输出上限（透传 max_tokens） */
+  maxTokens?: number;
+  /** 核采样（top_p，0~1） */
+  topP?: number;
+  /** top_k（部分兼容服务商支持） */
+  topK?: number;
+  /** 频率惩罚（frequency_penalty，-2~2） */
+  frequencyPenalty?: number;
+  /** 单模型请求超时（毫秒，下限 1000） */
+  timeoutMs?: number;
+  /** 自定义请求头（如 OpenAI-Organization、Azure api-version）；系统头不允许覆盖 */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -40,6 +65,8 @@ export interface ModelProfile {
   apiKey: string;
   /** 采样温度（可选；未设置时切换不覆盖 model.temperature 现值） */
   temperature?: number;
+  /** 单模型高级参数（可选；切换时同步到 model.advanced 快照） */
+  advanced?: ModelAdvanced;
 }
 
 /**
