@@ -11,7 +11,7 @@
 | 📄 **文件读取** | `fileRead` | 读取文件内容，支持按行范围部分读取，默认每行带 `行号: ` 前缀。默认读取上限：全文最多 2000 行 / 256KB，单行超过 8192 字符会截断，超出时末尾附截断提示；超过 16MB 的全文读取直接拒绝（需分段）；二进制文件（前 8000 字节含 NUL）拒绝读取 | `path`（必填）, `startLine`（可选）, `endLine`（可选）, `offset`（可选，1-based 起始行，与 `startLine` 等价）, `limit`（可选，读取行数）, `maxBytes`（可选，返回内容字节上限）, `encoding`（可选）, `lineNumbers`（可选，默认 `true`） |
 | ✏️ **文件写入** | `fileWrite` | **整文件写入**：`overwrite` 用 `content` 完整替换文件全部内容（**原内容会永久丢失，不支持区域/局部覆盖**，局部修改请用 `editFile`）；`append` 追加到末尾，自动创建父目录。已存在文件的换行自动适配该文件主导行尾（如 CRLF），新文件保持 LF；同文件写操作自动串行化 | `path`（必填）, `content`（必填，overwrite 时为覆盖后的完整文件内容）, `mode`（可选，`overwrite` / `append`） |
 | 🔁 **文件编辑** | `editFile` | 三种模式：①字面量替换（要求唯一出现，多处匹配报错以防误改）；②`regex=true` 正则替换（支持 `$1`/`$&` 捕获引用）；③指定 `startLine`/`endLine` 整段行替换。**行尾归一化**：匹配与校验对 `\r\n`/`\n` 等价（多行 oldText 可直接编辑 CRLF 文件），写回保持原文件行尾风格（未触及区域字节级不变，替换段适配主导行尾）；同文件写操作自动串行化；失配时报错附首个差异行与近似候选，文件 mtime 变化时提示「可能已被并发修改，先 fileRead 再编辑」 | `path`（必填）, `newText`（必填）, `oldText`（未指定行范围时必填）, `startLine`（可选）, `endLine`（可选）, `replaceAll`（可选，默认 `false`）, `regex`（可选，默认 `false`）, `flags`（可选，如 `i`/`m`/`s`） |
-| 🔍 **内容检索** | `grep` | 在文件或目录中检索内容，支持正则、忽略大小写、递归搜索 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选）, `recursive`（可选）, `maxResults`（可选，默认 50） |
+| 🔍 **内容检索** | `grep` | 在文件或目录中检索内容（模仿 grep）：支持正则、忽略大小写、递归搜索（自动跳过 `node_modules` / `.git` / `dist`，目录递归深度上限 5 层）。**流式按行扫描**：以 `createReadStream` + `readline` 逐行处理，内存只驻留当前行，GB 级日志不会整读入内存；`crlfDelay: Infinity` 顺带剥离行尾 `\r`，CRLF 文件上的行尾 `$` 锚点不再失配。**二进制嗅探**：前 8000 字节含 NUL 视为二进制直接跳过（与 `fileRead` 同一口径）。**超长行防护**：单行超过 1200 字符（如 minified 文件）时围绕正则命中点截取前后各 500 字符，两端标注省略字符数与总行长，短行原样返回。**匹配硬上限**：达 2000 条即提前停止扫描（`maxResults` 调大时上限跟随放大），避免匹配风暴撑爆上下文，落盘文件如实声明结果不完整并建议收紧正则。匹配数超出 `maxResults` 时完整结果落临时文件并给出路径与分段读取建议 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选，默认 `false`）, `recursive`（可选，默认 `true`）, `maxResults`（可选，默认 50） |
 | 🎯 **Skill 激活** | `activate_skill` | 激活指定 Skill（技能包），返回 SKILL.md 完整指令**及技能所在目录（技能目录 / SKILL.md 绝对路径）**，便于定位技能内附带的脚本、参考文档等文件 | `name`（必填） |
 | 🧑‍🤝‍🧑 **子任务委托** | `delegate` | 把自包含子任务交给独立子 Agent 执行，返回其最终结论。子 Agent 拥有独立消息历史、共享 L2/L3 记忆、独立 L1 工作记忆；工具集**排除 `delegate`**防无限递归；不落盘独立会话；取消信号透传。执行器由主 Agent 在 run 内注入（`ToolContext.runSubAgent`），未注入时降级报错。过程可见：WebUI 在卡片内提供「子 Agent 过程」折叠区（默认收起），CLI 结束打印一行摘要、`verbose` 时逐行缩进展开。支持 `background:true` 并行后台执行（立即返回 `sub_<id>`，完成后自动落盘结果卡片；并发上限 `agent.subAgent.maxConcurrent`，默认 3）。完成通知双通道（需求 20261107-011）：主 Agent 仍在运行时于下一轮 LLM 调用前注入通知，已结束时自动发起一轮唤醒 run；结果 >2000 字符时完整落盘 `~/.loop-agent/tmp/<sessionId>/subagent-*.txt`（复用 7 天 TTL 清理），通知只带 400 字符预览 + 路径 + `fileRead` 分段读取建议，落盘失败降级回截断（需求 20261108-001） | `task`（必填，自包含任务描述）, `context`（可选，背景补充）, `background`（可选，`true`=后台并行，缺省同步阻塞） |
 | 👁️ **图片描述** | `describe_image` | 对图片做整体描述（主体、场景、可见文字、颜色、数量等）；不确定该问什么时先用它获取全局信息 | `image`（必填，本地路径或 http(s) URL） |
@@ -71,6 +71,9 @@ editFile({ "path": "src/a.ts", "startLine": 10, "endLine": 12, "oldText": "funct
 
 # 内容检索
 grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 })
+
+# 大文件 / 日志检索（流式扫描不整读入内存；二进制文件自动跳过；minified 超长行自动截窗）
+grep({ "pattern": "ERROR|FATAL", "path": "logs/app.log" })
 
 # Skill 激活（渐进式加载，返回 SKILL.md 完整内容 + 技能目录 / SKILL.md 绝对路径）
 activate_skill({ "name": "example-skill" })

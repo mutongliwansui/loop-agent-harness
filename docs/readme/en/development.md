@@ -28,4 +28,4 @@ npm run test:watch
 npm run test:related
 ```
 
-Current test scale: **unit layer 160 test files / 2010 cases (parallel) + integration layer 8 test files / 17 cases (real PTY and other slow cases, serial)**. Before committing, run both `npm run typecheck` and `npm test` — both must report zero errors; run `npm run test:full` for a full regression before pushing or in CI.
+Current test scale: **unit layer 161 test files / 2020 cases (parallel) + integration layer 8 test files / 17 cases (real PTY and other slow cases, serial)**. Before committing, run both `npm run typecheck` and `npm test` — both must report zero errors; run `npm run test:full` for a full regression before pushing or in CI.

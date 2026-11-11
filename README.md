@@ -29,7 +29,7 @@
 | 🔀 **多模型接入与切换** | `/model` 登记多个 OpenAI 协议模型到登记簿，`/model use <别名>` 一键热切换（写盘即生效、零重启），支持连通性测试、漂移检测与全局/工作空间分层管理 |
 | 📈 **模型性能测速** | 连通性 ≠ 性能：后端实测 + SSE 实时读数，出 TTFT（首个**非空内容** chunk）、TPOT / ITL p90、纯解码 TPS（主指标）、端到端 TPS 与成功率；固定提示词 / `max_tokens` / `temperature:0` 保跨模型可比，默认破坏前缀缓存并记录 `prompt_cache_hit_tokens`，token 数以 `usage` 为权威，样本 < 3 轮不出 p90，网关攒包标注「疑似缓冲」，最多 4 模型串行对比，历史落 `~/.loop-agent/model-bench/history.json`（不存 apiKey）；**CLI 侧同样可用**：`/model bench [别名…]` 与 WebUI 共用同一引擎、同一份历史，TTY 下原地刷新实时读数，Ctrl+C 只停测速并保留已采样本，`--json` 供 CI 消费 |
 | 📤 **文件上传** | `/upload` 把本地文件复制到会话隔离的上传目录并注入 Agent 上下文：支持拖拽（跨终端格式归一）、无参弹出系统文件选择框（Windows / macOS / Linux），Agent 下一轮即可读取处理 |
-| 🛠️ **内置工具** | 命令执行（前台输出头尾各保留一半、中间省略并标注字节数，超时/退出码语义统一，不再因 `maxBuffer` 失败；`background:true` 后台运行不受 30s 超时限制）、后台任务管理（commandStatus 查状态、commandLogs 增量读日志、commandStop 终止进程树，任务日志按保留天数/总量自动轮转清理）、**后台完成通知**（任务结束把状态/退出码/耗时/日志尾部注入下一轮对话，替代轮询，日志注入前剥离 ANSI 转义；会话空闲时任务完成会以合成输入唤醒一轮 run 主动消费通知，CLI 模式维持被动注入，`tools.backgroundNotify.wakeIdle` 可关闭）、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep）、Skill 激活、子任务委托（delegate：把自包含子任务交给独立子 Agent 执行，独立上下文、共享项目记忆，子 Agent 不能再委托） |
+| 🛠️ **内置工具** | 命令执行（前台输出头尾各保留一半、中间省略并标注字节数，超时/退出码语义统一，不再因 `maxBuffer` 失败；`background:true` 后台运行不受 30s 超时限制）、后台任务管理（commandStatus 查状态、commandLogs 增量读日志、commandStop 终止进程树，任务日志按保留天数/总量自动轮转清理）、**后台完成通知**（任务结束把状态/退出码/耗时/日志尾部注入下一轮对话，替代轮询，日志注入前剥离 ANSI 转义；会话空闲时任务完成会以合成输入唤醒一轮 run 主动消费通知，CLI 模式维持被动注入，`tools.backgroundNotify.wakeIdle` 可关闭）、文件读取（支持行范围、默认带行号）、文件写入、文本编辑（editFile：字面量/正则/行范围）、内容检索（grep：流式按行扫描、内存只驻留当前行，GB 级日志不整读；前 8000 字节含 NUL 的二进制文件自动跳过，与 `fileRead` 同一口径；`crlfDelay` 顺带剥离行尾 `\r`，CRLF 文件行尾 `$` 锚点不再失配；minified 超长行围绕命中点截取前后各 500 字符并标注省略字符数，避免单行打爆上下文；匹配达 2000 条硬上限即提前停止扫描并如实声明落盘结果不完整，上限随 `maxResults` 放大；超出 `maxResults` 时完整匹配落临时文件并给出路径与分段读取建议）、Skill 激活、子任务委托（delegate：把自包含子任务交给独立子 Agent 执行，独立上下文、共享项目记忆，子 Agent 不能再委托） |
 | 👁️ **视觉理解** | 对接多模态视觉模型（OpenAI 协议 `image_url` 格式）：看图描述 / 定向问答 / 结构化提取 / OCR 四个工具，本地图片自动转 base64，LRU 结果缓存与用量统计，`/vision` 命令管理与连通性测试 |
 | 🌐 **MCP 接入** | 支持通过 Model Context Protocol 接入外部工具服务（stdio / SSE / Streamable HTTP）；工具展示名与参数说明自动中文化（展示元信息 → 中文描述提炼 → 后台异步 LLM 翻译，结果按内容指纹缓存，`enabled:false` 可完全关闭、不调 LLM） |
 | 🧩 **Skill 技能包** | SKILL.md 规范 + 渐进式加载，`activate_skill` 工具按需激活领域指令 |
@@ -134,7 +134,7 @@ npm run dev
 # 📝 编程式调用示例
 npx tsx examples/run.ts
 
-# 🧪 测试（unit 层：160 个测试文件 / 2010 个用例，并行执行）
+# 🧪 测试（unit 层：161 个测试文件 / 2020 个用例，并行执行）
 npm test
 
 # 🧪 集成测试（真实 PTY 等慢用例，串行执行）
