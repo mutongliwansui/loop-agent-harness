@@ -13,28 +13,23 @@ export const delegate: Tool = {
   // 超时后主 Agent 放弃等待（子 Agent Promise 仍会自然结束，结果被丢弃）。
   timeoutMs: 600000,
   description:
-    '把「自包含、可独立完成」的子任务委托给一个独立子 Agent 执行，返回其最终结论。' +
-    '子 Agent 拥有独立上下文与完整工具能力（共享项目记忆），适合：需要独立多步推理/检索的任务、' +
-    '可封装且不希望中间过程污染主对话的任务。子 Agent 不能再委托（无 delegate 工具）。' +
-    '注意：task 必须自包含（子 Agent 看不到当前对话），必要时用 context 补充背景。' +
-    '多个互不相干的任务可设 background=true 并行后台执行：工具立即返回 taskId，' +
-    '主 Agent 继续处理其他事务，完成结果会主动投递回会话。',
+    '把「自包含、可独立完成」的子任务委托给独立子 Agent 执行，返回其最终结论。' +
+    '子 Agent 看不到当前对话（task 须写全，可用 context 补背景），拥有独立上下文与完整工具能力（共享项目记忆），且不能再委托。' +
+    '多个互不相干的任务可设 background=true 并行后台执行（立即返回 taskId，结果完成后投递回会话）。',
   parameters: {
     type: 'object',
     properties: {
       task: {
         type: 'string',
-        description: '子任务描述：应自包含、可独立执行，包含明确的产出要求',
+        description: '子任务描述：必须自包含、可独立执行，含明确的产出要求',
       },
       context: {
         type: 'string',
-        description: '可选：补充给子 Agent 的背景信息（当前对话中与子任务相关的关键约束/结论）',
+        description: '补充背景（子 Agent 看不到当前对话，必要时把相关约束/结论写这里）',
       },
       background: {
         type: 'boolean',
-        description:
-          '可选：true=后台并行执行（立即返回 taskId，不阻塞主 Agent）；缺省 false=同步等待结论。' +
-          '仅在确有互不相干、可并行的子任务时使用',
+        description: '后台并行执行（默认 false 同步等待结论）；仅在确有互不相干任务时使用',
       },
     },
     required: ['task'],

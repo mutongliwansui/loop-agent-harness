@@ -31,19 +31,17 @@ export const commandRun: Tool = {
   name: 'commandRun',
   description:
     '在本地执行 shell 命令，返回 stdout 与 stderr。用于查看目录、运行脚本、查询系统信息等。'
-    + '长任务（dev server、watch、长测试）传 background:true 后台运行：立即返回 taskId，'
-    + '随后用 commandStatus 查状态、commandLogs 增量读日志、commandStop 终止。',
+    + '长任务（dev server、watch、长测试）传 background:true 后台运行：立即返回 taskId。',
   parameters: {
     type: 'object',
     properties: {
       command: { type: 'string', description: '要执行的命令' },
-      cwd: { type: 'string', description: '工作目录（可选），默认当前目录' },
-      timeout: { type: 'number', description: '超时毫秒数（可选），默认 30000（仅前台模式生效）' },
+      cwd: { type: 'string', description: '工作目录（默认当前目录）' },
+      timeout: { type: 'number', description: '超时毫秒数（默认 30000，仅前台模式生效）' },
       background: {
         type: 'boolean',
         description:
-          '后台运行模式（可选）：true 时立即返回 {taskId,pid,logPath}，不阻塞会话、不受 30s 超时限制。'
-          + '适合 dev server/watch/长测试。后续用 commandStatus/commandLogs/commandStop 管理',
+          '后台运行（默认 false）：true 时立即返回 {taskId,pid,logPath}，不阻塞会话、不受 30s 超时限制',
       },
     },
     required: ['command'],

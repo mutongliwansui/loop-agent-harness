@@ -1,5 +1,6 @@
-// 文件读取工具：支持全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
+// 文件读取工具：全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
 // 20261106-001：超限完整输出落临时文件 + 告知路径（方案 B：文件内治理，边扫描边写）
+// 20261111-003：删除 offset/limit 别名参数（行范围只保留 startLine/endLine），并精简工具描述
 import { createReadStream } from 'node:fs';
 import { open, stat, type FileHandle } from 'node:fs/promises';
 import type { Tool, ToolContext } from '../types.js';
@@ -26,35 +27,27 @@ const CHUNK_BYTES = 64 * 1024;
 export const fileRead: Tool = {
   name: 'fileRead',
   description:
-    '读取文件内容，支持全文读取或按行范围部分读取。默认在每行前加 "行号: " 前缀以便定位与引用；如需原始内容（如读-改-写）可设置 lineNumbers=false。默认有读取上限：全文最多 2000 行 / 256KB，单行超过 8192 字符会截断，超出时末尾附截断提示；大文件请用 startLine/endLine 或 offset/limit 分段读取，或先用 grep 定位。二进制文件会被拒绝。',
+    '读取文本文件，默认每行带行号前缀。大文件用 startLine/endLine 分段，或先用 grep 定位；二进制文件会被拒绝。',
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: '文件绝对路径或相对路径' },
+      path: { type: 'string', description: '文件路径' },
       startLine: {
         type: 'number',
-        description: '起始行号（从 1 开始，可选）。需与 endLine 一起使用；不传则读全文',
+        description: '起始行号（1-based，含该行）；与 endLine 成对使用',
       },
       endLine: {
         type: 'number',
-        description: '结束行号（包含，可选）。需与 startLine 一起使用',
-      },
-      offset: {
-        type: 'number',
-        description: '起始行号（从 1 开始，可选，与 startLine 等价）；可与 limit 搭配使用',
-      },
-      limit: {
-        type: 'number',
-        description: '读取行数（可选，从 offset 起算）；不传则读到文件末尾',
+        description: '结束行号（含该行）',
       },
       maxBytes: {
         type: 'number',
-        description: '返回内容的字节上限（可选）。全文读取默认 256KB；显式行范围时默认不限',
+        description: '返回字节上限（全文默认 256KB，行范围默认不限）',
       },
-      encoding: { type: 'string', description: '编码，默认 utf-8' },
+      encoding: { type: 'string', description: '编码（默认 utf-8）' },
       lineNumbers: {
         type: 'boolean',
-        description: '是否在每行前加 "行号: " 前缀，默认 true；设为 false 返回原始内容',
+        description: '是否加行号前缀（默认 true）',
       },
     },
     required: ['path'],
@@ -67,13 +60,7 @@ export const fileRead: Tool = {
     const maxBytes = args.maxBytes != null ? Number(args.maxBytes) : null;
     const startArg = args.startLine != null ? Number(args.startLine) : null;
     const endArg = args.endLine != null ? Number(args.endLine) : null;
-    const offsetArg = args.offset != null ? Number(args.offset) : null;
-    const limitArg = args.limit != null ? Number(args.limit) : null;
 
-    // 行范围两套参数互斥（startLine/endLine 与 offset/limit）
-    if ((startArg !== null || endArg !== null) && (offsetArg !== null || limitArg !== null)) {
-      throw new Error('startLine/endLine 与 offset/limit 不能同时使用');
-    }
     // 保持原语义：startLine 与 endLine 必须成对
     if ((startArg === null) !== (endArg === null)) {
       throw new Error('startLine 与 endLine 必须同时指定，或都不指定');
@@ -86,20 +73,14 @@ export const fileRead: Tool = {
         throw new Error('行号非法：startLine >= 1 且 endLine >= startLine');
       }
     }
-    if (offsetArg !== null && (!Number.isInteger(offsetArg) || offsetArg < 1)) {
-      throw new Error('offset 必须是 >= 1 的整数（1-based 起始行号）');
-    }
-    if (limitArg !== null && (!Number.isInteger(limitArg) || limitArg < 1)) {
-      throw new Error('limit 必须是 >= 1 的整数（读取行数）');
-    }
     if (maxBytes !== null && (!Number.isInteger(maxBytes) || maxBytes < 1)) {
       throw new Error('maxBytes 必须是 >= 1 的整数');
     }
 
-    // offset/limit 统一为 1-based：offset 起始行，limit 行数
-    const explicit = startArg !== null || offsetArg !== null || limitArg !== null;
-    const start = startArg ?? offsetArg ?? 1;
-    const end = endArg ?? (limitArg !== null ? start + limitArg - 1 : null);
+    // 需求 20261111-003（C 档）：删除 offset/limit 别名参数，行范围只保留 startLine/endLine 一套语义
+    const explicit = startArg !== null;
+    const start = startArg ?? 1;
+    const end = endArg;
 
     const st = await stat(path);
     if (st.isDirectory()) throw new Error(`是目录不是文件: ${path}`);
@@ -150,7 +131,7 @@ async function readFull(
   if (size > MAX_FULL_READ_BYTES) {
     throw new Error(
       `文件过大（${fmtSize(size)}），全文读取上限为 ${fmtSize(MAX_FULL_READ_BYTES)}；` +
-        '请改用 startLine/endLine 或 offset/limit 分段读取，或先用 grep 定位关键行',
+        '请改用 startLine/endLine 分段读取，或先用 grep 定位关键行',
     );
   }
 
@@ -225,7 +206,7 @@ async function readFull(
   ];
   if (byteCut) notes.push(`内容已达到 ${fmtSize(byteCap)} 字节上限（可用 maxBytes 调整）。`);
   if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
-  notes.push('继续读取请用 startLine/endLine 或 offset/limit 分段，或先用 grep 定位关键行。');
+  notes.push('继续读取请用 startLine/endLine 分段，或先用 grep 定位关键行。');
 
   // 需求 20261106-001：完整内容已落临时文件，追加结构化路径提示
   // bytes 取文件真实大小（旧实现报的是"收到的字节数"，与文件实际不符）
@@ -294,7 +275,7 @@ async function readRange(
   let out = `文件 ${path} 第 ${start}-${headerEnd} 行（${totalPart}）:\n${body}`;
 
   if (byteCut) {
-    out += `\n\n[已截断] 已达到 maxBytes=${maxBytes} 上限（读到第 ${lastNo} 行）；继续读取请用 offset=${lastNo + 1}。`;
+    out += `\n\n[已截断] 已达到 maxBytes=${maxBytes} 上限（读到第 ${lastNo} 行）；继续读取请用 startLine=${lastNo + 1}。`;
   }
   if (lineClipped) {
     out += `\n[已截断] 部分超长行按 ${MAX_LINE_CHARS} 字符截断。`;

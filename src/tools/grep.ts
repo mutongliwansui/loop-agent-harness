@@ -47,7 +47,7 @@ function clipMatchLine(line: string, matchIndex: number, matchLength: number): s
 export const grep: Tool = {
   name: 'grep',
   description:
-    '在文件或目录中检索内容（模仿 grep）。支持正则表达式、忽略大小写、递归搜索目录。返回 "path:line: content" 格式的匹配列表。',
+    '在文件或目录中用正则检索内容，返回 "path:line: content" 格式的匹配列表。',
   parameters: {
     type: 'object',
     properties: {
@@ -55,15 +55,15 @@ export const grep: Tool = {
       path: { type: 'string', description: '文件或目录路径' },
       ignoreCase: {
         type: 'boolean',
-        description: '是否忽略大小写，默认 false',
+        description: '忽略大小写（默认 false）',
       },
       recursive: {
         type: 'boolean',
-        description: '是否递归搜索目录（仅 path 为目录时生效），默认 true',
+        description: '递归搜索目录（默认 true，仅目录生效）',
       },
       maxResults: {
         type: 'number',
-        description: '最大返回匹配数，默认 50',
+        description: '最大返回条数（默认 50）',
       },
     },
     required: ['pattern', 'path'],

@@ -209,11 +209,11 @@ const VISION_TIMEOUT_MS = 60000;
 export const describeImage: Tool = {
   name: 'describe_image',
   description:
-    '对一张图片做整体描述（主体、场景、可见文字、颜色、数量等）。当用户给出图片且你不确定该问什么时，先用它获取全局信息；已明确要问什么时优先用 ask_image 定向提问。image 支持本地路径或 http(s) URL。',
+    '对一张图片做整体描述（主体、场景、可见文字、颜色、数量等）。不确定该看什么时先用它获取全局信息；已明确要看什么时改用 ask_image。',
   parameters: {
     type: 'object',
     properties: {
-      image: { type: 'string', description: '图片本地路径或 http(s) URL' },
+      image: { type: 'string', description: '图片路径、URL 或 dataURI' },
     },
     required: ['image'],
   },
@@ -226,11 +226,11 @@ export const describeImage: Tool = {
 export const askImage: Tool = {
   name: 'ask_image',
   description:
-    '针对一张图片回答一个具体问题（读取界面文字、错误码、按钮状态、颜色、数量等）。已明确要看什么时优先用它，比 describe_image 更精准、输出更短。',
+    '针对一张图片回答一个具体问题（界面文字、错误码、按钮状态、颜色、数量等）。已明确要看什么时用它，比 describe_image 更精准、输出更短。',
   parameters: {
     type: 'object',
     properties: {
-      image: { type: 'string', description: '图片本地路径或 http(s) URL' },
+      image: { type: 'string', description: '图片路径、URL 或 dataURI' },
       question: { type: 'string', description: '要问的具体问题' },
     },
     required: ['image', 'question'],
@@ -244,11 +244,11 @@ export const askImage: Tool = {
 export const extractJson: Tool = {
   name: 'extract_json',
   description:
-    '从图片中按给定字段列表提取结构化数据，返回 JSON 字符串。适合表单、表格、配置界面等需要精确字段值的场景，一次拿到结构化数据可减少多轮追问。',
+    '从图片中按给定字段列表提取结构化数据，返回 JSON 字符串。表单、表格、配置界面等需要精确字段值时用它。',
   parameters: {
     type: 'object',
     properties: {
-      image: { type: 'string', description: '图片本地路径或 http(s) URL' },
+      image: { type: 'string', description: '图片路径、URL 或 dataURI' },
       fields: {
         type: 'array',
         items: { type: 'string' },
@@ -266,11 +266,11 @@ export const extractJson: Tool = {
 export const ocrImage: Tool = {
   name: 'ocr_image',
   description:
-    '识别图片中的全部文字（OCR），保持原始布局与换行输出。适合文档、截图、照片中的文字提取场景；需要针对文字提问时用 ask_image 更合适。',
+    '识别图片中的全部文字（OCR），保持原始布局与换行。只需提取文字时用它；需针对文字内容提问时用 ask_image。',
   parameters: {
     type: 'object',
     properties: {
-      image: { type: 'string', description: '图片本地路径或 http(s) URL' },
+      image: { type: 'string', description: '图片路径、URL 或 dataURI' },
     },
     required: ['image'],
   },

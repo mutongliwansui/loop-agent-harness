@@ -62,16 +62,16 @@ describe('buildSystemPrompt 的环境信息区块', () => {
 });
 
 describe('buildSystemPrompt 的视觉能力区块', () => {
-  it('visionEnabled=true 时注入图片理解段与四个视觉工具选择规则', () => {
+  it('visionEnabled=true 时注入图片理解段（工具取舍规则已下沉到工具描述）', () => {
     const p = buildSystemPrompt([], 'D:\\work', true);
     expect(p).toContain('## 图片理解');
-    // 四个工具名作为裸文本出现（不再加反引号——反引号由 function calling schema 负责）
+    // 需求 20261111-003：工具名与四选一规则改由视觉工具 description 承载
+    // （模型每轮都能看到 schema），system 只留 schema 表达不了的通用事实
+    expect(p).toContain('路径/URL/dataURI');
+    expect(p).toContain('支持多图数组');
     for (const name of ['ask_image', 'describe_image', 'extract_json', 'ocr_image']) {
-      expect(p).toContain(name);
+      expect(p).not.toContain(name);
     }
-    // 选择规则压缩在一行里
-    expect(p).toContain('定向提问 ask_image');
-    expect(p).toContain('整体描述 describe_image');
   });
 
   it('visionEnabled 未传或 false 时不注入（prompt 字节级一致，保护前缀缓存）', () => {

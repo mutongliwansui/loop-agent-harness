@@ -199,42 +199,40 @@ async function executeLocked(path: string, args: Record<string, unknown>): Promi
 export const editFile: Tool = {
   name: 'editFile',
   description:
-    '在已有文件中替换内容，支持三种用法：①默认按字面量精确匹配替换 oldText（要求唯一出现，多处匹配会报错以避免误改，可用 replaceAll=true 替换全部）；②regex=true 时 oldText 按正则解释（flags 指定 i/m/s 等，g 自动补充），newText 支持 $1/$& 捕获引用；③指定 startLine/endLine 时进入“整段行替换”，把第 startLine-endLine 行整体替换为 newText（oldText 可选，提供则用作校验）。匹配与校验按行尾归一化（\\r\\n 与 \\n 等价），写回保持文件原行尾风格（未触及区域字节级不变，替换段适配主导行尾）；同文件写操作自动串行化，失配时报错附首个差异行与近似候选。文件必须已存在（新建文件请用 fileWrite）。',
+    '在已有文件中替换内容，三种用法：①默认按字面量匹配 oldText，须唯一命中（多处会报错），replaceAll=true 替换全部；'
+    + '②regex=true 时 oldText 按正则解释，newText 可用 $1/$&；③给 startLine/endLine 则整段行替换。'
+    + '文件必须已存在，新建文件用 fileWrite。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '文件路径' },
       oldText: {
         type: 'string',
-        description:
-          '要被替换的原文本（未指定行范围时必填）；regex=true 时为正则表达式；多行文本按 \\n 或 \\r\\n 均可匹配',
+        description: '待替换的原文本（行范围模式下可选，提供则用作校验）；regex=true 时为正则',
       },
       newText: {
         type: 'string',
-        description:
-          '替换后的新文本；regex=true 时支持 $1/$& 等捕获引用；行范围模式下为空字符串表示删除这些行；写入时换行自动适配文件主导行尾',
+        description: '新文本；regex=true 时支持 $1/$& 捕获引用；行范围模式下传空串表示删除该段',
       },
       startLine: {
         type: 'number',
-        description:
-          '起始行号（从 1 开始，可选，须与 endLine 同时指定）；指定后进入整段行替换模式',
+        description: '起始行号（1-based，须与 endLine 成对）；指定后进入整段行替换模式',
       },
       endLine: {
         type: 'number',
-        description: '结束行号（包含，可选，须与 startLine 同时指定）',
+        description: '结束行号（含，须与 startLine 成对）',
       },
       replaceAll: {
         type: 'boolean',
-        description: '是否替换所有匹配，默认 false（仅允许唯一匹配）',
+        description: '替换全部匹配（默认 false，仅允许唯一匹配）',
       },
       regex: {
         type: 'boolean',
-        description: '是否将 oldText 作为正则解释，默认 false（字面量匹配）',
+        description: 'oldText 按正则解释（默认 false 字面量匹配）',
       },
       flags: {
         type: 'string',
-        description:
-          '正则标志（如 "i" 忽略大小写、"m" 多行、"s" dotAll），仅 regex=true 时生效；g 会自动补充',
+        description: '正则标志（如 i 忽略大小写、m 多行、s dotAll），仅 regex=true 生效',
       },
     },
     required: ['path', 'newText'],

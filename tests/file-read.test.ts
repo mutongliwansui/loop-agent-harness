@@ -63,7 +63,7 @@ describe('fileRead 工具', () => {
     );
   });
 
-  // ===== 20261021-007：默认读取上限 / 截断 / 二进制探测 / offset-limit =====
+  // ===== 20261021-007：默认读取上限 / 截断 / 二进制探测 =====
 
   it('超过 2000 行只返回前 2000 行并附截断提示', async () => {
     const content = Array.from({ length: 100000 }, (_, i) => `line-${i + 1}`).join('\n');
@@ -77,7 +77,7 @@ describe('fileRead 工具', () => {
     expect(lines[1999]).toBe('2000: line-2000');
     expect(r).toContain('共 100000 行');
     expect(r).toContain('[已截断]');
-    expect(r).toContain('offset/limit');
+    expect(r).toContain('startLine/endLine');
   });
 
   it('超过 256KB 时按字节截断（未到 2000 行）', async () => {
@@ -100,21 +100,23 @@ describe('fileRead 工具', () => {
     await expect(fileRead.execute({ path: p })).rejects.toThrow(/二进制文件不支持读取/);
   });
 
-  it('offset/limit 分段读取使用 1-based 真实行号', async () => {
+  // ===== 20261111-003（C 档）：删除 offset/limit 别名参数，行范围只保留 startLine/endLine =====
+
+  it('参数 schema 不再暴露 offset/limit', () => {
+    const props = Object.keys(
+      (fileRead.parameters as { properties: Record<string, unknown> }).properties,
+    );
+    expect(props).toEqual(['path', 'startLine', 'endLine', 'maxBytes', 'encoding', 'lineNumbers']);
+  });
+
+  it('传 offset/limit 不再生效（不参与解析，按全文读取）', async () => {
     const content = Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join('\n');
-    const p = seed('range.txt', content);
+    const p = seed('alias.txt', content);
     const r = await fileRead.execute({ path: p, offset: 3, limit: 2 });
-    expect(r).toBe(`文件 ${p} 第 3-4 行（共 10 行）:\n3: l3\n4: l4`);
+    expect(r).toBe(Array.from({ length: 10 }, (_, i) => `${i + 1}: l${i + 1}`).join('\n'));
   });
 
-  it('startLine/endLine 与 offset/limit 混用时报错', async () => {
-    const p = seed('mix.txt', 'a\nb');
-    await expect(
-      fileRead.execute({ path: p, startLine: 1, endLine: 2, offset: 1 }),
-    ).rejects.toThrow(/不能同时使用/);
-  });
-
-  it('显式行范围 + maxBytes 截断并提示继续 offset', async () => {
+  it('显式行范围 + maxBytes 截断并提示继续 startLine', async () => {
     const content = Array.from(
       { length: 100 },
       (_, i) => `row-${i + 1}-${'y'.repeat(80)}`,
@@ -123,7 +125,7 @@ describe('fileRead 工具', () => {
     const r = await fileRead.execute({ path: p, startLine: 1, endLine: 100, maxBytes: 500 });
 
     expect(r).toContain('[已截断]');
-    expect(r).toMatch(/offset=\d+/);
+    expect(r).toMatch(/startLine=\d+/);
     const body = r.split('\n\n')[0];
     expect(body.split('\n').length).toBeLessThan(20);
   });

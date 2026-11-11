@@ -35,13 +35,11 @@ function taskLine(t: BackgroundTask): string {
 export const commandStatus: Tool = {
   name: 'commandStatus',
   description:
-    '查询后台命令任务状态。返回 status（running/exited/killed/orphaned-*）、退出码、耗时与日志大小。'
-    + '不带 taskId 时返回最近 5 个任务摘要（找回 taskId 用）。'
-    + '与 commandRun({background:true}) / commandLogs / commandStop 配套使用。',
+    '查询后台任务状态，返回 status / 退出码 / 耗时 / 日志大小；不带 taskId 时列出最近 5 个任务。',
   parameters: {
     type: 'object',
     properties: {
-      taskId: { type: 'string', description: '后台任务 id（commandRun 后台模式返回的 taskId）' },
+      taskId: { type: 'string', description: '后台任务 id' },
     },
   },
   async execute(args) {
@@ -82,15 +80,13 @@ export const commandStatus: Tool = {
 export const commandLogs: Tool = {
   name: 'commandLogs',
   description:
-    '读取后台命令任务的日志（增量）。不传 sinceOffset 时返回「上次读到处→文件尾部」的新增内容并推进游标；'
-    + '传 sinceOffset 可回读任意区间；tail:true 只读最近 2KB 尾部（不推进游标）。单次上限 8KB，超出请继续调用。'
-    + '推荐先 commandStatus 确认状态：running 时用 tail 看进度，exited 后读全量。',
+    '增量读取后台任务日志：默认从上次读到的位置续读到文件尾部并推进游标；tail=true 只读最近 2KB 尾部（不推进游标）。单次上限 8KB。',
   parameters: {
     type: 'object',
     properties: {
       taskId: { type: 'string', description: '后台任务 id' },
-      sinceOffset: { type: 'number', description: '起始字节偏移（可选，从 0 起）；不传则从上次读游标续读' },
-      tail: { type: 'boolean', description: '只读最近 2KB 尾部（可选）；适合运行中任务看最新输出' },
+      sinceOffset: { type: 'number', description: '起始字节偏移（从 0 起，用于回读历史区间）' },
+      tail: { type: 'boolean', description: '只读最近 2KB 尾部（运行中任务看进度）' },
     },
     required: ['taskId'],
   },
@@ -144,8 +140,7 @@ export const commandLogs: Tool = {
 export const commandStop: Tool = {
   name: 'commandStop',
   description:
-    '终止后台命令任务：杀掉其进程树（Windows taskkill /T /F；POSIX 进程组）。幂等：'
-    + '任务已结束（exited/killed/orphaned-exited）时返回当前状态不重复杀。会话停止不会连带终止后台任务，必须显式调用本工具。',
+    '终止后台任务，杀掉其进程树（Windows taskkill /T /F；POSIX 进程组）。幂等；会话停止不会自动终止后台任务。',
   parameters: {
     type: 'object',
     properties: {

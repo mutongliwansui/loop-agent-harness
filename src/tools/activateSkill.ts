@@ -5,13 +5,14 @@ import type { Tool } from '../types.js';
 export const activateSkill: Tool = {
   name: 'activate_skill',
   description:
-    '激活一个 Skill（技能包），返回该 Skill 的完整指令内容，以及技能所在目录（技能目录 / SKILL.md 绝对路径）。当你判断用户需求匹配某个 Skill 时使用此工具获取详细执行步骤；若技能内部引用了脚本、参考文档等附加文件，可用返回的技能目录拼接其路径后再读取或执行。',
+    '激活一个 Skill（技能包），返回该 Skill 的完整指令内容与技能目录（SKILL.md 绝对路径）。'
+    + '技能内引用的脚本、参考文档等附加文件，用返回的技能目录拼接路径后读取或执行。',
   parameters: {
     type: 'object',
     properties: {
       name: {
         type: 'string',
-        description: '要激活的 Skill 名称（区分大小写）',
+        description: 'Skill 名称（区分大小写）',
       },
     },
     required: ['name'],
