@@ -693,7 +693,10 @@ onBeforeUnmount(() => {
 .tl-toggle.on { background: var(--brand); }
 .tl-toggle.on::after { transform: translateX(18px); }
 
-.tl-more { width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: .6; }
+/* 顶部对齐在卡片右上角：-2px 上偏让 26px 按钮中心对齐 19px 标题行中心；
+   padding: 0 重置全局 button 的 6px 10px，让 15px 图标在 26px 盒内真正居中；
+   不再用 -5px 右负边距，按钮盒与卡片内容右边界对齐（与下方 Schema 按钮一致） */
+.tl-more { width: 26px; height: 26px; flex: none; margin: -2px 0 0; padding: 0; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: .6; }
 .tl-more svg { width: 15px; height: 15px; }
 .tl-card:hover .tl-more { opacity: 1; }
 .tl-more:hover { background: var(--hover); color: var(--text); }

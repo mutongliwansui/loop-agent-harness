@@ -1203,7 +1203,8 @@ onBeforeUnmount(() => {
 .mc-ic-btn svg { width: 14px; height: 14px; }
 
 .mc-more {
-  width: 26px; height: 26px; flex: none; margin: -2px -5px 0 0;
+  /* 顶部对齐右上角；padding: 0 重置全局 button 内边距让图标居中；右边与卡片内容边界对齐 */
+  width: 26px; height: 26px; flex: none; margin: -2px 0 0; padding: 0;
   display: grid; place-items: center; border: none; border-radius: 6px;
   background: transparent; color: var(--muted); cursor: pointer; opacity: .6;
 }
