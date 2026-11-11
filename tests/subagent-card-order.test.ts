@@ -9,7 +9,7 @@
  * 位置落在本轮消息之后（用户消息 → 助手回答 → 结果卡片）。
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../src/session/store.js';
@@ -20,7 +20,9 @@ import { subAgentRegistry } from '../src/agent/subagent-registry.js';
 import type { HandlerContext } from '../src/api/router.js';
 import type { AgentOptions, AgentResult, ChatMessage } from '../src/types.js';
 
-const BASE = join(tmpdir(), 'loop-agent-tests', 'subagent-card-order');
+const ROOT = join(tmpdir(), 'loop-agent-tests', 'subagent-card-order');
+/** 当前用例的独立目录（beforeEach 重新创建），避免与其他用例的后台落盘互相干扰 */
+let BASE = ROOT;
 const CARD_TAG = '<subagent_result>';
 const USER_TEXT = '用子Agent做全量比对';
 
@@ -84,13 +86,19 @@ function locate(messages: ChatMessage[], userText: string): { user: number; card
 }
 
 beforeAll(() => {
-  rmSync(BASE, { recursive: true, force: true });
-  mkdirSync(BASE, { recursive: true });
+  mkdirSync(ROOT, { recursive: true });
 });
-afterAll(() => rmSync(BASE, { recursive: true, force: true }));
+afterAll(() => {
+  try {
+    rmSync(ROOT, { recursive: true, force: true });
+  } catch {
+    // Windows 上后台 best-effort 写入（journal / runlog）可能仍有延迟句柄，残留临时目录不影响结果
+  }
+});
 beforeEach(() => {
-  rmSync(BASE, { recursive: true, force: true });
-  mkdirSync(BASE, { recursive: true });
+  // 每个用例独立目录：run 返回后 journal / runlog 仍可能异步落盘，复用同一目录会和清理竞争
+  // （Windows 上表现为 EPERM / ENOTEMPTY），隔离开即可避免。
+  BASE = mkdtempSync(join(ROOT, 'case-'));
   subAgentRegistry.reset();
 });
 

@@ -13,12 +13,17 @@
 import { describe, it, expect } from 'vitest';
 import {
   MODEL_ICON_PATHS,
+  MODEL_PROVIDERS,
   filterProfiles,
   hasErrors,
   hostOf,
+  isFailedModel,
   modelIconSvg,
   modelPills,
+  providerMetaOf,
+  providerOf,
   sortActiveFirst,
+  sortProfiles,
   validateModelForm,
 } from '../webui/src/models-ui.js';
 import { NAV_ICON_PATHS } from '../webui/src/nav-menu.js';
@@ -181,6 +186,75 @@ describe('validateModelForm', () => {
     for (const v of ['0', '0.7', '2']) {
       expect(validateModelForm({ ...ok, temperature: v }).temperature).toBeUndefined();
     }
+  });
+
+  it('编辑模式：别名跳过校验、API Key 可留空', () => {
+    const errs = validateModelForm({ ...ok, alias: '', apiKey: '' }, { editing: true });
+    expect(errs).toEqual({});
+    // 型号 / Base URL / temperature 仍照常校验
+    expect(validateModelForm({ ...ok, name: '', apiKey: '' }, { editing: true }).name).toBe('型号必填');
+    expect(validateModelForm({ ...ok, baseUrl: 'x', apiKey: '' }, { editing: true }).baseUrl).toBeTruthy();
+  });
+});
+
+describe('providerOf / providerMetaOf', () => {
+  it('按域名特征识别服务商', () => {
+    expect(providerOf('https://api.deepseek.com/v1')).toBe('deepseek');
+    expect(providerOf('https://open.bigmodel.cn/api/paas/v4')).toBe('zhipu');
+    expect(providerOf('https://api.openai.com/v1')).toBe('openai');
+    expect(providerOf('https://dashscope.aliyuncs.com/compatible-mode/v1')).toBe('qwen');
+    expect(providerOf('https://openrouter.ai/api/v1')).toBe('gateway');
+    expect(providerOf('http://127.0.0.1:11434/v1')).toBe('other');
+    expect(providerOf('')).toBe('other');
+  });
+
+  it('返回 tile 缩写与中文标签；每个服务商都有元数据', () => {
+    expect(providerMetaOf('https://api.deepseek.com').text).toBe('DS');
+    expect(providerMetaOf('https://open.bigmodel.cn').label).toBe('智谱');
+    for (const meta of Object.values(MODEL_PROVIDERS)) {
+      expect(meta.label.length).toBeGreaterThan(0);
+      expect(meta.text.length).toBe(2);
+    }
+  });
+});
+
+describe('sortProfiles', () => {
+  const rows = [
+    { alias: 'zeta', isCurrent: false },
+    { alias: 'alpha', isCurrent: true },
+    { alias: 'beta', isCurrent: false },
+  ];
+
+  it('active：生效优先，同档按别名 A→Z', () => {
+    expect(sortProfiles(rows, 'active').map((r) => r.alias)).toEqual(['alpha', 'beta', 'zeta']);
+  });
+
+  it('alias：纯别名升序', () => {
+    expect(sortProfiles(rows, 'alias').map((r) => r.alias)).toEqual(['alpha', 'beta', 'zeta']);
+  });
+
+  it('ttft：升序，无数据沉底', () => {
+    const ttft: Record<string, number | null> = { zeta: 900, alpha: 300, beta: null };
+    expect(sortProfiles(rows, 'ttft', (r) => ttft[r.alias]).map((r) => r.alias)).toEqual(['alpha', 'zeta', 'beta']);
+  });
+
+  it('不修改入参', () => {
+    const copy = [...rows];
+    sortProfiles(rows, 'alias');
+    expect(rows).toEqual(copy);
+  });
+});
+
+describe('isFailedModel', () => {
+  it('连通失败 → true；测速全失败 → true', () => {
+    expect(isFailedModel({ test: { ok: false, latencyMs: 0 } })).toBe(true);
+    expect(isFailedModel({ perf: { ttft: null, okCount: 0, total: 3 } })).toBe(true);
+  });
+
+  it('未测试 / 未测速 / 成功 → false（中性态不计入需关注）', () => {
+    expect(isFailedModel({})).toBe(false);
+    expect(isFailedModel({ test: { ok: true, latencyMs: 300 } })).toBe(false);
+    expect(isFailedModel({ perf: { ttft: 500, okCount: 3, total: 3 } })).toBe(false);
   });
 });
 

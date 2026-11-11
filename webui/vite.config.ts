@@ -19,6 +19,7 @@ export default defineConfig({
       '/config': 'http://127.0.0.1:3000',
       '/tools': 'http://127.0.0.1:3000',
       '/models': 'http://127.0.0.1:3000',
+      '/model': 'http://127.0.0.1:3000',
       '/mcp': 'http://127.0.0.1:3000',
       '/skills': 'http://127.0.0.1:3000',
       '/memory': 'http://127.0.0.1:3000',

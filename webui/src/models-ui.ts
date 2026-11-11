@@ -17,6 +17,10 @@ export type ModelIconKey =
   | 'refresh' // 刷新
   | 'close' // 关闭
   | 'alert' // 行内错误
+  | 'dots' // 更多操作
+  | 'pencil' // 编辑
+  | 'copy' // 复制
+  | 'info' // 详情
   | 'caret'; // 说明折叠指示
 
 /** 16×16 线性图标的 inner SVG（外层属性由 modelIconSvg() 统一给） */
@@ -35,6 +39,10 @@ export const MODEL_ICON_PATHS: Record<ModelIconKey, string> = {
   refresh: '<path d="M13 8a5 5 0 1 1-1.7-3.8"/><path d="M13.2 2.8v2.6h-2.6"/>',
   close: '<path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/>',
   alert: '<circle cx="8" cy="8" r="6.2"/><path d="M8 5.2v3.6M8 10.8v.4"/>',
+  dots: '<circle cx="3.6" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="12.4" cy="8" r=".9" fill="currentColor" stroke="none"/>',
+  pencil: '<path d="M3.2 12.8l.9-3.1 6.6-6.6 2.2 2.2-6.6 6.6-3.1.9z"/><path d="M9.8 4l2.2 2.2"/>',
+  copy: '<rect x="5.2" y="5.2" width="6.8" height="8" rx="1.2"/><path d="M10.4 5.2V3.4H3.6v8h1.6"/>',
+  info: '<circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v3.2M8 4.8v.4"/>',
   caret: '<path d="M6 4l4 4-4 4"/>',
 };
 
@@ -95,7 +103,66 @@ export function filterProfiles<T extends { alias: string; name: string; baseUrl:
   );
 }
 
+/** 工具条排序方式：生效优先 / 别名 A→Z / TTFT 升序 */
+export type ModelSortMode = 'active' | 'alias' | 'ttft';
+
+/**
+ * 卡片排序（稳定、不改入参）：
+ * - active：生效优先，同档按别名 A→Z
+ * - alias：纯别名 A→Z
+ * - ttft：TTFT 升序，无数据沉底，同值按别名
+ */
+export function sortProfiles<T extends { alias: string; isCurrent: boolean }>(
+  rows: readonly T[],
+  mode: ModelSortMode,
+  ttftOf: (row: T) => number | null | undefined = () => null,
+): T[] {
+  const arr = [...rows];
+  if (mode === 'alias') return arr.sort((a, b) => a.alias.localeCompare(b.alias));
+  if (mode === 'ttft') {
+    const val = (r: T): number => {
+      const v = ttftOf(r);
+      return typeof v === 'number' && Number.isFinite(v) ? v : Infinity;
+    };
+    return arr.sort((a, b) => val(a) - val(b) || a.alias.localeCompare(b.alias));
+  }
+  return arr.sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent) || a.alias.localeCompare(b.alias));
+}
+
 export type PillTone = 'brand' | 'ok' | 'bad' | 'warn' | 'dim';
+
+/** 服务商标识（决定卡片 tile 的渐变与标签文案） */
+export type ModelProvider = 'deepseek' | 'zhipu' | 'openai' | 'qwen' | 'gateway' | 'other';
+
+/** 服务商展示元数据：label 为中文名/品牌名，text 为 tile 上的两字缩写 */
+export const MODEL_PROVIDERS: Record<ModelProvider, { label: string; text: string }> = {
+  deepseek: { label: 'DeepSeek', text: 'DS' },
+  zhipu: { label: '智谱', text: 'GL' },
+  openai: { label: 'OpenAI', text: 'OA' },
+  qwen: { label: '通义千问', text: 'QW' },
+  gateway: { label: 'OpenRouter', text: 'OR' },
+  other: { label: '自定义', text: 'LM' },
+};
+
+/**
+ * baseUrl → 服务商（按域名特征猜测；猜不出归入 other）。
+ * 纯展示用途，不参与任何业务判断，因此宁可保守也不抛错。
+ */
+export function providerOf(baseUrl: string): ModelProvider {
+  const u = (baseUrl ?? '').toLowerCase();
+  if (u.includes('deepseek')) return 'deepseek';
+  if (u.includes('bigmodel') || u.includes('zhipu')) return 'zhipu';
+  if (u.includes('openai')) return 'openai';
+  if (u.includes('dashscope') || u.includes('aliyun')) return 'qwen';
+  if (u.includes('openrouter')) return 'gateway';
+  return 'other';
+}
+
+/** 服务商展示元数据（providerOf 的便捷封装） */
+export function providerMetaOf(baseUrl: string): { provider: ModelProvider; label: string; text: string } {
+  const provider = providerOf(baseUrl);
+  return { provider, ...MODEL_PROVIDERS[provider] };
+}
 
 /** 状态胶囊：tone 决定配色，text 为可见文案，title 为悬停解释 */
 export interface Pill {
@@ -157,6 +224,14 @@ export function modelPills(input: {
   return pills;
 }
 
+/** 卡片/统计条判定：连通失败或测速全失败才算「需关注」（未测试 / 未测速不计入） */
+export function isFailedModel(input: { test?: TestLike | null; perf?: PerfLike | null }): boolean {
+  const t = input.test;
+  if (t && !t.ok) return true;
+  const pf = input.perf;
+  return !!pf && (pf.ttft === null || pf.ttft === undefined);
+}
+
 /** 登记表单原始输入（全部为字符串，便于与 input v-model 直连） */
 export interface ModelFormInput {
   alias: string;
@@ -176,15 +251,22 @@ export interface ModelFormErrors {
 }
 
 /**
- * 登记表单行内校验（D7）：必填四项 + baseUrl 协议 + temperature 数值域。
+ * 登记 / 编辑表单行内校验（D7）：必填四项 + baseUrl 协议 + temperature 数值域。
+ * 编辑模式（editing=true）下别名只读跳过校验、API Key 允许留空（= 保持原值）。
  * 返回空对象表示可提交；不抛错、不做网络判断。
  */
-export function validateModelForm(input: ModelFormInput): ModelFormErrors {
+export function validateModelForm(
+  input: ModelFormInput,
+  options: { editing?: boolean } = {},
+): ModelFormErrors {
   const errs: ModelFormErrors = {};
 
-  const alias = (input.alias ?? '').trim();
-  if (!alias) errs.alias = '别名必填';
-  else if (/\s/.test(alias)) errs.alias = '别名不能包含空格';
+  if (!options.editing) {
+    const alias = (input.alias ?? '').trim();
+    if (!alias) errs.alias = '别名必填';
+    else if (/\s/.test(alias)) errs.alias = '别名不能包含空格';
+    else if (alias.startsWith('-')) errs.alias = '别名不能以 - 开头';
+  }
 
   if (!(input.name ?? '').trim()) errs.name = '型号必填';
 
@@ -192,7 +274,7 @@ export function validateModelForm(input: ModelFormInput): ModelFormErrors {
   if (!baseUrl) errs.baseUrl = 'Base URL 必填';
   else if (!/^https?:\/\/\S+$/i.test(baseUrl)) errs.baseUrl = '需要以 http:// 或 https:// 开头';
 
-  if (!(input.apiKey ?? '').trim()) errs.apiKey = 'API Key 必填';
+  if (!options.editing && !(input.apiKey ?? '').trim()) errs.apiKey = 'API Key 必填';
 
   const temp = (input.temperature ?? '').trim();
   if (temp !== '') {

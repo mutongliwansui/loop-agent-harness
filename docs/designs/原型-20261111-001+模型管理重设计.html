@@ -1,0 +1,1542 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebUI 原型 · 模型管理重设计 · 20261111-001</title>
+<!--
+  原型：WebUI 模型管理页（ModelsView）视觉与交互重设计
+  目标文件：webui/src/views/ModelsView.vue
+  端点不变：GET /models · GET /model · PUT /model（切换）
+            POST /models（登记，同名 409）· POST /models/:alias/test（连通性）
+            DELETE /models/:alias?scope=（删激活模型 409）
+            GET /models/bench/history（测速历史）
+  后端事实：现有端点没有「编辑已有模型」能力；本原型新增 PATCH /models/:alias 设计（需后端配套），
+  别名作为主键不可改，改名仍走删除后重新登记。
+  自包含：无 CDN、无外部字体、无外部图片，离线可开；图标全部为内联 SVG。
+-->
+<style>
+/* ====== 0. 主题令牌（与 webui/src/style.css 一致） ====== */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --text: #22252a;
+  --muted: #6b7280; --brand: #0e9f6e; --brand-weak: #e6f6ef; --brand-on: #ffffff;
+  --danger: #dc2626; --danger-weak: #fdecec; --warn: #b45309; --warn-weak: #fef3c7;
+  --ok: #059669; --ok-weak: #d1fae5;
+  --line-soft: #eef0f3; --line-strong: #d3d8de;
+  --hover: rgba(17, 24, 39, .055); --active: rgba(17, 24, 39, .1);
+  --text-2: #4b5563; --bar-bg: #fbfcfd; --code-bg: #f1f3f5;
+  --radius-card: 13px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+  --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+:root[data-theme="dark"] {
+  --bg: #14171c; --panel: #1b1f26; --line: #2b313a; --text: #e6e8eb;
+  --muted: #9aa1ab; --brand: #34d399; --brand-weak: #143528; --brand-on: #0b221a;
+  --danger: #f87171; --danger-weak: #3b1a1a; --warn: #fbbf24; --warn-weak: #3a2e10;
+  --ok: #34d399; --ok-weak: #143528;
+  --line-soft: #242a32; --line-strong: #3a424d;
+  --hover: rgba(255, 255, 255, .07); --active: rgba(255, 255, 255, .12);
+  --text-2: #b6bdc6; --bar-bg: #1f242b; --code-bg: #22272f;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+  --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0 0 90px; background: var(--bg); color: var(--text); font: 14px/1.65 var(--sans); -webkit-font-smoothing: antialiased; }
+button { font-family: inherit; }
+code { font-family: var(--mono); }
+
+/* ====== 1. 原型骨架 ====== */
+.page { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+.topbar { position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 12px; padding: 11px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+.topbar .tag { font: 500 11px/1 var(--mono); color: var(--muted); padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap; }
+.topbar nav { display: flex; gap: 2px; margin-left: 6px; }
+.topbar nav a { font-size: 12px; color: var(--muted); text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; cursor: pointer; }
+.topbar nav a:hover { background: var(--hover); color: var(--text); }
+.topbar .spring { flex: 1; }
+.theme-btns { display: flex; gap: 4px; }
+.theme-btns button { height: 24px; padding: 0 9px; font-size: 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.theme-btns button.on { background: var(--brand); border-color: var(--brand); color: var(--brand-on); }
+@media (max-width: 980px) { .topbar nav { display: none; } }
+
+section { padding-top: 42px; scroll-margin-top: 64px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.sec-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+.sec-head .badge { font: 500 11px/1 var(--mono); color: var(--brand); background: var(--brand-weak); padding: 4px 7px; border-radius: 999px; }
+.sec-head .badge.mute { color: var(--muted); background: var(--code-bg); }
+.sec-desc { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; max-width: 88ch; }
+.sec-desc code, .issue code, .kv td code, .d-item code { font: 500 11.5px/1 var(--mono); color: var(--text-2); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+
+.issue-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 860px) { .issue-grid { grid-template-columns: 1fr; } }
+.issue { display: flex; gap: 11px; padding: 13px 15px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
+.issue .no { width: 23px; height: 23px; flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--danger-weak); color: var(--danger); font: 700 11px/1 var(--mono); margin-top: 1px; }
+.issue b { display: block; font-size: 12.5px; font-weight: 650; }
+.issue p { margin: 3px 0 0; font-size: 12px; color: var(--muted); line-height: 1.62; }
+
+.ctx { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 22px 22px 24px; overflow: hidden; }
+.ctx-tag { position: absolute; top: 0; right: 0; font: 500 10px/1 var(--mono); color: var(--muted); background: var(--code-bg); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 5px 9px; border-bottom-left-radius: 8px; }
+.note { margin-top: 12px; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); line-height: 1.7; }
+.note b { color: var(--text); font-weight: 650; }
+.d-list { display: grid; gap: 10px; }
+.d-item { padding: 10px 13px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: 12px; color: var(--text-2); line-height: 1.7; }
+.d-item b { color: var(--text); font-weight: 650; }
+
+/* ====== 2. 通用控件 ====== */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text-2); font: 500 12.5px/1 var(--sans); cursor: pointer; white-space: nowrap; transition: border-color .13s, background .13s, color .13s, filter .13s; }
+.btn:hover { border-color: var(--line-strong); color: var(--text); background: var(--bar-bg); }
+.btn svg { width: 15px; height: 15px; flex: none; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-on); font-weight: 600; box-shadow: 0 1px 2px rgba(14, 159, 110, .22); }
+.btn.primary:hover { filter: brightness(1.05); background: var(--brand); color: var(--brand-on); }
+.btn.icon { width: 34px; padding: 0; }
+.btn.sm { height: 27px; padding: 0 9px; font-size: 11.5px; border-radius: 7px; }
+.btn.ghost { background: transparent; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger:hover { filter: brightness(1.06); color: #fff; }
+.btn.danger-outline { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); background: transparent; }
+.btn.danger-outline:hover { background: var(--danger-weak); color: var(--danger); border-color: var(--danger); }
+.btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+
+/* ====== 3. 模型页：页头 / 统计 / 工具条 ====== */
+.md-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+.md-head .lead { min-width: 0; }
+.eyebrow { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.eyebrow svg { width: 12px; height: 12px; color: var(--brand); }
+.md-head h1 { margin: 3px 0 0; font-size: 24px; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; }
+.md-head p { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); max-width: 70ch; }
+.md-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.md-stats { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.md-stat { padding: 11px 16px 12px; border-left: 1px solid var(--line-soft); min-width: 0; }
+.md-stat:first-child { border-left: none; }
+.md-stat .k { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.md-stat .k i { width: 5px; height: 5px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.md-stat .k i.on { background: var(--brand); }
+.md-stat .k i.bad { background: var(--danger); }
+.md-stat .v { font-size: 20px; font-weight: 650; line-height: 1.3; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.md-stat .v small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.md-stat .v.bad { color: var(--danger); }
+
+.md-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 13px; }
+.md-search { flex: 1; min-width: 190px; max-width: 320px; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; transition: border-color .13s, box-shadow .13s; }
+.md-search:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.md-search svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.md-search input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font: 400 12.5px/1 var(--sans); color: var(--text); padding: 0; }
+.md-search input::placeholder { color: var(--muted); }
+.md-search kbd { font: 500 10px/1 var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; }
+
+.md-seg { display: flex; gap: 2px; padding: 2px; background: var(--code-bg); border-radius: 9px; }
+.md-seg button { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: none; border-radius: 7px; background: transparent; color: var(--muted); font: 500 12px/1 var(--sans); cursor: pointer; }
+.md-seg button:hover { color: var(--text-2); }
+.md-seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .09); }
+.md-seg .n { font: 600 10px/14px var(--mono); color: var(--muted); background: var(--panel); border-radius: 999px; padding: 0 5px; min-width: 16px; text-align: center; }
+.md-seg button.on .n { color: var(--brand); background: var(--brand-weak); }
+
+.md-sel { height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center; color: var(--text-2); font: 500 12px/1 var(--sans); cursor: pointer; appearance: none; }
+.md-scope-wrap { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.md-scope-wrap .md-sel { height: 30px; font-size: 11.5px; }
+.md-count { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* ====== 4. 模型卡片 ====== */
+.md-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.md-card { position: relative; display: flex; flex-direction: column; gap: 9px; padding: 14px 16px 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 1px 2px rgba(16, 24, 40, .03); cursor: pointer; outline: none; transition: border-color .15s, box-shadow .15s, transform .15s; }
+.md-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.md-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.md-card.on { border-color: color-mix(in srgb, var(--brand) 42%, var(--line)); background: color-mix(in srgb, var(--brand-weak) 42%, var(--panel)); }
+.md-card.on::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--brand); border-radius: 13px 0 0 13px; }
+.md-card.bad { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
+.md-card.bad::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--danger); border-radius: 13px 0 0 13px; }
+
+.md-top { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.tile { width: 42px; height: 42px; border-radius: 12px; flex: none; display: grid; place-items: center; color: #fff; font: 700 12px/1 var(--sans); letter-spacing: .04em; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 2px 7px -3px rgba(16, 24, 40, .35); }
+.tile.deepseek { background: linear-gradient(135deg, #4f6bff, #3355e0); }
+.tile.zhipu    { background: linear-gradient(135deg, #7c3aed, #6d28d9); }
+.tile.openai   { background: linear-gradient(135deg, #10a37f, #0b7a5f); }
+.tile.qwen     { background: linear-gradient(135deg, #0891b2, #0e7490); }
+.tile.gateway  { background: linear-gradient(135deg, #ea580c, #c2410c); }
+.tile.other    { background: linear-gradient(135deg, #6b7280, #4b5563); }
+.tile.muted { filter: grayscale(1) opacity(.7); }
+
+.md-id { flex: 1; min-width: 0; }
+.md-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
+.md-title h3 { margin: 0; font: 650 14px/1.35 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.md-tag { font: 500 10.5px/1 var(--sans); color: var(--brand); background: var(--brand-weak); padding: 3px 7px; border-radius: 999px; white-space: nowrap; }
+.md-meta { margin: 3px 0 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+.md-meta.sub { margin-top: 1px; font-size: 11px; }
+.md-meta .m { font-family: var(--mono); color: var(--text-2); max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-meta .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.md-more { width: 26px; height: 26px; padding: 0; flex: none; display: grid; place-items: center; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; opacity: .62; }
+.md-more svg { width: 15px; height: 15px; }
+.md-card:hover .md-more { opacity: 1; }
+.md-more:hover { background: var(--active); color: var(--text); }
+
+.md-pills { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.md-pill { display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 7px; border-radius: 999px; font: 600 10.5px/1 var(--sans); white-space: nowrap; background: var(--code-bg); color: var(--muted); }
+.md-pill svg { width: 11px; height: 11px; }
+.md-pill.brand { color: var(--brand); background: var(--brand-weak); }
+.md-pill.ok { color: var(--ok); background: var(--ok-weak); }
+.md-pill.warn { color: var(--warn); background: var(--warn-weak); }
+.md-pill.bad { color: var(--danger); background: var(--danger-weak); }
+.md-pill.dim { color: var(--muted); background: var(--code-bg); }
+
+.md-foot { display: flex; align-items: center; gap: 8px; padding-top: 9px; border-top: 1px solid var(--line-soft); font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.md-foot .sp { flex: 1; }
+.md-foot .on-txt { color: var(--brand); font-weight: 600; }
+.md-foot .btn { flex: none; }
+
+/* ====== 5. 骨架 / 空态 / 提示 ====== */
+.md-skel { display: flex; gap: 11px; padding: 15px 16px; min-height: 116px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; }
+.md-skel .t { width: 42px; height: 42px; flex: none; border-radius: 12px; background: var(--code-bg); animation: sk 1.2s ease-in-out infinite; }
+.md-skel .l { flex: 1; display: flex; flex-direction: column; gap: 9px; padding-top: 4px; }
+.md-skel .l i { display: block; height: 8px; border-radius: 4px; background: var(--code-bg); animation: sk 1.2s ease-in-out infinite; }
+.md-skel .l i:nth-child(2) { animation-delay: .1s; width: 80%; }
+.md-skel .l i:nth-child(3) { animation-delay: .2s; width: 55%; }
+@keyframes sk { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+.md-nothing { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; padding: 34px 20px; text-align: center; border: 1px dashed var(--line-strong); border-radius: 14px; background: var(--panel); }
+.md-nothing .nt-ico { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: var(--code-bg); color: var(--muted); margin-bottom: 11px; }
+.md-nothing .nt-ico svg { width: 22px; height: 22px; }
+.md-nothing b { font-size: 13.5px; font-weight: 650; }
+.md-nothing p { margin: 5px 0 13px; font-size: 12px; color: var(--muted); max-width: 56ch; line-height: 1.65; }
+
+.md-alert { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 12px; padding: 10px 12px; border-radius: 9px; font-size: 12px; line-height: 1.65; color: var(--danger); background: var(--danger-weak); border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); }
+.md-alert .ai { width: 17px; height: 17px; flex: none; display: grid; place-items: center; margin-top: 1px; border-radius: 50%; border: 1px solid currentColor; font: 700 10px/1 var(--mono); }
+.md-alert b { font-weight: 650; }
+.md-link { border: none; background: none; color: currentColor; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; padding: 0; }
+
+.md-footline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--line-soft); font-size: 11px; color: var(--muted); }
+.md-footline .sp { flex: 1; }
+
+/* ====== 6. 卡片 ⋯ 菜单 ====== */
+.md-menu { position: fixed; z-index: 96; width: 190px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-pop); display: none; }
+.md-menu .m-head { padding: 6px 9px 7px; font: 600 11px/1.3 var(--mono); color: var(--muted); border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-menu button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px 9px; border: none; border-radius: 6px; background: transparent; font-size: 12px; color: var(--text-2); text-align: left; cursor: pointer; }
+.md-menu button svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.md-menu button:hover { background: var(--hover); color: var(--text); }
+.md-menu .hr { height: 1px; background: var(--line-soft); margin: 4px 2px; }
+.md-menu button.danger { color: var(--danger); }
+.md-menu button.danger svg { color: var(--danger); }
+.md-menu button.danger:hover { background: var(--danger-weak); }
+.md-menu button:disabled { opacity: .42; cursor: not-allowed; }
+.md-menu button:disabled:hover { background: transparent; color: var(--danger); }
+
+/* ====== 7. 遮罩 / 抽屉 ====== */
+.md-backdrop { position: fixed; inset: 0; z-index: 100; background: rgba(16, 24, 40, .4); backdrop-filter: blur(2px); opacity: 0; pointer-events: none; transition: opacity .2s; }
+.md-backdrop.show { opacity: 1; pointer-events: auto; }
+.md-drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 110; width: min(520px, 100%); display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -24px 0 64px -24px rgba(16, 24, 40, .45); transform: translateX(102%); visibility: hidden; transition: transform .26s cubic-bezier(.2, .8, .2, 1), visibility .26s; }
+.md-drawer.show { transform: none; visibility: visible; }
+.md-drv-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 16px; border-bottom: 1px solid var(--line-soft); }
+.md-drv-head .tile { width: 46px; height: 46px; border-radius: 13px; font-size: 13px; }
+.md-drv-title { flex: 1; min-width: 0; }
+.md-drv-title h2 { margin: 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font: 650 16px/1.35 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.md-drv-sub { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.md-drv-sub .mono { font-family: var(--mono); color: var(--text-2); }
+.md-drv-sub .sep { color: var(--line-strong); }
+.md-close { width: 30px; height: 30px; padding: 0; flex: none; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; margin: -3px -4px 0 0; }
+.md-close:hover { background: var(--code-bg); color: var(--text); }
+.md-close svg { width: 14px; height: 14px; }
+.md-drv-body { flex: 1; overflow: auto; padding: 16px 20px 28px; }
+.md-drv-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bar-bg); flex-wrap: wrap; }
+.md-drv-foot .sp { flex: 1; }
+.md-scope-line { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.md-scope-line select { height: 28px; padding: 0 22px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text-2); font: 500 11.5px/1 var(--sans); cursor: pointer; appearance: none; }
+
+.md-lab { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted); margin: 18px 0 8px; }
+.md-lab:first-child { margin-top: 0; }
+.md-lab svg { width: 12px; height: 12px; }
+.md-lab-sub { margin-left: auto; font: 400 10.5px/1 var(--sans); color: var(--muted); }
+
+.kv { width: 100%; border-collapse: collapse; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.kv tr + tr td { border-top: 1px solid var(--line-soft); }
+.kv td { padding: 7px 11px; font-size: 12px; vertical-align: top; }
+.kv td.k { width: 104px; color: var(--muted); font-size: 11.5px; background: var(--bar-bg); }
+.kv td.v { color: var(--text-2); overflow-wrap: anywhere; }
+.kv code { font: 500 11px/1.5 var(--mono); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; }
+.kv code.url { display: inline-block; max-width: calc(100% - 30px); word-break: break-all; }
+.md-mini { width: 22px; height: 22px; padding: 0; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); cursor: pointer; vertical-align: middle; margin-left: 4px; }
+.md-mini:hover { color: var(--text); background: var(--code-bg); }
+.md-mini svg { width: 12px; height: 12px; }
+.md-dim { color: var(--muted); font-size: 11px; }
+
+.md-conn { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--bar-bg); }
+.md-conn .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line-strong); }
+.md-conn .txt { flex: 1; min-width: 0; }
+.md-conn b { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.md-conn p { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
+.md-conn.ok { border-color: color-mix(in srgb, var(--ok) 32%, var(--line)); background: color-mix(in srgb, var(--ok-weak) 45%, var(--panel)); }
+.md-conn.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+.md-conn.bad { border-color: color-mix(in srgb, var(--danger) 32%, var(--line)); background: color-mix(in srgb, var(--danger-weak) 45%, var(--panel)); }
+.md-conn.bad .dot { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent); }
+.md-conn.bad b { color: var(--danger); }
+
+.md-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.md-metric { padding: 9px 11px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bar-bg); min-width: 0; }
+.md-metric .k { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.md-metric .v { margin-top: 1px; font-size: 19px; font-weight: 650; line-height: 1.25; font-variant-numeric: tabular-nums; color: var(--text); }
+.md-metric .v .u { font-size: 10.5px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.md-metric .s { margin-top: 2px; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.md-metric.good .v { color: var(--ok); }
+.md-metric.warn .v { color: var(--warn); }
+.md-metric.bad .v { color: var(--danger); }
+
+.md-hint { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.md-sparkrow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.md-sparkrow svg { display: block; }
+.md-hist { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 11.5px; }
+.md-hist th { text-align: left; padding: 5px 8px; color: var(--muted); font-size: 10.5px; font-weight: 600; background: var(--bar-bg); border-bottom: 1px solid var(--line-soft); }
+.md-hist td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.md-hist tr:last-child td { border-bottom: none; }
+.md-hist td.ok { color: var(--ok); font-weight: 600; }
+.md-hist td.bad { color: var(--danger); font-weight: 600; }
+.md-perf-acts { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.md-empty-mini { padding: 14px 13px; border: 1px dashed var(--line-strong); border-radius: 9px; background: var(--bar-bg); text-align: center; }
+.md-empty-mini b { font-size: 12.5px; font-weight: 650; }
+.md-empty-mini p { margin: 4px auto 10px; max-width: 44ch; font-size: 11.5px; color: var(--muted); line-height: 1.65; }
+
+.md-run { padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bar-bg); }
+.md-run-head { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-2); }
+.md-run-head .btn { margin-left: auto; }
+.md-bar { height: 6px; margin: 9px 0 10px; border-radius: 999px; background: var(--code-bg); overflow: hidden; }
+.md-bar i { display: block; height: 100%; width: 0; border-radius: 999px; background: var(--brand); transition: width .12s linear; }
+.md-live { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+.md-live .cell { padding: 6px 8px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--panel); min-width: 0; }
+.md-live .k { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.md-live .v { margin-top: 1px; font-size: 12.5px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.md-danger { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--danger-weak) 30%, var(--panel)); }
+.md-danger .txt, .md-danger > div { flex: 1; min-width: 0; }
+.md-danger b { font-size: 12px; font-weight: 650; color: var(--danger); }
+.md-danger p { margin: 2px 0 0; font-size: 11px; color: var(--muted); line-height: 1.55; }
+
+/* ====== 8. 添加模型表单 ====== */
+.field { margin-bottom: 14px; }
+.field label { display: flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+.field label .req { color: var(--danger); font-weight: 700; }
+.field label .opt { color: var(--muted); font-weight: 400; font-size: 11.5px; }
+.field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: 400 12.5px/1 var(--mono); outline: none; transition: border-color .13s, box-shadow .13s; }
+.field input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-weak); }
+.field input.bad { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-weak); }
+.field input[readonly] { background: var(--code-bg); color: var(--muted); cursor: not-allowed; }
+.field input[readonly]:focus { border-color: var(--line); box-shadow: none; }
+.field .hint { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.field .err { margin: 6px 0 0; font-size: 11.5px; color: var(--danger); display: flex; align-items: center; gap: 5px; }
+.field .err svg { width: 12px; height: 12px; flex: none; }
+.with-suffix { position: relative; }
+.with-suffix input { padding-right: 54px; }
+.with-suffix button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 11px; cursor: pointer; }
+.field-sep { height: 1px; background: var(--line-soft); margin: 4px 0 14px; }
+.scope-line { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; background: var(--bar-bg); border: 1px solid var(--line-soft); font-size: 12px; }
+.scope-line .t { color: var(--muted); white-space: nowrap; }
+.scope-line .sp { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--panel); }
+.seg button { height: 26px; padding: 0 10px; border: none; border-radius: 0; background: var(--panel); color: var(--muted); font: 500 11.5px/1 var(--sans); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+.md-errbox { margin-bottom: 12px; padding: 9px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); background: var(--danger-weak); color: var(--danger); font-size: 12px; }
+
+/* ====== 9. 确认弹层 / Toast ====== */
+.md-modal-mask { position: fixed; inset: 0; z-index: 140; display: grid; place-items: center; padding: 20px; background: rgba(16, 24, 40, .46); backdrop-filter: blur(2px); }
+.md-modal-mask[hidden] { display: none; }
+.md-modal { width: min(380px, 100%); padding: 18px 18px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: var(--shadow-pop); }
+.md-modal h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.md-modal p { margin: 7px 0 16px; font-size: 12px; color: var(--muted); line-height: 1.65; }
+.md-modal-acts { display: flex; justify-content: flex-end; gap: 8px; }
+
+.md-toast { position: fixed; left: 50%; bottom: 30px; z-index: 200; transform: translate(-50%, 10px); padding: 9px 15px; border-radius: 9px; background: #22252a; color: #fff; font-size: 12px; box-shadow: 0 8px 24px -8px rgba(0, 0, 0, .5); opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; max-width: 90vw; }
+.md-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.md-toast.error { background: var(--danger); }
+.md-toast.success { background: var(--brand); }
+
+/* ====== 10. 响应式 & 深色微调 ====== */
+@media (max-width: 980px) { .md-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+  .md-head { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .md-actions { margin-left: 0; width: 100%; }
+  .md-actions .btn.primary { flex: 1; }
+  .md-search { max-width: none; flex-basis: 100%; }
+  .md-scope-wrap { margin-left: 0; }
+  .md-count { margin-left: auto; }
+  .md-metrics { grid-template-columns: 1fr 1fr; }
+  .md-metrics .md-metric:last-child { grid-column: 1 / -1; }
+  .md-live { grid-template-columns: 1fr 1fr; }
+  .md-card { padding-left: 14px; }
+}
+:root[data-theme="dark"] .md-card { box-shadow: none; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>loop-agent · 原型</h1>
+  <span class="tag">20261111-001 · 模型管理重设计</span>
+  <nav>
+    <a href="#sec-issues">现状问题</a>
+    <a href="#sec-decisions">设计决策</a>
+    <a href="#sec-preview">原型预览</a>
+    <a href="#sec-states">状态矩阵</a>
+    <a href="#sec-api">接口映射</a>
+  </nav>
+  <div class="spring"></div>
+  <div class="theme-btns">
+    <button data-theme-btn="light" class="on">浅色</button>
+    <button data-theme-btn="dark">深色</button>
+  </div>
+</div>
+
+<div class="page">
+
+  <!-- ======= A. 现状问题 ======= -->
+  <section id="sec-issues">
+    <div class="sec-head"><h2>A. 现状问题</h2><span class="badge mute">先问为什么改</span></div>
+    <p class="sec-desc">当前模型页（ModelsView）沿用 20261029-004 的「行卡 + 页头 scope」结构，功能完整，但对照已落地的工具 / 技能页「卡片流 + 统计条 + 抽屉」范式，有 5 个具体问题：</p>
+    <div class="issue-grid">
+      <div class="issue"><div class="no">1</div><div><b>信息层级平，扫视抓不到重点</b><p>别名、型号、主机、四位 Key 全部挤在同一行 meta，字号与颜色几乎一致；「哪个是正在用的」只能靠左侧一条细边和一枚 pill 判断。</p></div></div>
+      <div class="issue"><div class="no">2</div><div><b>状态语义混杂，没有汇总</b><p>未测试、未测速与真实失败共用同一种淡色 pill；失败行只靠红色小点区分，页面顶部也没有「几个模型需要处理」的汇总，异常容易被忽略。</p></div></div>
+      <div class="issue"><div class="no">3</div><div><b>每行 4 个操作，图标靠猜</b><p>测试 / 测速 / 设置为默认 / 删除平铺在行尾，「测速」与「删除」只隔一个按钮，误触成本高；图标的语义完全依赖 title 悬停。</p></div></div>
+      <div class="issue"><div class="no">4</div><div><b>没有详情，测速数据只值一枚 pill</b><p>完整 Base URL、temperature、最近一次测速的 p50 / 成功率 / 历史走势都无处查看；排查 401 时只能重新点测试再读 toast。</p></div></div>
+      <div class="issue"><div class="no">5</div><div><b>写入位置是页头全局开关</b><p>scope 影响登记 / 切换 / 删除三类写操作，却远离操作现场；用户很容易在「全局」状态下删掉工作空间里的模型，或反过来。</p></div></div>
+      <div class="issue"><div class="no">6</div><div><b>与相邻页面不像一套</b><p>工具、技能、MCP 都已是双列卡片 + 统计条 + 右侧抽屉；模型页仍是行列表，视觉密度与交互手感都不一致。</p></div></div>
+    </div>
+  </section>
+
+  <!-- ======= B. 设计决策 ======= -->
+  <section id="sec-decisions">
+    <div class="sec-head"><h2>B. 设计决策</h2><span class="badge">D1–D10</span></div>
+    <p class="sec-desc">沿用 20261109-001 / 002 / 003 已经建立的「卡片流 + 统计条 + 工具条 + 抽屉」范式；除新增一个编辑端点外，其余接口保持不变。</p>
+    <div class="issue-grid" style="grid-template-columns: 1fr; gap: 10px;">
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D1</div><div><b>双列卡片流，生效模型置顶</b><p>桌面两列、窄屏单列。卡片 = 服务商 tile + 别名 + 服务商标签 + 型号 / 主机 / Key + 状态胶囊 + 底部操作。生效卡左侧 3px 品牌条 + 极淡品牌底，并恒排第一。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D2</div><div><b>卡片只保留一个主操作</b><p>卡片底部只放「设置为默认」（或「当前生效」文字）；测试、测速、复制、删除全部收进右上角 ⋯ 菜单，降低误触，同时把「删除」与常用操作隔开。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D3</div><div><b>统计条：已登记 / 生效中 / 需关注</b><p>「需关注」= 连通失败或测速全失败。数字实时联动筛选与分段计数；异常数用红色，未测试 / 未测速不计入异常。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D4</div><div><b>工具条：搜索 + 状态分段 + 排序 + 写入位置</b><p>搜索匹配别名 / 型号 / 主机；分段「全部 / 生效中 / 需关注」；排序「生效优先 / 别名 A→Z / TTFT 升序」。写入位置收进工具条右侧，并在添加抽屉、详情抽屉底部就地同步。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D5</div><div><b>详情抽屉承载配置与性能</b><p>点卡片或「查看详情」打开右侧抽屉：接入配置（KV 表）→ 连通性（就地重测）→ 性能（TTFT / 吞吐 / 稳定性 + 历史 + 抽屉内测速）→ 危险区（移除）。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D6</div><div><b>测速在抽屉内闭环</b><p>「开始测速」→ 进度条 + 四项实时指标 → 完成后结果与历史即时回流到卡片 pill。真实实现复用 BenchDrawer 的四态，原型只演示入口、运行态与结果回流。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D7</div><div><b>添加 / 编辑共用右侧表单抽屉</b><p>字段与后端一致（别名 / 型号 / Base URL / API Key / temperature），实时行内校验；编辑时别名只读、Key 留空不改。写入位置在提交区就地可见，不再只存在于页头。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D8</div><div><b>异常前置</b><p>失败卡片红色左条 + 「连通失败 / 测速全失败」红 pill；顶部出现汇总告警条，一键直达第一个异常模型的详情。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D9</div><div><b>中性状态降噪</b><p>未测试 / 未测速用中性灰 pill，不再用黄色暗示「有问题」；绿色只给成功，红色只给真实失败。</p></div></div>
+      <div class="issue"><div class="no" style="background: var(--brand-weak); color: var(--brand);">D10</div><div><b>编辑信息：新增 PATCH /models/:alias（需后端配套）</b><p>别名是登记簿主键，编辑时只读；可改型号 / Base URL / API Key / temperature。Key 留空表示保持原值，填写则整体替换并重新遮蔽。保存后清空连通性结果并提示重新测试；改名仍走「移除 → 重新登记」。删除当前生效模型继续由后端 409 兜底。</p></div></div>
+    </div>
+  </section>
+
+  <!-- ======= C. 原型预览 ======= -->
+  <section id="sec-preview">
+    <div class="sec-head"><h2>C. 原型预览</h2><span class="badge">可交互</span></div>
+    <p class="sec-desc">演示数据 6 个模型（1 个生效、1 个连通失败、1 个未测试、2 个未测速）。试试：搜索、状态分段、排序、卡片 ⋯ 菜单、点卡片打开详情、详情内「编辑信息 / 立即测试 / 开始测速」、右上角「添加模型」、深浅色切换。Esc 关闭浮层；<code>/</code> 聚焦搜索。</p>
+
+    <div class="ctx">
+      <div class="ctx-tag">模型管理 · 20261111-001</div>
+
+      <!-- 页头 -->
+      <div class="md-head">
+        <div class="lead">
+          <div class="eyebrow">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="2"/><rect x="6.3" y="6.3" width="3.4" height="3.4" rx=".9"/></svg>
+            模型接入 · 登记簿
+          </div>
+          <h1>模型</h1>
+          <p>登记 OpenAI 兼容的接入点，切换后立即用于后续对话。测试只收首块（近免费），测速才跑完整流。</p>
+        </div>
+        <div class="md-actions">
+          <button class="btn icon" id="md-refresh" title="刷新登记簿" aria-label="刷新登记簿">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.8V5h-2.2"/></svg>
+          </button>
+          <button class="btn primary" id="md-add">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.6v8.8M3.6 8h8.8"/></svg>
+            添加模型
+          </button>
+        </div>
+      </div>
+
+      <!-- 统计条 -->
+      <div class="md-stats">
+        <div class="md-stat"><div class="k"><i class="on"></i>已登记</div><div class="v" id="sum-total">6<small>个</small></div></div>
+        <div class="md-stat"><div class="k"><i class="on"></i>生效中</div><div class="v" id="sum-active">1<small>个</small></div></div>
+        <div class="md-stat"><div class="k"><i class="bad"></i>需关注</div><div class="v bad" id="sum-attn">1<small>个</small></div></div>
+      </div>
+
+      <!-- 工具条 -->
+      <div class="md-toolbar">
+        <div class="md-search">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
+          <input id="md-q" type="text" placeholder="搜索别名、型号或主机" autocomplete="off" spellcheck="false">
+          <kbd>/</kbd>
+        </div>
+        <div class="md-seg" id="md-tabs" role="tablist" aria-label="按状态筛选">
+          <button type="button" class="on" data-tab="all">全部 <span class="n" id="n-all">6</span></button>
+          <button type="button" data-tab="active">生效中 <span class="n" id="n-active">1</span></button>
+          <button type="button" data-tab="attention">需关注 <span class="n" id="n-attn">1</span></button>
+        </div>
+        <select class="md-sel" id="md-sort" aria-label="排序">
+          <option value="active">生效优先</option>
+          <option value="alias">别名 A→Z</option>
+          <option value="ttft">TTFT 升序</option>
+        </select>
+        <span class="md-scope-wrap">
+          写入位置
+          <select class="md-sel" id="md-scope" aria-label="写入位置">
+            <option value="workspace">工作空间</option>
+            <option value="global">全局</option>
+          </select>
+        </span>
+        <span class="md-count" id="md-count">显示 6 / 6</span>
+      </div>
+
+      <div id="md-alert"></div>
+      <div class="md-grid" id="md-grid"></div>
+
+      <div class="md-footline">
+        <span>测试 = 连通性探测；测速 = 完整流性能体检，两者并存互不替代。</span>
+        <span class="sp"></span>
+        <span>共 <b id="md-foot-total" style="color:var(--text);font-weight:600">6</b> 个模型 · API Key 仅回显后四位</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======= D. 状态矩阵 ======= -->
+  <section id="sec-states">
+    <div class="sec-head"><h2>D. 状态矩阵</h2><span class="badge mute">卡片与浮层如何呈现</span></div>
+    <p class="sec-desc">把状态写死成矩阵，避免实现时回到「条件判断漏分支」。</p>
+    <div style="display:grid; grid-template-columns: 1.25fr repeat(3, 1fr); gap: 1px; background: var(--line); border-radius: 9px; overflow: hidden; border: 1px solid var(--line); font-size: 12px;">
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">状态</div>
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">卡片视觉</div>
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">胶囊</div>
+      <div style="padding: 8px 11px; background: var(--bar-bg); color: var(--muted); font-size: 11px; font-weight: 600;">操作 / 约束</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">生效中</div>
+      <div style="padding: 9px 11px; background: var(--panel);">左侧 3px 品牌条 + 极淡品牌底 + 恒排第一</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="md-pill brand">生效中</span></div>
+      <div style="padding: 9px 11px; background: var(--panel);">底部只显示「当前生效」，无「设置为默认」</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">已登记 · 正常</div>
+      <div style="padding: 9px 11px; background: var(--panel);">白底 + 服务商渐变 tile</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="md-pill ok">连通 328ms</span> <span class="md-pill ok">TTFT 542ms</span></div>
+      <div style="padding: 9px 11px; background: var(--panel);">底部「设置为默认」；⋯ 内含测试 / 测速 / 删除</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">连通失败</div>
+      <div style="padding: 9px 11px; background: var(--panel);">红色左条 + 顶部汇总告警条</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="md-pill bad">连通失败</span> <span class="md-pill dim">未测速</span></div>
+      <div style="padding: 9px 11px; background: var(--panel);">抽屉内展示完整错误文案，可立即重测</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">测速全失败</div>
+      <div style="padding: 9px 11px; background: var(--panel);">红色左条；计入「需关注」</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="md-pill bad">测速全失败</span></div>
+      <div style="padding: 9px 11px; background: var(--panel);">抽屉性能区显示「3 轮全部失败」+ 重跑入口</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">未测试 / 未测速</div>
+      <div style="padding: 9px 11px; background: var(--panel);">白底，无红条</div>
+      <div style="padding: 9px 11px; background: var(--panel);"><span class="md-pill dim">未测试</span> <span class="md-pill dim">未测速</span></div>
+      <div style="padding: 9px 11px; background: var(--panel);">中性灰，不飘黄；不计入「需关注」</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">登记 / 编辑抽屉</div>
+      <div style="padding: 9px 11px; background: var(--panel);">右侧 520px 抽屉 + 遮罩；两种模式共用</div>
+      <div style="padding: 9px 11px; background: var(--panel);">—</div>
+      <div style="padding: 9px 11px; background: var(--panel);">登记：四必填；编辑：别名只读、Key 留空保持原值，保存后清空连通性结果</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">详情抽屉</div>
+      <div style="padding: 9px 11px; background: var(--panel);">配置 KV + 连通性 + 性能 + 危险区</div>
+      <div style="padding: 9px 11px; background: var(--panel);">头部同步卡片胶囊</div>
+      <div style="padding: 9px 11px; background: var(--panel);">测速运行中可中断；删除需二次确认，生效模型禁用</div>
+
+      <div style="padding: 9px 11px; background: var(--panel);">骨架 / 空态 / 无匹配</div>
+      <div style="padding: 9px 11px; background: var(--panel);">骨架卡 / 虚线框 / 虚线框</div>
+      <div style="padding: 9px 11px; background: var(--panel);">—</div>
+      <div style="padding: 9px 11px; background: var(--panel);">空态给「添加第一个模型」；无匹配给「清空筛选」</div>
+    </div>
+  </section>
+
+  <!-- ======= E. 接口映射 ======= -->
+  <section id="sec-api">
+    <div class="sec-head"><h2>E. 接口映射</h2><span class="badge">后端零改动</span></div>
+    <div class="d-list">
+      <div class="d-item"><b>GET /models</b> → <code>{ profiles: [{ alias, name, baseUrl, apiKey, temperature?, isCurrent }], active }</code>（列表数据源，apiKey 已遮蔽）</div>
+      <div class="d-item"><b>GET /model</b> → 当前生效快照；无激活但存在登记时，页面提示“正在使用配置文件 model.* 快照”</div>
+      <div class="d-item"><b>PUT /model</b> <code>{ alias, scope }</code> → 「设置为默认」；成功后同步 models.active 与 model.* 快照</div>
+      <div class="d-item"><b>POST /models</b> <code>{ alias, scope, profile }</code> → 添加抽屉提交；同名返回 409，前端在别名字段行内提示</div>
+      <div class="d-item"><b>PATCH /models/:alias</b> <code>{ scope, profile }</code> → 编辑抽屉保存；仅更新型号 / Base URL / API Key / temperature，别名不可改。若编辑的是当前生效模型，后端需同步刷新 model.* 快照 <span class="md-pill warn" style="vertical-align:1px">新增端点，待后端实现</span></div>
+      <div class="d-item"><b>POST /models/:alias/test</b> → 连通性测试，返回 <code>{ ok, latencyMs, error? }</code>；卡片与详情抽屉的状态胶囊就地更新</div>
+      <div class="d-item"><b>DELETE /models/:alias?scope=</b> → 移除；删除当前激活模型返回 409，前端在生效卡片上禁用删除并说明</div>
+      <div class="d-item"><b>POST /models/bench · GET /models/bench/:id/stream · POST /models/bench/:id/stop · GET /models/bench/history</b> → 测速入口、进度、中断与历史；抽屉内“性能”区复用它</div>
+    </div>
+    <p class="note"><b>编辑接口是新增需求：</b>现有后端没有更新 profile 的端点，本设计新增 <code>PATCH /models/:alias { scope, profile }</code>，只更新型号 / Base URL / API Key / temperature。别名是登记簿主键，不可修改；重命名仍走「移除 → 重新登记」。落地前需后端补该端点，并在编辑生效模型时同步 model.* 快照。</p>
+  </section>
+
+  <!-- ======= F. 响应式 ======= -->
+  <section id="sec-responsive">
+    <div class="sec-head"><h2>F. 响应式</h2><span class="badge mute">三个断点</span></div>
+    <div class="issue-grid">
+      <div class="issue"><div class="no">≥ 980</div><div><b>桌面 · 双列</b><p>卡片两列；统计条 3 项均分；搜索 max-width 320px；写入位置靠工具条右侧。</p></div></div>
+      <div class="issue"><div class="no">700–980</div><div><b>平板 · 单列</b><p>卡片单列；统计条保持一行；分段与排序折行但仍靠左排列。</p></div></div>
+      <div class="issue"><div class="no">≤ 700</div><div><b>手机 · 堆叠</b><p>页头纵排，主按钮撑满；搜索独占一行；卡片底部操作换行；抽屉宽度 100%。</p></div></div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ======= 卡片 ⋯ 菜单 ======= -->
+<div class="md-menu" id="md-menu"></div>
+
+<!-- ======= 详情抽屉 ======= -->
+<div class="md-backdrop" id="md-detail-backdrop"></div>
+<aside class="md-drawer" id="md-detail" role="dialog" aria-modal="true" aria-labelledby="md-detail-title">
+  <div class="md-drv-head" id="md-detail-head"></div>
+  <div class="md-drv-body" id="md-detail-body"></div>
+  <div class="md-drv-foot" id="md-detail-foot"></div>
+</aside>
+
+<!-- ======= 添加 / 编辑模型抽屉 ======= -->
+<div class="md-backdrop" id="md-add-backdrop"></div>
+<aside class="md-drawer" id="md-form" role="dialog" aria-modal="true" aria-labelledby="md-add-title">
+  <div class="md-drv-head">
+    <span class="tile deepseek" id="md-form-tile">＋</span>
+    <div class="md-drv-title">
+      <h2 id="md-add-title" style="font-family: var(--sans); font-size: 16px;">添加模型</h2>
+      <div class="md-drv-sub" id="md-form-sub">登记一个 OpenAI 兼容的接入点</div>
+    </div>
+    <button class="md-close" data-add-close title="关闭">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/></svg>
+    </button>
+  </div>
+  <div class="md-drv-body">
+    <div class="md-errbox" id="md-add-err" hidden></div>
+
+    <div class="field">
+      <label for="f-alias">别名 <span class="req">*</span></label>
+      <input id="f-alias" class="mono" placeholder="如 deepseek-flash" autocomplete="off" spellcheck="false">
+      <p class="err" data-err="alias" hidden></p>
+      <p class="hint" data-hint="alias">对话内切换模型与 <code>/model</code> 命令都用这个别名，同名会冲突。</p>
+    </div>
+
+    <div class="field">
+      <label for="f-name">型号 <span class="req">*</span></label>
+      <input id="f-name" class="mono" placeholder="如 deepseek-chat" autocomplete="off" spellcheck="false">
+      <p class="err" data-err="name" hidden></p>
+      <p class="hint" data-hint="name">请求体里的 <code>model</code> 字段原值，以服务商文档为准。</p>
+    </div>
+
+    <div class="field-sep"></div>
+
+    <div class="field">
+      <label for="f-base">Base URL <span class="req">*</span></label>
+      <input id="f-base" class="mono" placeholder="https://api.deepseek.com/v1" autocomplete="off" spellcheck="false">
+      <p class="err" data-err="baseUrl" hidden></p>
+      <p class="hint" data-hint="baseUrl">兼容 OpenAI 协议的接入点，通常以 <code>/v1</code> 结尾。</p>
+    </div>
+
+    <div class="field">
+      <label for="f-key">API Key <span class="req" id="f-key-req">*</span></label>
+      <div class="with-suffix">
+        <input id="f-key" type="password" class="mono" placeholder="sk-..." autocomplete="off">
+        <button type="button" id="f-key-toggle">显示</button>
+      </div>
+      <p class="err" data-err="apiKey" hidden></p>
+      <p class="hint" data-hint="apiKey">只保存在服务端配置文件里，页面回显时一律遮蔽为后四位。</p>
+    </div>
+
+    <div class="field">
+      <label for="f-temp">temperature <span class="opt">可选</span></label>
+      <input id="f-temp" class="mono" placeholder="0 ~ 2，留空用服务商默认" autocomplete="off" style="max-width:190px">
+      <p class="err" data-err="temperature" hidden></p>
+    </div>
+
+    <div class="scope-line">
+      <span class="t">写入位置</span>
+      <div class="seg" id="md-add-scope" role="group" aria-label="写入位置">
+        <button type="button" data-scope="workspace" class="on">工作空间</button>
+        <button type="button" data-scope="global">全局</button>
+      </div>
+      <span class="sp"></span>
+      <span class="t mono" id="md-add-scope-txt" style="font-size:11px">当前工作空间配置</span>
+    </div>
+  </div>
+  <div class="md-drv-foot">
+    <button class="btn" data-add-close>取消</button>
+    <span class="sp"></span>
+    <button class="btn primary" id="md-add-submit">登记模型</button>
+  </div>
+</aside>
+
+<!-- ======= 确认弹层 ======= -->
+<div class="md-modal-mask" id="md-confirm" hidden>
+  <div class="md-modal" role="dialog" aria-modal="true" aria-labelledby="md-confirm-title">
+    <h3 id="md-confirm-title">移除模型？</h3>
+    <p id="md-confirm-text"></p>
+    <div class="md-modal-acts">
+      <button class="btn" id="md-confirm-cancel">取消</button>
+      <button class="btn danger" id="md-confirm-ok">确认移除</button>
+    </div>
+  </div>
+</div>
+
+<div class="md-toast" id="md-toast"></div>
+
+<script>
+/* ================= 演示数据 ================= */
+const MODELS = [
+  {
+    alias: 'deepseek-flash', name: 'deepseek-chat', provider: 'deepseek',
+    baseUrl: 'https://api.deepseek.com/v1', key: 'sk-****c4c3', temp: 0, active: true,
+    test: { ok: true, ms: 328, at: '今天 10:42' },
+    perf: {
+      ttft: 542, tps: 38.2, okCount: 3, total: 3, at: '2 小时前',
+      history: [
+        { when: '今天 10:12', ttft: 542, tps: 38.2, ok: 3, total: 3 },
+        { when: '昨天 16:40', ttft: 568, tps: 37.4, ok: 3, total: 3 },
+        { when: '11-09 09:15', ttft: 611, tps: 36.1, ok: 2, total: 3 },
+      ],
+    },
+  },
+  {
+    alias: 'qwen3-coder', name: 'qwen3-coder-plus', provider: 'qwen',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key: 'sk-****3b8c', temp: null, active: false,
+    test: { ok: true, ms: 455, at: '今天 09:05' },
+    perf: {
+      ttft: 703, tps: 44.9, okCount: 3, total: 3, at: '今天 09:05',
+      history: [
+        { when: '今天 09:05', ttft: 703, tps: 44.9, ok: 3, total: 3 },
+        { when: '11-08 20:18', ttft: 742, tps: 43.1, ok: 3, total: 3 },
+      ],
+    },
+  },
+  {
+    alias: 'deepseek-r1', name: 'deepseek-reasoner', provider: 'deepseek',
+    baseUrl: 'https://api.deepseek.com/v1', key: 'sk-****c4c3', temp: null, active: false,
+    test: { ok: true, ms: 611, at: '3 天前' },
+    perf: { ttft: 1240, tps: 21.4, okCount: 3, total: 3, at: '3 天前', history: [{ when: '11-08 14:02', ttft: 1240, tps: 21.4, ok: 3, total: 3 }] },
+  },
+  {
+    alias: 'glm-4.6', name: 'glm/glm-4.6', provider: 'zhipu',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4', key: 'sk-****9f2a', temp: null, active: false,
+    test: { ok: true, ms: 886, at: '今天 08:30' },
+    perf: null,
+  },
+  {
+    alias: 'gpt-4.1-mini', name: 'gpt-4.1-mini', provider: 'openai',
+    baseUrl: 'https://api.openai.com/v1', key: 'sk-****7d1e', temp: null, active: false,
+    test: { ok: false, ms: 0, err: 'HTTP 401（invalid_api_key）', at: '昨天 18:20' },
+    perf: { ttft: null, tps: null, okCount: 0, total: 3, at: '昨天 18:20', history: [{ when: '昨天 18:20', ttft: null, tps: null, ok: 0, total: 3 }] },
+  },
+  {
+    alias: 'claude-sonnet', name: 'anthropic/claude-sonnet-4.5', provider: 'gateway',
+    baseUrl: 'https://openrouter.ai/api/v1', key: 'sk-****e6b1', temp: null, active: false,
+    test: null,
+    perf: null,
+  },
+];
+
+const PROVIDER = {
+  deepseek: { label: 'DeepSeek', text: 'DS' },
+  zhipu: { label: '智谱', text: 'GL' },
+  openai: { label: 'OpenAI', text: 'OA' },
+  qwen: { label: '通义千问', text: 'QW' },
+  gateway: { label: 'OpenRouter', text: 'OR' },
+  other: { label: '自定义', text: 'LM' },
+};
+
+const state = { tab: 'all', sort: 'active', scope: 'workspace' };
+let drawerAlias = null;
+let testingAlias = null;
+let armedDelete = false;
+let benchTimer = null;
+let benchPhase = 'idle';
+let benchStartedAt = 0;
+let benchAcc = { ttft: null, tokens: 0, elapsed: 0, pct: 0 };
+let confirmAlias = null;
+/** 表单抽屉模式：add = 登记，edit = 编辑 */
+let formMode = 'add';
+let editingAlias = null;
+
+/* ================= 小工具 ================= */
+const ICON = {
+  search: '<circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.6 13.6"/>',
+  plus: '<path d="M8 3.6v8.8M3.6 8h8.8"/>',
+  check: '<path d="M3.4 8.4l3 3 6.2-6.6"/>',
+  pulse: '<path d="M1.8 8h2.5l1.5-3.6L8.5 12l1.5-4h4.2"/>',
+  gauge: '<path d="M2.6 11.4a5.4 5.4 0 1 1 10.8 0"/><path d="M8 11.4 11 8"/>',
+  trash: '<path d="M3.4 5.2h9.2M6.4 5.2V3.8h3.2v1.4M4.8 5.2l.6 7.2h5.2l.6-7.2"/>',
+  copy: '<rect x="5.2" y="5.2" width="6.8" height="8" rx="1.2"/><path d="M10.4 5.2V3.4H3.6v8h1.6"/>',
+  close: '<path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2"/>',
+  alert: '<circle cx="8" cy="8" r="6.2"/><path d="M8 5.2v3.6M8 10.8v.4"/>',
+  dots: '<circle cx="3.5" cy="8" r="1.2" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.2" fill="currentColor" stroke="none"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor" stroke="none"/>',
+  chip: '<rect x="3.4" y="3.4" width="9.2" height="9.2" rx="2"/><rect x="6.3" y="6.3" width="3.4" height="3.4" rx=".9"/>',
+  arrow: '<path d="M3.4 8h9.2M9 4.4 12.6 8 9 11.6"/>',
+  info: '<circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v3.2M8 4.8v.4"/>',
+  pencil: '<path d="M3.2 12.8l.9-3.1 6.6-6.6 2.2 2.2-6.6 6.6-3.1.9z"/><path d="M9.8 4l2.2 2.2"/>',
+};
+const svg = (p, w = 1.6, size = 16) => `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const byAlias = (a) => MODELS.find((m) => m.alias === a) || null;
+const hostOf = (u) => { try { return new URL(u).host; } catch { return String(u).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/+$/, ''); } };
+const fmtMs = (v) => (v === null || v === undefined ? '—' : v < 1000 ? `${Math.round(v)}ms` : `${(v / 1000).toFixed(2)}s`);
+const scopeName = (s) => (s === 'workspace' ? '工作空间' : '全局');
+const ttftTone = (v) => (v === null || v === undefined ? 'bad' : v < 800 ? 'good' : v < 1500 ? 'warn' : 'bad');
+const isFailed = (m) => !!((m.test && !m.test.ok) || (m.perf && (m.perf.ttft === null || m.perf.ttft === undefined)));
+const tileText = (m) => (PROVIDER[m.provider] || PROVIDER.other).text;
+
+function spark(vals, w, h) {
+  const arr = (vals || []).filter((v) => typeof v === 'number' && v > 0);
+  if (arr.length < 2) return '';
+  const min = Math.min(...arr), max = Math.max(...arr), span = max - min || 1;
+  return arr.map((v, i) => `${((i / (arr.length - 1)) * w).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`).join(' ');
+}
+
+let toastTimer = null;
+function toast(msg, tone = '') {
+  const t = document.getElementById('md-toast');
+  t.textContent = msg;
+  t.className = 'md-toast show ' + tone;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = 'md-toast ' + tone; }, 2400);
+}
+
+/* ================= 列表渲染 ================= */
+function rows() {
+  let arr = [...MODELS];
+  const q = document.getElementById('md-q').value.trim().toLowerCase();
+  if (q) arr = arr.filter((m) => [m.alias, m.name, m.baseUrl].some((v) => String(v).toLowerCase().includes(q)));
+  if (state.tab === 'active') arr = arr.filter((m) => m.active);
+  if (state.tab === 'attention') arr = arr.filter(isFailed);
+
+  if (state.sort === 'alias') arr.sort((a, b) => a.alias.localeCompare(b.alias));
+  else if (state.sort === 'ttft') {
+    const val = (m) => (m.perf && typeof m.perf.ttft === 'number' ? m.perf.ttft : Infinity);
+    arr.sort((a, b) => val(a) - val(b) || a.alias.localeCompare(b.alias));
+  } else {
+    arr.sort((a, b) => Number(b.active) - Number(a.active) || a.alias.localeCompare(b.alias));
+  }
+  return arr;
+}
+
+function pillsHTML(m) {
+  const out = [];
+  if (m.active) out.push(`<span class="md-pill brand">${svg(ICON.check, 2, 11)}生效中</span>`);
+
+  if (testingAlias === m.alias) out.push('<span class="md-pill dim">测试中…</span>');
+  else if (!m.test) out.push('<span class="md-pill dim">未测试</span>');
+  else if (m.test.ok) out.push(`<span class="md-pill ok">连通 ${fmtMs(m.test.ms)}</span>`);
+  else out.push('<span class="md-pill bad">连通失败</span>');
+
+  if (!m.perf) out.push('<span class="md-pill dim">未测速</span>');
+  else if (m.perf.ttft === null || m.perf.ttft === undefined) out.push('<span class="md-pill bad">测速全失败</span>');
+  else {
+    const tone = ttftTone(m.perf.ttft);
+    const cls = tone === 'good' ? 'ok' : tone;
+    out.push(`<span class="md-pill ${cls}">TTFT ${fmtMs(m.perf.ttft)}</span>`);
+  }
+  return out.join('');
+}
+
+function footText(m) {
+  if (!m.perf) return '尚未测速';
+  if (m.perf.ttft === null || m.perf.ttft === undefined) return `最近测速 ${m.perf.at} · ${m.perf.okCount}/${m.perf.total} 轮成功`;
+  return `最近测速 ${m.perf.at} · ${m.perf.okCount}/${m.perf.total} 轮成功`;
+}
+
+function cardHTML(m) {
+  const p = PROVIDER[m.provider] || PROVIDER.other;
+  const failed = isFailed(m);
+  const cls = ['md-card'];
+  if (m.active) cls.push('on');
+  if (failed && !m.active) cls.push('bad');
+  return `
+    <article class="${cls.join(' ')}" data-alias="${esc(m.alias)}" role="button" tabindex="0" aria-label="查看 ${esc(m.alias)} 详情">
+      <div class="md-top">
+        <span class="tile ${m.provider}">${tileText(m)}</span>
+        <div class="md-id">
+          <div class="md-title">
+            <h3>${esc(m.alias)}</h3>
+            <span class="md-tag">${p.label}</span>
+          </div>
+          <p class="md-meta">
+            <span class="m" title="${esc(m.name)}">${esc(m.name)}</span>
+            <span class="dot"></span>
+            <span class="m" title="${esc(m.baseUrl)}">${esc(hostOf(m.baseUrl))}</span>
+          </p>
+          <p class="md-meta sub">
+            <span class="m" title="API Key（服务端已遮蔽）">${esc(m.key)}</span>
+            ${m.temp === null || m.temp === undefined ? '' : `<span class="dot"></span><span class="m">T ${m.temp}</span>`}
+          </p>
+        </div>
+        <button class="md-more" type="button" aria-label="更多操作" data-more="${esc(m.alias)}">${svg(ICON.dots, 1.6, 15)}</button>
+      </div>
+      <div class="md-pills">${pillsHTML(m)}</div>
+      <div class="md-foot">
+        <span>${footText(m)}</span>
+        <span class="sp"></span>
+        ${m.active
+          ? `<span class="on-txt">当前生效 · 立即用于新对话</span>`
+          : `<button class="btn sm primary" data-activate="${esc(m.alias)}">${svg(ICON.arrow, 1.6, 12)}设置为默认</button>`}
+      </div>
+    </article>`;
+}
+
+function renderList() {
+  const grid = document.getElementById('md-grid');
+  const arr = rows();
+  document.getElementById('md-count').textContent = `显示 ${arr.length} / ${MODELS.length}`;
+  document.getElementById('md-foot-total').textContent = MODELS.length;
+
+  if (MODELS.length === 0) {
+    grid.innerHTML = `
+      <div class="md-nothing">
+        <span class="nt-ico">${svg(ICON.chip, 1.5, 22)}</span>
+        <b>还没有登记任何模型</b>
+        <p>登记一个 OpenAI 兼容的接入点即可开始对话：需要别名、型号名、Base URL 与 API Key。也可以直接在终端用 /model add 登记。</p>
+        <button class="btn sm primary" data-open-add>${svg(ICON.plus, 1.6, 13)}添加第一个模型</button>
+      </div>`;
+    return;
+  }
+  if (arr.length === 0) {
+    grid.innerHTML = `
+      <div class="md-nothing">
+        <span class="nt-ico">${svg(ICON.search, 1.5, 22)}</span>
+        <b>没有匹配的模型</b>
+        <p>换个关键字，或切回「全部」分段。当前筛选：${state.tab === 'attention' ? '需关注' : state.tab === 'active' ? '生效中' : '全部'}。</p>
+        <button class="btn sm primary" data-clear>清空筛选</button>
+      </div>`;
+    return;
+  }
+  grid.innerHTML = arr.map(cardHTML).join('');
+}
+
+function renderStats() {
+  const total = MODELS.length;
+  const active = MODELS.filter((m) => m.active).length;
+  const attn = MODELS.filter(isFailed).length;
+  document.getElementById('sum-total').innerHTML = `${total}<small>个</small>`;
+  document.getElementById('sum-active').innerHTML = `${active}<small>个</small>`;
+  document.getElementById('sum-attn').innerHTML = `${attn}<small>个</small>`;
+  document.getElementById('n-all').textContent = total;
+  document.getElementById('n-active').textContent = active;
+  document.getElementById('n-attn').textContent = attn;
+}
+
+function renderAlert() {
+  const box = document.getElementById('md-alert');
+  const fails = MODELS.filter(isFailed);
+  if (fails.length === 0) { box.innerHTML = ''; return; }
+  const first = fails[0];
+  const reason = first.test && !first.test.ok ? (first.test.err || '连通失败') : `${first.perf.okCount}/${first.perf.total} 轮测速成功`;
+  box.innerHTML = `
+    <div class="md-alert">
+      <span class="ai">!</span>
+      <div><b>${fails.length} 个模型需要处理</b>：${fails.map((m) => esc(m.alias)).join('、')} · ${esc(reason)}。
+        <button class="md-link" data-open="${esc(first.alias)}">查看详情</button>
+      </div>
+    </div>`;
+}
+
+function renderAll() {
+  renderStats();
+  renderAlert();
+  renderList();
+  if (drawerAlias) renderDetail();
+}
+
+/* ================= 详情抽屉 ================= */
+function detailBodyHTML(m) {
+  const t = m.test;
+  const testing = testingAlias === m.alias;
+  let connCls = '', connTitle = '尚未测试', connSub = '发一条极短请求，收到首块即断开，几乎不产生费用';
+  if (testing) { connTitle = '测试中…'; connSub = '正在等待首块响应'; }
+  else if (t && t.ok) { connCls = 'ok'; connTitle = `连通正常 · ${fmtMs(t.ms)}`; connSub = `${t.at || '—'} 探测 · 收到首块即断开`; }
+  else if (t) { connCls = 'bad'; connTitle = '连通失败'; connSub = t.err || '未知错误'; }
+
+  const pf = m.perf;
+  return `
+    <div class="md-lab">${svg(ICON.chip, 1.5, 12)}接入配置</div>
+    <table class="kv">
+      <tr><td class="k">别名</td><td class="v"><code>${esc(m.alias)}</code></td></tr>
+      <tr><td class="k">型号</td><td class="v"><code>${esc(m.name)}</code></td></tr>
+      <tr><td class="k">Base URL</td><td class="v"><code class="url">${esc(m.baseUrl)}</code><button class="md-mini" data-act="copy" title="复制 Base URL">${svg(ICON.copy, 1.5, 12)}</button></td></tr>
+      <tr><td class="k">API Key</td><td class="v"><code>${esc(m.key)}</code> <span class="md-dim">仅回显后四位</span></td></tr>
+      <tr><td class="k">temperature</td><td class="v">${m.temp === null || m.temp === undefined ? '<span class="md-dim">未设置（服务商默认）</span>' : `<code>${m.temp}</code>`}</td></tr>
+    </table>
+
+    <div class="md-lab">${svg(ICON.pulse, 1.5, 12)}连通性</div>
+    <div class="md-conn ${connCls}">
+      <span class="dot"></span>
+      <div class="txt"><b>${esc(connTitle)}</b><p>${esc(connSub)}</p></div>
+      <button class="btn sm" data-act="test" ${testing ? 'disabled' : ''}>${testing ? '测试中…' : '立即测试'}</button>
+    </div>
+
+    <div class="md-lab">${svg(ICON.gauge, 1.5, 12)}性能${pf && pf.at ? `<span class="md-lab-sub">最近 ${esc(pf.at)}</span>` : ''}</div>
+    ${perfHTML(m)}
+
+    <div class="md-lab">${svg(ICON.alert, 1.5, 12)}危险区</div>
+    <div class="md-danger">
+      <div>
+        <b>移除模型</b>
+        <p>${m.active ? '当前生效模型不能移除，请先把其他模型设置为默认。' : `从${scopeName(state.scope)}配置中删除该接入点，明文 Key 一并移除，不可撤销。`}</p>
+      </div>
+      <button class="btn sm danger-outline" data-act="del" ${m.active ? 'disabled' : ''}>移除</button>
+    </div>
+  `;
+}
+
+function perfHTML(m) {
+  if (benchPhase === 'running') {
+    return `
+      <div class="md-run">
+        <div class="md-run-head">
+          <span>正在测速 · 第 <b id="md-bench-round">1</b> / 3 轮 · 短问答 ~20 字</span>
+          <button class="btn sm danger" data-act="stop">中断</button>
+        </div>
+        <div class="md-bar"><i id="md-bench-bar"></i></div>
+        <div class="md-live">
+          <div class="cell"><div class="k">首 token</div><div class="v" id="md-live-ttft">—</div></div>
+          <div class="cell"><div class="k">已生成</div><div class="v" id="md-live-tokens">0 tok</div></div>
+          <div class="cell"><div class="k">当前速度</div><div class="v" id="md-live-tps">—</div></div>
+          <div class="cell"><div class="k">已用时</div><div class="v" id="md-live-elapsed">0.0s</div></div>
+        </div>
+        <p class="md-hint">每轮注入随机 nonce 破坏前缀缓存，避免多轮平均被缓存命中率污染。</p>
+      </div>`;
+  }
+
+  const pf = m.perf;
+  if (!pf) {
+    return `
+      <div class="md-empty-mini">
+        <b>还没有性能数据</b>
+        <p>连通性只回答「能不能用」；测速跑完整流，回答「有多快、稳不稳」。按标准档位（3 轮 × 2 提示词 · max 256）跑一次即可。</p>
+        <button class="btn sm primary" data-act="bench">开始测速</button>
+      </div>`;
+  }
+  if (pf.ttft === null || pf.ttft === undefined) {
+    return `
+      <div class="md-metrics">
+        <div class="md-metric bad" style="grid-column:1/-1">
+          <div class="k">最近一次测速</div>
+          <div class="v" style="font-size:17px">${pf.total} 轮全部失败</div>
+          <div class="s">${esc(pf.at)} · 检查 Key / 网络后重跑</div>
+        </div>
+      </div>
+      <p class="md-hint">失败轮次不重试，成功轮次仍可参考；样本不足时不建议作为选型依据。</p>
+      <div class="md-perf-acts"><button class="btn sm primary" data-act="bench">重新测速</button></div>`;
+  }
+
+  const rate = Math.round((pf.okCount / pf.total) * 100);
+  const hist = (pf.history || []).slice(0, 3);
+  const tone = ttftTone(pf.ttft);
+  return `
+    <div class="md-metrics">
+      <div class="md-metric ${tone}"><div class="k">TTFT（首 token）</div><div class="v">${Math.round(pf.ttft)}<span class="u">ms</span></div><div class="s">${pf.okCount}/${pf.total} 轮成功</div></div>
+      <div class="md-metric"><div class="k">解码吞吐</div><div class="v">${pf.tps ?? '—'}<span class="u">tok/s</span></div><div class="s">按输出 token 计费</div></div>
+      <div class="md-metric ${rate === 100 ? 'good' : rate >= 60 ? 'warn' : 'bad'}"><div class="k">稳定性</div><div class="v">${rate}<span class="u">%</span></div><div class="s">${pf.okCount}/${pf.total} 轮成功</div></div>
+    </div>
+    ${hist.length > 1 ? `<div class="md-sparkrow"><span class="md-dim">TTFT 走势</span><svg width="120" height="24" viewBox="0 0 120 24"><polyline points="${spark(hist.map((h) => h.ttft), 120, 24)}" fill="none" stroke="var(--brand)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg></div>` : ''}
+    <table class="md-hist">
+      <thead><tr><th>时间</th><th>TTFT</th><th>吞吐</th><th>成功</th></tr></thead>
+      <tbody>
+        ${hist.map((h) => `<tr><td>${esc(h.when)}</td><td>${fmtMs(h.ttft)}</td><td>${h.tps === null || h.tps === undefined ? '—' : h.tps + ' tok/s'}</td><td class="${h.ok === h.total ? 'ok' : 'bad'}">${h.ok}/${h.total}</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="md-perf-acts">
+      <button class="btn sm primary" data-act="bench">重新测速</button>
+      <span class="md-dim">完整流测速，按输出 token 计费</span>
+    </div>`;
+}
+
+function renderDetail() {
+  const m = byAlias(drawerAlias);
+  if (!m) { closeDetail(); return; }
+  armedDelete = false;
+  const p = PROVIDER[m.provider] || PROVIDER.other;
+
+  document.getElementById('md-detail-head').innerHTML = `
+    <span class="tile ${m.provider}">${tileText(m)}</span>
+    <div class="md-drv-title">
+      <h2 id="md-detail-title">${esc(m.alias)}${m.active ? `<span class="md-pill brand">${svg(ICON.check, 2, 11)}生效中</span>` : ''}</h2>
+      <div class="md-drv-sub">
+        <span class="md-tag">${p.label}</span>
+        <span class="mono">${esc(m.name)}</span>
+        <span class="sep">·</span>
+        <span class="mono">${esc(hostOf(m.baseUrl))}</span>
+      </div>
+    </div>
+    <button class="md-close" data-act="edit" title="编辑模型信息" aria-label="编辑模型信息" style="margin-right:0">
+      ${svg(ICON.pencil, 1.5, 14)}
+    </button>
+    <button class="md-close" data-act="close" title="关闭">
+      ${svg(ICON.close, 1.6, 14)}
+    </button>`;
+
+  document.getElementById('md-detail-body').innerHTML = detailBodyHTML(m);
+
+  document.getElementById('md-detail-foot').innerHTML = `
+    <label class="md-scope-line">写入位置
+      <select data-scope-sel>
+        <option value="workspace">工作空间</option>
+        <option value="global">全局</option>
+      </select>
+    </label>
+    <span class="sp"></span>
+    <button class="btn" data-act="close">关闭</button>
+    ${m.active ? '<button class="btn primary" disabled>当前生效</button>' : `<button class="btn primary" data-act="activate">${svg(ICON.arrow, 1.6, 13)}设置为默认</button>`}`;
+
+  const sel = document.querySelector('#md-detail [data-scope-sel]');
+  if (sel) {
+    sel.value = state.scope;
+    sel.onchange = () => setScope(sel.value);
+  }
+
+  document.querySelectorAll('#md-detail [data-act]').forEach((el) => {
+    const act = el.dataset.act;
+    if (act === 'close') el.onclick = closeDetail;
+    else if (act === 'edit') el.onclick = () => openEdit(m.alias);
+    else if (act === 'test') el.onclick = () => runTest(m.alias);
+    else if (act === 'bench') el.onclick = startBench;
+    else if (act === 'stop') el.onclick = stopBench;
+    else if (act === 'activate') el.onclick = () => activate(m.alias);
+    else if (act === 'copy') el.onclick = () => copyText(m.baseUrl, 'Base URL 已复制');
+    else if (act === 'del') el.onclick = (e) => armDelete(e.currentTarget, m.alias);
+  });
+}
+
+function openDetail(alias) {
+  drawerAlias = alias;
+  armedDelete = false;
+  benchPhase = 'idle';
+  clearInterval(benchTimer);
+  benchTimer = null;
+  document.getElementById('md-detail').classList.add('show');
+  document.getElementById('md-detail-backdrop').classList.add('show');
+  document.body.style.overflow = 'hidden';
+  renderDetail();
+}
+
+function closeDetail() {
+  drawerAlias = null;
+  benchPhase = 'idle';
+  armedDelete = false;
+  clearInterval(benchTimer);
+  benchTimer = null;
+  document.getElementById('md-detail').classList.remove('show');
+  document.getElementById('md-detail-backdrop').classList.remove('show');
+  if (!document.getElementById('md-form').classList.contains('show')) document.body.style.overflow = '';
+}
+
+/* ================= 动作 ================= */
+function activate(alias) {
+  MODELS.forEach((m) => { m.active = false; });
+  const m = byAlias(alias);
+  if (!m) return;
+  m.active = true;
+  renderAll();
+  toast(`已切换生效模型：${alias}（${scopeName(state.scope)}）`, 'success');
+}
+
+function runTest(alias) {
+  if (testingAlias) return;
+  testingAlias = alias;
+  if (drawerAlias === alias) renderDetail(); else renderList();
+  setTimeout(() => {
+    const m = byAlias(alias);
+    if (!m) { testingAlias = null; return; }
+    const stillFail = m.alias === 'gpt-4.1-mini';
+    m.test = stillFail
+      ? { ok: false, ms: 0, err: 'HTTP 401（invalid_api_key）', at: '刚刚' }
+      : { ok: true, ms: Math.round(240 + Math.random() * 180), at: '刚刚' };
+    testingAlias = null;
+    renderAll();
+    toast(stillFail ? `${alias} 连通失败：HTTP 401` : `${alias} 连通正常 · ${fmtMs(m.test.ms)}`, stillFail ? 'error' : 'success');
+  }, 900);
+}
+
+function armDelete(btn, alias) {
+  if (!armedDelete) {
+    armedDelete = true;
+    btn.textContent = '再点一次确认移除';
+    toast('再次点击将移除该模型');
+    return;
+  }
+  removeModel(alias);
+}
+
+function removeModel(alias) {
+  const i = MODELS.findIndex((m) => m.alias === alias);
+  if (i < 0) return;
+  if (MODELS[i].active) { toast('当前生效模型不能移除，请先切换', 'error'); return; }
+  MODELS.splice(i, 1);
+  if (drawerAlias === alias) closeDetail();
+  renderAll();
+  toast(`已移除模型 ${alias}（${scopeName(state.scope)}）`, 'success');
+}
+
+function openConfirm(alias) {
+  confirmAlias = alias;
+  const m = byAlias(alias);
+  document.getElementById('md-confirm-text').textContent = m && m.active
+    ? '当前生效模型不能移除，请先把其他模型设置为默认。'
+    : `将从${scopeName(state.scope)}配置中移除「${alias}」，不可撤销。`;
+  document.getElementById('md-confirm-ok').disabled = !!(m && m.active);
+  document.getElementById('md-confirm').hidden = false;
+}
+
+function closeConfirm() {
+  document.getElementById('md-confirm').hidden = true;
+  confirmAlias = null;
+}
+
+function copyText(text, okMsg) {
+  try {
+    navigator.clipboard.writeText(text).then(() => toast(okMsg, 'success'), () => toast('复制失败，请手动选择'));
+  } catch {
+    toast('复制失败，请手动选择');
+  }
+}
+
+/* ================= 测速（演示） ================= */
+function startBench() {
+  if (!drawerAlias) return;
+  benchPhase = 'running';
+  benchAcc = { ttft: null, tokens: 0, elapsed: 0, pct: 0 };
+  benchStartedAt = Date.now();
+  renderDetail();
+  clearInterval(benchTimer);
+  benchTimer = setInterval(tickBench, 120);
+}
+
+function tickBench() {
+  const bar = document.getElementById('md-bench-bar');
+  if (!bar) { clearInterval(benchTimer); benchTimer = null; return; }
+  const el = Date.now() - benchStartedAt;
+  benchAcc.elapsed = el;
+  benchAcc.pct = Math.min(100, (el / 2400) * 100);
+  if (el > 520 && benchAcc.ttft === null) benchAcc.ttft = Math.round(360 + Math.random() * 220);
+  benchAcc.tokens = Math.min(256, Math.round((el / 2400) * 256));
+  bar.style.width = benchAcc.pct.toFixed(1) + '%';
+  const set = (id, txt) => { const n = document.getElementById(id); if (n) n.textContent = txt; };
+  set('md-bench-round', String(Math.min(3, Math.floor(benchAcc.pct / 33.4) + 1)));
+  set('md-live-ttft', benchAcc.ttft ? fmtMs(benchAcc.ttft) : '—');
+  set('md-live-tokens', benchAcc.tokens + ' tok');
+  set('md-live-tps', benchAcc.elapsed > 0 && benchAcc.tokens > 0 ? (benchAcc.tokens / (benchAcc.elapsed / 1000)).toFixed(1) + ' tok/s' : '—');
+  set('md-live-elapsed', (benchAcc.elapsed / 1000).toFixed(1) + 's');
+  if (el >= 2400) finishBench();
+}
+
+function finishBench() {
+  clearInterval(benchTimer);
+  benchTimer = null;
+  const m = byAlias(drawerAlias);
+  if (!m) { benchPhase = 'idle'; return; }
+  const ttft = benchAcc.ttft || Math.round(420 + Math.random() * 160);
+  const tps = Math.round((30 + Math.random() * 16) * 10) / 10;
+  m.perf = {
+    ttft, tps, okCount: 3, total: 3, at: '刚刚',
+    history: [{ when: '刚刚', ttft, tps, ok: 3, total: 3 }, ...((m.perf && m.perf.history) || [])].slice(0, 4),
+  };
+  if (!m.test || !m.test.ok) m.test = { ok: true, ms: Math.round(260 + Math.random() * 160), at: '刚刚' };
+  benchPhase = 'idle';
+  renderAll();
+  toast(`测速完成：TTFT ${fmtMs(ttft)} · ${tps} tok/s`, 'success');
+}
+
+function stopBench() {
+  clearInterval(benchTimer);
+  benchTimer = null;
+  benchPhase = 'idle';
+  renderDetail();
+  toast('已中断测速');
+}
+
+/* ================= ⋯ 菜单 ================= */
+function openMenu(alias, ev) {
+  const m = byAlias(alias);
+  if (!m) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  const menu = document.getElementById('md-menu');
+  menu.style.display = 'block';
+  const top = Math.min(r.bottom + 6, window.innerHeight - 250);
+  const left = Math.max(8, Math.min(r.right - 190, window.innerWidth - 198));
+  menu.style.top = top + 'px';
+  menu.style.left = left + 'px';
+  menu.innerHTML = `
+    <div class="m-head">${esc(m.alias)}</div>
+    <button type="button" data-a="detail">${svg(ICON.info, 1.5, 14)}查看详情</button>
+    <button type="button" data-a="edit">${svg(ICON.pencil, 1.5, 14)}编辑信息</button>
+    <button type="button" data-a="copy">${svg(ICON.copy, 1.5, 14)}复制别名</button>
+    <button type="button" data-a="test">${svg(ICON.pulse, 1.5, 14)}连通性测试</button>
+    <button type="button" data-a="bench">${svg(ICON.gauge, 1.5, 14)}性能测速</button>
+    <div class="hr"></div>
+    <button type="button" class="danger" data-a="del" ${m.active ? 'disabled title="当前生效模型不能移除"' : ''}>${svg(ICON.trash, 1.5, 14)}移除模型</button>`;
+  menu.querySelectorAll('button').forEach((b) => {
+    b.onclick = () => { execMenu(b.dataset.a, alias); };
+  });
+}
+
+function closeMenu() {
+  document.getElementById('md-menu').style.display = 'none';
+}
+
+function execMenu(a, alias) {
+  closeMenu();
+  if (a === 'detail') openDetail(alias);
+  else if (a === 'edit') openEdit(alias);
+  else if (a === 'copy') copyText(alias, '别名已复制');
+  else if (a === 'test') runTest(alias);
+  else if (a === 'bench') { openDetail(alias); startBench(); }
+  else if (a === 'del') openConfirm(alias);
+}
+
+/* ================= 添加模型 ================= */
+function setScope(scope) {
+  state.scope = scope;
+  document.getElementById('md-scope').value = scope;
+  document.querySelectorAll('#md-add-scope button').forEach((b) => b.classList.toggle('on', b.dataset.scope === scope));
+  const txt = document.getElementById('md-add-scope-txt');
+  if (txt) txt.textContent = scope === 'workspace' ? '当前工作空间配置' : '全局配置（所有工作空间共享）';
+  const sel = document.querySelector('#md-detail [data-scope-sel]');
+  if (sel) sel.value = scope;
+}
+
+/** 打开表单抽屉：mode = add | edit */
+function openForm(mode, alias) {
+  const editing = mode === 'edit';
+  const m = editing ? byAlias(alias) : null;
+  if (editing && !m) { toast('模型不存在，可能已被移除', 'error'); return; }
+
+  formMode = mode;
+  editingAlias = m ? m.alias : null;
+
+  document.getElementById('f-alias').value = m ? m.alias : '';
+  document.getElementById('f-name').value = m ? m.name : '';
+  document.getElementById('f-base').value = m ? m.baseUrl : '';
+  document.getElementById('f-key').value = '';
+  document.getElementById('f-temp').value = m && m.temp !== null && m.temp !== undefined ? String(m.temp) : '';
+
+  document.querySelectorAll('#md-form input').forEach((el) => el.classList.remove('bad'));
+  document.querySelectorAll('#md-form [data-err]').forEach((el) => { el.hidden = true; el.textContent = ''; });
+  document.querySelectorAll('#md-form [data-hint]').forEach((el) => { el.hidden = false; });
+  document.getElementById('md-add-err').hidden = true;
+  document.getElementById('f-key').type = 'password';
+  document.getElementById('f-key-toggle').textContent = '显示';
+  document.getElementById('f-key').placeholder = editing ? '留空保持现有 Key' : 'sk-...';
+  document.getElementById('f-key-req').hidden = editing;
+  document.getElementById('f-alias').readOnly = editing;
+
+  document.getElementById('md-add-title').textContent = editing ? '编辑模型' : '添加模型';
+  document.getElementById('md-form-sub').textContent = editing ? `修改 ${m.alias} 的接入配置` : '登记一个 OpenAI 兼容的接入点';
+  document.getElementById('md-add-submit').textContent = editing ? '保存修改' : '登记模型';
+
+  const tile = document.getElementById('md-form-tile');
+  tile.className = 'tile ' + (editing ? m.provider : 'deepseek');
+  tile.textContent = editing ? tileText(m) : '＋';
+
+  document.querySelector('#md-form [data-hint="alias"]').innerHTML = editing
+    ? '别名是登记簿主键，不可修改；需要改名请移除后重新登记。'
+    : '对话内切换模型与 <code>/model</code> 命令都用这个别名，同名会冲突。';
+  document.querySelector('#md-form [data-hint="apiKey"]').innerHTML = editing
+    ? `留空表示保持现有 Key（${esc(m.key)}）；填写则整体替换，页面仍只回显后四位。`
+    : '只保存在服务端配置文件里，页面回显时一律遮蔽为后四位。';
+
+  setScope(state.scope);
+  document.getElementById('md-form').classList.add('show');
+  document.getElementById('md-add-backdrop').classList.add('show');
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => (editing ? document.getElementById('f-name') : document.getElementById('f-alias')).focus(), 60);
+}
+
+function openAdd() {
+  openForm('add');
+}
+
+function openEdit(alias) {
+  closeDetail();
+  openForm('edit', alias);
+}
+
+function closeAdd() {
+  document.getElementById('md-form').classList.remove('show');
+  document.getElementById('md-add-backdrop').classList.remove('show');
+  if (!document.getElementById('md-detail').classList.contains('show')) document.body.style.overflow = '';
+  formMode = 'add';
+  editingAlias = null;
+  document.getElementById('f-alias').readOnly = false;
+}
+
+function showFieldErr(name, msg) {
+  const p = document.querySelector(`#md-form [data-err="${name}"]`);
+  if (p) { p.textContent = msg; p.hidden = !msg; }
+  const input = { alias: 'f-alias', name: 'f-name', baseUrl: 'f-base', apiKey: 'f-key', temperature: 'f-temp' }[name];
+  const el = input && document.getElementById(input);
+  if (el) el.classList.toggle('bad', !!msg);
+}
+
+function submitForm() {
+  const editing = formMode === 'edit';
+  const alias = editing ? editingAlias : document.getElementById('f-alias').value.trim();
+  const name = document.getElementById('f-name').value.trim();
+  const baseUrl = document.getElementById('f-base').value.trim();
+  const apiKey = document.getElementById('f-key').value.trim();
+  const tempRaw = document.getElementById('f-temp').value.trim();
+  const errs = {};
+
+  if (!editing) {
+    if (!alias) errs.alias = '别名必填';
+    else if (/\s/.test(alias)) errs.alias = '别名不能包含空格';
+    else if (alias.startsWith('-')) errs.alias = '别名不能以 - 开头';
+    else if (byAlias(alias)) errs.alias = '该别名已存在';
+  }
+
+  if (!name) errs.name = '型号必填';
+
+  if (!baseUrl) errs.baseUrl = 'Base URL 必填';
+  else if (!/^https?:\/\/\S+$/i.test(baseUrl)) errs.baseUrl = '需要以 http:// 或 https:// 开头';
+
+  if (!editing && !apiKey) errs.apiKey = 'API Key 必填';
+
+  if (tempRaw !== '') {
+    const n = Number(tempRaw);
+    if (!Number.isFinite(n)) errs.temperature = 'temperature 必须为数字';
+    else if (n < 0 || n > 2) errs.temperature = 'temperature 需在 0 ~ 2 之间';
+  }
+
+  ['alias', 'name', 'baseUrl', 'apiKey', 'temperature'].forEach((k) => showFieldErr(k, errs[k] || ''));
+
+  if (Object.keys(errs).length > 0) {
+    const first = Object.keys(errs)[0];
+    const input = { alias: 'f-alias', name: 'f-name', baseUrl: 'f-base', apiKey: 'f-key', temperature: 'f-temp' }[first];
+    if (input) document.getElementById(input).focus();
+    return;
+  }
+
+  const temp = tempRaw === '' ? null : Number(tempRaw);
+
+  if (editing) {
+    const m = byAlias(editingAlias);
+    if (!m) { toast('模型不存在，可能已被移除', 'error'); closeAdd(); return; }
+    const endpointChanged = m.name !== name || m.baseUrl !== baseUrl || !!apiKey;
+    m.name = name;
+    m.baseUrl = baseUrl;
+    m.provider = guessProvider(baseUrl);
+    m.temp = temp;
+    if (apiKey) m.key = 'sk-****' + apiKey.slice(-4);
+    if (endpointChanged) m.test = null;
+    const savedAlias = m.alias;
+    closeAdd();
+    renderAll();
+    toast(endpointChanged
+      ? `已保存 ${savedAlias} 的修改（${scopeName(state.scope)}）· 建议重新测试连通性`
+      : `已保存 ${savedAlias} 的修改（${scopeName(state.scope)}）`, 'success');
+    return;
+  }
+
+  MODELS.push({
+    alias, name, provider: guessProvider(baseUrl), baseUrl, key: 'sk-****' + Math.random().toString(16).slice(2, 6),
+    temp, active: false, test: null, perf: null,
+  });
+  closeAdd();
+  renderAll();
+  toast(`已登记模型 ${alias}（${scopeName(state.scope)}）`, 'success');
+}
+
+function guessProvider(url) {
+  const u = url.toLowerCase();
+  if (u.includes('deepseek')) return 'deepseek';
+  if (u.includes('bigmodel') || u.includes('zhipu')) return 'zhipu';
+  if (u.includes('openai')) return 'openai';
+  if (u.includes('dashscope') || u.includes('aliyun')) return 'qwen';
+  if (u.includes('openrouter')) return 'gateway';
+  return 'other';
+}
+
+/* ================= 事件绑定 ================= */
+document.querySelectorAll('[data-theme-btn]').forEach((b) => {
+  b.onclick = () => {
+    document.documentElement.dataset.theme = b.dataset.themeBtn;
+    document.querySelectorAll('[data-theme-btn]').forEach((x) => x.classList.toggle('on', x === b));
+  };
+});
+
+document.getElementById('md-refresh').onclick = () => { renderAll(); toast('登记簿已刷新'); };
+document.getElementById('md-add').onclick = openAdd;
+document.getElementById('md-add-backdrop').onclick = closeAdd;
+document.querySelectorAll('[data-add-close]').forEach((b) => { b.onclick = closeAdd; });
+document.getElementById('md-add-submit').onclick = submitForm;
+
+document.getElementById('f-key-toggle').onclick = () => {
+  const el = document.getElementById('f-key');
+  const show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  document.getElementById('f-key-toggle').textContent = show ? '隐藏' : '显示';
+};
+
+document.querySelectorAll('#md-add-scope button').forEach((b) => {
+  b.onclick = () => setScope(b.dataset.scope);
+});
+
+document.getElementById('md-q').addEventListener('input', () => { renderList(); });
+document.getElementById('md-sort').addEventListener('change', (e) => { state.sort = e.target.value; renderList(); });
+document.getElementById('md-scope').addEventListener('change', (e) => setScope(e.target.value));
+document.getElementById('md-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-tab]');
+  if (!b) return;
+  state.tab = b.dataset.tab;
+  document.querySelectorAll('#md-tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  renderList();
+});
+
+document.getElementById('md-detail-backdrop').onclick = closeDetail;
+
+document.getElementById('md-confirm-cancel').onclick = closeConfirm;
+document.getElementById('md-confirm-ok').onclick = () => {
+  if (confirmAlias) removeModel(confirmAlias);
+  closeConfirm();
+};
+document.getElementById('md-confirm').onclick = (e) => {
+  if (e.target.id === 'md-confirm') closeConfirm();
+};
+
+document.getElementById('md-grid').addEventListener('click', (e) => {
+  const more = e.target.closest('.md-more');
+  if (more) { openMenu(more.dataset.more, e); return; }
+  const act = e.target.closest('[data-activate]');
+  if (act) { activate(act.dataset.activate); return; }
+  const clear = e.target.closest('[data-clear]');
+  if (clear) {
+    document.getElementById('md-q').value = '';
+    state.tab = 'all';
+    document.querySelectorAll('#md-tabs button').forEach((x) => x.classList.toggle('on', x.dataset.tab === 'all'));
+    renderList();
+    return;
+  }
+  if (e.target.closest('[data-open-add]')) { openAdd(); return; }
+  const card = e.target.closest('.md-card');
+  if (card) openDetail(card.dataset.alias);
+});
+
+document.getElementById('md-grid').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.md-card');
+  if (card) { e.preventDefault(); openDetail(card.dataset.alias); }
+});
+
+document.getElementById('md-alert').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-open]');
+  if (b) openDetail(b.dataset.open);
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#md-menu') && !e.target.closest('.md-more')) closeMenu();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!document.getElementById('md-confirm').hidden) { closeConfirm(); return; }
+    if (document.getElementById('md-form').classList.contains('show')) { closeAdd(); return; }
+    if (drawerAlias) { closeDetail(); return; }
+    closeMenu();
+  }
+  if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+    e.preventDefault();
+    document.getElementById('md-q').focus();
+  }
+});
+
+/* ================= 启动 ================= */
+setScope('workspace');
+renderAll();
+</script>
+</body>
+</html>

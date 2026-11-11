@@ -469,6 +469,61 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     expect((await req('PUT', '/model', {})).status).toBe(400);
   });
 
+  it('PATCH /models/:alias 编辑 → 只改提交字段；Key 留空保持；清 temperature 删键；生效模型同步快照', async () => {
+    // 生效中的 test-model 改名 → 同时同步 model.* 快照
+    const renamed = await req('PATCH', '/models/test-model', { profile: { name: 'gpt-test-2' } });
+    expect(renamed.status).toBe(200);
+    const renamedBody = (await renamed.json()) as {
+      alias: string;
+      scope: string;
+      syncedActive: boolean;
+      profile: { name: string; apiKey: string; temperature?: number };
+    };
+    expect(renamedBody.alias).toBe('test-model');
+    expect(renamedBody.syncedActive).toBe(true);
+    expect(renamedBody.profile.name).toBe('gpt-test-2');
+    expect(renamedBody.profile.temperature).toBe(0.5); // 未提交 → 不变
+    expect((await (await req('GET', '/model')).json() as { model: { name: string } }).model.name).toBe('gpt-test-2');
+
+    // Key 留空 → 保持原值（后四位不变）
+    const kept = await req('PATCH', '/models/test-model', { profile: { apiKey: '' } });
+    expect(kept.status).toBe(200);
+    expect(((await kept.json()) as { profile: { apiKey: string } }).profile.apiKey).toBe('****6789');
+
+    // Key 填写 → 整体替换并重新遮蔽
+    const rekeyed = await req('PATCH', '/models/test-model', { profile: { apiKey: 'sk-new-key-9876' } });
+    expect(((await rekeyed.json()) as { profile: { apiKey: string } }).profile.apiKey).toBe('****9876');
+
+    // temperature null → 从 profile 与生效快照中删除该键
+    const cleared = await req('PATCH', '/models/test-model', { profile: { temperature: null } });
+    expect(cleared.status).toBe(200);
+    expect(((await cleared.json()) as { profile: Record<string, unknown> }).profile.temperature).toBeUndefined();
+    const listBody = (await (await req('GET', '/models')).json()) as { profiles: Record<string, unknown>[] };
+    expect(listBody.profiles.find((p) => p.alias === 'test-model')?.temperature).toBeUndefined();
+    const curBody = (await (await req('GET', '/model')).json()) as { model: Record<string, unknown> };
+    // 快照键已删除；GET /model 回读的是默认配置里的 temperature: 0
+    expect(curBody.model.temperature).toBe(0);
+
+    // 跨层归属：全局层存在但按默认 workspace 编辑 → 404 提示 ?scope=global
+    const g = await req('POST', '/models', {
+      alias: 'global-edit-model',
+      scope: 'global',
+      profile: { name: 'gpt-global-edit', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-global-0001' },
+    });
+    expect(g.status).toBe(201);
+    const wrong = await req('PATCH', '/models/global-edit-model', { profile: { name: 'x' } });
+    expect(wrong.status).toBe(404);
+    expect(((await wrong.json()) as { error: { message: string } }).error.message).toContain('scope=global');
+    const ok = await req('PATCH', '/models/global-edit-model', { scope: 'global', profile: { name: 'gpt-global-edit-2' } });
+    expect(ok.status).toBe(200);
+
+    // 非法入参 / 未知模型
+    expect((await req('PATCH', '/models/test-model', {})).status).toBe(400);
+    expect((await req('PATCH', '/models/test-model', { profile: { name: '' } })).status).toBe(400);
+    expect((await req('PATCH', '/models/test-model', { profile: { temperature: 'hot' } })).status).toBe(400);
+    expect((await req('PATCH', '/models/ghost-model', { profile: { name: 'x' } })).status).toBe(404);
+  });
+
   it('DELETE 当前激活 → 409；跨层归属 → 404 提示 scope；目标层存在 → 200', async () => {
     expect((await req('DELETE', '/models/test-model')).status).toBe(409);
 

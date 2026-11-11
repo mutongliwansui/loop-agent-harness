@@ -128,6 +128,107 @@ async function handleCreateModel(
   });
 }
 
+/** 编辑请求体中的 profile 增量：字段缺省 = 不变；apiKey 空串 = 保持；temperature null = 删除该键 */
+interface ProfilePatch {
+  name?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  temperature?: number | null;
+}
+
+/** 校验 PATCH profile 增量（只校验出现的字段，未出现即不改） */
+function parseProfilePatch(raw: unknown): ProfilePatch {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new ApiHttpError('bad_request', '请求体必须包含 profile 对象');
+  }
+  const p = raw as Record<string, unknown>;
+  const patch: ProfilePatch = {};
+  for (const field of ['name', 'baseUrl', 'apiKey'] as const) {
+    if (p[field] === undefined) continue;
+    if (typeof p[field] !== 'string') {
+      throw new ApiHttpError('bad_request', `profile.${field} 必须为字符串`);
+    }
+    const v = (p[field] as string).trim();
+    // apiKey 允许空串（语义 = 保持原值）；name/baseUrl 不允许清空
+    if (field !== 'apiKey' && v === '') {
+      throw new ApiHttpError('bad_request', `profile.${field} 不能为空`);
+    }
+    patch[field] = v;
+  }
+  if (p.temperature !== undefined) {
+    if (p.temperature !== null && typeof p.temperature !== 'number') {
+      throw new ApiHttpError('bad_request', 'profile.temperature 必须为数字或 null');
+    }
+    patch.temperature = p.temperature as number | null;
+  }
+  return patch;
+}
+
+/** PATCH /models/:alias：编辑已有 profile（别名不可改；生效模型同步 model.* 快照） */
+async function handleUpdateModel(
+  ctx: HandlerContext,
+  req: IncomingMessage,
+  res: ServerResponse,
+  alias: string,
+): Promise<void> {
+  if (!validAlias(alias)) {
+    throw new ApiHttpError('bad_request', '别名非法（非空、无空白、不以 - 开头）');
+  }
+  const body = await readJsonBody(req);
+  const scope = parseScope(body.scope);
+  const patch = parseProfilePatch(body.profile);
+  const { config: cfg } = ctx.configLoader.load();
+  const existing = cfg.models.profiles[alias];
+  if (!existing) {
+    throw new ApiHttpError('not_found', `未找到模型「${alias}」`);
+  }
+
+  // 写入层归属校验：目标层没有但另一层有 → 提示 scope（同 DELETE 语义）
+  const targetRaw = await readLayerRaw(ctx.configLoader, scope);
+  if (targetRaw?.models?.profiles?.[alias] === undefined) {
+    const otherScope = scope === 'workspace' ? 'global' : 'workspace';
+    const otherRaw = await readLayerRaw(ctx.configLoader, otherScope);
+    if (otherRaw?.models?.profiles?.[alias] !== undefined) {
+      throw new ApiHttpError('not_found', `「${alias}」未在${scopeName(scope)}登记，但存在于${scopeName(otherScope)}（请求体 scope=${otherScope}）`);
+    }
+    throw new ApiHttpError('not_found', `未找到模型「${alias}」`);
+  }
+
+  const removeTemp = patch.temperature === null;
+  let nextTemp: number | undefined;
+  if (patch.temperature === null) nextTemp = undefined;
+  else nextTemp = patch.temperature !== undefined ? patch.temperature : existing.temperature;
+  // 以生效配置中的完整 profile 为基线写入目标层，保证回读结果与页面提交一致
+  const next: ModelProfile = {
+    name: patch.name ?? existing.name,
+    baseUrl: patch.baseUrl ?? existing.baseUrl,
+    apiKey: patch.apiKey ? patch.apiKey : existing.apiKey,
+    ...(nextTemp !== undefined ? { temperature: nextTemp } : {}),
+  };
+
+  await ctx.configWriter.updateScope(scope, { models: { profiles: { [alias]: next } } });
+  if (removeTemp) {
+    await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias, 'temperature']);
+  }
+  const syncedActive = alias === cfg.models.active;
+  if (syncedActive) {
+    await ctx.configWriter.updateScope(scope, buildUsePartial(alias, next));
+    if (removeTemp) await ctx.configWriter.deleteScopeKey(scope, ['model', 'temperature']);
+  }
+  ctx.log(`[api] 已更新模型（${scope}）: ${alias}${syncedActive ? '（同步 model.* 快照）' : ''}`);
+  sendJson(res, 200, {
+    alias,
+    scope,
+    syncedActive,
+    profile: {
+      name: next.name,
+      baseUrl: next.baseUrl,
+      apiKey: maskKey(next.apiKey),
+      ...(next.temperature !== undefined ? { temperature: next.temperature } : {}),
+    },
+  });
+}
+
 /** DELETE /models/:alias?scope=：移除 profile（删当前激活 409；跨层归属提示 404） */
 async function handleDeleteModel(
   ctx: HandlerContext,
@@ -182,6 +283,7 @@ export function modelRoutes(): Route[] {
     { method: 'GET', path: '/model', handler: (ctx, _req, res) => handleGetCurrentModel(ctx, _req, res) },
     { method: 'PUT', path: '/model', handler: (ctx, req, res) => handlePutModel(ctx, req, res) },
     { method: 'POST', path: '/models', handler: (ctx, req, res) => handleCreateModel(ctx, req, res) },
+    { method: 'PATCH', path: '/models/:alias', handler: (ctx, req, res, p) => handleUpdateModel(ctx, req, res, p.alias) },
     { method: 'POST', path: '/models/:alias/test', handler: (ctx, _req, res, p) => handleTestModel(ctx, res, p.alias) },
     { method: 'DELETE', path: '/models/:alias', handler: (ctx, req, res, p) => handleDeleteModel(ctx, req, res, p.alias) },
   ];

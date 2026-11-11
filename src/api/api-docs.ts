@@ -446,6 +446,17 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     body: '{ "alias": "string", "profile": { "model": "string", "baseUrl": "string", "apiKey": "string" } }',
     example: 'curl -X POST /models -H "Content-Type: application/json" -d \'{"alias":"ds","profile":{"model":"deepseek-chat"}}\'',
   },
+  'PATCH /models/:alias': {
+    summary: '编辑模型 profile（缺省字段不变；alias 不可改；生效模型同步 model.* 快照）。',
+    scope: 'write',
+    params: [
+      { name: 'alias', in: 'path', type: 'string', required: true, desc: '模型别名（不可修改）' },
+      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'profile', in: 'body', type: 'object', required: true, desc: '字段增量；apiKey 空串 = 保持，temperature null = 删除该键' },
+    ],
+    body: '{ "scope?": "workspace", "profile": { "name?": "string", "baseUrl?": "string", "apiKey?": "string", "temperature?": "number | null" } }',
+    example: 'curl -X PATCH /models/ds -H "Content-Type: application/json" -d \'{"profile":{"temperature":0.7}}\'',
+  },
   'POST /models/:alias/test': {
     summary: '模型连通性测试（失败也返回 200，用 ok:false 表达）。',
     scope: 'read',
