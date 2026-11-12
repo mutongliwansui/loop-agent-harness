@@ -1,15 +1,20 @@
 // 文件读取工具：全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
 // 20261106-001：超限完整输出落临时文件 + 告知路径（方案 B：文件内治理，边扫描边写）
 // 20261111-003：删除 offset/limit 别名参数（行范围只保留 startLine/endLine），并精简工具描述
-import { createReadStream } from 'node:fs';
+import { createReadStream, mkdirSync, writeFileSync } from 'node:fs';
 import { open, stat, type FileHandle } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
 import { resolveToolPath, toolWorkspaceRoot } from './workspace-fs.js';
 import {
   TmpFileWriter,
   buildFullOutputNotice,
+  buildTmpFilePath,
   summarizeParam,
 } from './output-governor.js';
+import { detectDocumentKind } from '../documents/detect.js';
+import { extractDocument } from '../documents/extract.js';
+import type { DocumentKind } from '../documents/types.js';
 
 /** 全文读取默认行数上限（超出只返回前 N 行并附截断提示） */
 const DEFAULT_MAX_LINES = 2000;
@@ -23,11 +28,17 @@ const MAX_LINE_CHARS = 8 * 1024;
 const BINARY_SNIFF_BYTES = 8000;
 /** 流式扫描块大小（内存只保留当前行，不整文件入内存） */
 const CHUNK_BYTES = 64 * 1024;
+/** 文档解析的源文件大小上限（与文本文件 16MB 全文上限分开：docx/pdf 需整体解析） */
+const MAX_DOC_SOURCE_BYTES = 50 * 1024 * 1024;
+/** 单文档解析时间预算（毫秒，远小于 runner 默认 30s，保证超时前返回） */
+const DOC_TIME_BUDGET_MS = 15_000;
+/** 支持 pages 参数的分页文档类型（xlsx 的 page = 工作表序号） */
+const PAGEABLE_DOCUMENT_KINDS = new Set<DocumentKind>(['pdf', 'pptx', 'xlsx']);
 
 export const fileRead: Tool = {
   name: 'fileRead',
   description:
-    '读取文本文件，默认每行带行号前缀。大文件用 startLine/endLine 分段，或先用 grep 定位；二进制文件会被拒绝。',
+    '读取文本或文档（doc/docx/pdf/xlsx/pptx/rtf/odt），默认每行带行号。大文件用 startLine/endLine 分段；分页文档可传 pages；扫描件/加密件会提示。',
   parameters: {
     type: 'object',
     properties: {
@@ -39,6 +50,10 @@ export const fileRead: Tool = {
       endLine: {
         type: 'number',
         description: '结束行号（含该行）',
+      },
+      pages: {
+        type: 'string',
+        description: '分页文档页码（PDF/PPTX/XLSX）：3 / 3-7 / 3- / 1,4,9；与 startLine/endLine 互斥',
       },
       maxBytes: {
         type: 'number',
@@ -60,6 +75,7 @@ export const fileRead: Tool = {
     const maxBytes = args.maxBytes != null ? Number(args.maxBytes) : null;
     const startArg = args.startLine != null ? Number(args.startLine) : null;
     const endArg = args.endLine != null ? Number(args.endLine) : null;
+    const pagesArg = args.pages != null ? String(args.pages).trim() : null;
 
     // 保持原语义：startLine 与 endLine 必须成对
     if ((startArg === null) !== (endArg === null)) {
@@ -76,6 +92,11 @@ export const fileRead: Tool = {
     if (maxBytes !== null && (!Number.isInteger(maxBytes) || maxBytes < 1)) {
       throw new Error('maxBytes 必须是 >= 1 的整数');
     }
+    // 需求 20261112-001：pages 只用于分页文档，且与行区间互斥
+    if (pagesArg !== null && pagesArg !== '' && startArg !== null) {
+      throw new Error('pages 与 startLine/endLine 互斥，请二选一');
+    }
+    const pageSelection = pagesArg ? parsePageSelection(pagesArg) : null;
 
     // 需求 20261111-003（C 档）：删除 offset/limit 别名参数，行范围只保留 startLine/endLine 一套语义
     const explicit = startArg !== null;
@@ -87,7 +108,30 @@ export const fileRead: Tool = {
 
     const fh = await open(path, 'r');
     try {
-      await assertTextFile(fh, path, st.size);
+      // 需求 20261112-001：先识别文档格式，再决定走纯文本管线还是文档提取管线。
+      // 文件头只读一次，与二进制 NUL 嗅探共用同一缓冲（文本路径零额外 I/O）。
+      const head = await readHead(fh, st.size);
+      const detected = detectDocumentKind(path, head);
+      if (detected.kind !== 'text') {
+        if (pageSelection && !PAGEABLE_DOCUMENT_KINDS.has(detected.kind)) {
+          throw new Error('pages 仅对 PDF/PPTX/XLSX 文档生效');
+        }
+        return await readDocument(
+          path,
+          detected.kind,
+          detected.warning,
+          encoding,
+          lineNumbers,
+          explicit ? start : null,
+          explicit ? end : null,
+          maxBytes,
+          pageSelection,
+          ctx,
+        );
+      }
+
+      if (pageSelection) throw new Error('pages 仅对 PDF/PPTX/XLSX 文档生效');
+      assertTextFile(head, path);
       return explicit
         ? await readRange(fh, path, st.size, encoding, lineNumbers, start, end, maxBytes)
         : await readFull(fh, path, st.size, encoding, lineNumbers, maxBytes, ctx);
@@ -97,17 +141,277 @@ export const fileRead: Tool = {
   },
 };
 
-/** 二进制探测：前 BINARY_SNIFF_BYTES 字节含 NUL 视为二进制并拒绝（避免裸数据进上下文） */
-async function assertTextFile(fh: FileHandle, path: string, size: number): Promise<void> {
+/** 读取文件头（最多 BINARY_SNIFF_BYTES），供格式识别与 NUL 嗅探共用 */
+async function readHead(fh: FileHandle, size: number): Promise<Buffer> {
   const len = Math.min(size, BINARY_SNIFF_BYTES);
-  if (len === 0) return;
+  if (len === 0) return Buffer.alloc(0);
   const sniff = Buffer.alloc(len);
   await fh.read(sniff, 0, len, 0);
-  if (sniff.includes(0)) {
+  return sniff;
+}
+
+/** 二进制探测：前 BINARY_SNIFF_BYTES 字节含 NUL 视为二进制并拒绝（避免裸数据进上下文） */
+function assertTextFile(head: Buffer, path: string): void {
+  if (head.includes(0)) {
     throw new Error(
-      `二进制文件不支持读取: ${path}（前 ${BINARY_SNIFF_BYTES} 字节含 NUL）；如需处理请改用 commandRun 等工具`,
+      `二进制文件不支持读取: ${path}（前 ${BINARY_SNIFF_BYTES} 字节含 NUL）；当前支持文本与 doc/docx 文档，其他格式请先转换或改用 commandRun`,
     );
   }
+}
+
+interface PageSelectionRange {
+  start: number;
+  /** 省略表示到文档末页 */
+  end?: number;
+}
+type PageSelection = PageSelectionRange[];
+
+/** 解析 pages 参数：支持 3 / 3-7 / 3- / 1,4,9 */
+function parsePageSelection(raw: string): PageSelection {
+  const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0 || parts.length > 50) {
+    throw new Error(`页码格式非法: ${raw}（示例：3 / 3-7 / 3- / 1,4,9）`);
+  }
+  const out: PageSelection = [];
+  for (const part of parts) {
+    const m = /^(\d+)(?:-(\d*))?$/.exec(part);
+    if (!m) throw new Error(`页码格式非法: ${raw}（示例：3 / 3-7 / 3- / 1,4,9）`);
+    const start = Number(m[1]);
+    const end = m[2] === undefined ? start : m[2] === '' ? undefined : Number(m[2]);
+    if (!Number.isInteger(start) || start < 1) {
+      throw new Error(`页码必须 >= 1: ${part}`);
+    }
+    if (end !== undefined && (!Number.isInteger(end) || end < start)) {
+      throw new Error(`页码范围非法: ${part}`);
+    }
+    out.push({ start, end });
+  }
+  return out;
+}
+
+/** 页码选择的可读描述（用于输出首行；xlsx 的 page 是工作表序号） */
+function describePageSelection(
+  selection: PageSelection,
+  pageCount: number,
+  kind: DocumentKind,
+): string {
+  const parts = selection.map((r) => {
+    const end = r.end ?? pageCount;
+    return end > r.start ? `${r.start}-${end}` : `${r.start}`;
+  });
+  return `第 ${parts.join('、')}${kind === 'xlsx' ? ' 个工作表' : ' 页'}`;
+}
+
+/**
+ * 文档截断时把「完整提取文本」落盘（非原始二进制），返回可追加的提示；失败返回空串。
+ * 复用 output-governor 的路径与清理机制，文案通过 completeLabel 说明落盘内容类型。
+ */
+function spillExtractedText(path: string, text: string, lines: number, ctx?: ToolContext): string {
+  try {
+    const fullPath = buildTmpFilePath(ctx?.sessionId, 'fileRead', summarizeParam({ path }, 'fileRead'));
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, text, 'utf-8');
+    return buildFullOutputNotice({
+      path: fullPath,
+      bytes: Buffer.byteLength(text, 'utf-8'),
+      lines,
+      complete: true,
+      completeLabel: '该文件为提取出的全文文本，非原始二进制文档',
+      suggestion: '建议: 用 fileRead 的 startLine/endLine 分段读取（提取文本行号），或用 grep 定位关键行',
+    });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 文档读取（需求 20261112-001）：提取为纯文本后复用既有行号/区间/截断语义。
+ * 与文本路径的差异：encoding 参数无效（文档统一输出 UTF-8），并在首行声明行号口径。
+ */
+async function readDocument(
+  path: string,
+  kind: DocumentKind,
+  warning: string | undefined,
+  encoding: BufferEncoding,
+  lineNumbers: boolean,
+  start: number | null,
+  end: number | null,
+  maxBytes: number | null,
+  pageSelection: PageSelection | null,
+  ctx?: ToolContext,
+): Promise<string> {
+  const result = await extractDocument(path, kind, {
+    maxBytes: MAX_DOC_SOURCE_BYTES,
+    timeBudgetMs: DOC_TIME_BUDGET_MS,
+  });
+
+  const lines = result.text.split('\n');
+  const totalLines = lines.length;
+  const pageCount = result.pageCount ?? result.pages?.length ?? null;
+  const pageUnit = kind === 'xlsx' ? ' 个工作表' : ' 页';
+  const headerParts = [
+    `${kind} 文档，已提取为文本，共 ${totalLines} 行${pageCount ? `（${pageCount}${pageUnit}）` : ''}`,
+    '行号为提取文本行号',
+  ];
+  if (warning) headerParts.push(warning);
+  // 文档统一输出 UTF-8：encoding 传 utf-8/utf8 视为默认，其他值给出忽略说明
+  if (encoding !== 'utf-8' && encoding !== 'utf8') {
+    headerParts.push(`已忽略 encoding=${encoding}`);
+  }
+  const warningBlock = result.warnings.length
+    ? `\n${result.warnings.map((w) => `[提示] ${w}`).join('\n')}`
+    : '';
+
+  // 按页读取（仅 PDF；execute 已校验）
+  if (pageSelection) {
+    if (!result.pages || !pageCount) {
+      throw new Error('该文档未提供页映射，无法按页读取');
+    }
+    for (const range of pageSelection) {
+      if (range.start > pageCount) {
+        throw new Error(`页码 ${range.start} 超出文档总页数 ${pageCount}`);
+      }
+      if (range.end !== undefined && range.end > pageCount) {
+        throw new Error(`页码 ${range.end} 超出文档总页数 ${pageCount}`);
+      }
+    }
+    headerParts.push(`本次返回${describePageSelection(pageSelection, pageCount, kind)}`);
+    const header = `[${headerParts.join('；')}]`;
+
+    const selectedPages = result.pages.filter((pr) =>
+      pageSelection.some(
+        (range) => pr.page >= range.start && pr.page <= (range.end ?? pageCount),
+      ),
+    );
+    if (selectedPages.length === 0) {
+      throw new Error(`所选页码没有可返回的文本: ${describePageSelection(pageSelection, pageCount, kind)}`);
+    }
+
+    const byteCap = maxBytes ?? DEFAULT_MAX_BYTES;
+    const selectedLines: Array<{ no: number; text: string }> = [];
+    let used = 0;
+    let byteCut = false;
+    let lineCut = false;
+    let lineClipped = false;
+
+    outer: for (const page of selectedPages) {
+      for (let no = page.startLine; no <= page.endLine; no++) {
+        if (selectedLines.length >= DEFAULT_MAX_LINES) {
+          lineCut = true;
+          break outer;
+        }
+        const raw = lines[no - 1] ?? '';
+        const text = clipLine(raw);
+        if (text !== raw) lineClipped = true;
+        const len = Buffer.byteLength(text, 'utf-8') + 1;
+        if (used + len > byteCap) {
+          byteCut = true;
+          break outer;
+        }
+        used += len;
+        selectedLines.push({ no, text });
+      }
+    }
+
+    const body = lineNumbers
+      ? selectedLines.map((l) => `${l.no}: ${l.text}`).join('\n')
+      : selectedLines.map((l) => l.text).join('\n');
+    if (!byteCut && !lineCut && !lineClipped) {
+      return `${header}\n${body}${warningBlock}`;
+    }
+
+    const notes = [
+      `[已截断] 本次返回 ${selectedLines.length} 行（所选页未全部返回），文档共 ${totalLines} 行。`,
+    ];
+    if (byteCut) notes.push(`内容已达到 ${fmtSize(byteCap)} 字节上限（可用 maxBytes 调整）。`);
+    if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
+    notes.push('继续读取请用 startLine/endLine（提取文本行号），或缩小 pages 范围。');
+    const spill = spillExtractedText(path, result.text, totalLines, ctx);
+    return `${header}\n${body}\n\n${notes.join('\n')}${spill ? `\n${spill}` : ''}${warningBlock}`;
+  }
+
+  const header = `[${headerParts.join('；')}]`;
+
+  // 全文模式
+  if (start === null || end === null) {
+    const byteCap = maxBytes ?? DEFAULT_MAX_BYTES;
+    const shown: string[] = [];
+    let used = 0;
+    let byteCut = false;
+    let lineCut = false;
+    let lineClipped = false;
+
+    for (const line of lines) {
+      if (shown.length >= DEFAULT_MAX_LINES) {
+        lineCut = true;
+        break;
+      }
+      const text = clipLine(line);
+      if (text !== line) lineClipped = true;
+      const len = Buffer.byteLength(text, 'utf-8') + 1;
+      if (used + len > byteCap) {
+        byteCut = true;
+        break;
+      }
+      used += len;
+      shown.push(text);
+    }
+
+    const body = lineNumbers ? withLineNumbers(shown, 1) : shown.join('\n');
+    if (!byteCut && !lineCut && !lineClipped) {
+      return `${header}\n${body}${warningBlock}`;
+    }
+
+    const notes = [
+      `[已截断] 文档 ${path}（${kind}）共 ${totalLines} 行，本次返回前 ${shown.length} 行。`,
+    ];
+    if (byteCut) notes.push(`内容已达到 ${fmtSize(byteCap)} 字节上限（可用 maxBytes 调整）。`);
+    if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
+    notes.push('继续读取请用 startLine/endLine（提取文本行号）。');
+    const spill = spillExtractedText(path, result.text, totalLines, ctx);
+    return `${header}\n${body}\n\n${notes.join('\n')}${spill ? `\n${spill}` : ''}${warningBlock}`;
+  }
+
+  // 区间模式：start/end 均非空（execute 已保证成对）
+  if (start > totalLines) {
+    throw new Error(`起始行号 ${start} 超出文档总行数 ${totalLines}`);
+  }
+  const slice = lines.slice(start - 1, end);
+  const shown: string[] = [];
+  let used = 0;
+  let byteCut = false;
+  let lineClipped = false;
+  let lastNo = start - 1;
+
+  for (let i = 0; i < slice.length; i++) {
+    const raw = slice[i];
+    const no = start + i;
+    const text = clipLine(raw);
+    if (text !== raw) lineClipped = true;
+    if (maxBytes !== null) {
+      const len = Buffer.byteLength(text, 'utf-8') + 1;
+      if (used + len > maxBytes) {
+        byteCut = true;
+        break;
+      }
+      used += len;
+    }
+    shown.push(text);
+    lastNo = no;
+  }
+
+  const headerEnd = Math.min(end, totalLines);
+  const body = lineNumbers ? withLineNumbers(shown, start) : shown.join('\n');
+  let out = `文件 ${path}（${kind} 文档，共 ${totalLines} 行，已提取为文本）第 ${start}-${headerEnd} 行:\n${body}`;
+  if (byteCut) {
+    out += `\n\n[已截断] 已达到 maxBytes=${maxBytes} 上限（读到第 ${lastNo} 行）；继续读取请用 startLine=${lastNo + 1}。`;
+    const spill = spillExtractedText(path, result.text, totalLines, ctx);
+    if (spill) out += `\n${spill}`;
+  }
+  if (lineClipped) {
+    out += `\n[已截断] 部分超长行按 ${MAX_LINE_CHARS} 字符截断。`;
+  }
+  return `${out}${warningBlock}`;
 }
 
 /**

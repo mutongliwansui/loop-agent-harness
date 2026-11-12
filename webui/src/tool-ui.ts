@@ -45,7 +45,7 @@ const BUILTIN_FAMILY: Record<string, ToolFamily> = {
   commandRun:'cmd', commandStatus:'cmd', commandLogs:'cmd', commandStop:'cmd',
   fileRead:'file', fileWrite:'file', editFile:'file', grep:'file', listFiles:'file',
   createFile:'file', deleteFile:'file',
-  ask_image:'vision', describe_image:'vision', extract_json:'vision', ocr_image:'vision',
+  analyzeImage:'vision',
   memoryWrite:'memory', memoryRead:'memory', memorySearch:'memory',
   sessionHistory:'session', skillRun:'skill',
   httpRequest:'http',

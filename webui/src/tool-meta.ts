@@ -133,9 +133,10 @@ export function toolIconSvg(tool: string): string {
 /* ================= 内置工具映射表 ================= */
 
 /**
- * 内置工具映射表（13 个全覆盖，顺序无意义）。
+ * 内置工具映射表（11 个全覆盖，顺序无意义）。
  * 键必须是工具的**真实 name**（与 `src/tools/**` 里的 `name` 字段逐字一致）：
- * 查找是精确匹配，拼错只会静默回退英文名（`activate_skill` 曾误写成驼峰 `activateSkill`）。
+ * 查找是精确匹配，拼错只会静默回退英文名。
+ * 需求 20261111-004：内置工具名统一驼峰，视觉四工具合一为 analyzeImage。
  * 新增内置工具时同步此处，`tests/webui-tool-meta.test.ts` 有全覆盖断言兜底。
  */
 const TOOL_META: Record<string, ToolMeta> = {
@@ -261,7 +262,7 @@ const TOOL_META: Record<string, ToolMeta> = {
       return id ? `终止 ${clip(id, BRIEF_TEXT_MAX)}` : '';
     },
   },
-  activate_skill: {
+  activateSkill: {
     zh: '激活技能',
     icon: 'puzzle',
     params: {
@@ -284,50 +285,23 @@ const TOOL_META: Record<string, ToolMeta> = {
       return a.background === true ? `委托 ${head}（后台）` : `委托 ${head}`;
     },
   },
-  describe_image: {
-    zh: '描述图片',
+  analyzeImage: {
+    zh: '图片分析',
     icon: 'image',
     params: {
       image: '图片',
-    },
-    brief: (a) => baseName(str(a, 'image')),
-  },
-  ask_image: {
-    zh: '图片问答',
-    icon: 'help',
-    params: {
-      image: '图片',
       question: '问题',
-    },
-    brief: (a) => {
-      const img = baseName(str(a, 'image'));
-      const q = clip(str(a, 'question'), BRIEF_TEXT_MAX);
-      if (!img && !q) return '';
-      return `${img}${q ? ` →「${q}」` : ''}`;
-    },
-  },
-  extract_json: {
-    zh: '提取字段',
-    icon: 'table',
-    params: {
-      image: '图片',
       fields: '字段列表',
     },
     brief: (a) => {
       const img = baseName(str(a, 'image'));
+      const q = clip(str(a, 'question'), BRIEF_TEXT_MAX);
+      if (q) return `${img}${img ? ' →「' : '「'}${q}」`;
       const f = a.fields;
       const names = Array.isArray(f) ? f.filter((x): x is string => typeof x === 'string').join('、') : '';
-      if (!img && !names) return '';
-      return `${img}${names ? ` → ${clip(names, BRIEF_TEXT_MAX * 2)}` : ''}`;
+      if (names) return `${img}${img ? ' → ' : ''}${clip(names, BRIEF_TEXT_MAX * 2)}`;
+      return img;
     },
-  },
-  ocr_image: {
-    zh: '文字识别',
-    icon: 'text',
-    params: {
-      image: '图片',
-    },
-    brief: (a) => baseName(str(a, 'image')),
   },
 };
 
@@ -483,10 +457,7 @@ export const PATH_ARGS: Record<string, Record<string, 'file' | 'dir'>> = {
   editFile: { path: 'file' },
   grep: { path: 'dir' },
   commandRun: { cwd: 'dir' },
-  describe_image: { image: 'file' },
-  ask_image: { image: 'file' },
-  extract_json: { image: 'file' },
-  ocr_image: { image: 'file' },
+  analyzeImage: { image: 'file' },
 };
 
 /** 参数行附加信息（20261028-006）：路径参数补原始值与分类，供 ToolCard 渲染可点 chip */
@@ -682,6 +653,48 @@ export function resultMetaText(result: string): string {
   if (!text) return '';
   const bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text).length : text.length;
   return `${text.split('\n').length} 行 · ${formatBytes(bytes)}`;
+}
+
+/**
+ * 截断/省略提示徽标（需求 20261112-001）：
+ * 截断说明都写在正文中间或末尾，而结果区默认只有 190px 高——不滚动根本看不到。
+ * 卡片头部常驻一个徽标，用户不展开也能知道「这不是完整输出」。
+ */
+export interface ResultTruncation {
+  /** 头部徽标短文案 */
+  label: string;
+  /** 悬浮说明（去哪里看完整内容） */
+  detail: string;
+}
+
+export function resultTruncation(result: string): ResultTruncation | undefined {
+  const text = result ?? '';
+  if (!text) return undefined;
+  if (/…\(省略 \d+ 字节\)…/.test(text)) {
+    return {
+      label: '已省略中段',
+      detail: '输出中间部分已被省略；完整原始输出见末尾「完整输出已保存」中的文件路径',
+    };
+  }
+  if (text.includes('[已截断]')) {
+    return {
+      label: '已截断',
+      detail: '输出已按上限截断；完整内容与继续读取方式见末尾提示',
+    };
+  }
+  if (/\[匹配达 \d+ 条上限/.test(text) || /\[完整匹配 \d+ 条因超限未返回/.test(text)) {
+    return { label: '匹配截断', detail: '匹配结果超出上限，本次未完整返回' };
+  }
+  if (/…（结果过长已截断/.test(text)) {
+    return { label: '已截断', detail: '结果过长已截断，未完整返回' };
+  }
+  if (text.includes('── 完整输出已保存 ──')) {
+    return {
+      label: '已落盘',
+      detail: '本次只返回了截断片段；完整原始输出已写入末尾提示中的临时文件',
+    };
+  }
+  return undefined;
 }
 
 /* ================= 工具段 → 渲染项（20261107-010：取消连续同工具合并） ================= */

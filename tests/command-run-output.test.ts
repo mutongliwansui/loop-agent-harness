@@ -4,6 +4,8 @@ import {
   OutputAccumulator,
   configureCommandRunOutput,
   commandRunOutputOptions,
+  decodeBytes,
+  decodeByteRange,
 } from '../src/tools/command-run-output.js';
 import { commandRun } from '../src/tools/commandRun.js';
 
@@ -48,6 +50,48 @@ describe('OutputAccumulator 头尾截断', () => {
     acc.push(Buffer.from('中文测试尾部内容'));
     const r = acc.render();
     expect(r.text).not.toContain('\uFFFD');
+  });
+});
+
+describe('decodeBytes 跨平台编码探测', () => {
+  it('UTF-8 字节按 UTF-8 解出中文', () => {
+    const buf = Buffer.from('中文测试', 'utf8');
+    expect(decodeBytes(buf)).toBe('中文测试');
+  });
+
+  it('GBK 字节（Windows 中文 shell 输出）不再变成替换符', () => {
+    // 'd6d0 cec4 b2e2 cad4' 是「中文测试」在 cp936 下的字节
+    const buf = Buffer.from('d6d0cec4b2e2cad4', 'hex');
+    expect(decodeBytes(buf)).toBe('中文测试');
+  });
+
+  it('纯 ASCII 两种编码一致，稳定解出原文', () => {
+    expect(decodeBytes(Buffer.from('hello world'))).toBe('hello world');
+  });
+
+  it('head 截断点落在多字节字符中间：裁掉残字节而非产生替换符', () => {
+    const full = Buffer.from('中文测试尾部内容', 'utf8');
+    const head = full.subarray(0, 7); // 第 7 字节切在「测」的中间
+    const out = decodeBytes(head, { end: true });
+    expect(out).not.toContain('\uFFFD');
+    expect(out.startsWith('中文')).toBe(true);
+  });
+
+  it('tail 起点落在续字节上：跳到字符起始字节', () => {
+    const full = Buffer.from('中文测试尾部内容', 'utf8');
+    const tail = full.subarray(7);
+    const out = decodeBytes(tail, { start: true });
+    expect(out).not.toContain('\uFFFD');
+    expect(out.endsWith('内容')).toBe(true);
+  });
+
+  it('decodeByteRange 同时容错两端（后台日志增量读）', () => {
+    const gbk = Buffer.from('d6d0cec4b2e2cad4', 'hex');
+    expect(decodeByteRange(gbk)).toBe('中文测试');
+  });
+
+  it('空缓冲返回空串', () => {
+    expect(decodeBytes(Buffer.alloc(0))).toBe('');
   });
 });
 

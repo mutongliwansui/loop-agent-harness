@@ -1,6 +1,7 @@
 /**
  * 视觉工具注册单测（Task-20261010-001）
  * 覆盖：vision.enabled 条件注册（默认关闭不注册，保护前缀缓存）、enabled 白名单与 disabled 排除交互、幂等注册
+ * 需求 20261111-004：视觉四工具合并为 analyzeImage，内置工具名统一驼峰
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { registerBuiltinTools, registry } from '../src/tools/index.js';
@@ -8,7 +9,7 @@ import { BUILTIN_TOOL_NAMES } from '../src/commands/tools-command.js';
 import { VISION_TOOL_NAMES } from '../src/tools/vision/tools.js';
 import type { ToolsConfig, VisionConfig } from '../src/config/schema.js';
 
-const BUILTIN_SIX = ['commandRun', 'fileRead', 'fileWrite', 'editFile', 'grep', 'activate_skill'];
+const BUILTIN_SIX = ['commandRun', 'fileRead', 'fileWrite', 'editFile', 'grep', 'activateSkill'];
 // Task-20261022-002：内置工具新增 commandStatus/commandLogs/commandStop（后台任务三件套）
 const BACKGROUND_THREE = ['commandStatus', 'commandLogs', 'commandStop'];
 // 需求 20261107-001：内置工具新增 delegate（子 Agent 委托）
@@ -60,9 +61,9 @@ describe('vision.enabled 条件注册', () => {
     expect(names).toEqual(base);
   });
 
-  it('vision.enabled=true 时注册 4 个视觉工具且入全局 registry', () => {
+  it('vision.enabled=true 时注册 analyzeImage 且入全局 registry', () => {
     const names = registerBuiltinTools(toolsConfig(), visionConfig(true));
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(11);
     expect(names).toEqual(expect.arrayContaining([...BUILTIN_ALL, ...visionNames]));
     for (const n of visionNames) {
       expect(registry.has(n)).toBe(true);
@@ -75,23 +76,22 @@ describe('vision.enabled 条件注册', () => {
     expect(names).toEqual(['fileRead']);
   });
 
-  it('disabled 列表可排除单个视觉工具', () => {
-    const names = registerBuiltinTools(toolsConfig([], ['describe_image']), visionConfig(true));
-    expect(names).toHaveLength(13);
-    expect(names).not.toContain('describe_image');
-    expect(names).toContain('ask_image');
+  it('disabled 列表可排除 analyzeImage', () => {
+    const names = registerBuiltinTools(toolsConfig([], ['analyzeImage']), visionConfig(true));
+    expect(names).toHaveLength(10);
+    expect(names).not.toContain('analyzeImage');
   });
 
   it('重复注册幂等，不抛错不重复', () => {
     registerBuiltinTools(toolsConfig(), visionConfig(true));
     const names = registerBuiltinTools(toolsConfig(), visionConfig(true));
-    expect(names).toHaveLength(14);
-    expect(registry.list()).toHaveLength(14);
+    expect(names).toHaveLength(11);
+    expect(registry.list()).toHaveLength(11);
   });
 });
 
 describe('BUILTIN_TOOL_NAMES（/tools 命令校验与 Tab 补全复用）', () => {
-  it('包含 7 个内置工具与 4 个视觉工具', () => {
+  it('包含 10 个内置工具与 1 个视觉工具', () => {
     // 只比对集合内容（tools-command.ts 中三件套排在 commandRun 之后，顺序与 BUILTIN_ALL 定义不同）
     expect([...BUILTIN_TOOL_NAMES].sort()).toEqual([...BUILTIN_ALL, ...visionNames].sort());
   });

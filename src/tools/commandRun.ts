@@ -24,6 +24,7 @@ import {
   buildFullOutputNotice,
   summarizeParam,
   pruneTmp,
+  outputGovernorOptions,
   type TmpFileInfo,
 } from './output-governor.js';
 
@@ -93,8 +94,23 @@ function runInForeground(cmd: string, cwd: string, timeout: number, ctx?: ToolCo
   // ② 保留流归属，不会像旧实现那样把两个流混写进同一文件、丢弃 [stdout]/[stderr] 结构。
   const digest = summarizeParam({ command: cmd }, 'commandRun');
   const ctxSession = ctx?.sessionId;
-  const outWriter = new TmpFileWriter({ sessionId: ctxSession, toolName: 'commandRun', paramDigest: `${digest}-stdout` });
-  const errWriter = new TmpFileWriter({ sessionId: ctxSession, toolName: 'commandRun', paramDigest: `${digest}-stderr` });
+  // 落盘触发必须不晚于「进上下文的上限」：否则输出被截断时完整文件还没开始写，
+  // 模型与用户都找不到完整内容（表现为输出被吞）。取两者较小值作为触发基数。
+  const gov = outputGovernorOptions();
+  const triggerKb = Math.max(1, Math.min(gov.preserveKb, commandRunOutputOptions().outputLimitKb));
+  const writerThresholds = { preserveKb: triggerKb, triggerMultiplier: 1 };
+  const outWriter = new TmpFileWriter({
+    sessionId: ctxSession,
+    toolName: 'commandRun',
+    paramDigest: `${digest}-stdout`,
+    thresholds: writerThresholds,
+  });
+  const errWriter = new TmpFileWriter({
+    sessionId: ctxSession,
+    toolName: 'commandRun',
+    paramDigest: `${digest}-stderr`,
+    thresholds: writerThresholds,
+  });
 
   return new Promise((resolve) => {
     const startedAt = Date.now();

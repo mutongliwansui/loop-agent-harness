@@ -16,10 +16,7 @@ describe('PATH_ARGS：路径型参数映射', () => {
     expect(PATH_ARGS.editFile).toEqual({ path: 'file' });
     expect(PATH_ARGS.grep).toEqual({ path: 'dir' });
     expect(PATH_ARGS.commandRun).toEqual({ cwd: 'dir' });
-    expect(PATH_ARGS.describe_image).toEqual({ image: 'file' });
-    expect(PATH_ARGS.ask_image).toEqual({ image: 'file' });
-    expect(PATH_ARGS.ocr_image).toEqual({ image: 'file' });
-    expect(PATH_ARGS.extract_json).toEqual({ image: 'file' });
+    expect(PATH_ARGS.analyzeImage).toEqual({ image: 'file' });
   });
 });
 
@@ -37,8 +34,8 @@ describe('toolParamRows 路径注记', () => {
     expect(c.find((r) => r.key === 'cwd')?.kind).toBe('dir');
   });
 
-  it('视觉工具 image 注记为 file', () => {
-    const rows = toolParamRows('ask_image', JSON.stringify({ image: 'C:\\u\\1.png', question: 'q' }));
+  it('图片分析 image 注记为 file', () => {
+    const rows = toolParamRows('analyzeImage', JSON.stringify({ image: 'C:\\u\\1.png', question: 'q' }));
     const img = rows.find((r) => r.key === 'image');
     expect(img?.path).toBe('C:\\u\\1.png');
     expect(img?.kind).toBe('file');
@@ -104,7 +101,7 @@ describe('isPathArgClickable：chip 可点判定', () => {
     expect(isPathArgClickable('C:\\Users\\muton\\.loop-agent\\memory\\a43aa30f2ceec764\\2026-10-29.md', WS)).toBe(true);
     // runs 日志（fileRead 后台任务日志场景）
     expect(isPathArgClickable('~\\.loop-agent\\runs\\t1.log', WS)).toBe(true);
-    // 全局技能（activate_skill 引导读取场景）
+    // 全局技能（activateSkill 引导读取场景）
     expect(isPathArgClickable('~/.loop-agent/skills/task-driven-development/SKILL.md', WS)).toBe(true);
   });
 

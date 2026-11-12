@@ -11,31 +11,76 @@ export interface AccumulatedOutput {
   totalBytes: number;
 }
 
-/** 去掉尾部不完整的多字节字符（缓冲区末尾截断） */
-function trimIncompleteTail(buf: Buffer): Buffer {
-  let i = buf.length - 1;
-  let cont = 0;
-  while (i >= 0 && buf[i] >= 0x80 && buf[i] < 0xc0) {
-    i--;
-    cont++;
-  }
-  if (i < 0) return buf;
-  const lead = buf[i];
-  const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
-  return cont + 1 >= need ? buf : buf.subarray(0, i);
+/** 开头连续 UTF-8 续字节数（0-3；缓冲区可能从字符中间开始） */
+function leadingContinuationLen(buf: Buffer): number {
+  let i = 0;
+  while (i < buf.length && i < 3 && buf[i] >= 0x80 && buf[i] < 0xc0) i++;
+  return i;
 }
 
-/** 单侧解码容错：截断点可能落在多字节 UTF-8 字符中间 */
-function decode(buf: Buffer, side: 'head' | 'tail'): string {
-  if (side === 'tail') {
-    // 尾部开头可能从续字节开始：跳到下一个字符起始字节
-    let i = 0;
-    while (i < buf.length && buf[i] >= 0x80 && buf[i] < 0xc0) i++;
-    buf = buf.subarray(i);
-  } else {
-    buf = trimIncompleteTail(buf);
+/** 末尾不完整的 UTF-8 序列字节数（0 = 末尾完整，或末尾不是多字节序列的开头） */
+function incompleteUtf8TailLen(buf: Buffer): number {
+  let i = buf.length - 1;
+  while (i >= 0 && buf[i] >= 0x80 && buf[i] < 0xc0) i--;
+  if (i < 0) return 0;
+  const lead = buf[i];
+  const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+  if (need === 1) return 0;
+  const have = buf.length - i;
+  return have < need ? have : 0;
+}
+
+/**
+ * 严格 UTF-8 解码；只裁掉「确实残缺」的边界字节（开头续字节 / 末尾不完整序列）。
+ *
+ * 不能盲目尝试任意缩短：GBK 字节有时恰好是合法 UTF-8，
+ * 乱裁会把它误判成 UTF-8 并解出乱码（实测 d6d0cec4… 裁 2 字节后即为合法 UTF-8）。
+ * 判定不出 UTF-8 时返回 null，由调用方改用 GBK。
+ */
+function tryDecodeUtf8(buf: Buffer, trimStart: boolean, trimEnd: boolean): string | null {
+  const start = trimStart ? leadingContinuationLen(buf) : 0;
+  const end = buf.length - (trimEnd ? incompleteUtf8TailLen(buf) : 0);
+  if (start >= end) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(start, end));
+  } catch {
+    return null;
   }
-  return buf.toString('utf8');
+}
+
+/**
+ * 字节 → 文本（跨平台编码探测）。
+ *
+ * 背景：Windows 中文环境下 cmd / PowerShell 5.1 的输出是 GBK(cp936)，
+ * 直接按 UTF-8 解码会把中文变成 `�`（模型与界面都只看到替换符，等同输出被吞）。
+ *
+ * 策略：先按严格 UTF-8 解码；失败则按 GBK 解码。
+ * - 纯 ASCII 在两种编码下一致，不会误判；
+ * - GBK 解码依赖 ICU（Node 官方构建自带），不可用时退回宽松 UTF-8，保持旧行为；
+ * - 只影响「进上下文 / 界面展示」的文本，完整输出落盘仍写原始字节。
+ */
+export function decodeBytes(
+  buf: Buffer,
+  edges: { start?: boolean; end?: boolean } = {},
+): string {
+  if (buf.length === 0) return '';
+  const utf8 = tryDecodeUtf8(buf, edges.start === true, edges.end === true);
+  if (utf8 !== null) return utf8;
+  try {
+    return new TextDecoder('gbk').decode(buf);
+  } catch {
+    return buf.toString('utf8');
+  }
+}
+
+/** 解码任意字节区间（后台日志增量读）：两端都可能落在字符中间 */
+export function decodeByteRange(buf: Buffer): string {
+  return decodeBytes(buf, { start: true, end: true });
+}
+
+/** 单侧解码：head 可能末尾截断，tail 可能开头截断 */
+function decode(buf: Buffer, side: 'head' | 'tail'): string {
+  return decodeBytes(buf, side === 'tail' ? { start: true } : { end: true });
 }
 
 /**

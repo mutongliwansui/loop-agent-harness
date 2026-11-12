@@ -17,13 +17,14 @@ interface Def {
 
 const EXPECTED_TOOLS = [
   'commandRun', 'commandStatus', 'commandLogs', 'commandStop',
-  'fileRead', 'fileWrite', 'editFile', 'grep', 'activate_skill', 'delegate',
-  'describe_image', 'ask_image', 'extract_json', 'ocr_image',
+  'fileRead', 'fileWrite', 'editFile', 'grep', 'activateSkill', 'delegate',
+  'analyzeImage',
 ];
 
-/** 精简后的实测基线（2026-11-11）：6316 → 4721 字符 */
-const BUDGET_CHARS = 4900;
-const BUDGET_TOKENS = 1250;
+/** 精简后的实测基线：需求 20261111-003 后 4721 字符；20261111-004 四合一+驼峰后 4190 字符；
+ *  20261112-001 新增 fileRead.pages 后约 4330 字符 */
+const BUDGET_CHARS = 4400;
+const BUDGET_TOKENS = 1100;
 /** 单条 description 上限：长过这个数说明又在写使用手册 */
 const MAX_DESC_CHARS = 200;
 /** 单个参数 schema 上限（最重的是 editFile，673 字符） */
@@ -44,7 +45,7 @@ function paramProps(name: string): Record<string, unknown> {
 }
 
 beforeAll(() => {
-  // 视觉工具仅在 vision.enabled 时注册；这里全开以覆盖四个视觉工具
+  // 视觉工具仅在 vision.enabled 时注册；这里全开以覆盖 analyzeImage
   registerBuiltinTools(undefined, { enabled: true } as never);
   defs = registry.toOpenAITools() as unknown as Def[];
 });
@@ -89,10 +90,10 @@ describe('工具描述预算（需求 20261111-003）', () => {
 });
 
 describe('C 档参数契约：fileRead 行范围只有 startLine/endLine', () => {
-  it('参数只暴露 path/startLine/endLine/maxBytes/encoding/lineNumbers', () => {
+  it('参数只暴露 path/startLine/endLine/pages/maxBytes/encoding/lineNumbers', () => {
     // toOpenAITools() 会 canonicalize（key 按字典序重排，保前缀缓存），故比较排序后的集合
     expect(Object.keys(paramProps('fileRead')).sort()).toEqual([
-      'encoding', 'endLine', 'lineNumbers', 'maxBytes', 'path', 'startLine',
+      'encoding', 'endLine', 'lineNumbers', 'maxBytes', 'pages', 'path', 'startLine',
     ]);
   });
 
@@ -104,23 +105,17 @@ describe('C 档参数契约：fileRead 行范围只有 startLine/endLine', () =>
   });
 });
 
-describe('视觉四工具的取舍规则下沉到各自 description', () => {
-  it('只有 describe_image 与 ask_image 走「定向提问 vs 整体描述」分流', () => {
-    expect(descOf('describe_image')).toContain('ask_image');
-    expect(descOf('ask_image')).toContain('describe_image');
+describe('视觉工具的取舍规则下沉到 analyzeImage 的 description', () => {
+  it('description 用一句话说明三种用法分流（只给 image / 给 question / 给 fields）', () => {
+    const desc = descOf('analyzeImage');
+    expect(desc).toContain('整体描述');
+    expect(desc).toContain('question');
+    expect(desc).toContain('fields');
   });
 
-  it('extract_json 说明用于精确字段值，ocr_image 说明用于纯文字提取', () => {
-    expect(descOf('extract_json')).toContain('字段');
-    expect(descOf('ocr_image')).toContain('OCR');
-    expect(descOf('ocr_image')).toContain('ask_image');
-  });
-
-  it('每个视觉工具都保留「何时该用我」的一句话定位', () => {
-    expect(descOf('describe_image')).toContain('整体描述');
-    expect(descOf('ask_image')).toContain('具体问题');
-    expect(paramProps('ask_image')).toHaveProperty('question');
-    expect(paramProps('extract_json')).toHaveProperty('fields');
-    expect(Object.keys(paramProps('ocr_image'))).toEqual(['image']);
+  it('参数契约：image 必填，question/fields 可选', () => {
+    const d = defs.find((x) => x.function.name === 'analyzeImage');
+    expect(d?.function.parameters?.required).toEqual(['image']);
+    expect(Object.keys(paramProps('analyzeImage')).sort()).toEqual(['fields', 'image', 'question']);
   });
 });

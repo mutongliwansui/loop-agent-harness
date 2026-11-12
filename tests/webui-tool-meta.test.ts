@@ -10,6 +10,7 @@ import {
   resultLines,
   resultMetaText,
   resultNeedsExpand,
+  resultTruncation,
   stripAnsi,
   TOOL_ICON_PATHS,
   toolDisplay,
@@ -28,7 +29,7 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
   it('已知工具返回中文映射', () => {
     expect(toolDisplay('fileRead')).toEqual({ icon: 'book', name: '读取文件', known: true });
     expect(toolDisplay('commandRun')).toEqual({ icon: 'terminal', name: '执行命令', known: true });
-    expect(toolDisplay('ocr_image')).toEqual({ icon: 'text', name: '文字识别', known: true });
+    expect(toolDisplay('analyzeImage')).toEqual({ icon: 'image', name: '图片分析', known: true });
   });
 
   it('未知工具 / MCP 工具回退英文名 + 齿轮图标（D2 / D10）', () => {
@@ -45,7 +46,8 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
   });
 
   // 防回归：映射表键必须是工具的真实 name（曾把 activate_skill 误写成驼峰
-  // activateSkill → 精确查找落空，UI 静默回退英文名，且当时测试也用错键所以没暴露）
+  // activateSkill → 精确查找落空，UI 静默回退英文名，且当时测试也用错键所以没暴露；
+  // 需求 20261111-004 起内置工具名统一驼峰，错键与正确键不再有区别，故靠全覆盖断言兜底）
   it('全部内置工具名都命中中文映射（键须与 src/tools 的 name 逐字一致）', () => {
     const BUILTIN_TOOLS = [
       'fileRead',
@@ -56,12 +58,9 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
       'commandStatus',
       'commandLogs',
       'commandStop',
-      'activate_skill',
+      'activateSkill',
       'delegate',
-      'describe_image',
-      'ask_image',
-      'extract_json',
-      'ocr_image',
+      'analyzeImage',
     ];
     const missed = BUILTIN_TOOLS.filter((t) => !toolDisplay(t).known);
     expect(missed).toEqual([]);
@@ -158,6 +157,33 @@ describe('结果区行数口径（D6：190px≈12 行 / 展开 420px）', () => 
   });
 });
 
+describe('resultTruncation：截断/省略徽标（20261112-001）', () => {
+  it('commandRun 中段省略 → 已省略中段', () => {
+    const r = resultTruncation('HEAD\n…(省略 88 字节)…\nTAIL');
+    expect(r?.label).toBe('已省略中段');
+  });
+
+  it('fileRead / grep 的 [已截断] → 已截断', () => {
+    expect(resultTruncation('[已截断] 文件 a.ts 共 3000 行')?.label).toBe('已截断');
+  });
+
+  it('grep 匹配上限 → 匹配截断', () => {
+    expect(resultTruncation('[匹配达 2000 条上限，扫描提前停止（结果非完整）]')?.label).toBe('匹配截断');
+    expect(resultTruncation('[完整匹配 120 条因超限未返回，请缩小搜索范围]')?.label).toBe('匹配截断');
+  });
+
+  it('仅落盘提示 → 已落盘', () => {
+    const r = resultTruncation('片段…\n── 完整输出已保存 ──\n路径: /tmp/a.txt');
+    expect(r?.label).toBe('已落盘');
+    expect(r?.detail).toContain('临时文件');
+  });
+
+  it('无截断提示的普通结果不产生徽标', () => {
+    expect(resultTruncation('hello world')).toBeUndefined();
+    expect(resultTruncation('')).toBeUndefined();
+  });
+});
+
 describe('toolSummary：摘要短语', () => {
   it('fileRead：行范围 / 全文', () => {
     const range = JSON.stringify({ path: 'src/agent/react-agent.ts', startLine: 430, endLine: 500 });
@@ -180,12 +206,12 @@ describe('toolSummary：摘要短语', () => {
     expect(toolSummary('editFile', JSON.stringify({ path: 'p.json' }))).toBe('p.json（替换）');
   });
 
-  it('grep / commandRun / activate_skill', () => {
+  it('grep / commandRun / activateSkill', () => {
     expect(toolSummary('grep', JSON.stringify({ pattern: 'dict\\.txt', path: 'webui/src' }))).toBe(
       '在 webui/src 中检索 dict\\.txt',
     );
     expect(toolSummary('commandRun', JSON.stringify({ command: 'npm run build' }))).toBe('npm run build');
-    expect(toolSummary('activate_skill', JSON.stringify({ name: 'task-driven-development' }))).toBe(
+    expect(toolSummary('activateSkill', JSON.stringify({ name: 'task-driven-development' }))).toBe(
       'task-driven-development',
     );
   });
@@ -205,15 +231,15 @@ describe('toolSummary：摘要短语', () => {
     expect(toolSummary('delegate', '{}')).toBe('委托子任务');
   });
 
-  it('视觉工具：图片名 + 问题/字段', () => {
-    expect(toolSummary('ask_image', JSON.stringify({ image: 'C:\\a\\error.png', question: '报错码是什么？' }))).toBe(
-      'error.png →「报错码是什么？」',
-    );
+  it('图片分析：图片名 + 问题/字段（四合一后按参数分流）', () => {
     expect(
-      toolSummary('extract_json', JSON.stringify({ image: 'invoice.png', fields: ['标题', '金额'] })),
+      toolSummary('analyzeImage', JSON.stringify({ image: 'C:\\a\\error.png', question: '报错码是什么？' })),
+    ).toBe('error.png →「报错码是什么？」');
+    expect(
+      toolSummary('analyzeImage', JSON.stringify({ image: 'invoice.png', fields: ['标题', '金额'] })),
     ).toBe('invoice.png → 标题、金额');
-    expect(toolSummary('describe_image', JSON.stringify({ image: '/tmp/x.jpg' }))).toBe('x.jpg');
-    expect(toolSummary('ocr_image', JSON.stringify({ image: 'shot.png' }))).toBe('shot.png');
+    expect(toolSummary('analyzeImage', JSON.stringify({ image: '/tmp/x.jpg' }))).toBe('x.jpg');
+    expect(toolSummary('analyzeImage', JSON.stringify({ image: 'shot.png' }))).toBe('shot.png');
   });
 
   it('未知工具回退紧凑 JSON（截断 80）', () => {

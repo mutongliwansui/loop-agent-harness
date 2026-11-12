@@ -32,7 +32,7 @@ export function resolveInWs(root: string, input: string): string {
 
 /**
  * 工具层路径解析（D20）：
- * - 绝对路径**原样返回**（不校验是否在空间内：activate_skill 引导的
+ * - 绝对路径**原样返回**（不校验是否在空间内：activateSkill 引导的
  *   `~/.loop-agent/skills/...`、上传目录均在空间外，强制拒绝属行为变更）；
  * - 相对路径按注入的空间根解析（替代原先隐式的 process.cwd()）。
  */

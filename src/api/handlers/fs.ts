@@ -45,7 +45,8 @@ import { MAX_UPLOAD_BYTES } from '../../upload/manager.js';
 // D15：toSlash / resolveInWs 抽到工具层共享模块，本文件只保留调用（规则唯一真源）
 import { resolveInWs, toSlash } from '../../tools/workspace-fs.js';
 import { canonicalWorkspacePath, isSameWorkspace } from '../../session/path-utils.js';
-import WordExtractor from 'word-extractor'; // CJS 包，类型见 src/types/word-extractor.d.ts
+// 需求 20261112-001：Word 提取下沉到文档层，API 与工具共用同一实现
+import { extractWordBody } from '../../documents/word.js';
 
 /** 恒排除的重目录（体积大且对代码浏览无价值；不随 hidden 开关出现） */
 const ALWAYS_SKIP = new Set(['node_modules', '__pycache__']);
@@ -305,8 +306,7 @@ async function handleDoc2Md(ctx: HandlerContext, req: IncomingMessage, res: Serv
 
   let raw: string;
   try {
-    const doc = await new WordExtractor().extract(abs);
-    raw = doc.getBody();
+    raw = await extractWordBody(abs);
   } catch {
     throw new ApiHttpError('bad_request', `doc 解析失败（文件损坏或不是 Word 97-2003 文档）: ${input}`);
   }

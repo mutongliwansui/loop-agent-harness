@@ -303,8 +303,7 @@ describe('辅助', () => {
       uploadedAt: '2026-10-28T14:30:12.000Z',
     });
     expect(note).toContain('类型: 图片 image/png');
-    expect(note).toContain('ask_image');
-    expect(note).toContain('describe_image');
+    expect(note).toContain('analyzeImage');
     // 大写的 .PNG 也要命中（扩展名按小写比对）
     expect(
       buildContextNote({

@@ -1232,7 +1232,7 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
  * 类名统一 .mv- 前缀，避免与 .fs-*（文件面板）/ .dream-*（记忆）/ .bench-*（测速抽屉）冲突。 */
 
 /* 页头 */
-.mv-page { max-width: 1180px; }
+.mv-page { width: 100%; }
 .mv-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
 .mv-lead { min-width: 0; }
 .mv-eyebrow { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; color: var(--muted); }

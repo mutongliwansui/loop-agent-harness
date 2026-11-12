@@ -15,10 +15,10 @@ import { registerBuiltinTools } from '../../tools/index.js';
 import { registry } from '../../tools/registry.js';
 import { parseScope } from './config.js';
 
-/** 视觉四工具：仅 vision.enabled 时可见（与 registerBuiltinTools 门控一致） */
-const VISION_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'describe_image', 'ask_image', 'extract_json', 'ocr_image',
-]);
+import { VISION_TOOL_NAMES } from '../../tools/vision/tools.js';
+
+/** 视觉工具名集合：仅 vision.enabled 时可见（与 registerBuiltinTools 门控一致） */
+const VISION_TOOL_SET: ReadonlySet<string> = new Set(VISION_TOOL_NAMES);
 
 interface ToolMeta {
   name: string;
@@ -37,7 +37,7 @@ async function handleListTools(ctx: HandlerContext, _req: IncomingMessage, res: 
   const { config: cfg } = ctx.configLoader.load();
   const visionEnabled = cfg.vision.enabled === true;
   const tools = BUILTIN_TOOL_NAMES
-    .filter((n) => visionEnabled || !VISION_TOOL_NAMES.has(n))
+    .filter((n) => visionEnabled || !VISION_TOOL_SET.has(n))
     .map((n) => {
       const t = BUILTIN_TOOL_MAP[n] as ToolMeta;
       return { name: t.name, description: t.description, enabled: builtinEnabled(cfg, t.name), source: 'builtin' };

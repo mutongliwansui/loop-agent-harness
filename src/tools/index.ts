@@ -15,8 +15,8 @@ export { activateSkill } from './activateSkill.js';
 // 子 Agent 委托（需求 20261107-001）
 export { delegate } from './delegate.js';
 
-// 视觉工具（按 vision.enabled 条件注册）
-export { visionTools, describeImage, askImage, extractJson, ocrImage } from './vision/tools.js';
+// 视觉工具（按 vision.enabled 条件注册；需求 20261111-004 四合一为 analyzeImage）
+export { visionTools, analyzeImage } from './vision/tools.js';
 
 // MCP 接入
 export { MCPClient, normalizeMcpTransportType } from './mcp/client.js';

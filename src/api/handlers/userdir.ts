@@ -1,6 +1,6 @@
 // 自有数据目录受控只读端点（20261028-007 D1/D2）：root = ~/.loop-agent（应用自有数据目录，
 // 记忆/会话/runs/skills/model-bench 等均在其中）。供对话流工具卡片路径 chip 预览
-// fileWrite 写记忆、fileRead 读 runs 日志、activate_skill 引导的 SKILL.md 等场景。
+// fileWrite 写记忆、fileRead 读 runs 日志、activateSkill 引导的 SKILL.md 等场景。
 // 与 /uploads/view 完全同构：只读、词法防穿越 + 符号链接防逃逸 + 只读读取，越界一律 403；
 // `~` 开头输入先按 homedir 展开（D3）。root 经 ctx.userDir 注入（默认 ~/.loop-agent），单测可换临时目录。
 import { join } from 'node:path';

@@ -90,7 +90,7 @@ beforeEach(() => {
 });
 
 describe('/config set vision.enabled 自动同步注册', () => {
-  it('true：立即注册 4 个视觉工具并输出提示', async () => {
+  it('true：立即注册视觉工具并输出提示', async () => {
     mockConfig(false);
     registerBuiltinTools(toolsCfg(), vision(false));
     expect(VISION_TOOL_NAMES.every((n) => !registry.has(n))).toBe(true);
@@ -101,7 +101,7 @@ describe('/config set vision.enabled 自动同步注册', () => {
 
     expect(updateScopeMock).toHaveBeenCalledTimes(1);
     expect(VISION_TOOL_NAMES.every((n) => registry.has(n))).toBe(true);
-    expect(logsOf(lines)).toContain('已自动注册视觉工具: describe_image, ask_image, extract_json, ocr_image');
+    expect(logsOf(lines)).toContain('已自动注册视觉工具: analyzeImage');
   });
 
   it('false：立即注销视觉工具，其余内置工具保留', async () => {

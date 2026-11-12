@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 工具管理视图（原型-20261109-003 · 卡片流 + 抽屉 + 分段/排序/toggle + 视觉门控）
 // 端点：GET /tools · GET /tools/:name（schema）· PATCH /tools/:name {enabled, scope} · POST /tools/reload
-//      · GET /vision（门控视觉四件套）；仅展示内置工具，MCP 工具归 MCP 服务器页
+//      · GET /vision（门控 analyzeImage）；仅展示内置工具，MCP 工具归 MCP 服务器页
 // 纯逻辑（家族/统计/筛选/排序/Schema 解析）见 ../tool-ui.ts
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
@@ -39,7 +39,7 @@ const sortMode = ref<ToolSort>('name');
 const searchInput = ref<HTMLInputElement | null>(null);
 
 /* ===== 工具列表（仅内置，含 family 补充字段） ===== */
-const visionGatedPrefixes = ['ask_image', 'describe_image', 'extract_json', 'ocr_image'];
+const visionGatedPrefixes = ['analyzeImage'];
 function isVisionTool(name: string): boolean {
   return visionGatedPrefixes.some((p) => name === p || name.startsWith(p + '__'));
 }

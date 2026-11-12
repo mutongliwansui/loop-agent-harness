@@ -118,7 +118,7 @@ vi.mock('../src/llm/client.js', () => ({ llm: { chatVision: chatVisionMock } }))
 const { loadMock } = vi.hoisted(() => ({ loadMock: vi.fn() }));
 vi.mock('../src/config/index.js', () => ({ configLoader: { load: loadMock } }));
 
-import { describeImage, askImage } from '../src/tools/vision/tools.js';
+import { analyzeImage } from '../src/tools/vision/tools.js';
 import type { VisionConfig, AgentConfig } from '../src/config/schema.js';
 
 function vision(overrides: Partial<VisionConfig> = {}): VisionConfig {
@@ -163,8 +163,8 @@ describe('管道缓存集成', () => {
     mockConfig(vision());
     chatVisionMock.mockResolvedValue({ content: '一只猫', usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }, elapsedMs: 7 });
 
-    const first = await describeImage.execute({ image: IMG_URL });
-    const second = await describeImage.execute({ image: IMG_URL });
+    const first = await analyzeImage.execute({ image: IMG_URL });
+    const second = await analyzeImage.execute({ image: IMG_URL });
 
     expect(second).toBe(first);
     expect(chatVisionMock).toHaveBeenCalledTimes(1);
@@ -174,11 +174,11 @@ describe('管道缓存集成', () => {
     expect(stats.totalTokens).toBe(15);
   });
 
-  it('ask_image 问题不同即未命中，各自实调', async () => {
+  it('question 不同即未命中，各自实调', async () => {
     mockConfig(vision());
     chatVisionMock.mockResolvedValue({ content: '答', elapsedMs: 1 });
-    await askImage.execute({ image: IMG_URL, question: '问题一' });
-    await askImage.execute({ image: IMG_URL, question: '问题二' });
+    await analyzeImage.execute({ image: IMG_URL, question: '问题一' });
+    await analyzeImage.execute({ image: IMG_URL, question: '问题二' });
     expect(chatVisionMock).toHaveBeenCalledTimes(2);
     expect(visionStats.snapshot().calls).toBe(2);
   });
@@ -186,8 +186,8 @@ describe('管道缓存集成', () => {
   it('cacheEnabled=false 时不查不写缓存，重复调用均实调', async () => {
     mockConfig(vision({ cacheEnabled: false }));
     chatVisionMock.mockResolvedValue({ content: 'x', elapsedMs: 1 });
-    await describeImage.execute({ image: IMG_URL });
-    await describeImage.execute({ image: IMG_URL });
+    await analyzeImage.execute({ image: IMG_URL });
+    await analyzeImage.execute({ image: IMG_URL });
     expect(chatVisionMock).toHaveBeenCalledTimes(2);
     expect(visionCache.size()).toBe(0);
   });
@@ -197,9 +197,9 @@ describe('管道缓存集成', () => {
     try {
       mockConfig(vision({ cacheTtlMs: 100 }));
       chatVisionMock.mockResolvedValue({ content: 'x', elapsedMs: 1 });
-      await describeImage.execute({ image: IMG_URL });
+      await analyzeImage.execute({ image: IMG_URL });
       vi.advanceTimersByTime(101);
-      await describeImage.execute({ image: IMG_URL });
+      await analyzeImage.execute({ image: IMG_URL });
       expect(chatVisionMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -211,8 +211,8 @@ describe('管道缓存集成', () => {
     chatVisionMock.mockRejectedValueOnce(new Error('服务超时'));
     chatVisionMock.mockResolvedValueOnce({ content: '恢复', elapsedMs: 1 });
 
-    await expect(describeImage.execute({ image: IMG_URL })).rejects.toThrow('服务超时');
-    const out = await describeImage.execute({ image: IMG_URL });
+    await expect(analyzeImage.execute({ image: IMG_URL })).rejects.toThrow('服务超时');
+    const out = await analyzeImage.execute({ image: IMG_URL });
 
     expect(out).toBe('恢复');
     expect(chatVisionMock).toHaveBeenCalledTimes(2);
@@ -229,12 +229,12 @@ describe('管道缓存集成', () => {
 
     mockConfig(vision());
     chatVisionMock.mockResolvedValue({ content: 'v1', elapsedMs: 1 });
-    const first = await describeImage.execute({ image: file });
+    const first = await analyzeImage.execute({ image: file });
 
     // 改变文件大小 → 指纹（size-mtime）变化 → key 变化
     await writeFile(file, Buffer.from('aaaaaa'));
     chatVisionMock.mockResolvedValue({ content: 'v2', elapsedMs: 1 });
-    const second = await describeImage.execute({ image: file });
+    const second = await analyzeImage.execute({ image: file });
 
     expect(first).toBe('v1');
     expect(second).toBe('v2');

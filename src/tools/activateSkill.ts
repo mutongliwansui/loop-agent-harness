@@ -1,9 +1,10 @@
-// activate_skill 工具：激活指定 Skill，返回 SKILL.md 完整内容 + 技能所在目录供 Agent 参考执行
+// activateSkill 工具：激活指定 Skill，返回 SKILL.md 完整内容 + 技能所在目录供 Agent 参考执行
+// 需求 20261111-004：内置工具名统一驼峰（原 activate_skill）
 import { skillLoader } from '../skill/loader.js';
 import type { Tool } from '../types.js';
 
 export const activateSkill: Tool = {
-  name: 'activate_skill',
+  name: 'activateSkill',
   description:
     '激活一个 Skill（技能包），返回该 Skill 的完整指令内容与技能目录（SKILL.md 绝对路径）。'
     + '技能内引用的脚本、参考文档等附加文件，用返回的技能目录拼接路径后读取或执行。',

@@ -358,7 +358,7 @@ describe('tools 组（GET /tools、GET|PATCH /tools/:name、POST /tools/reload�
     const fileRead = body.tools.find((t) => t.name === 'fileRead');
     expect(fileRead).toMatchObject({ source: 'builtin', enabled: true });
     // vision.enabled 已被 config 组用例置 true → 视觉工具可见
-    expect(body.tools.some((t) => t.name === 'describe_image')).toBe(true);
+    expect(body.tools.some((t) => t.name === 'analyzeImage')).toBe(true);
   });
 
   it('GET /tools/:name 内置工具含 schema；不存在 → 404', async () => {

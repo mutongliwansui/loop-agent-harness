@@ -150,6 +150,12 @@ export interface ChatMsg {
   /** 后台子任务结果卡片（20261107-002 D8）：渲染为独立卡片，不占用户气泡 */
   subResult?: SubAgentResultVM;
   /**
+   * L1 压缩总结文本（后端 is_show=false / kind=summary 的消息）。
+   * 该消息会替代被折叠的历史进入 LLM 上下文，但原文在界面上原本被直接丢弃——
+   * 用户必须知道「更早的工具输出模型已经看不到了」，因此渲染为可展开的摘要卡片。
+   */
+  summary?: string;
+  /**
    * 已被 L1 压缩折叠进摘要的历史消息（后端 is_compact=true）。
    * 这类消息不进入恢复视图（不计 seq、不可重试），但磁盘上完好保留，
    * 界面与普通历史一样平铺渲染——否则用户会看到「前面的对话凭空消失」。
@@ -388,8 +394,25 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
       continue;
     }
     const historyIdx = archived ? undefined : viewIdx++;
-    // 不展示的消息：压缩总结消息（is_show=false）仍计入恢复视图下标
-    if (m.is_show === false) continue;
+    // 不展示的消息：压缩总结消息（is_show=false）——它替代了被折叠的历史进入模型上下文，
+    // 但界面上原本被直接丢弃，用户看不到「模型已经只认摘要」这件事。
+    // 现在渲染为可展开的摘要卡片（role 仍按 user 承载，seq 计入恢复视图下标，锚点语义不变）。
+    if (m.is_show === false) {
+      // 空摘要没有展示价值，仍按原逻辑静默跳过，避免渲染出空气泡。
+      // 存量会话的旧占位可能仍带 [历史摘要] 前缀，展示时剥掉。
+      const summaryText = (m.content ?? '').replace(/^\[历史摘要\]\s*/, '');
+      if (m.role === 'user' && summaryText.trim()) {
+        flush();
+        out.push({
+          id: nextMsgId(),
+          role: 'user',
+          segments: [],
+          seq: historyIdx,
+          summary: summaryText,
+        });
+      }
+      continue;
+    }
     if (m.role === 'user') {
       flush();
       // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原；
@@ -919,7 +942,12 @@ function applyEvent(id: string, ev: SseEvent): void {
       asst.lastEventAt = now;
       asst.compacting = false;
       asst.live = { kind: 'thinking', since: now };
-      const info = (d.info ?? {}) as { failed?: boolean; fallback?: string };
+      const info = (d.info ?? {}) as {
+        failed?: boolean;
+        fallback?: string;
+        keptMessages?: number;
+        flushedChars?: number;
+      };
       if (info.failed) {
         // 压缩期被用户停止（Task-20261021-002-02 D4）：aborted 终止事件随 run 取消到达，
         // 紧随其后的 aborted 终态会再提示「已被用户停止」，这里换文案避免语义混淆
@@ -933,6 +961,14 @@ function applyEvent(id: string, ev: SseEvent): void {
             'error',
           );
         }
+      } else {
+        // 压缩成功此前完全静默：用户以为界面上的工具输出模型都还看得到，
+        // 实际模型只剩一段摘要，导致「输出被吞」的错觉。这里显式提示一次。
+        showToast(
+          `对话历史已压缩（保留最近 ${info.keptMessages ?? '若干'} 条消息），更早的工具输出已折叠为摘要，模型不再看到原文`,
+          'info',
+          6000,
+        );
       }
       notifyActivity(id);
       break;
@@ -1357,14 +1393,15 @@ function sameTimeline(a: ChatMsg[], b: ChatMsg[]): boolean {
  * （用户气泡 + 助手占位/已收片段）原样接回重建结果。
  */
 function preserveOptimisticTail(disk: ChatMsg[], local: ChatMsg[]): void {
+  // 摘要卡片与子任务结果卡片不是用户输入，不能参与「本地比磁盘多几条」的判断
   const countUser = (list: ChatMsg[]): number =>
-    list.filter((m) => m.role === 'user' && !m.subResult).length;
+    list.filter((m) => m.role === 'user' && !m.subResult && !m.summary).length;
   const diskUsers = countUser(disk);
   if (countUser(local) <= diskUsers) return;
   let seen = 0;
   for (let i = 0; i < local.length; i++) {
     const m = local[i];
-    if (m.role === 'user' && !m.subResult && ++seen > diskUsers) {
+    if (m.role === 'user' && !m.subResult && !m.summary && ++seen > diskUsers) {
       disk.push(...local.slice(i));
       return;
     }
@@ -1373,11 +1410,11 @@ function preserveOptimisticTail(disk: ChatMsg[], local: ChatMsg[]): void {
 
 /** 磁盘 user 消息的 content 含附件 note / 记忆前缀：展示层沿用本地乐观气泡的原文与附件 */
 function keepLocalUserBubbles(disk: ChatMsg[], local: ChatMsg[]): void {
-  const users = local.filter((m) => m.role === 'user');
+  const users = local.filter((m) => m.role === 'user' && !m.summary);
   let i = 0;
   for (const m of disk) {
-    // 结果卡片是系统风格卡片，不参与用户气泡对齐（否则后续气泡会错位）
-    if (m.role !== 'user' || m.subResult) continue;
+    // 结果卡片 / 摘要卡片是系统风格卡片，不参与用户气泡对齐（否则后续气泡会错位）
+    if (m.role !== 'user' || m.subResult || m.summary) continue;
     const l = users[i++];
     if (!l) break;
     const seg = l.segments[0];
@@ -1505,7 +1542,8 @@ export async function retryMessage(id: string, opts: RetryOptions): Promise<Send
   }
   let userIdx = -1;
   for (let i = idx - 1; i >= 0; i--) {
-    if (st.messages[i].role === 'user') {
+    // 摘要卡片也用 role=user 承载，但不是用户输入，不能作为重试锚点
+    if (st.messages[i].role === 'user' && !st.messages[i].summary) {
       userIdx = i;
       break;
     }

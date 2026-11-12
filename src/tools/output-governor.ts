@@ -163,6 +163,8 @@ export interface FullOutputNotice {
   suggestion: string;
   /** false 表示落盘不完整（背压丢弃 / 写入出错），提示里会显式声明，避免 LLM 把它当完整输出 */
   complete?: boolean;
+  /** complete=true 时的说明文案（默认「该文件即工具原始输出全文」；文档提取场景需说明非原始字节） */
+  completeLabel?: string;
   /** 不完整原因（complete=false 时展示） */
   incompleteReason?: string;
 }
@@ -182,7 +184,7 @@ export function buildFullOutputNotice(notice: FullOutputNotice): string {
   if (notice.complete === false) {
     lines.push(`完整性: ⚠ 不完整（${notice.incompleteReason ?? '写入过程有丢弃'}），不可当作完整原始输出`);
   } else {
-    lines.push('完整性: 完整（该文件即工具原始输出全文）');
+    lines.push(`完整性: 完整（${notice.completeLabel ?? '该文件即工具原始输出全文'}）`);
   }
   lines.push(notice.suggestion);
   return `${NOTICE_BOUNDARY}${lines.join('\n')}\n`;

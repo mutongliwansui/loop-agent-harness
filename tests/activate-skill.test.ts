@@ -1,5 +1,5 @@
 /**
- * activate_skill 工具单元测试：输出应包含技能目录与 SKILL.md 绝对路径，便于定位技能内附带文件
+ * activateSkill 工具单元测试：输出应包含技能目录与 SKILL.md 绝对路径，便于定位技能内附带文件
  */
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { activateSkill } from '../src/tools/activateSkill.js';
@@ -27,7 +27,7 @@ function seedSkill(
   return { skillDir, skillMd };
 }
 
-describe('activate_skill 工具', () => {
+describe('activateSkill 工具', () => {
   beforeEach(() => {
     rmSync(DIR, { recursive: true, force: true });
     mkdirSync(DIR, { recursive: true });

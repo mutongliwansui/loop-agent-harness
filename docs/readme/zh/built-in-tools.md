@@ -4,14 +4,14 @@
 
 | 工具 | 名称 | 说明 | 参数 |
 |---|---|---|---|
-| 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr；长任务可 `background:true` 后台运行（立即返回 `taskId`，不受 30s 超时限制）；会话空闲期间任务完成时，API 服务以合成输入发起一轮唤醒 run 主动消费完成通知（`tools.backgroundNotify.wakeIdle`，默认开启）。前台输出头尾各保留 128KB（总上限可配），中间省略并标注字节数，不再因 maxBuffer 失败；结束标签统一为 `[exit=N]` / `[timeout=Nms]` / `[aborted]` / `[signal=…]` + `[duration=…]` | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认取 `tools.commandRun.timeoutMs`，仅前台生效）, `background`（可选，默认 `false`） |
+| 🖥️ **命令执行** | `commandRun` | 在本地执行 shell 命令，返回 stdout + stderr；长任务可 `background:true` 后台运行（立即返回 `taskId`，不受 30s 超时限制）；会话空闲期间任务完成时，API 服务以合成输入发起一轮唤醒 run 主动消费完成通知（`tools.backgroundNotify.wakeIdle`，默认开启）。前台输出默认头尾各保留 32KB（总上限 64KB，可配置；超限时完整输出同步落临时文件并给出路径），中间省略并标注字节数，不再因 maxBuffer 失败；结束标签统一为 `[exit=N]` / `[timeout=Nms]` / `[aborted]` / `[signal=…]` + `[duration=…]` | `command`（必填）, `cwd`（可选）, `timeout`（可选，默认取 `tools.commandRun.timeoutMs`，仅前台生效）, `background`（可选，默认 `false`） |
 | ⏱️ **后台任务状态** | `commandStatus` | 查询后台命令任务状态（running/exited/killed/orphaned-*）、退出码、耗时与日志大小；不带 `taskId` 时返回最近 5 个任务摘要 | `taskId`（可选） |
 | 📜 **后台任务日志** | `commandLogs` | 增量读取后台任务日志：不传 `sinceOffset` 返回「上次读到处→尾部」并推进游标；单次上限 8KB；`tail:true` 只读最近 2KB 尾部 | `taskId`（必填）, `sinceOffset`（可选，字节偏移）, `tail`（可选） |
 | ⏹️ **后台任务停止** | `commandStop` | 终止后台任务：杀掉其进程树（Windows `taskkill /T /F`；POSIX 进程组）。幂等；会话停止不连带终止后台任务，必须显式调用 | `taskId`（必填） |
-| 📄 **文件读取** | `fileRead` | 读取文件内容，支持按行范围部分读取（`startLine`/`endLine`，1-based 含端点），默认每行带 `行号: ` 前缀。默认读取上限：全文最多 2000 行 / 256KB，单行超过 8192 字符会截断，超出时末尾附截断提示并给出续读行号；超过 16MB 的全文读取直接拒绝（需分段）；二进制文件（前 8000 字节含 NUL）拒绝读取。**需求 20261111-003 起已移除 `offset`/`limit` 别名参数**，行范围只保留 `startLine`/`endLine` 一套语义 | `path`（必填）, `startLine`（可选，1-based 起始行，须与 `endLine` 成对）, `endLine`（可选，含该行，须与 `startLine` 成对）, `maxBytes`（可选，返回内容字节上限）, `encoding`（可选）, `lineNumbers`（可选，默认 `true`） |
+| 📄 **文件读取** | `fileRead` | 读取文件内容，支持按行范围部分读取（`startLine`/`endLine`，1-based 含端点），默认每行带 `行号: ` 前缀。默认读取上限：全文最多 2000 行 / 256KB，单行超过 8192 字符会截断，超出时末尾附截断提示并给出续读行号；超过 16MB 的全文读取直接拒绝（需分段）。**文档支持（需求 20261112-001）**：自动识别 doc/docx/pdf/xlsx/pptx/rtf/odt（魔数 + 扩展名）并提取为 UTF-8 纯文本，复用行号/区间/`maxBytes` 语义；PDF/PPTX 插入 `=== 第 N 页 ===` 页标记、XLSX 插入 `=== Sheet: 名称 ===`，分页文档（PDF/PPTX/XLSX）可用 `pages` 按页读取（`3` / `3-7` / `3-` / `1,4,9`，xlsx 的 page 为工作表序号，与 `startLine`/`endLine` 互斥）；文档行号为**提取文本行号**，输出首行会显式声明；源文件上限 50MB、单文档解析预算 15s；加密 PDF 提示无法解密，扫描件提示没有文本层（系统存在 `pdftotext` 时自动兜底）；截断时完整提取文本落临时文件并注明「非原始二进制文档」；旧版 .xls/.ppt 提示另存为。二进制文件（前 8000 字节含 NUL）仍拒绝读取。**需求 20261111-003 起已移除 `offset`/`limit` 别名参数**，行范围只保留 `startLine`/`endLine` 一套语义 | `path`（必填）, `startLine`（可选，1-based 起始行，须与 `endLine` 成对）, `endLine`（可选，含该行，须与 `startLine` 成对）, `pages`（可选，分页文档页码：PDF/PPTX/XLSX，如 `3` / `3-7` / `3-` / `1,4,9`）, `maxBytes`（可选，返回内容字节上限）, `encoding`（可选）, `lineNumbers`（可选，默认 `true`） |
 | ✏️ **文件写入** | `fileWrite` | **整文件写入**：`overwrite` 用 `content` 完整替换文件全部内容（**原内容会永久丢失，不支持区域/局部覆盖**，局部修改请用 `editFile`）；`append` 追加到末尾，自动创建父目录。已存在文件的换行自动适配该文件主导行尾（如 CRLF），新文件保持 LF；同文件写操作自动串行化 | `path`（必填）, `content`（必填，overwrite 时为覆盖后的完整文件内容）, `mode`（可选，`overwrite` / `append`） |
 | 🔁 **文件编辑** | `editFile` | 三种模式：①字面量替换（要求唯一出现，多处匹配报错以防误改）；②`regex=true` 正则替换（支持 `$1`/`$&` 捕获引用）；③指定 `startLine`/`endLine` 整段行替换。**行尾归一化**：匹配与校验对 `\r\n`/`\n` 等价（多行 oldText 可直接编辑 CRLF 文件），写回保持原文件行尾风格（未触及区域字节级不变，替换段适配主导行尾）；同文件写操作自动串行化；失配时报错附首个差异行与近似候选，文件 mtime 变化时提示「可能已被并发修改，先 fileRead 再编辑」 | `path`（必填）, `newText`（必填）, `oldText`（未指定行范围时必填）, `startLine`（可选）, `endLine`（可选）, `replaceAll`（可选，默认 `false`）, `regex`（可选，默认 `false`）, `flags`（可选，如 `i`/`m`/`s`） |
-| 🔍 **内容检索** | `grep` | 在文件或目录中检索内容（模仿 grep）：支持正则、忽略大小写、递归搜索（自动跳过 `node_modules` / `.git` / `dist`，目录递归深度上限 5 层）。**流式按行扫描**：以 `createReadStream` + `readline` 逐行处理，内存只驻留当前行，GB 级日志不会整读入内存；`crlfDelay: Infinity` 顺带剥离行尾 `\r`，CRLF 文件上的行尾 `$` 锚点不再失配。**二进制嗅探**：前 8000 字节含 NUL 视为二进制直接跳过（与 `fileRead` 同一口径）。**超长行防护**：单行超过 1200 字符（如 minified 文件）时围绕正则命中点截取前后各 500 字符，两端标注省略字符数与总行长，短行原样返回。**匹配硬上限**：达 2000 条即提前停止扫描（`maxResults` 调大时上限跟随放大），避免匹配风暴撑爆上下文，落盘文件如实声明结果不完整并建议收紧正则。匹配数超出 `maxResults` 时完整结果落临时文件并给出路径与分段读取建议 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选，默认 `false`）, `recursive`（可选，默认 `true`）, `maxResults`（可选，默认 50） |
+| 🔍 **内容检索** | `grep` | 在文件或目录中检索内容（模仿 grep）：支持正则、忽略大小写、递归搜索（自动跳过 `node_modules` / `.git` / `dist`，目录递归深度上限 5 层）。**文档支持（需求 20261112-001）**：doc/docx/pdf/xlsx/pptx/rtf/odt 会先提取为文本再逐行匹配，结果仍为 `path:line: content`（行号为提取文本行号）；PDF 命中在 content 前加 `[p.N]` 页码；单个文档失败不中断检索，末尾输出「跳过 N 个文档」汇总（最多列 5 条）；单文档上限 50MB、单次检索文档提取合计预算 20s。**流式按行扫描**：文本文件以 `createReadStream` + `readline` 逐行处理，内存只驻留当前行，GB 级日志不会整读入内存；`crlfDelay: Infinity` 顺带剥离行尾 `\r`，CRLF 文件上的行尾 `$` 锚点不再失配。**二进制嗅探**：前 8000 字节含 NUL 视为二进制直接跳过（与 `fileRead` 同一口径）。**超长行防护**：单行超过 1200 字符（如 minified 文件）时围绕正则命中点截取前后各 500 字符，两端标注省略字符数与总行长，短行原样返回。**匹配硬上限**：达 2000 条即提前停止扫描（`maxResults` 调大时上限跟随放大），避免匹配风暴撑爆上下文，落盘文件如实声明结果不完整并建议收紧正则。匹配数超出 `maxResults` 时完整结果落临时文件并给出路径与分段读取建议 | `pattern`（必填）, `path`（必填）, `ignoreCase`（可选，默认 `false`）, `recursive`（可选，默认 `true`）, `maxResults`（可选，默认 50） |
 | 🎯 **Skill 激活** | `activate_skill` | 激活指定 Skill（技能包），返回 SKILL.md 完整指令**及技能所在目录（技能目录 / SKILL.md 绝对路径）**，便于定位技能内附带的脚本、参考文档等文件 | `name`（必填） |
 | 🧑‍🤝‍🧑 **子任务委托** | `delegate` | 把自包含子任务交给独立子 Agent 执行，返回其最终结论。子 Agent 拥有独立消息历史、共享 L2/L3 记忆、独立 L1 工作记忆；工具集**排除 `delegate`**防无限递归；不落盘独立会话；取消信号透传。执行器由主 Agent 在 run 内注入（`ToolContext.runSubAgent`），未注入时降级报错。过程可见：WebUI 在卡片内提供「子 Agent 过程」折叠区（默认收起），CLI 结束打印一行摘要、`verbose` 时逐行缩进展开。支持 `background:true` 并行后台执行（立即返回 `sub_<id>`，完成后自动落盘结果卡片；并发上限 `agent.subAgent.maxConcurrent`，默认 3）。完成通知双通道（需求 20261107-011）：主 Agent 仍在运行时于下一轮 LLM 调用前注入通知，已结束时自动发起一轮唤醒 run；结果 >2000 字符时完整落盘 `~/.loop-agent/tmp/<sessionId>/subagent-*.txt`（复用 7 天 TTL 清理），通知只带 400 字符预览 + 路径 + `fileRead` 分段读取建议，落盘失败降级回截断（需求 20261108-001） | `task`（必填，自包含任务描述）, `context`（可选，背景补充）, `background`（可选，`true`=后台并行，缺省同步阻塞） |
 | 👁️ **图片描述** | `describe_image` | 对图片做整体描述（主体、场景、可见文字、颜色、数量等）；不确定该问什么时先用它获取全局信息 | `image`（必填，本地路径或 http(s) URL） |
@@ -50,6 +50,22 @@ fileRead({ "path": "src/agent/react-agent.ts", "startLine": 1, "endLine": 20 })
 # 文件读取（关闭行号，返回原始内容，适合读-改-写）
 fileRead({ "path": "src/agent/react-agent.ts", "lineNumbers": false })
 
+# 读取 Word 文档（doc/docx 自动提取为文本；行号为提取文本行号）
+fileRead({ "path": "docs/需求说明.docx" })
+
+# Word 文档按提取文本行号分段读取
+fileRead({ "path": "docs/需求说明.docx", "startLine": 10, "endLine": 30 })
+
+# 读取 PDF（正文带 === 第 N 页 === 页标记与行号）
+fileRead({ "path": "docs/manual.pdf" })
+
+# 只读 PDF 第 3-5 页（与 startLine/endLine 互斥）
+fileRead({ "path": "docs/manual.pdf", "pages": "3-5" })
+
+# 读取 Excel（按工作表输出）/ PowerPoint（按幻灯片输出）
+fileRead({ "path": "reports/summary.xlsx" })
+fileRead({ "path": "reports/deck.pptx", "pages": "2" })
+
 # 文件写入（overwrite 为整文件覆盖：content 即覆盖后的完整文件内容，原内容会丢失）
 fileWrite({ "path": "output.txt", "content": "Hello World", "mode": "overwrite" })
 
@@ -73,6 +89,9 @@ editFile({ "path": "src/a.ts", "startLine": 10, "endLine": 12, "oldText": "funct
 
 # 内容检索
 grep({ "pattern": "config", "path": "src", "ignoreCase": true, "maxResults": 20 })
+
+# 在 Word/PDF 文档中检索（PDF 命中带 [p.N] 页码；失败文档会在末尾汇总）
+grep({ "pattern": "预算", "path": "docs" })
 
 # 大文件 / 日志检索（流式扫描不整读入内存；二进制文件自动跳过；minified 超长行自动截窗）
 grep({ "pattern": "ERROR|FATAL", "path": "logs/app.log" })

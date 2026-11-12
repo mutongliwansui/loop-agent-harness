@@ -105,7 +105,9 @@ export interface ToolsConfig {
 /**
  * 前台命令执行配置（需求 20261104-006 D7）
  *
- * - outputLimitKb：返回内容总上限，头尾各占一半，中间省略（默认 256KB）
+ * - outputLimitKb：返回内容总上限，头尾各占一半，中间省略（默认 64KB）
+ *   默认值与上下文预算对齐：过大的单次输出会瞬间顶到 L1 压缩阈值，
+ *   压缩后历史工具结果只剩摘要（界面看起来「输出被吞」）。
  * - timeoutMs：未传 timeout 参数时的默认超时（默认 30s，长任务请走 background）
  */
 export interface CommandRunConfig {
@@ -214,7 +216,7 @@ export interface SubAgentConfig {
  * - baseUrl/apiKey/model 为空时回退主模型 model.* 三元组（同一服务商多模型零重复配置）
  */
 export interface VisionConfig {
-  /** 是否启用视觉工具（关闭时不注册 describe_image/ask_image/extract_json/ocr_image） */
+  /** 是否启用视觉工具（关闭时不注册 analyzeImage） */
   enabled: boolean;
   /** 视觉服务 baseUrl，空则回退 model.baseUrl */
   baseUrl: string;
@@ -343,7 +345,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
       maxTotalMb: 100,
     },
     commandRun: {
-      outputLimitKb: 256,
+      outputLimitKb: 64,
       timeoutMs: 30000,
     },
     outputGovernor: {

@@ -8,6 +8,7 @@ import {
   type BackgroundTask,
 } from './background-tasks.js';
 import { killProcessTree } from './process-tree.js';
+import { decodeByteRange } from './command-run-output.js';
 
 /** 单次 commandLogs 返回上限（D4：超出截断并提示继续调用） */
 const LOG_CHUNK_MAX = 8 * 1024;
@@ -198,7 +199,9 @@ function readRange(path: string, from: number, to: number): string {
     if (actual <= 0) return '';
     const buf = Buffer.alloc(actual);
     const read = readSync(fd, buf, 0, actual, from);
-    return buf.toString('utf-8', 0, read);
+    // 增量读的起止都可能落在多字节字符中间，且 Windows 命令输出可能是 GBK：
+    // 统一走编码探测，避免中文日志在命令卡片里变成 `�`
+    return decodeByteRange(buf.subarray(0, read));
   } finally {
     closeSync(fd);
   }

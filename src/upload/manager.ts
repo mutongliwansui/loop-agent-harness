@@ -364,7 +364,7 @@ export function buildContextNote(entry: UploadEntry): string {
   ];
   const mime = MIME_BY_EXT[extname(entry.fileName).toLowerCase()];
   if (mime) {
-    lines.push(`  类型: 图片 ${mime}（可用 ask_image / describe_image / extract_json / ocr_image 查看）`);
+    lines.push(`  类型: 图片 ${mime}（可用 analyzeImage 查看）`);
   }
   return lines.join('\n');
 }

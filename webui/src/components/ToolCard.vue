@@ -17,6 +17,7 @@ import {
   resultLines,
   resultMetaText,
   resultNeedsExpand,
+  resultTruncation,
   stripAnsi,
   toolDisplay,
   toolFailReason,
@@ -230,6 +231,8 @@ const resultText = computed(() => {
 
 const resultLineCount = computed(() => resultLines(resultRaw.value));
 const outMeta = computed(() => resultMetaText(resultRaw.value));
+/** 截断/省略徽标：提示写在正文中间或末尾，190px 预览区默认看不到，必须放到头部 */
+const cut = computed(() => resultTruncation(resultRaw.value));
 const canExpand = computed(() => !!resultRaw.value && resultNeedsExpand(resultRaw.value));
 const outLabel = computed(() => {
   switch (state.value) {
@@ -286,6 +289,7 @@ const backgroundInitial = computed(() => ({
         >
           { }
         </button>
+        <span v-if="cut" class="tcut" :title="cut.detail">{{ cut.label }}</span>
         <span class="tpill" :class="pill.cls">
           <span v-if="pill.spin" class="sp"></span>{{ pill.text }}
         </span>
@@ -489,6 +493,18 @@ const backgroundInitial = computed(() => ({
   font: 11.5px/1 ui-monospace, Consolas, monospace;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* 截断/省略徽标：中性警示色，常驻头部（结果区默认折叠看不到正文里的提示） */
+.tcut {
+  flex: none;
+  font: 600 11px/1.4 ui-monospace, Consolas, monospace;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--warn-weak);
+  color: var(--warn);
+  white-space: nowrap;
+  cursor: help;
 }
 
 .tcaret { flex: none; display: grid; place-items: center; color: var(--muted); transition: transform 0.15s; }

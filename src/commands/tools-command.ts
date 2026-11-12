@@ -11,10 +11,7 @@ import {
   grep,
   activateSkill,
   delegate,
-  describeImage,
-  askImage,
-  extractJson,
-  ocrImage,
+  analyzeImage,
 } from '../tools/index.js';
 import type { PartialAgentConfig } from '../config/index.js';
 import { COLORS } from '../ui/colors.js';
@@ -32,13 +29,11 @@ export const BUILTIN_TOOL_NAMES = [
   'fileWrite',
   'editFile',
   'grep',
-  'activate_skill',
+  'activateSkill',
   // 需求 20261107-001：子 Agent 委托
   'delegate',
-  'describe_image',
-  'ask_image',
-  'extract_json',
-  'ocr_image',
+  // 需求 20261111-004：视觉工具四合一，内置工具名统一驼峰
+  'analyzeImage',
 ];
 
 /** 内置工具注册表：名称 → 工具实例（供 /tools enable 与 API 端点同步 registry 复用） */
@@ -51,12 +46,9 @@ export const BUILTIN_TOOL_MAP: Record<string, unknown> = {
   fileWrite,
   editFile,
   grep,
-  activate_skill: activateSkill,
+  activateSkill,
   delegate,
-  describe_image: describeImage,
-  ask_image: askImage,
-  extract_json: extractJson,
-  ocr_image: ocrImage,
+  analyzeImage,
 };
 
 export const toolsCommand: CommandHandler = {

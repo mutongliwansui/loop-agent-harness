@@ -109,10 +109,11 @@ interface UploadChip {
 
 // 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
 const messages = computed(() => messagesOf(activeId.value));
-// 已压缩历史（后端 is_compact=true）与普通历史一样**平铺渲染**，不再显示「已压缩 N 条」提示条：
-// 该提示没有信息价值（原文完整可见），反而暗示「前面的对话被藏起来了」，与用户诉求相悖；
-// 且其计数取自前端收到的截断窗口，与实际归档数不符（显示 8 条，实际 147 条），会误导。
-// `m.archived` 仅作为数据层标记保留（seq 计算、可达性判断），不影响渲染。
+// 已压缩历史（后端 is_compact=true）仍平铺渲染（原文完整可见），但必须在归档段起点
+// 明确提示「这段模型已经看不到了」——此前完全无标记，用户误以为模型仍能看到全部工具输出。
+// 计数只用于提示条，与后端归档数不一定相等（前端只拿到截断窗口），故文案不写死精确条数。
+const archivedCount = computed(() => messages.value.filter((m) => m.archived).length);
+const firstArchivedId = computed(() => messages.value.find((m) => m.archived)?.id ?? -1);
 /** 20261105-001 D3：user 消息整体为后台通知块 → 系统通知卡片（按 id 预解析，模板只查表） */
 const noticeMap = computed(() => {
   const map = new Map<number, BackgroundNoticeInfo>();
@@ -1181,16 +1182,24 @@ onUnmounted(() => {
             <div v-if="!activeId && messages.length === 0" class="chat-empty">
               选择左侧会话，或点击「＋ 新建对话」开始
             </div>
+            <template v-for="m in messages" :key="m.id">
+            <!-- 归档段起点：明确告诉用户「以下历史模型已经看不到原文，只剩摘要」 -->
+            <div v-if="m.archived && m.id === firstArchivedId" class="arch-divider">
+              <span>以下 {{ archivedCount }} 条历史已归档（仅保存在本地，模型上下文只保留摘要）</span>
+            </div>
             <div
-              v-for="m in messages"
-              :key="m.id"
               class="msg"
-              :class="[m.role, { notice: noticeMap.has(m.id) }]"
+              :class="[m.role, { notice: noticeMap.has(m.id), 'is-summary': !!m.summary }]"
             >
               <!-- 20261105-001：后台任务完成通知渲染为系统卡片，不占用户气泡 -->
               <BackgroundNoticeCard v-if="noticeMap.get(m.id)" :info="noticeMap.get(m.id)!" />
               <!-- 20261107-002 D8：后台子任务完成结果卡片（服务端主动落盘） -->
               <SubAgentResultCard v-else-if="m.subResult" :info="m.subResult" :session-id="activeId" />
+              <!-- L1 压缩摘要：此前被 is_show=false 静默丢弃，用户不知道模型已看不到更早的工具输出 -->
+              <details v-else-if="m.summary" class="summary-card">
+                <summary>已压缩历史摘要（模型当前只能看到这段摘要）</summary>
+                <div class="plain">{{ m.summary }}</div>
+              </details>
               <template v-else>
               <div v-if="m.role === 'assistant'" class="m-head">
                 <div class="ava">L</div><span class="m-role">Loop Agent</span>
@@ -1395,6 +1404,7 @@ onUnmounted(() => {
               </div>
               </template>
             </div>
+            </template>
           </div>
           <!-- 时间线尾注记（task-06）：重启后的中断/停止说明，前端态灰条，不进消息数组 -->
           <div v-if="stream?.note" class="aborted-note run-note">{{ stream.note }}</div>
@@ -1844,6 +1854,61 @@ onUnmounted(() => {
 }
 /* 用户消息：无头像，右对齐气泡；助手消息：头像+名称在上，正文平铺 */
 .msg { margin-bottom: 18px; }
+
+/* 归档段分隔：告知「以下历史模型已看不到原文」，不阻断阅读，灰线 + 小字 */
+.arch-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.arch-divider::before,
+.arch-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.arch-divider span {
+  flex: none;
+  padding: 0 2px;
+  text-align: center;
+}
+
+/* L1 压缩摘要卡片：默认收起，点开可见模型当前持有的全部历史摘要 */
+.msg.user.is-summary { justify-content: flex-start; }
+.summary-card {
+  width: 100%;
+  max-width: 680px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.summary-card > summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+  list-style: none;
+}
+.summary-card > summary::-webkit-details-marker { display: none; }
+.summary-card > summary::before {
+  content: '▸ ';
+  color: var(--muted);
+}
+.summary-card[open] > summary::before { content: '▾ '; }
+.summary-card .plain {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .msg .ava {
   width: 22px;
   height: 22px;

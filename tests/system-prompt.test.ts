@@ -65,11 +65,12 @@ describe('buildSystemPrompt 的视觉能力区块', () => {
   it('visionEnabled=true 时注入图片理解段（工具取舍规则已下沉到工具描述）', () => {
     const p = buildSystemPrompt([], 'D:\\work', true);
     expect(p).toContain('## 图片理解');
-    // 需求 20261111-003：工具名与四选一规则改由视觉工具 description 承载
+    // 需求 20261111-003 / 20261111-004：三种用法与取舍规则改由 analyzeImage 的 description 承载
     // （模型每轮都能看到 schema），system 只留 schema 表达不了的通用事实
     expect(p).toContain('路径/URL/dataURI');
     expect(p).toContain('支持多图数组');
-    for (const name of ['ask_image', 'describe_image', 'extract_json', 'ocr_image']) {
+    expect(p).toContain('analyzeImage');
+    for (const name of ['ask_image', 'describe_image', 'extract_json', 'ocr_image', 'activate_skill']) {
       expect(p).not.toContain(name);
     }
   });

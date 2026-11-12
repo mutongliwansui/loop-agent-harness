@@ -20,7 +20,7 @@ export function buildSystemPrompt(
   // 否则模型面对"有哪些技能"的提问会误判为需要去文件系统检索技能目录。
   const skillSection = skills.length > 0
     ? `\n## 可用 Skill（技能包）
-当用户的需求与以下 Skill 的描述匹配时，使用 activate_skill 工具激活对应 Skill，获取详细的执行指令。
+当用户的需求与以下 Skill 的描述匹配时，使用 activateSkill 工具激活对应 Skill，获取详细的执行指令。
 ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace' ? '(工作空间)' : '(全局)'}`).join('\n')}
 - 以上即为当前全部可用 Skill；当用户询问「有哪些技能 / 当前有什么技能」时，请直接依据该列表回答，不要通过检索文件系统去寻找技能目录。
 `
@@ -36,13 +36,13 @@ ${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace'
 `
     : '';
 
-  // 视觉能力段（需求 20261110-002 / 20261111-003）：四个视觉工具各自的用途与选择规则
+  // 视觉能力段（需求 20261110-002 / 20261111-003 / 20261111-004）：analyzeImage 的三种用法
   // 已下沉到工具 description（模型每轮都能看到 schema），system 里只留 schema 表达不了的
   // 「图片以字符串形式出现」「支持多图数组」这类通识，避免同一事实常驻两份。
   const visionSection = visionEnabled
     ? `
 ## 图片理解
-当前会话接入视觉模型。用户图片以路径/URL/dataURI 字符串出现，理解图片时把该字符串传给视觉工具（四个视觉工具如何取舍见各自描述）。支持多图数组；失败会返回错误说明，可改参数重试。
+当前会话接入视觉模型。用户图片以路径/URL/dataURI 字符串出现，理解图片时把该字符串传给 analyzeImage 工具（用法见其描述）。支持多图数组；失败会返回错误说明，可改参数重试。
 `
     : '';
 

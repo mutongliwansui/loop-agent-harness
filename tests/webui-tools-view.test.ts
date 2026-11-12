@@ -32,8 +32,7 @@ const builtinRows: ToolRow[] = [
   { name: 'fileWrite', description: 'Write a file', enabled: true, source: 'builtin' },
   { name: 'grep', description: 'Search with regex', enabled: false, source: 'builtin' },
   { name: 'editFile', description: 'Edit a file with patches', enabled: true, source: 'builtin' },
-  { name: 'ask_image', description: 'Ask about an image', enabled: true, source: 'builtin' },
-  { name: 'describe_image', description: 'Describe an image', enabled: true, source: 'builtin' },
+  { name: 'analyzeImage', description: 'Analyze an image', enabled: true, source: 'builtin' },
   { name: 'memoryWrite', description: 'Write to memory', enabled: true, source: 'builtin' },
   { name: 'memoryRead', description: 'Read from memory', enabled: false, source: 'builtin' },
   { name: 'memorySearch', description: 'Search memory', enabled: true, source: 'builtin' },
@@ -65,8 +64,7 @@ describe('classifyFamily / familyLabel', () => {
     expect(classifyFamily('commandRun')).toBe('cmd');
     expect(classifyFamily('fileRead')).toBe('file');
     expect(classifyFamily('editFile')).toBe('file');
-    expect(classifyFamily('ask_image')).toBe('vision');
-    expect(classifyFamily('describe_image')).toBe('vision');
+    expect(classifyFamily('analyzeImage')).toBe('vision');
     expect(classifyFamily('memoryWrite')).toBe('memory');
     expect(classifyFamily('memoryRead')).toBe('memory');
     expect(classifyFamily('sessionHistory')).toBe('session');
@@ -90,7 +88,7 @@ describe('withFamily', () => {
     const fr = merged.find((r) => r.name === 'fileRead');
     expect(fr).toBeTruthy();
     expect(fr!.family).toBe('file');
-    const vision = merged.find((r) => r.name === 'ask_image');
+    const vision = merged.find((r) => r.name === 'analyzeImage');
     expect(vision!.family).toBe('vision');
   });
 });
@@ -136,7 +134,8 @@ describe('filterTools', () => {
     const r2 = filterTools(merged, 'grep', 'disabled');
     expect(r2.length).toBe(1);
     const r3 = filterTools(merged, 'image', 'enabled');
-    expect(r3.length).toBe(2);
+    expect(r3.length).toBe(1);
+    expect(r3[0].name).toBe('analyzeImage');
   });
 });
 
@@ -199,7 +198,8 @@ describe('parseSchemaParams', () => {
 describe('toolInitials', () => {
   it('驼峰/下划线 → 清理后前两字大写', () => {
     expect(toolInitials('fileRead')).toBe('FI');
-    expect(toolInitials('ask_image')).toBe('AS');
+    expect(toolInitials('analyzeImage')).toBe('AN');
+    expect(toolInitials('activateSkill')).toBe('AC');
     expect(toolInitials('commandRun')).toBe('CO');
     expect(toolInitials('httpRequest')).toBe('HT');
   });

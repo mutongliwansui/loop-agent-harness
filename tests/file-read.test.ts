@@ -106,7 +106,7 @@ describe('fileRead 工具', () => {
     const props = Object.keys(
       (fileRead.parameters as { properties: Record<string, unknown> }).properties,
     );
-    expect(props).toEqual(['path', 'startLine', 'endLine', 'maxBytes', 'encoding', 'lineNumbers']);
+    expect(props).toEqual(['path', 'startLine', 'endLine', 'pages', 'maxBytes', 'encoding', 'lineNumbers']);
   });
 
   it('传 offset/limit 不再生效（不参与解析，按全文读取）', async () => {
