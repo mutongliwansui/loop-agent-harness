@@ -14,9 +14,11 @@ import {
 } from './output-governor.js';
 import { detectDocumentKind } from '../documents/detect.js';
 import { extractDocument } from '../documents/extract.js';
-import { ocrDocumentImages } from '../documents/images.js';
+import { readDocumentImages } from '../documents/images.js';
 import type { DocumentKind } from '../documents/types.js';
 import { resolveOcrConfig } from '../ocr/index.js';
+import { configLoader } from '../config/index.js';
+import { buildDocumentImageDescriber } from './vision/describe-document-image.js';
 
 /** 全文读取默认行数上限（超出只返回前 N 行并附截断提示） */
 const DEFAULT_MAX_LINES = 2000;
@@ -36,8 +38,8 @@ const MAX_DOC_SOURCE_BYTES = 50 * 1024 * 1024;
 const DOC_TIME_BUDGET_MS = 15_000;
 /** 支持 pages 参数的分页文档类型（xlsx 的 page = 工作表序号） */
 const PAGEABLE_DOCUMENT_KINDS = new Set<DocumentKind>(['pdf', 'pptx', 'xlsx']);
-/** 文档内图片 OCR 块的分隔行（并入提取文本后仍可被 startLine/grep 定位） */
-const DOC_IMAGE_BLOCK_HEADER = '=== 文档内图片 OCR ===';
+/** 文档内图片取文块的分隔行（并入提取文本后仍可被 startLine/grep 定位） */
+const DOC_IMAGE_BLOCK_HEADER = '=== 文档内图片文本 ===';
 
 export const fileRead: Tool = {
   name: 'fileRead',
@@ -246,6 +248,8 @@ async function readDocument(
 ): Promise<string> {
   // 需求 20261112-002 / 任务 04：文档内图片 OCR 配置在此解析一次，
   // 既决定 PDF 是否光栅化（避免 OCR 关闭时白白 spawn 外部工具），也决定图片块是否产出。
+  // 需求 20261112-004 / 任务 02：视觉取文能力（视觉优先 → OCR 兜底）由本层以回调注入，
+  // documents 层不反向依赖 tools/vision。
   const ocrCfg = resolveOcrConfig();
   const docOcrOn = ocrCfg.enabled && ocrCfg.doc.enabled;
 
@@ -255,13 +259,21 @@ async function readDocument(
     pdfImageOcr: docOcrOn,
     pdfOcrAllPages: ocrCfg.doc.pdfScannedPagesOnly === false,
     pdfRasterizer: ocrCfg.pdfRasterizer,
+    pdfRasterEngine: ocrCfg.pdfRasterEngine,
   });
 
   // 块文本并入提取文本尾部，行号/截断/落盘/按页回读全部复用既有管线，不新增渲染分支。
   let docText = result.text;
   let imageWarnings: string[] = [];
   if (result.images && result.images.length > 0) {
-    const outcome = await ocrDocumentImages(result.images, ocrCfg);
+    // vision.enabled=false（默认）或视觉三元组缺失时 buildDocumentImageDescriber 返回 undefined，
+    // readDocumentImages 直接委托纯 OCR —— 行为与升级前逐字节一致。
+    const cfg = configLoader.load().config;
+    const describe = buildDocumentImageDescriber({
+      vision: cfg.vision,
+      model: cfg.model,
+    });
+    const outcome = await readDocumentImages(result.images, ocrCfg, { describe });
     imageWarnings = outcome.warnings;
     if (outcome.text) {
       const sep = docText === '' || docText.endsWith('\n') ? '' : '\n';
@@ -279,9 +291,11 @@ async function readDocument(
     '行号为提取文本行号',
   ];
   if (warning) headerParts.push(warning);
-  // 文档内图片 OCR：在 header 里点名，让模型知道末尾有图片块可直接读到
+  // 文档内图片：在 header 里点名，让模型知道末尾有图片取文块可直接读到
   if (result.images && result.images.length > 0 && docText.includes(DOC_IMAGE_BLOCK_HEADER)) {
-    headerParts.push(`末尾附 ${result.images.length} 张文档内图片的 OCR 文本（块头 ${DOC_IMAGE_BLOCK_HEADER}）`);
+    headerParts.push(
+      `末尾附 ${result.images.length} 张文档内图片的取文结果（块头 ${DOC_IMAGE_BLOCK_HEADER}）`,
+    );
   }
   // 文档统一输出 UTF-8：encoding 传 utf-8/utf8 视为默认，其他值给出忽略说明
   if (encoding !== 'utf-8' && encoding !== 'utf8') {

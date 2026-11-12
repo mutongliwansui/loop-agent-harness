@@ -68,6 +68,7 @@ loop-agent-command/
 │   │   ├── engine-winrt.ts           # Windows.Media.Ocr（经 powershell.exe 调用）
 │   │   ├── engine-http.ts            # 可选 HTTP OCR 端点
 │   │   ├── run-ocr.ts                # 单图编排（超时 / 缓存 / 限流 / 错误归类）
+│   │   ├── layout.ts                 # 版面还原（y 聚类视觉行 / x 投影列聚类 / text|table|words 渲染）
 │   │   ├── postprocess.ts            # 断行修复与后处理
 │   │   └── cache.ts                  # 结果 LRU 缓存（文件指纹参与 key）
 │   └── tools/

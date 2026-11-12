@@ -313,12 +313,17 @@ const TOOL_META: Record<string, ToolMeta> = {
     params: {
       image: '图片',
       lang: '识别语言',
+      layout: '版面',
+      scale: '放大倍数',
+      crop: '裁剪区域',
       maxChars: '字符上限',
     },
     brief: (a) => {
       const img = baseName(str(a, 'image'));
       const lang = clip(str(a, 'lang'), BRIEF_TEXT_MAX);
-      if (lang) return `${img}${img ? '（' : ''}${lang}${img ? '）' : ''}`;
+      const layout = str(a, 'layout').trim();
+      const suffix = [layout, lang].filter(Boolean).join(' · ');
+      if (suffix) return `${img}${img ? '（' : ''}${suffix}${img ? '）' : ''}`;
       return img;
     },
   },

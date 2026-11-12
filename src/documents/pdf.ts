@@ -15,7 +15,7 @@ import {
 } from './types.js';
 import { normalizeText } from './text.js';
 import { pdftotextAvailable, runPdftotext } from './external.js';
-import { rasterizePdfPages } from './pdf-raster.js';
+import { rasterizePdfPages, type PdfRasterEngine } from './pdf-raster.js';
 
 /* ========================================================================
  * 配置
@@ -49,6 +49,8 @@ export interface PdfExtractOptions {
   pdfOcrAllPages?: boolean;
   /** 自定义光栅化命令模板（ocr.pdfRasterizer） */
   pdfRasterizer?: string;
+  /** 渲染引擎策略（ocr.pdfRasterEngine），默认 auto（Windows 内建优先） */
+  pdfRasterEngine?: PdfRasterEngine;
 }
 
 /**
@@ -64,6 +66,7 @@ async function rasterizeForOcr(
   if (!opts.pdfImageOcr) return { images: [], warnings: [] };
   const result = await rasterizePdfPages(absPath, pageNumbers, {
     customTemplate: opts.pdfRasterizer,
+    engine: opts.pdfRasterEngine,
     signal: opts.signal,
   });
   return {

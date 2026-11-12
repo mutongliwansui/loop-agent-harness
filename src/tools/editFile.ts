@@ -199,24 +199,23 @@ async function executeLocked(path: string, args: Record<string, unknown>): Promi
 export const editFile: Tool = {
   name: 'editFile',
   description:
-    '在已有文件中替换内容，三种用法：①默认按字面量匹配 oldText，须唯一命中（多处会报错），replaceAll=true 替换全部；'
-    + '②regex=true 时 oldText 按正则解释，newText 可用 $1/$&；③给 startLine/endLine 则整段行替换。'
-    + '文件必须已存在，新建文件用 fileWrite。',
+    '在已有文件中替换内容：①默认字面量匹配 oldText，须唯一命中（多处报错），replaceAll=true 全部替换；'
+    + '②regex=true 时按正则解释，newText 可用 $1/$&；③给 startLine/endLine 整段行替换。新建文件用 fileWrite。',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: '文件路径' },
       oldText: {
         type: 'string',
-        description: '待替换的原文本（行范围模式下可选，提供则用作校验）；regex=true 时为正则',
+        description: '待替换文本（行范围模式下可选，作校验用）；regex=true 时按正则',
       },
       newText: {
         type: 'string',
-        description: '新文本；regex=true 时支持 $1/$& 捕获引用；行范围模式下传空串表示删除该段',
+        description: '新文本；regex=true 时可用 $1/$&；行范围模式传空串即删除该段',
       },
       startLine: {
         type: 'number',
-        description: '起始行号（1-based，须与 endLine 成对）；指定后进入整段行替换模式',
+        description: '起始行号（1-based，须与 endLine 成对），给出即整段行替换',
       },
       endLine: {
         type: 'number',
@@ -232,7 +231,7 @@ export const editFile: Tool = {
       },
       flags: {
         type: 'string',
-        description: '正则标志（如 i 忽略大小写、m 多行、s dotAll），仅 regex=true 生效',
+        description: '正则标志（如 i/m/s），仅 regex=true 生效',
       },
     },
     required: ['path', 'newText'],

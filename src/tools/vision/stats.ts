@@ -18,6 +18,8 @@ export interface VisionUsageSnapshot {
   errors: number;
   /** 视觉不可用而改走本地 OCR 的降级次数（需求 20261112-002 §4.4） */
   ocrFallbacks: number;
+  /** 文档内图片由视觉模型取文的次数（需求 20261112-004 / 任务 02） */
+  docImageDescribes: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -31,6 +33,7 @@ export class VisionUsageStats {
     cacheHits: 0,
     errors: 0,
     ocrFallbacks: 0,
+    docImageDescribes: 0,
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
@@ -61,6 +64,11 @@ export class VisionUsageStats {
     this.usage.ocrFallbacks++;
   }
 
+  /** 记录一次文档内图片视觉取文（需求 20261112-004：只计成功实调，缓存命中不计） */
+  recordDocImageDescribe(): void {
+    this.usage.docImageDescribes++;
+  }
+
   /** 当前累计快照 */
   snapshot(): VisionUsageSnapshot {
     return { ...this.usage };
@@ -73,6 +81,7 @@ export class VisionUsageStats {
       cacheHits: 0,
       errors: 0,
       ocrFallbacks: 0,
+      docImageDescribes: 0,
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,

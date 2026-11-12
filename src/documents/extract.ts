@@ -87,6 +87,7 @@ export async function extractDocument(
       pdfOcrAllPages: opts.pdfOcrAllPages,
       pdfImageOcr: opts.pdfImageOcr,
       pdfRasterizer: opts.pdfRasterizer,
+      pdfRasterEngine: opts.pdfRasterEngine,
     });
   }
 

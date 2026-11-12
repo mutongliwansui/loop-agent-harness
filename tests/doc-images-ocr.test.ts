@@ -62,6 +62,7 @@ function baseConfig(patch: Partial<OcrConfig> = {}, docPatch = {}): OcrConfig {
       maxCharsPerImage: 4000,
       timeBudgetMs: 15000,
       pdfScannedPagesOnly: true,
+      preferVision: true,
       ...docPatch,
     },
     ...patch,
@@ -283,12 +284,12 @@ describe('fileRead：图片块并入提取文本尾部的端到端表现', () =>
     runOcrMock.mockResolvedValue(ok('图里的字'));
     const p = await readPptx();
     const out = (await fileRead.execute({ path: p }, { workspaceRoot: dir })) as string;
-    expect(out).toContain('=== 文档内图片 OCR ===');
+    expect(out).toContain('=== 文档内图片文本 ===');
     expect(out).toContain('[图片 1（ppt/media/image1.png）：OCR 文本]');
     expect(out).toContain('图里的字');
-    expect(out).toContain('末尾附 1 张文档内图片的 OCR 文本');
+    expect(out).toContain('末尾附 1 张文档内图片的取文结果');
     // 行号模式：块内容也带行号，说明走的是同一套行号管线
-    expect(out).toMatch(/^\d+: === 文档内图片 OCR ===$/m);
+    expect(out).toMatch(/^\d+: === 文档内图片文本 ===$/m);
   });
 
   it('ocr.doc.enabled=false 时不出现块头，正文照常返回', async () => {
@@ -296,7 +297,7 @@ describe('fileRead：图片块并入提取文本尾部的端到端表现', () =>
     const p = await readPptx();
     const out = (await fileRead.execute({ path: p }, { workspaceRoot: dir })) as string;
     expect(out).toContain('正文标题');
-    expect(out).not.toContain('=== 文档内图片 OCR ===');
+    expect(out).not.toContain('=== 文档内图片文本 ===');
     expect(runOcrMock).not.toHaveBeenCalled();
   });
 });

@@ -266,8 +266,12 @@ export interface OcrConfig {
   timeoutMs: number;
   /** 单张图片大小上限（字节，与 vision.maxImageBytes 同口径） */
   maxImageBytes: number;
-  /** 单张结果字符上限（超出截断并给出说明） */
+  /** 单张结果字符上限的**默认值**（工具入参可上浮至 maxCharsHardLimit，见 D7） */
   maxChars: number;
+  /** 单张结果字符的硬上限（工具入参不得突破） */
+  maxCharsHardLimit: number;
+  /** 默认版面形态：text（y 聚类视觉行）/ table（markdown 表格）/ words（词坐标 TSV），见 D2 */
+  layout: string;
   /** 是否启用进程内结果缓存（D5） */
   cacheEnabled: boolean;
   /** 缓存 TTL（毫秒） */
@@ -280,8 +284,15 @@ export interface OcrConfig {
   doc: OcrDocConfig;
   /** 可选 HTTP OCR 端点（P2；未配置则不参与探测） */
   http?: OcrHttpConfig;
-  /** 自定义 PDF 光栅化命令模板（D8）；省略则按 pdftoppm → mutool → gs 顺序探测 */
+  /** 自定义 PDF 光栅化命令模板（D8）；省略则按 内建渲染器 → pdftoppm → mutool → gs 顺序探测 */
   pdfRasterizer?: string;
+  /**
+   * PDF 渲染引擎策略（需求 20261112-004 / D6）：
+   * - 'auto'（默认）：Windows 内建渲染器（Windows.Data.Pdf）优先，不可用时回落外部工具；
+   * - 'winrt'：只用内建渲染器，不可用则直接报错（不回落，便于现场定位）；
+   * - 'external'：只用外部工具（pdftoppm → mutool → gs），完全不 spawn powershell。
+   */
+  pdfRasterEngine?: PdfRasterEngine;
 }
 
 /** 文档内图片 OCR 预算（D3） */
@@ -296,7 +307,20 @@ export interface OcrDocConfig {
   timeBudgetMs: number;
   /** PDF 仅对无文本层页做 OCR */
   pdfScannedPagesOnly: boolean;
+  /**
+   * 文档内图片是否视觉优先（需求 20261112-004 / D3）：默认 true，但还需 vision.enabled=true 才实际生效；
+   * 置 false 可一键回到「只用本地 OCR」的旧行为（内网/隐私场景）。
+   */
+  preferVision: boolean;
 }
+
+/**
+ * PDF 渲染引擎策略（`ocr.pdfRasterEngine`，需求 20261112-004 / D6）：
+ * - `'auto'`（默认）：Windows 内建渲染器（`Windows.Data.Pdf`）优先，不可用时回落外部工具；
+ * - `'winrt'`：只用内建渲染器，不可用即报错（不回落，便于现场定位）；
+ * - `'external'`：只用外部工具（pdftoppm → mutool → gs），完全不 spawn powershell。
+ */
+export type PdfRasterEngine = 'auto' | 'winrt' | 'external';
 
 /** 可选 HTTP OCR 端点配置 */
 export interface OcrHttpConfig {
@@ -479,6 +503,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     timeoutMs: 20000,
     maxImageBytes: 10 * 1024 * 1024,
     maxChars: 8000,
+    maxCharsHardLimit: 200000,
+    layout: 'text',
     cacheEnabled: true,
     cacheTtlMs: 600000,
     cacheMaxEntries: 64,
@@ -489,7 +515,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
       maxCharsPerImage: 4000,
       timeBudgetMs: 15000,
       pdfScannedPagesOnly: true,
+      preferVision: true,
     },
+    pdfRasterEngine: 'auto',
   },
   api: {
     port: 3000,

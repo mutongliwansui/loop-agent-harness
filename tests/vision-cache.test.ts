@@ -93,12 +93,19 @@ describe('VisionUsageStats 会话累计', () => {
     s.recordCacheHit();
     s.recordError();
     s.recordOcrFallback();
+    s.recordDocImageDescribe();
     let snap = s.snapshot();
-    expect(snap).toMatchObject({ calls: 1, cacheHits: 2, errors: 1, ocrFallbacks: 1 });
+    expect(snap).toMatchObject({
+      calls: 1,
+      cacheHits: 2,
+      errors: 1,
+      ocrFallbacks: 1,
+      docImageDescribes: 1,
+    });
     s.reset();
     snap = s.snapshot();
     expect(snap).toEqual({
-      calls: 0, cacheHits: 0, errors: 0, ocrFallbacks: 0,
+      calls: 0, cacheHits: 0, errors: 0, ocrFallbacks: 0, docImageDescribes: 0,
       promptTokens: 0, completionTokens: 0, totalTokens: 0, elapsedMs: 0,
     });
   });

@@ -28,5 +28,18 @@ export {
   buildOcrResultText,
   describeOcrStatus,
   clearOcrCache,
+  normalizeLayout,
+  normalizeScale,
+  normalizeCrop,
+  OCR_LAYOUTS,
   type RunOcrOptions,
 } from './run-ocr.js';
+export {
+  buildVisualLines,
+  renderLayout,
+  clusterColumns,
+  medianWordHeight,
+  describeImageSize,
+  type VisualLine,
+  type LayoutRenderResult,
+} from './layout.js';

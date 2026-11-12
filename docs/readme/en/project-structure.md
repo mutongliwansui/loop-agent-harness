@@ -68,6 +68,7 @@ loop-agent-command/
 │   │   ├── engine-winrt.ts           # Windows.Media.Ocr (invoked via powershell.exe)
 │   │   ├── engine-http.ts            # Optional HTTP OCR endpoint
 │   │   ├── run-ocr.ts                # Single-image orchestration (timeout / cache / throttling / error mapping)
+│   │   ├── layout.ts                 # Layout reconstruction (y-cluster lines / x-projection columns / text|table|words)
 │   │   ├── postprocess.ts            # Line-break repair and post-processing
 │   │   └── cache.ts                  # LRU result cache (file fingerprints in the key)
 │   └── tools/

@@ -36,6 +36,45 @@ export class OcrError extends Error {
   }
 }
 
+/** 版面输出形态（需求 20261112-003 / D2） */
+export type OcrLayout =
+  /** 视觉行文本（默认）：按 y 中心聚类重建人眼所见行，列间用 ` | ` 标记 */
+  | 'text'
+  /** markdown 表格：在 text 基础上做 x 投影列聚类 */
+  | 'table'
+  /** 词级坐标 TSV：`x\ty\tw\th\ttext`，供精确几何推理 */
+  | 'words';
+
+/** 词级识别结果（坐标为引擎输入位图的像素，scale/crop 后） */
+export interface OcrWord {
+  /** 词文本 */
+  t: string;
+  /** 左边界 x */
+  x: number;
+  /** 上边界 y */
+  y: number;
+  /** 宽 */
+  w: number;
+  /** 高 */
+  h: number;
+}
+
+/**
+ * 引擎给出的原始行。
+ * 注意：引擎的「行」粒度比人眼所见更细（同一视觉行里的名称与日期会被切成两个 Line），
+ * 因此上层必须用 `buildVisualLines()` 按 y 中心再聚类（需求 20261112-003 / D3）。
+ */
+export interface OcrLine {
+  text: string;
+  words: OcrWord[];
+}
+
+/** 引擎输入位图的像素尺寸（scale/crop 之后） */
+export interface OcrImageSize {
+  width: number;
+  height: number;
+}
+
 /** 引擎调用选项 */
 export interface OcrOptions {
   /** 语言标签；省略用 ocr.lang（'auto' 取引擎首选） */
@@ -44,6 +83,12 @@ export interface OcrOptions {
   timeoutMs?: number;
   /** 结果字符上限（超出截断并追加说明） */
   maxChars?: number;
+  /** 版面输出形态；省略用 ocr.layout（默认 'text'） */
+  layout?: OcrLayout;
+  /** 整数放大倍数 1–4（默认 1）；小字误识时用 2（D6） */
+  scale?: number;
+  /** 裁剪区域 [x, y, w, h]（原图像素，默认整图）（D6） */
+  crop?: [number, number, number, number];
 }
 
 /** 识别结果 */
@@ -54,12 +99,24 @@ export interface OcrResult {
   engine: string;
   /** 实际使用的语言标签 */
   lang: string;
-  /** 端到端耗时（毫秒） */
+  /** 端到端耗时（毫秒，含进程启动与解码；D8 起如实反映体感） */
   elapsedMs: number;
+  /** 纯识别耗时（毫秒）；与 elapsedMs 之差即进程启动+解码+预处理的固定开销（D8） */
+  recognizeMs?: number;
   /** 引擎不提供则为 undefined，不臆造（WinRT 不返回置信度） */
   confidence?: number;
   /** 非致命告警（语言回退、结果截断、缓存命中等） */
   warnings: string[];
+  /** 结构化行（仅提供坐标的引擎才有；供表格/坐标输出与行数统计） */
+  lines?: OcrLine[];
+  /** 引擎输入位图尺寸（无坐标引擎为 undefined） */
+  imageSize?: OcrImageSize;
+  /** 实际使用的版面形态（省略视为 'text'） */
+  layout?: OcrLayout;
+  /** 视觉行数（y 聚类后的行数，仅坐标引擎有） */
+  lineCount?: number;
+  /** 词数（仅坐标引擎有） */
+  wordCount?: number;
 }
 
 /**
@@ -115,6 +172,17 @@ export const IMAGE_EXT_BY_FORMAT: Record<ImageFormat, string> = {
   tiff: '.tif',
 };
 
+/**
+ * 裁剪参数 → 脚本参数串 `x,y,w,h`（空串表示整图）。
+ *
+ * 放在 types.ts 而不是 engine-winrt.ts：它同时被 run-ocr（缓存 key）与 engine-winrt
+ * （脚本入参）使用，单测会用 mock 整体替换 engine-winrt 模块，从中取纯函数会踩空。
+ */
+export function formatCropArg(crop?: [number, number, number, number]): string {
+  if (!crop || crop.length !== 4) return '';
+  return crop.map((n) => Math.max(0, Math.round(n))).join(',');
+}
+
 
 /** 引擎输出结果的内部形态（未经后处理） */
 export interface RawOcrOutput {
@@ -122,4 +190,8 @@ export interface RawOcrOutput {
   lang: string;
   elapsedMs: number;
   warnings: string[];
+  /** 结构化行（无坐标引擎省略） */
+  lines?: OcrLine[];
+  /** 引擎输入位图尺寸（无坐标引擎省略） */
+  imageSize?: OcrImageSize;
 }

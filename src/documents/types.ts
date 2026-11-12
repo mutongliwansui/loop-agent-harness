@@ -1,6 +1,8 @@
 // 文档层类型（需求 20261112-001 / 任务 01）
 // 职责边界：只描述「识别结果 + 提取结果」，行号/截断/落盘由工具层处理。
 
+import type { PdfRasterEngine } from '../config/schema.js';
+
 /** 受支持的文档种类；xls/ppt 仅用于识别后给出「另存为」提示 */
 export type DocumentKind =
   | 'doc'
@@ -41,6 +43,8 @@ export interface ExtractOptions {
   pdfImageOcr?: boolean;
   /** 任务 04：自定义 PDF 光栅化命令模板（`ocr.pdfRasterizer`） */
   pdfRasterizer?: string;
+  /** 需求 20261112-004：PDF 渲染引擎策略（`ocr.pdfRasterEngine`），缺省 auto */
+  pdfRasterEngine?: PdfRasterEngine;
 }
 
 /** 分页文档的页 ↔ 提取文本行映射（任务 02 起由 PDF/PPTX 提供） */
