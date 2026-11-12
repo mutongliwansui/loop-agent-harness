@@ -11,8 +11,10 @@ import {
   type ExtractOptions,
   type ExtractResult,
 } from './types.js';
-import { collectDocxImages } from './images.js';
+import { collectZipImages } from './images.js';
 import { extractWordBody } from './word.js';
+import { docxBodyFromZip } from './docx.js';
+import { readOfficeZip } from './zip-text.js';
 import { extractPdf } from './pdf.js';
 import { extractXlsx } from './xlsx.js';
 import { extractPptx } from './pptx.js';
@@ -32,16 +34,41 @@ function formatBytes(n: number): string {
   return `${n} B`;
 }
 
-/** Word 提取错误统一映射（底层消息附加在末尾，便于排查） */
-async function extractWordSafely(absPath: string, kind: 'doc' | 'docx'): Promise<string> {
+/** .doc（OLE）提取错误映射（底层消息附加在末尾，便于排查） */
+async function extractDocSafely(absPath: string): Promise<string> {
   try {
     return await extractWordBody(absPath);
   } catch (e) {
+    // 超时已是可纠正的明确语义（需求 20261112-005），不再包装成「文件损坏」
+    if (e instanceof DocumentExtractError) throw e;
     const detail = e instanceof Error ? e.message : String(e);
-    const label = kind === 'doc' ? 'Word 97-2003（.doc）' : 'Word（.docx）';
     throw new DocumentExtractError(
       'corrupt',
-      `${label} 文档解析失败（文件损坏或格式不符）: ${detail}`,
+      `Word 97-2003（.doc）文档解析失败（文件损坏或格式不符）: ${detail}`,
+    );
+  }
+}
+
+/**
+ * docx 走零依赖 zip 解析（需求 20261112-005）。
+ * 统一在此补「解析失败」语义：底层 zip 校验抛出的 corrupt 消息只说明「不是合法 zip」，
+ * 直接透出会让上层（fileRead）出现与 .doc 不一致的措辞；同时保留 too_large / timeout 原语义。
+ */
+async function withDocxCorruptContext<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof DocumentExtractError) {
+      if (e.code !== 'corrupt') throw e;
+      throw new DocumentExtractError(
+        'corrupt',
+        `Word（.docx）文档解析失败（文件损坏或格式不符）: ${e.message}`,
+      );
+    }
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new DocumentExtractError(
+      'corrupt',
+      `Word（.docx）文档解析失败（文件损坏或格式不符）: ${detail}`,
     );
   }
 }
@@ -95,13 +122,19 @@ export async function extractDocument(
   let images: DocumentImage[] | undefined;
   switch (kind) {
     case 'doc':
-      raw = await extractWordSafely(absPath, kind);
+      raw = await extractDocSafely(absPath);
       break;
-    case 'docx':
-      raw = await extractWordSafely(absPath, kind);
-      // 任务 04：docx 的媒体文件与正文同在一个 zip 包内，单独收集（失败不影响正文）
-      images = await collectDocxImages(absPath);
+    case 'docx': {
+      // 需求 20261112-005：docx 走零依赖 zip 解析（正文与图片共用一次解包），
+      // 彻底绕开 word-extractor(yauzl) 在「条目压缩后 ≥16384」时永不 settle 的挂起。
+      raw = await withDocxCorruptContext(async () => {
+        const zip = await readOfficeZip(absPath);
+        // 任务 04：docx 的媒体文件与正文同在一个 zip 包内，单独收集（失败不影响正文）
+        images = collectZipImages(zip);
+        return docxBodyFromZip(zip);
+      });
       break;
+    }
     case 'xlsx':
       return extractXlsx(absPath, opts);
     case 'pptx':

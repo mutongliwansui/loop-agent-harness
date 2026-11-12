@@ -57,7 +57,7 @@ loop-agent-command/
 │   ├── documents/                    # 📄 文档解析（fileRead 复用）
 │   │   ├── detect.ts                 # 类型探测（扩展名 + 魔数）
 │   │   ├── extract.ts                # 解析分发入口（含文档内图片 OCR 整理）
-│   │   ├── word.ts / pptx.ts / xlsx.ts / odt.ts / rtf.ts / pdf.ts   # 各格式正文提取
+│   │   ├── word.ts / docx.ts / pptx.ts / xlsx.ts / odt.ts / rtf.ts / pdf.ts   # 各格式正文提取（docx 走零依赖 zip 解包，不经 word-extractor 流式管道）
 │   │   ├── images.ts                 # 内嵌图片抽取 + OCR 结果拼装为 [Image N] 块
 │   │   ├── pdf-raster.ts             # 扫描版 PDF 逐页栅格化（pdftoppm / mutool / gs）
 │   │   ├── external.ts               # 外部转换器调用（docx/pdf 兜底）

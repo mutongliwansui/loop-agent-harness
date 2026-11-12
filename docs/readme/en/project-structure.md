@@ -57,7 +57,7 @@ loop-agent-command/
 │   ├── documents/                    # 📄 Document parsing (reused by fileRead)
 │   │   ├── detect.ts                 # Type detection (extension + magic bytes)
 │   │   ├── extract.ts                # Extraction dispatcher (incl. in-document image OCR assembly)
-│   │   ├── word.ts / pptx.ts / xlsx.ts / odt.ts / rtf.ts / pdf.ts   # Per-format body text extraction
+│   │   ├── word.ts / docx.ts / pptx.ts / xlsx.ts / odt.ts / rtf.ts / pdf.ts   # Per-format body text extraction (docx via zero-dependency zip unpacking, bypassing word-extractor's streaming pipeline)
 │   │   ├── images.ts                 # Embedded image extraction + OCR results assembled into [Image N] blocks
 │   │   ├── pdf-raster.ts             # Page-by-page rasterisation of scanned PDFs (pdftoppm / mutool / gs)
 │   │   ├── external.ts               # External converter invocation (docx/pdf fallback)
