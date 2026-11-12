@@ -150,8 +150,9 @@ flowchart TD
     subgraph L3["3️⃣ 能力层"]
         direction LR
         C1["llm/client.ts<br/>chat · chatStream · 重试"]
-        C2["tools/*<br/>registry · runner · 6 内置工具"]
-        C3["tools/vision/*<br/>4 视觉工具 + 缓存"]
+        C2["tools/*<br/>registry · runner · 内置工具"]
+        C3["tools/vision · tools/ocrImage.ts · ocr/*<br/>视觉理解 + 本地 OCR"]
+        C3b["documents/*<br/>文档解析 + 文档内图片 OCR"]
         C4["tools/mcp/*<br/>client · adapter"]
         C5["skill/*<br/>scanner · loader · installer"]
         C6["upload/manager.ts<br/>会话隔离上传目录"]
@@ -379,8 +380,8 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph SRC["工具来源"]
-        B["9 个内置工具<br/>commandRun · commandStatus · commandLogs<br/>commandStop · fileRead · fileWrite<br/>editFile · grep · activate_skill"]
-        V["4 个视觉工具<br/>describe_image · ask_image<br/>extract_json · ocr_image"]
+        B["10 个常驻内置工具<br/>commandRun · commandStatus · commandLogs<br/>commandStop · fileRead · fileWrite<br/>editFile · grep · activateSkill · delegate"]
+        V["条件注册：视觉与 OCR<br/>analyzeImage（vision.enabled）<br/>ocrImage（ocr.enabled + 引擎探测）"]
         M["MCP 远端工具<br/>adaptMCPTool + buildToolName"]
     end
 

@@ -1,4 +1,4 @@
-// 文件读取工具：全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
+﻿// 文件读取工具：全文读取或按行范围部分读取（20261021-007：默认行数/字节上限，防大文件撑爆上下文与内存）
 // 20261106-001：超限完整输出落临时文件 + 告知路径（方案 B：文件内治理，边扫描边写）
 // 20261111-003：删除 offset/limit 别名参数（行范围只保留 startLine/endLine），并精简工具描述
 import { createReadStream, mkdirSync, writeFileSync } from 'node:fs';
@@ -14,7 +14,9 @@ import {
 } from './output-governor.js';
 import { detectDocumentKind } from '../documents/detect.js';
 import { extractDocument } from '../documents/extract.js';
+import { ocrDocumentImages } from '../documents/images.js';
 import type { DocumentKind } from '../documents/types.js';
+import { resolveOcrConfig } from '../ocr/index.js';
 
 /** 全文读取默认行数上限（超出只返回前 N 行并附截断提示） */
 const DEFAULT_MAX_LINES = 2000;
@@ -34,6 +36,8 @@ const MAX_DOC_SOURCE_BYTES = 50 * 1024 * 1024;
 const DOC_TIME_BUDGET_MS = 15_000;
 /** 支持 pages 参数的分页文档类型（xlsx 的 page = 工作表序号） */
 const PAGEABLE_DOCUMENT_KINDS = new Set<DocumentKind>(['pdf', 'pptx', 'xlsx']);
+/** 文档内图片 OCR 块的分隔行（并入提取文本后仍可被 startLine/grep 定位） */
+const DOC_IMAGE_BLOCK_HEADER = '=== 文档内图片 OCR ===';
 
 export const fileRead: Tool = {
   name: 'fileRead',
@@ -240,12 +244,33 @@ async function readDocument(
   pageSelection: PageSelection | null,
   ctx?: ToolContext,
 ): Promise<string> {
+  // 需求 20261112-002 / 任务 04：文档内图片 OCR 配置在此解析一次，
+  // 既决定 PDF 是否光栅化（避免 OCR 关闭时白白 spawn 外部工具），也决定图片块是否产出。
+  const ocrCfg = resolveOcrConfig();
+  const docOcrOn = ocrCfg.enabled && ocrCfg.doc.enabled;
+
   const result = await extractDocument(path, kind, {
     maxBytes: MAX_DOC_SOURCE_BYTES,
     timeBudgetMs: DOC_TIME_BUDGET_MS,
+    pdfImageOcr: docOcrOn,
+    pdfOcrAllPages: ocrCfg.doc.pdfScannedPagesOnly === false,
+    pdfRasterizer: ocrCfg.pdfRasterizer,
   });
 
-  const lines = result.text.split('\n');
+  // 块文本并入提取文本尾部，行号/截断/落盘/按页回读全部复用既有管线，不新增渲染分支。
+  let docText = result.text;
+  let imageWarnings: string[] = [];
+  if (result.images && result.images.length > 0) {
+    const outcome = await ocrDocumentImages(result.images, ocrCfg);
+    imageWarnings = outcome.warnings;
+    if (outcome.text) {
+      const sep = docText === '' || docText.endsWith('\n') ? '' : '\n';
+      docText = `${docText}${sep}${DOC_IMAGE_BLOCK_HEADER}\n${outcome.text}`;
+    }
+  }
+  const docWarnings = [...result.warnings, ...imageWarnings];
+
+  const lines = docText.split('\n');
   const totalLines = lines.length;
   const pageCount = result.pageCount ?? result.pages?.length ?? null;
   const pageUnit = kind === 'xlsx' ? ' 个工作表' : ' 页';
@@ -254,12 +279,16 @@ async function readDocument(
     '行号为提取文本行号',
   ];
   if (warning) headerParts.push(warning);
+  // 文档内图片 OCR：在 header 里点名，让模型知道末尾有图片块可直接读到
+  if (result.images && result.images.length > 0 && docText.includes(DOC_IMAGE_BLOCK_HEADER)) {
+    headerParts.push(`末尾附 ${result.images.length} 张文档内图片的 OCR 文本（块头 ${DOC_IMAGE_BLOCK_HEADER}）`);
+  }
   // 文档统一输出 UTF-8：encoding 传 utf-8/utf8 视为默认，其他值给出忽略说明
   if (encoding !== 'utf-8' && encoding !== 'utf8') {
     headerParts.push(`已忽略 encoding=${encoding}`);
   }
-  const warningBlock = result.warnings.length
-    ? `\n${result.warnings.map((w) => `[提示] ${w}`).join('\n')}`
+  const warningBlock = docWarnings.length
+    ? `\n${docWarnings.map((w) => `[提示] ${w}`).join('\n')}`
     : '';
 
   // 按页读取（仅 PDF；execute 已校验）
@@ -326,7 +355,7 @@ async function readDocument(
     if (byteCut) notes.push(`内容已达到 ${fmtSize(byteCap)} 字节上限（可用 maxBytes 调整）。`);
     if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
     notes.push('继续读取请用 startLine/endLine（提取文本行号），或缩小 pages 范围。');
-    const spill = spillExtractedText(path, result.text, totalLines, ctx);
+    const spill = spillExtractedText(path, docText, totalLines, ctx);
     return `${header}\n${body}\n\n${notes.join('\n')}${spill ? `\n${spill}` : ''}${warningBlock}`;
   }
 
@@ -368,7 +397,7 @@ async function readDocument(
     if (byteCut) notes.push(`内容已达到 ${fmtSize(byteCap)} 字节上限（可用 maxBytes 调整）。`);
     if (lineClipped) notes.push(`部分超长行按 ${MAX_LINE_CHARS} 字符截断。`);
     notes.push('继续读取请用 startLine/endLine（提取文本行号）。');
-    const spill = spillExtractedText(path, result.text, totalLines, ctx);
+    const spill = spillExtractedText(path, docText, totalLines, ctx);
     return `${header}\n${body}\n\n${notes.join('\n')}${spill ? `\n${spill}` : ''}${warningBlock}`;
   }
 
@@ -405,7 +434,7 @@ async function readDocument(
   let out = `文件 ${path}（${kind} 文档，共 ${totalLines} 行，已提取为文本）第 ${start}-${headerEnd} 行:\n${body}`;
   if (byteCut) {
     out += `\n\n[已截断] 已达到 maxBytes=${maxBytes} 上限（读到第 ${lastNo} 行）；继续读取请用 startLine=${lastNo + 1}。`;
-    const spill = spillExtractedText(path, result.text, totalLines, ctx);
+    const spill = spillExtractedText(path, docText, totalLines, ctx);
     if (spill) out += `\n${spill}`;
   }
   if (lineClipped) {

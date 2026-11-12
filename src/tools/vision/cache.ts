@@ -13,20 +13,32 @@ interface CacheEntry {
 
 /**
  * 视觉结果缓存
- * key = sha1(model | kind | 归一化参数 | 图片uri或fileFingerprint)
+ * key = sha1(channel | model | kind | 归一化参数 | 图片uri或fileFingerprint)
+ *
+ * 需求 20261112-002 §4.4：cache key 带 `channel`（'vision' | 'ocr'），
+ * 防止视觉结果与本地 OCR 降级结果在同一张图上互相命中。
  */
 export class VisionResultCache {
   private entries = new Map<string, CacheEntry>();
 
   /**
    * 构建缓存 key（归一化：参数按位置拼接，调用方保证同类工具参数顺序稳定）
-   * @param model 视觉模型名（换模型即换 key）
+   * @param model 视觉模型名（换模型即换 key）；OCR 通道传引擎 id
    * @param kind 工具种类（describe/ask/extract/ocr）
    * @param params 归一化参数片段（ask 为 [question]，extract 为 fields 逐项，describe/ocr 为空）
    * @param imageIdentity 图片标识：本地文件用 fileFingerprint(size-mtime)，URL/data 用 uri 本身
+   * @param channel 结果来源通道，默认 'vision'（保持既有调用点行为不变）
    */
-  buildKey(model: string, kind: string, params: string[], imageIdentity: string): string {
-    return createHash('sha1').update([model, kind, ...params, imageIdentity].join('|')).digest('hex');
+  buildKey(
+    model: string,
+    kind: string,
+    params: string[],
+    imageIdentity: string,
+    channel: 'vision' | 'ocr' = 'vision',
+  ): string {
+    return createHash('sha1')
+      .update([channel, model, kind, ...params, imageIdentity].join('|'))
+      .digest('hex');
   }
 
   /** 查缓存：命中返回结果，未命中或已过期返回 null */

@@ -86,18 +86,19 @@ describe('VisionUsageStats 会话累计', () => {
     });
   });
 
-  it('recordCacheHit / recordError 单独计数，reset 清零', () => {
+  it('recordCacheHit / recordError / recordOcrFallback 单独计数，reset 清零', () => {
     const s = new VisionUsageStats();
     s.recordSuccess({ total_tokens: 10 }, 5);
     s.recordCacheHit();
     s.recordCacheHit();
     s.recordError();
+    s.recordOcrFallback();
     let snap = s.snapshot();
-    expect(snap).toMatchObject({ calls: 1, cacheHits: 2, errors: 1 });
+    expect(snap).toMatchObject({ calls: 1, cacheHits: 2, errors: 1, ocrFallbacks: 1 });
     s.reset();
     snap = s.snapshot();
     expect(snap).toEqual({
-      calls: 0, cacheHits: 0, errors: 0,
+      calls: 0, cacheHits: 0, errors: 0, ocrFallbacks: 0,
       promptTokens: 0, completionTokens: 0, totalTokens: 0, elapsedMs: 0,
     });
   });

@@ -61,6 +61,7 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
       'activateSkill',
       'delegate',
       'analyzeImage',
+      'ocrImage',
     ];
     const missed = BUILTIN_TOOLS.filter((t) => !toolDisplay(t).known);
     expect(missed).toEqual([]);
@@ -68,9 +69,9 @@ describe('toolDisplay：工具名 → 图标 key + 中文名（D2：不再是 em
 });
 
 describe('toolIconSvg / TOOL_ICON_PATHS：16×16 线性 SVG（D2）', () => {
-  it('14 个 icon key 全有路径，无空值', () => {
+  it('15 个 icon key 全有路径，无空值', () => {
     const keys = Object.keys(TOOL_ICON_PATHS);
-    expect(keys).toHaveLength(14);
+    expect(keys).toHaveLength(15);
     for (const k of keys) {
       expect(TOOL_ICON_PATHS[k as keyof typeof TOOL_ICON_PATHS].length).toBeGreaterThan(10);
     }

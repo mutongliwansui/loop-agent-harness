@@ -7,7 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { registerBuiltinTools, registry } from '../src/tools/index.js';
 import { BUILTIN_TOOL_NAMES } from '../src/commands/tools-command.js';
 import { VISION_TOOL_NAMES } from '../src/tools/vision/tools.js';
-import type { ToolsConfig, VisionConfig } from '../src/config/schema.js';
+import { OCR_TOOL_NAMES } from '../src/tools/ocrImage.js';
+import type { OcrConfig, ToolsConfig, VisionConfig } from '../src/config/schema.js';
 
 const BUILTIN_SIX = ['commandRun', 'fileRead', 'fileWrite', 'editFile', 'grep', 'activateSkill'];
 // Task-20261022-002：内置工具新增 commandStatus/commandLogs/commandStop（后台任务三件套）
@@ -36,6 +37,8 @@ function visionConfig(enabled: boolean): VisionConfig {
 }
 
 const visionNames = VISION_TOOL_NAMES as readonly string[];
+// 需求 20261112-002：ocrImage 同样按条件注册（ocr.enabled 且本机有可用引擎），但仍在内置工具名录内
+const ocrNames = OCR_TOOL_NAMES as readonly string[];
 
 beforeEach(() => {
   registry.clear();
@@ -91,8 +94,8 @@ describe('vision.enabled 条件注册', () => {
 });
 
 describe('BUILTIN_TOOL_NAMES（/tools 命令校验与 Tab 补全复用）', () => {
-  it('包含 10 个内置工具与 1 个视觉工具', () => {
+  it('包含 10 个内置工具、1 个视觉工具与 1 个 OCR 工具', () => {
     // 只比对集合内容（tools-command.ts 中三件套排在 commandRun 之后，顺序与 BUILTIN_ALL 定义不同）
-    expect([...BUILTIN_TOOL_NAMES].sort()).toEqual([...BUILTIN_ALL, ...visionNames].sort());
+    expect([...BUILTIN_TOOL_NAMES].sort()).toEqual([...BUILTIN_ALL, ...visionNames, ...ocrNames].sort());
   });
 });

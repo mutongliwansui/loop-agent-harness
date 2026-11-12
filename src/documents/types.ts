@@ -28,6 +28,19 @@ export interface ExtractOptions {
   timeBudgetMs?: number;
   /** run 级取消信号（预留给耗时提取器） */
   signal?: AbortSignal;
+  /**
+   * 任务 04：PDF 的 OCR 目标页范围。
+   * false/省略 = 只光栅化「无文本层」页；true = 全部页都光栅化。
+   * 由工具层按 `ocr.doc.pdfScannedPagesOnly` 取反传入——documents 层只接收策略，不读 OCR 配置。
+   */
+  pdfOcrAllPages?: boolean;
+  /**
+   * 任务 04：是否对 PDF 无文本层页做光栅化（供 OCR 使用）。
+   * false/省略时完全不 spawn 光栅化工具，保证「OCR 关闭 / 非 Windows」零额外开销。
+   */
+  pdfImageOcr?: boolean;
+  /** 任务 04：自定义 PDF 光栅化命令模板（`ocr.pdfRasterizer`） */
+  pdfRasterizer?: string;
 }
 
 /** 分页文档的页 ↔ 提取文本行映射（任务 02 起由 PDF/PPTX 提供） */
@@ -40,6 +53,20 @@ export interface PageRange {
   endLine: number;
 }
 
+/** 文档内嵌图片或 PDF 扫描页（需求 20261112-002 / 任务 04） */
+export interface DocumentImage {
+  /** 文档内标识：zip 路径（如 word/media/image1.png）或 PDF 页标识（如 pdf-page-3） */
+  name: string;
+  /** 图片原始字节 */
+  data: Buffer;
+  /** 在文档中的呈现顺序（1-based，用于块标注「图片 3」） */
+  index: number;
+  /** 来源：OOXML 内嵌图片 / PDF 扫描页光栅化产物 */
+  source: 'embedded' | 'pdf-page';
+  /** source='pdf-page' 时的 1-based 页号 */
+  page?: number;
+}
+
 /** 提取结果 */
 export interface ExtractResult {
   kind: DocumentKind;
@@ -47,6 +74,12 @@ export interface ExtractResult {
   text: string;
   pages?: PageRange[];
   pageCount?: number;
+  /**
+   * 文档内图片（任务 04）。
+   * 只做「收集」，OCR 与预算由工具层（fileRead）按 `ocr.doc.*` 决定，
+   * 保证 documents 层不依赖 OCR 引擎、非 Windows 平台行为不变。
+   */
+  images?: DocumentImage[];
   /** 可读告警（不阻断结果） */
   warnings: string[];
   /** 是否因页数/字符数/时间预算提前结束 */

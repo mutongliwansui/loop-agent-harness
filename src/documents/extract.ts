@@ -6,10 +6,12 @@
 import { stat } from 'node:fs/promises';
 import {
   DocumentExtractError,
+  type DocumentImage,
   type DocumentKind,
   type ExtractOptions,
   type ExtractResult,
 } from './types.js';
+import { collectDocxImages } from './images.js';
 import { extractWordBody } from './word.js';
 import { extractPdf } from './pdf.js';
 import { extractXlsx } from './xlsx.js';
@@ -82,14 +84,22 @@ export async function extractDocument(
       maxBytes: opts.maxBytes,
       timeBudgetMs: opts.timeBudgetMs,
       signal: opts.signal,
+      pdfOcrAllPages: opts.pdfOcrAllPages,
+      pdfImageOcr: opts.pdfImageOcr,
+      pdfRasterizer: opts.pdfRasterizer,
     });
   }
 
   let raw: string;
+  let images: DocumentImage[] | undefined;
   switch (kind) {
     case 'doc':
+      raw = await extractWordSafely(absPath, kind);
+      break;
     case 'docx':
       raw = await extractWordSafely(absPath, kind);
+      // 任务 04：docx 的媒体文件与正文同在一个 zip 包内，单独收集（失败不影响正文）
+      images = await collectDocxImages(absPath);
       break;
     case 'xlsx':
       return extractXlsx(absPath, opts);
@@ -108,11 +118,15 @@ export async function extractDocument(
   }
 
   const text = normalizeText(raw);
+  const warnings: string[] = [];
   if (!text.trim()) {
-    throw new DocumentExtractError('empty', `文档没有可提取的文本: ${absPath}`);
+    // 纯图片 docx（如扫描件直接插入 Word）没有正文，但收集到图片时仍交回工具层决定是否 OCR
+    if (!images || images.length === 0) {
+      throw new DocumentExtractError('empty', `文档没有可提取的文本: ${absPath}`);
+    }
+    warnings.push(`文档没有可提取的正文，仅收集到 ${images.length} 张图片`);
   }
 
-  const warnings: string[] = [];
   const elapsed = Date.now() - startedAt;
   if (opts.timeBudgetMs && elapsed > opts.timeBudgetMs) {
     warnings.push(
@@ -120,5 +134,5 @@ export async function extractDocument(
     );
   }
 
-  return { kind, text, warnings, truncated: false };
+  return { kind, text, images, warnings, truncated: false };
 }

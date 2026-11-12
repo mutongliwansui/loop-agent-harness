@@ -116,7 +116,7 @@ npm run cli -- /config set webui.terminalIdleMs 1800000
 
 ### 对话流路径点击预览
 
-工具调用卡片中的路径参数渲染为可点 chip（20261028-006，承接优化建议 20261028-003）：`fileRead` / `fileWrite` / `editFile` 的 `path`、`grep` 的 `path`（目录）、`commandRun` 的 `cwd`（目录）、视觉四件套（`describe_image` / `ask_image` / `ocr_image` / `extract_json`）的 `image`。点击文件 chip 自动展开文件面板并打开预览（复用 `FilesView.openFile` 既有渲染链路：md/html/svg/csv/xlsx/docx/pdf/图片/pptx/文本）；点击目录 chip 面板定位该目录。http(s) 链接、`data:` URI、缺失参数、工作空间之外的绝对路径不渲染为链接（悬停 title 注明原因），避免必然失败的点击。
+工具调用卡片中的路径参数渲染为可点 chip（20261028-006，承接优化建议 20261028-003）：`fileRead` / `fileWrite` / `editFile` 的 `path`、`grep` 的 `path`（目录）、`commandRun` 的 `cwd`（目录）、`analyzeImage`（视觉理解：描述 / 问答 / 结构化提取）与 `ocrImage`（文字识别）的 `image`。点击文件 chip 自动展开文件面板并打开预览（复用 `FilesView.openFile` 既有渲染链路：md/html/svg/csv/xlsx/docx/pdf/图片/pptx/文本）；点击目录 chip 面板定位该目录。http(s) 链接、`data:` URI、缺失参数、工作空间之外的绝对路径不渲染为链接（悬停 title 注明原因），避免必然失败的点击。
 
 uploads 图片（视觉工具落点 `~/.loop-agent/uploads/{sessionId}/`，工作空间之外 `/fs/*` 不可达）通过新增受控只读端点 `GET /uploads/view?path=&disp=file|raw` 预览：只读、词法防穿越（`resolveInWs`）+ 符号链接防逃逸（realpath）双校验，越界一律 403；`disp=file` 响应与 `/fs/file` 同构（512KB 截断、二进制拒绝），`disp=raw` 原始字节直显（Content-Type 按扩展名，上限 100MB）。历史会话回放同样生效（路径取自已持久化的 args）；文件不存在时预览区显示错误态并 toast 提示，不阻塞界面。
 

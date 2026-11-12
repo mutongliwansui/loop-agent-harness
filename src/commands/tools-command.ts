@@ -12,6 +12,7 @@ import {
   activateSkill,
   delegate,
   analyzeImage,
+  ocrImage,
 } from '../tools/index.js';
 import type { PartialAgentConfig } from '../config/index.js';
 import { COLORS } from '../ui/colors.js';
@@ -34,6 +35,8 @@ export const BUILTIN_TOOL_NAMES = [
   'delegate',
   // 需求 20261111-004：视觉工具四合一，内置工具名统一驼峰
   'analyzeImage',
+  // 需求 20261112-002：本地 OCR（ocr.enabled 且本机有可用引擎时才真正注册）
+  'ocrImage',
 ];
 
 /** 内置工具注册表：名称 → 工具实例（供 /tools enable 与 API 端点同步 registry 复用） */
@@ -49,6 +52,7 @@ export const BUILTIN_TOOL_MAP: Record<string, unknown> = {
   activateSkill,
   delegate,
   analyzeImage,
+  ocrImage,
 };
 
 export const toolsCommand: CommandHandler = {
@@ -82,7 +86,7 @@ export const toolsCommand: CommandHandler = {
       const { config: cfg } = configLoader.load();
       await mcpManager.disconnectAll();
       registry.clear();
-      const built = registerBuiltinTools(cfg.tools, cfg.vision);
+      const built = registerBuiltinTools(cfg.tools, cfg.vision, cfg.ocr);
       const mcp = await mcpManager.loadFromConfig();
       out.blank();
       out.log(`${COLORS.green}✓${COLORS.reset} 工具重新加载完成`);

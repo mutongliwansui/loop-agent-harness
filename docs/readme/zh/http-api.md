@@ -78,7 +78,7 @@ HTTP API 服务已启动
 | GET | `/userdir/view?path=&disp=file\|raw` | 预览自有数据目录文件（20261028-007）：root = `~/.loop-agent`（`ctx.userDir` 可注入）。校验链与 `/uploads/view` 完全同构（`resolveInWs` + realpath 双重校验，越界 403、不存在 404、缺参 400、二进制 400、>100MB 413），`disp=file`（默认）与 `/fs/file` 同构、`disp=raw` 原始字节。`path` 为相对 root 的路径（如 `memory/<wsId>/日期.md`）、绝对路径或 `~` 字面量（先按 homedir 展开）。用途：对话流工具卡片路径 chip 点击预览记忆 / runs 日志 / 全局技能 SKILL.md 等 `~/.loop-agent` 内文件 |
 | DELETE | `/uploads?sessionId=` | 清空会话上传目录（动词即确认） |
 
-`contextNote` 是注入 Agent 上下文的文本块：`[文件上传] <落盘名>` + 上传路径 + 大小；图片文件（png/jpg/jpeg/webp/gif/bmp）额外追加一行 `类型: 图片 <mime>（可用 ask_image / describe_image / extract_json / ocr_image 查看）`——否则主模型看到 `paste.png` 并不知道这是能看的图，容易用 `fileRead` 读出二进制垃圾。
+`contextNote` 是注入 Agent 上下文的文本块：`[文件上传] <落盘名>` + 上传路径 + 大小；图片文件（png/jpg/jpeg/webp/gif/bmp）额外追加一行 `类型: 图片 <mime>（可用 analyzeImage / ocrImage 查看）`——否则主模型看到 `paste.png` 并不知道这是能看的图，容易用 `fileRead` 读出二进制垃圾。
 
 **config（/config 命令）**
 

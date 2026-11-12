@@ -54,8 +54,25 @@ loop-agent-command/
 │   │   ├── keychain.ts               # Keychain（主密钥自动生成/加载/备份）
 │   │   ├── crypto.ts                 # 加密原语（PBKDF2 + AES-256-GCM）
 │   │   └── types.ts                  # 会话类型定义 + 默认配置
+│   ├── documents/                    # 📄 文档解析（fileRead 复用）
+│   │   ├── detect.ts                 # 类型探测（扩展名 + 魔数）
+│   │   ├── extract.ts                # 解析分发入口（含文档内图片 OCR 整理）
+│   │   ├── word.ts / pptx.ts / xlsx.ts / odt.ts / rtf.ts / pdf.ts   # 各格式正文提取
+│   │   ├── images.ts                 # 内嵌图片抽取 + OCR 结果拼装为 [Image N] 块
+│   │   ├── pdf-raster.ts             # 扫描版 PDF 逐页栅格化（pdftoppm / mutool / gs）
+│   │   ├── external.ts               # 外部转换器调用（docx/pdf 兜底）
+│   │   ├── text.ts                   # 纯文本读取（行范围 / 截断 / 编码）
+│   │   └── zip-text.ts               # zip 文本平铺（避免二进制噪声）
+│   ├── ocr/                          # 🔍 本地 OCR 引擎（零依赖）
+│   │   ├── index.ts                  # 引擎工厂 + 可用性探测
+│   │   ├── engine-winrt.ts           # Windows.Media.Ocr（经 powershell.exe 调用）
+│   │   ├── engine-http.ts            # 可选 HTTP OCR 端点
+│   │   ├── run-ocr.ts                # 单图编排（超时 / 缓存 / 限流 / 错误归类）
+│   │   ├── postprocess.ts            # 断行修复与后处理
+│   │   └── cache.ts                  # 结果 LRU 缓存（文件指纹参与 key）
 │   └── tools/
 │       ├── index.ts                  # 🛠️ 工具系统聚合入口
+│       ├── ocrImage.ts               # 🔤 内置工具：图片文字识别（ocrImage）
 │       ├── registry.ts               # 📋 工具注册表（注册/查询/转 OpenAI 格式/MCP 管理）
 │       ├── runner.ts                 # ⚡ 工具执行器（超时控制 + 异常捕获）
 │       ├── commandRun.ts             # 🖥️ 内置工具：命令执行
@@ -65,7 +82,7 @@ loop-agent-command/
 │       ├── grep.ts                   # 🔍 内置工具：内容检索
 │       ├── activateSkill.ts          # 🎯 内置工具：Skill 激活（渐进式加载）
 │       ├── vision/                   # 👁️ 视觉工具（对接多模态视觉模型）
-│       │   ├── tools.ts              # 四个视觉工具（describe_image / ask_image / extract_json / ocr_image）
+│       │   ├── tools.ts              # 视觉工具 analyzeImage（描述 / 定向问答 / 结构化提取三合一）
 │       │   ├── image.ts              # 图片解析（本地转 base64 data URL / URL 校验 / 大小限制）
 │       │   ├── cache.ts              # LRU 结果缓存（本地文件指纹参与 key，内容变更自动失效）
 │       │   └── stats.ts              # 用量统计（成功 / 失败 / 缓存命中 / 耗时 / token）

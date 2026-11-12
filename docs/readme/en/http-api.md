@@ -79,7 +79,7 @@ Three auth modes:
 | GET | `/userdir/view?path=&disp=file\|raw` | Preview a file inside the app-owned data directory (20261028-007): root = `~/.loop-agent` (injectable via `ctx.userDir`). Validation chain identical to `/uploads/view` (`resolveInWs` + realpath double check — 403 out of root, 404 missing, 400 missing param, 400 binary under `disp=file`, 413 beyond 100MB); `disp=file` (default) same shape as `/fs/file`, `disp=raw` raw bytes. `path` is relative to the root (e.g. `memory/<wsId>/date.md`), an absolute path, or a `~` literal (expanded via homedir first). Used by conversation tool-card path chips to preview memories / runs logs / global skill SKILL.md files inside `~/.loop-agent` |
 | DELETE | `/uploads?sessionId=` | Clear a session's upload directory (verb as confirmation) |
 
-`contextNote` is the text block injected into the Agent context: `[文件上传] <on-disk name>` plus the upload path and size. Image files (png/jpg/jpeg/webp/gif/bmp) get one extra line, `类型: 图片 <mime>（可用 ask_image / describe_image / extract_json / ocr_image 查看）` — without it the main model sees `paste.png` and has no idea it is an image it can look at, and tends to `fileRead` raw binary instead.
+`contextNote` is the text block injected into the Agent context: `[文件上传] <on-disk name>` plus the upload path and size. Image files (png/jpg/jpeg/webp/gif/bmp) get one extra line, `类型: 图片 <mime>（可用 analyzeImage / ocrImage 查看）` — without it the main model sees `paste.png` and has no idea it is an image it can look at, and tends to `fileRead` raw binary instead.
 
 **config (`/config` command)**
 

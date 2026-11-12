@@ -17,6 +17,8 @@ export interface AgentConfig {
   skill: SkillConfig;
   memory: MemoryConfig;
   vision: VisionConfig;
+  /** 本地 OCR（需求 20261112-002） */
+  ocr: OcrConfig;
   api: ApiConfig;
   webui: WebuiConfig;
 }
@@ -241,6 +243,72 @@ export interface VisionConfig {
 }
 
 /**
+ * 本地 OCR 配置（需求 20261112-002）
+ *
+ * 设计要点：
+ * - `enabled` 默认 true，但**只有探测到可用引擎时**才注册 `ocrImage`（D7），
+ *   非 Windows 平台不注册、不降级、不产出文档图片块（零影响）
+ * - 引擎抽象为 `src/ocr/types.ts` 的 `OcrEngine`，`enginePriority` 决定 auto 探测顺序，
+ *   补齐 macOS/Linux 实现时无需改动任何调用方（演进项）
+ * - `fallbackFromVision` 控制 `analyzeImage` 视觉失败时是否降级到本地 OCR（D2）
+ * - `doc.*` 是 `fileRead` 文档内图片 OCR 的三重预算（D3）
+ */
+export interface OcrConfig {
+  /** 是否启用本地 OCR（关闭后不注册 ocrImage、不做视觉降级、文档不出图片块） */
+  enabled: boolean;
+  /** 引擎选择：'auto' 按 enginePriority 探测；也可显式指定 'winrt-ocr' / 'http' */
+  engine: string;
+  /** auto 时的探测顺序；默认 ['winrt-ocr']，配置了 http.endpoint 时自动追加 'http' */
+  enginePriority: string[];
+  /** 识别语言；'auto' 取引擎首选（Windows 上优先 zh-Hans-CN，其次任意 zh，再退首个可用） */
+  lang: string;
+  /** 单张图片 OCR 超时（毫秒） */
+  timeoutMs: number;
+  /** 单张图片大小上限（字节，与 vision.maxImageBytes 同口径） */
+  maxImageBytes: number;
+  /** 单张结果字符上限（超出截断并给出说明） */
+  maxChars: number;
+  /** 是否启用进程内结果缓存（D5） */
+  cacheEnabled: boolean;
+  /** 缓存 TTL（毫秒） */
+  cacheTtlMs: number;
+  /** 缓存条目上限 */
+  cacheMaxEntries: number;
+  /** analyzeImage 视觉失败时是否降级到本地 OCR（D2；extract 分支不降级） */
+  fallbackFromVision: boolean;
+  /** fileRead 文档内图片 OCR（D3） */
+  doc: OcrDocConfig;
+  /** 可选 HTTP OCR 端点（P2；未配置则不参与探测） */
+  http?: OcrHttpConfig;
+  /** 自定义 PDF 光栅化命令模板（D8）；省略则按 pdftoppm → mutool → gs 顺序探测 */
+  pdfRasterizer?: string;
+}
+
+/** 文档内图片 OCR 预算（D3） */
+export interface OcrDocConfig {
+  /** 是否对文档内图片做 OCR */
+  enabled: boolean;
+  /** 单文档最多 OCR 的图片数 */
+  maxImages: number;
+  /** 单张图片结果字符上限 */
+  maxCharsPerImage: number;
+  /** 文档图片 OCR 总时间预算（毫秒），超预算的剩余图片只给路径提示 */
+  timeBudgetMs: number;
+  /** PDF 仅对无文本层页做 OCR */
+  pdfScannedPagesOnly: boolean;
+}
+
+/** 可选 HTTP OCR 端点配置 */
+export interface OcrHttpConfig {
+  /** 端点地址（POST，请求体 { image: base64, lang }） */
+  endpoint: string;
+  /** 鉴权 Token（Bearer；留空不带鉴权头，也不继承主模型 apiKey） */
+  apiKey: string;
+  /** 响应中承载文本的字段名（默认 'text'） */
+  fieldName: string;
+}
+
+/**
  * HTTP API 服务配置（Task-20261016-001 自定义 REST API 服务）
  *
  * 设计要点：
@@ -297,6 +365,7 @@ export type PartialAgentConfig = {
   skill?: Partial<SkillConfig>;
   memory?: Partial<MemoryConfig>;
   vision?: Partial<VisionConfig>;
+  ocr?: Partial<OcrConfig>;
   api?: Partial<ApiConfig>;
   webui?: Partial<WebuiConfig>;
 };
@@ -401,6 +470,26 @@ export const DEFAULT_CONFIG: AgentConfig = {
     maxResultChars: 8000,
     cacheEnabled: true,
     cacheTtlMs: 600000,
+  },
+  ocr: {
+    enabled: true,
+    engine: 'auto',
+    enginePriority: ['winrt-ocr'],
+    lang: 'auto',
+    timeoutMs: 20000,
+    maxImageBytes: 10 * 1024 * 1024,
+    maxChars: 8000,
+    cacheEnabled: true,
+    cacheTtlMs: 600000,
+    cacheMaxEntries: 64,
+    fallbackFromVision: true,
+    doc: {
+      enabled: true,
+      maxImages: 20,
+      maxCharsPerImage: 4000,
+      timeBudgetMs: 15000,
+      pdfScannedPagesOnly: true,
+    },
   },
   api: {
     port: 3000,

@@ -16,6 +16,8 @@ export interface VisionUsageSnapshot {
   cacheHits: number;
   /** 调用失败次数 */
   errors: number;
+  /** 视觉不可用而改走本地 OCR 的降级次数（需求 20261112-002 §4.4） */
+  ocrFallbacks: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -28,6 +30,7 @@ export class VisionUsageStats {
     calls: 0,
     cacheHits: 0,
     errors: 0,
+    ocrFallbacks: 0,
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
@@ -53,6 +56,11 @@ export class VisionUsageStats {
     this.usage.errors++;
   }
 
+  /** 记录一次「视觉不可用 → 本地 OCR」降级（需求 20261112-002） */
+  recordOcrFallback(): void {
+    this.usage.ocrFallbacks++;
+  }
+
   /** 当前累计快照 */
   snapshot(): VisionUsageSnapshot {
     return { ...this.usage };
@@ -64,6 +72,7 @@ export class VisionUsageStats {
       calls: 0,
       cacheHits: 0,
       errors: 0,
+      ocrFallbacks: 0,
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,

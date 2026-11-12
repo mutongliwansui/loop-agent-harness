@@ -38,7 +38,7 @@ export const setupCommand: CommandHandler = {
 
     // 写盘后刷新：重新加载生效值并按需注册工具（registerBuiltinTools 幂等）
     const { config: fresh } = ctx.configLoader.load();
-    registerBuiltinTools(fresh.tools, fresh.vision);
+    registerBuiltinTools(fresh.tools, fresh.vision, fresh.ocr);
 
     out.blank();
     out.log(`${COLORS.green}✓ 模型配置已写入，后续对话即时生效${COLORS.reset}`);

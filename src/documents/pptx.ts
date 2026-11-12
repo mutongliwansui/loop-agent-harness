@@ -4,6 +4,7 @@
 import { DocumentExtractError, type ExtractOptions, type ExtractResult, type PageRange } from './types.js';
 import { normalizeText } from './text.js';
 import { readOfficeZip, stripXmlTags } from './zip-text.js';
+import { collectZipImages } from './images.js';
 
 /** 提取单页文本：按 <a:p> 段落分组，段内 <a:t> 运行拼接 */
 function parseSlide(xml: string): string {
@@ -49,7 +50,20 @@ export async function extractPptx(
   }
 
   if (!hasText) {
-    throw new DocumentExtractError('empty', `pptx 没有可提取的幻灯片文本: ${absPath}`);
+    const images = collectZipImages(zip);
+    if (images.length === 0) {
+      throw new DocumentExtractError('empty', `pptx 没有可提取的幻灯片文本: ${absPath}`);
+    }
+    // 纯图片幻灯片：正文为空，图片交回工具层决定是否 OCR
+    return {
+      kind: 'pptx',
+      text: lines.join('\n'),
+      pages: ranges,
+      pageCount: slides.length,
+      images,
+      warnings: [`幻灯片没有可提取的文本，仅收集到 ${images.length} 张图片`],
+      truncated: false,
+    };
   }
 
   return {
@@ -57,6 +71,7 @@ export async function extractPptx(
     text: lines.join('\n'),
     pages: ranges,
     pageCount: slides.length,
+    images: collectZipImages(zip),
     warnings: [],
     truncated: false,
   };

@@ -22,7 +22,7 @@ function syncVisionTools(ctx: CommandContext): void {
   const { config: cfg } = ctx.configLoader.load();
   if (cfg.vision.enabled === true) {
     const before = new Set(ctx.registry.list().map((t) => t.name));
-    registerBuiltinTools(cfg.tools, cfg.vision);
+    registerBuiltinTools(cfg.tools, cfg.vision, cfg.ocr);
     const added = VISION_TOOL_NAMES.filter((n) => !before.has(n));
     if (added.length > 0) {
       ctx.out.log(`  ${COLORS.green}✓ 已自动注册视觉工具: ${added.join(', ')}${COLORS.reset}`);

@@ -5,6 +5,7 @@
 import { DocumentExtractError, type ExtractOptions, type ExtractResult, type PageRange } from './types.js';
 import { normalizeText } from './text.js';
 import { decodeXmlEntities, entryText, readOfficeZip, xmlAttr } from './zip-text.js';
+import { collectZipImages } from './images.js';
 
 /** rels 中的 Target 归一化为 zip 内路径 */
 function normalizeTarget(target: string): string {
@@ -104,7 +105,20 @@ export async function extractXlsx(
   }
 
   if (!hasText) {
-    throw new DocumentExtractError('empty', `xlsx 没有可提取的单元格文本: ${absPath}`);
+    const images = collectZipImages(zip);
+    if (images.length === 0) {
+      throw new DocumentExtractError('empty', `xlsx 没有可提取的单元格文本: ${absPath}`);
+    }
+    // 纯图片表格（如插入截图的工作表）：正文为空，图片交回工具层决定是否 OCR
+    return {
+      kind: 'xlsx',
+      text: lines.join('\n'),
+      pages: ranges,
+      pageCount: sheets.length,
+      images,
+      warnings: [`工作表没有可提取的单元格文本，仅收集到 ${images.length} 张图片`],
+      truncated: false,
+    };
   }
 
   return {
@@ -112,6 +126,7 @@ export async function extractXlsx(
     text: lines.join('\n'),
     pages: ranges,
     pageCount: sheets.length,
+    images: collectZipImages(zip),
     warnings: [],
     truncated: false,
   };

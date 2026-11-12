@@ -84,8 +84,9 @@ describe('/setup 执行', () => {
     expect(opts.preferredScope).toBeUndefined();
 
     // 写盘后刷新：重新 load 生效值并按需注册工具（幂等）
+    // 第三参为 ocr 配置（需求 20261112-002 新增）：本用例 mock 的 fresh 不含 ocr，故为 undefined
     expect(registerBuiltinToolsMock).toHaveBeenCalledTimes(1);
-    expect(registerBuiltinToolsMock).toHaveBeenCalledWith({ t: 2 }, { v: 2 });
+    expect(registerBuiltinToolsMock).toHaveBeenCalledWith({ t: 2 }, { v: 2 }, undefined);
 
     const logs = logsOf(lines);
     expect(logs).toContain('✓ 模型配置已写入，后续对话即时生效');

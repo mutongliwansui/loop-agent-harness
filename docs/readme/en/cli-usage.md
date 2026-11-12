@@ -186,7 +186,7 @@ When the vision triplet (`vision.baseUrl` / `vision.apiKey` / `vision.model`) is
 /config set vision.model gpt-4o    # falls back to model.name when unset
 ```
 
-Once enabled, four vision tools are registered: `describe_image` (whole-image description), `ask_image` (targeted Q&A), `extract_json` (structured extraction) and `ocr_image` (text recognition). See [🔧 Built-in Tools](built-in-tools.md).
+Once enabled, `analyzeImage` is registered (image understanding — since 20261111-004 the former description / targeted Q&A / structured extraction trio is merged into this single tool). The text-recognition tool `ocrImage` does not depend on a vision model: it is registered separately by `ocr.enabled` plus local engine probing. See [🔧 Built-in Tools](built-in-tools.md) and [Configuration](configuration.md).
 
 #### `/model` — Multi-Model & Hot Switching
 

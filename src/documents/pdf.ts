@@ -7,9 +7,15 @@
 
 import { readFile, stat } from 'node:fs/promises';
 import { inflateRawSync, inflateSync } from 'node:zlib';
-import { DocumentExtractError, type ExtractResult, type PageRange } from './types.js';
+import {
+  DocumentExtractError,
+  type DocumentImage,
+  type ExtractResult,
+  type PageRange,
+} from './types.js';
 import { normalizeText } from './text.js';
 import { pdftotextAvailable, runPdftotext } from './external.js';
+import { rasterizePdfPages } from './pdf-raster.js';
 
 /* ========================================================================
  * 配置
@@ -30,6 +36,46 @@ export interface PdfExtractOptions {
   maxChars?: number;
   timeBudgetMs?: number;
   signal?: AbortSignal;
+  /**
+   * 任务 04：是否对 PDF 无文本层页做光栅化（供 OCR 使用）。
+   * false/省略时完全不 spawn 光栅化工具，保证「OCR 关闭 / 非 Windows」零额外开销。
+   */
+  pdfImageOcr?: boolean;
+  /**
+   * 任务 04（D3）：OCR 目标页范围。
+   * false/省略 = 只光栅化「无文本层」页（ocr.doc.pdfScannedPagesOnly=true 的语义）；
+   * true = 全部页都光栅化（pdfScannedPagesOnly=false）。
+   */
+  pdfOcrAllPages?: boolean;
+  /** 自定义光栅化命令模板（ocr.pdfRasterizer） */
+  pdfRasterizer?: string;
+}
+
+/**
+ * 把指定页光栅化为 PNG，并组装成 DocumentImage（任务 04）。
+ * 光栅化工具缺失或全部页失败时返回空 images，调用方保持原有降级提示。
+ */
+async function rasterizeForOcr(
+  absPath: string,
+  pageNumbers: number[],
+  opts: PdfExtractOptions,
+): Promise<{ images: DocumentImage[]; warnings: string[] }> {
+  // 未开启文档图片 OCR（或 OCR 整体关闭）时不做任何 spawn，保证零额外开销
+  if (!opts.pdfImageOcr) return { images: [], warnings: [] };
+  const result = await rasterizePdfPages(absPath, pageNumbers, {
+    customTemplate: opts.pdfRasterizer,
+    signal: opts.signal,
+  });
+  return {
+    images: result.pages.map((p, i) => ({
+      name: `pdf-page-${p.page}`,
+      data: p.data,
+      index: i + 1,
+      source: 'pdf-page' as const,
+      page: p.page,
+    })),
+    warnings: result.warnings,
+  };
 }
 
 /* ========================================================================
@@ -1108,18 +1154,55 @@ async function extractPdfInternal(absPath: string, opts: PdfExtractOptions): Pro
   }
   // 扫描件通常连一个可读字符都没有；阈值按页数放宽，避免短文档误判
   if (nonWhitespace < Math.max(5, pages.length * 5)) {
+    // 任务 04：无文本层时尝试光栅化扫描页，图片交由工具层 OCR（D8）。
+    // 光栅化工具缺失/失败时保持原有 scanned 错误，并附安装指引。
+    const raster = await rasterizeForOcr(absPath, pages.map((_, i) => i + 1), opts);
+    if (raster.images.length > 0) {
+      return {
+        kind: 'pdf',
+        text: lines.join('\n'),
+        pages: ranges,
+        pageCount: declaredCount ?? pages.length,
+        images: raster.images,
+        warnings: [
+          ...warnings,
+          'PDF 没有可提取的文本层（扫描件），已渲染页面图片并交回 OCR',
+          ...raster.warnings,
+        ],
+        truncated,
+      };
+    }
     throw new DocumentExtractError(
       'scanned',
-      '该 PDF 没有可提取的文本层（可能是扫描件）；可用 analyzeImage 识别图片，或先转换为文本型 PDF',
+      `该 PDF 没有可提取的文本层（可能是扫描件）；可用 analyzeImage 识别图片，或先转换为文本型 PDF。${raster.warnings[0] ?? ''}`,
     );
   }
 
   const pageCount = declaredCount ?? pages.length;
+
+  // 任务 04：混合型 PDF（部分页无文本层）同样把空白页光栅化后交回 OCR
+  const blankPages = pageTexts
+    .map((t, i) => (t.trim() ? 0 : i + 1))
+    .filter((p) => p > 0);
+  const ocrTargets = opts.pdfOcrAllPages ? pages.map((_, i) => i + 1) : blankPages;
+  let images;
+  if (ocrTargets.length > 0) {
+    const raster = await rasterizeForOcr(absPath, ocrTargets, opts);
+    if (raster.images.length > 0) {
+      images = raster.images;
+      warnings.push(
+        `PDF 有 ${ocrTargets.length} 页无文本层，已渲染页面图片并交回 OCR`,
+        ...raster.warnings,
+      );
+    }
+  }
+
   return {
     kind: 'pdf',
     text: lines.join('\n'),
     pages: ranges,
     pageCount,
+    images,
     warnings,
     truncated,
   };

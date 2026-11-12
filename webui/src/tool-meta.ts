@@ -24,6 +24,7 @@ export type ToolIconKey =
   | 'help'
   | 'table'
   | 'text'
+  | 'scan'
   | 'gear';
 
 /** 单个工具的展示元信息 */
@@ -117,6 +118,9 @@ export const TOOL_ICON_PATHS: Record<ToolIconKey, string> = {
   table:
     '<rect x="2.4" y="3.2" width="11.2" height="9.6" rx="1.6"/><path d="M2.4 6.5h11.2M6.3 6.5v6.3"/>',
   text: '<path d="M3.4 3.6h9.2M8 3.6v8.8M6.2 12.4h3.6"/>',
+  // 文字扫描：四角取景框 + 中间三条文字线（需求 20261112-002 本地 OCR）
+  scan:
+    '<path d="M2.6 5.4V3.6a1 1 0 0 1 1-1h1.8M13.4 5.4V3.6a1 1 0 0 0-1-1h-1.8M2.6 10.6v1.8a1 1 0 0 0 1 1h1.8M13.4 10.6v1.8a1 1 0 0 1-1 1h-1.8"/><path d="M5.4 6.7h5.2M5.4 9.3h3.8"/>',
   gear:
     '<circle cx="8" cy="8" r="2.1"/><path d="M8 1.9v1.7M8 12.4v1.7M1.9 8h1.7M12.4 8h1.7M3.7 3.7l1.2 1.2M11.1 11.1l1.2 1.2M12.3 3.7l-1.2 1.2M4.9 11.1l-1.2 1.2"/>',
 };
@@ -133,7 +137,7 @@ export function toolIconSvg(tool: string): string {
 /* ================= 内置工具映射表 ================= */
 
 /**
- * 内置工具映射表（11 个全覆盖，顺序无意义）。
+ * 内置工具映射表（12 个全覆盖，顺序无意义）。
  * 键必须是工具的**真实 name**（与 `src/tools/**` 里的 `name` 字段逐字一致）：
  * 查找是精确匹配，拼错只会静默回退英文名。
  * 需求 20261111-004：内置工具名统一驼峰，视觉四工具合一为 analyzeImage。
@@ -303,6 +307,21 @@ const TOOL_META: Record<string, ToolMeta> = {
       return img;
     },
   },
+  ocrImage: {
+    zh: '图片取字',
+    icon: 'scan',
+    params: {
+      image: '图片',
+      lang: '识别语言',
+      maxChars: '字符上限',
+    },
+    brief: (a) => {
+      const img = baseName(str(a, 'image'));
+      const lang = clip(str(a, 'lang'), BRIEF_TEXT_MAX);
+      if (lang) return `${img}${img ? '（' : ''}${lang}${img ? '）' : ''}`;
+      return img;
+    },
+  },
 };
 
 /** 未知工具（含 MCP server__tool）的回退元信息 */
@@ -458,6 +477,7 @@ export const PATH_ARGS: Record<string, Record<string, 'file' | 'dir'>> = {
   grep: { path: 'dir' },
   commandRun: { cwd: 'dir' },
   analyzeImage: { image: 'file' },
+  ocrImage: { image: 'file' },
 };
 
 /** 参数行附加信息（20261028-006）：路径参数补原始值与分类，供 ToolCard 渲染可点 chip */

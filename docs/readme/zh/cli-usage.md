@@ -191,7 +191,7 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 /config set vision.model gpt-4o    # 不设置则回退主模型 model.name
 ```
 
-启用后注册四个视觉工具：`describe_image`（整体描述）、`ask_image`（定向问答）、`extract_json`（结构化提取）、`ocr_image`（文字识别），见 [🔧 内置工具](built-in-tools.md)。
+启用后注册 `analyzeImage`（图片理解，20261111-004 起把描述 / 定向问答 / 结构化提取三合一为单工具）；文字识别工具 `ocrImage` 不依赖视觉模型，按 `ocr.enabled` + 本机引擎探测单独注册（详见 [🔧 内置工具](built-in-tools.md)、[配置说明](configuration.md)）。
 
 #### `/model` — 多模型接入与切换
 

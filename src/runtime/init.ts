@@ -48,7 +48,7 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
   console.log(`  ├─ 配置加载 (${config.model.name}) (+${Date.now() - t0b}ms)`);
 
   // 1. 注册内置工具
-  registerBuiltinTools(config.tools, config.vision);
+  registerBuiltinTools(config.tools, config.vision, config.ocr);
 
   // 1.1 后台任务：启动时**不阻塞**扫 runs 目录
   //    历史上这里 await sweepOrphans()，但 runs/ 目录若积几千个旧 JSON，

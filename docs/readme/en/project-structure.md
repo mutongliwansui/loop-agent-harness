@@ -54,8 +54,25 @@ loop-agent-command/
 │   │   ├── keychain.ts               # Keychain (master key auto-generation/loading/backup)
 │   │   ├── crypto.ts                 # Crypto primitives (PBKDF2 + AES-256-GCM)
 │   │   └── types.ts                  # Session type definitions + default config
+│   ├── documents/                    # 📄 Document parsing (reused by fileRead)
+│   │   ├── detect.ts                 # Type detection (extension + magic bytes)
+│   │   ├── extract.ts                # Extraction dispatcher (incl. in-document image OCR assembly)
+│   │   ├── word.ts / pptx.ts / xlsx.ts / odt.ts / rtf.ts / pdf.ts   # Per-format body text extraction
+│   │   ├── images.ts                 # Embedded image extraction + OCR results assembled into [Image N] blocks
+│   │   ├── pdf-raster.ts             # Page-by-page rasterisation of scanned PDFs (pdftoppm / mutool / gs)
+│   │   ├── external.ts               # External converter invocation (docx/pdf fallback)
+│   │   ├── text.ts                   # Plain-text reading (line range / truncation / encoding)
+│   │   └── zip-text.ts               # Zip text flattening (avoids binary noise)
+│   ├── ocr/                          # 🔍 Local OCR engines (zero dependency)
+│   │   ├── index.ts                  # Engine factory + availability probing
+│   │   ├── engine-winrt.ts           # Windows.Media.Ocr (invoked via powershell.exe)
+│   │   ├── engine-http.ts            # Optional HTTP OCR endpoint
+│   │   ├── run-ocr.ts                # Single-image orchestration (timeout / cache / throttling / error mapping)
+│   │   ├── postprocess.ts            # Line-break repair and post-processing
+│   │   └── cache.ts                  # LRU result cache (file fingerprints in the key)
 │   └── tools/
 │       ├── index.ts                  # 🛠️ Tool system aggregate entry
+│       ├── ocrImage.ts               # 🔤 Built-in tool: image text recognition (ocrImage)
 │       ├── registry.ts               # 📋 Tool registry (register/query/convert to OpenAI format/MCP mgmt)
 │       ├── runner.ts                 # ⚡ Tool runner (timeout control + exception capture)
 │       ├── commandRun.ts             # 🖥️ Built-in tool: command execution
@@ -65,7 +82,7 @@ loop-agent-command/
 │       ├── grep.ts                   # 🔍 Built-in tool: content search
 │       ├── activateSkill.ts          # 🎯 Built-in tool: Skill activation (progressive loading)
 │       ├── vision/                   # 👁️ Vision tools (multimodal vision model integration)
-│       │   ├── tools.ts              # Four vision tools (describe_image / ask_image / extract_json / ocr_image)
+│       │   ├── tools.ts              # Vision tool analyzeImage (description / targeted Q&A / structured extraction merged)
 │       │   ├── image.ts              # Image resolution (local → base64 data URL / URL validation / size limits)
 │       │   ├── cache.ts              # LRU result cache (local file fingerprints in the key; auto-invalidated on content change)
 │       │   └── stats.ts              # Usage stats (success / failure / cache hits / elapsed / tokens)

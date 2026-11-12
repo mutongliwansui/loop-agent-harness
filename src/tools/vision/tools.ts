@@ -10,6 +10,7 @@ import { debug } from '../../debug.js';
 import { resolveImage } from './image.js';
 import { visionCache } from './cache.js';
 import { visionStats } from './stats.js';
+import { composeFallbackError, runOcrFallback, summarizeVisionError } from './ocr-fallback.js';
 
 /**
  * 视觉工具名（注册与 Tab 补全复用）。
@@ -153,13 +154,14 @@ function pickKind(rawArgs: Record<string, unknown>): VisionKind {
  * 3. 缓存查询（P1：本地文件指纹参与 key，文件变更自动失效）
  * 4. 构造多模态消息调 llm.chatVision（用量统计 + 失败计数）
  * 5. 回填处理：extract 分支解析容错降级 + 结果截断
+ *
+ * 需求 20261112-002（D2）接入点：视觉未启用或调用失败时改走本地 OCR，
+ * 结果带「已降级」标注；OCR 也不可用时抛错并保留两条信息。
  */
 async function runVision(rawArgs: Record<string, unknown>): Promise<string> {
   const { config: cfg } = configLoader.load();
   const vision = cfg.vision;
-  if (!vision.enabled) {
-    throw new Error('视觉功能未启用，请先 /config set vision.enabled true 并配置 vision.model');
-  }
+  const ocrConfig = cfg.ocr;
 
   const kind = pickKind(rawArgs);
   const args: VisionArgs = {
@@ -167,6 +169,20 @@ async function runVision(rawArgs: Record<string, unknown>): Promise<string> {
     question: kind === 'ask' ? reqStr(rawArgs, 'question') : '',
     fields: kind === 'extract' ? reqStrArray(rawArgs, 'fields') : [],
   };
+  const params = kind === 'ask' ? [args.question] : kind === 'extract' ? [...args.fields] : [];
+
+  // D2 判定①：视觉未启用 → 直接尝试本地 OCR（不抛错，fail-open）
+  if (!vision.enabled) {
+    const out = await runOcrFallback({
+      kind,
+      imageSource: args.image,
+      reason: '视觉功能未启用（vision.enabled=false）',
+      ocr: ocrConfig,
+      params,
+    });
+    if (out.status === 'ok') return out.text;
+    throw new Error(composeFallbackError(null, out, { visionDisabled: true }));
+  }
 
   const img = await resolveImage(args.image, vision.maxImageBytes);
   const targets = resolveVisionTargets(vision, cfg.model);
@@ -175,7 +191,7 @@ async function runVision(rawArgs: Record<string, unknown>): Promise<string> {
   const cacheKey = visionCache.buildKey(
     targets.model,
     kind,
-    kind === 'ask' ? [args.question] : kind === 'extract' ? [...args.fields] : [],
+    params,
     img.fileFingerprint ?? img.uri,
   );
   if (vision.cacheEnabled) {
@@ -208,6 +224,22 @@ async function runVision(rawArgs: Record<string, unknown>): Promise<string> {
     content = result.content;
   } catch (err) {
     visionStats.recordError();
+    // D2 判定②：不做错误码白名单（现场失败形态太多，白名单必漏），一律 fail-open，
+    // 但把原始错误摘要写进结果，让模型与用户都能看出「这次结果来自 OCR」。
+    if (ocrConfig?.fallbackFromVision !== false) {
+      const out = await runOcrFallback({
+        kind,
+        imageSource: args.image,
+        reason: summarizeVisionError(err),
+        ocr: ocrConfig,
+        params,
+      });
+      if (out.status === 'ok') {
+        debug.log('[vision] 视觉失败，已降级为本地 OCR');
+        return out.text;
+      }
+      throw new Error(composeFallbackError(err, out));
+    }
     throw err;
   }
 
