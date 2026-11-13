@@ -33,6 +33,26 @@ export interface MemoryKitOptions {
 }
 
 /**
+ * 推导某工作空间的 L2 episodic 存储目录（需求 20261113-002 D3 抽出的共享口径）。
+ *
+ * `createMemoryKit` 的建目录行为与 bootstrap 的「是否已有记忆」探测必须用同一口径，
+ * 否则两处漂移会导致探测永远为假（跳过初始化）或为真（照旧落盘）。
+ *
+ * @param cwd 工作空间根
+ * @param opts.memoryRoot 覆盖 memory 根（默认 ~/.loop-agent/memory）
+ * @param configEpisodicDir 配置中 memory.episodic.dir；绝对路径时直接用它（与 kit 同口径）
+ */
+export function memoryDirFor(
+  cwd: string,
+  opts: Pick<MemoryKitOptions, 'memoryRoot'> = {},
+  configEpisodicDir?: string,
+): string {
+  if (configEpisodicDir && isAbsolute(configEpisodicDir)) return configEpisodicDir;
+  const baseDir = opts.memoryRoot ?? join(loopAgentHome(), 'memory');
+  return join(baseDir, workspaceId(cwd));
+}
+
+/**
  * 组装记忆子系统（与 ReactAgent.initMemory 完全同口径）。
  * 工厂内已完成各层 init/loadState，返回即可用。
  */
@@ -44,11 +64,9 @@ export async function createMemoryKit(
   const { config: cfg } = loader.load();
 
   // L2 目录：显式绝对路径配置 → 尊重配置；默认相对路径 → {memoryRoot}/{workspaceId}
-  const baseDir = opts.memoryRoot ?? join(loopAgentHome(), 'memory');
+  // 口径与 memoryDirFor 共享（需求 20261113-002 D3），避免 bootstrap 探测漂移
   const configEpisodicDir = cfg.memory.episodic.dir;
-  const episodicDir = configEpisodicDir && isAbsolute(configEpisodicDir)
-    ? configEpisodicDir
-    : join(baseDir, workspaceId(cwd));
+  const episodicDir = memoryDirFor(cwd, opts, configEpisodicDir);
 
   // 全局 Curated 目录：SOUL/USER 存用户目录，MEMORY.md 留项目目录
   const globalCuratedDir = opts.globalCuratedDir ?? join(loopAgentHome(), 'curated');

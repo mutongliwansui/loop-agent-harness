@@ -411,6 +411,11 @@ export class SessionStore {
    * 表现为「刚落盘的消息又消失」或被当成新消息重复追加（重复段成因之一）。
    */
   private readonly sessionLocks = new Map<string, Promise<void>>();
+  /**
+   * 空间存储目录是否已就绪（需求 20261113-002 D1）：`init()` 不再落盘后，
+   * mkdir + meta.json 推迟到首次真实写入，本标记避免每次写会话都重复 stat/write meta。
+   */
+  private dirReady = false;
 
   /** 在同一会话的写锁内执行（前序失败不阻塞后续） */
   private async withSessionLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
@@ -501,14 +506,31 @@ export class SessionStore {
   }
 
   /**
-   * 初始化：加密模式下确保密钥已加载，创建目录
+   * 初始化：加密模式下确保密钥已加载。
+   *
+   * 需求 20261113-002 D1：**不再创建目录、不再写 meta.json** —— 落盘推迟到首次真实写入
+   * （`ensureWorkspaceDir()` 由 `writeSession()` / `appendIndex()` 前置调用）。
+   * 原因：`init()` 语义是「初始化」，但原实现在磁盘上「登记了这个空间」；而 serve 启动期
+   * 必然对缺省空间预装 runtime 并 init，于是每次启动都会凭空产出 `sessions/<wsId>/meta.json`
+   * 与 `memory/<wsId>/`，这些空壳随后被当成「最近使用空间」自我强化，永不自愈。
    */
   async init(): Promise<void> {
     if (this.encryptionEnabled) {
       keychain.ensureUnlocked();
     }
+  }
+
+  /**
+   * 幂等确保空间存储目录存在并刷新 meta.json（需求 20261113-002 D1）。
+   *
+   * 仅在真实写入前调用：`writeSession()` 与 `appendIndex()` 各自独立防御（任一入口被单独
+   * 复用时都不会因目录缺失写失败）。`dirReady` 为实例级缓存，避免高频写会话反复 stat/写 meta。
+   */
+  private async ensureWorkspaceDir(): Promise<void> {
+    if (this.dirReady) return;
     await mkdir(this.workspaceDir, { recursive: true });
     await this.touchWorkspaceMeta();
+    this.dirReady = true;
   }
 
   /**
@@ -1153,6 +1175,8 @@ export class SessionStore {
   }
 
   private async writeSession(data: SessionData): Promise<void> {
+    // 需求 20261113-002 D1：落盘前确保空间目录与 meta.json 存在（init 不再预建）
+    await this.ensureWorkspaceDir();
     const dir = await this.resolveWorkspaceDir(data.id);
     const filePath = join(dir, `${data.id}${this.sessionFileExt}`);
     let payload: string;
@@ -1213,6 +1237,8 @@ export class SessionStore {
   }
 
   private async appendIndex(meta: SessionMeta): Promise<void> {
+    // 需求 20261113-002 D1：与 writeSession 各自独立防御，避免单独复用本入口时目录缺失
+    await this.ensureWorkspaceDir();
     const sessions = await this.readIndex();
     sessions.push(meta);
     await this.writeIndex(sessions);

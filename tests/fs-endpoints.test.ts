@@ -60,6 +60,9 @@ beforeAll(async () => {
 
   const store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions'));
   await store.init();
+  // 需求 20261113-002 D1：init() 不再写 meta.json（不登记空间），
+  // 必须真实建一条会话，主空间才会进入 /fs/* 的白名单校验。
+  await store.createSession('fs 夹具会话', [{ role: 'user', content: 'fs 夹具会话' }]);
 
   const config: AgentConfig = { ...structuredClone(DEFAULT_CONFIG), api: { ...DEFAULT_CONFIG.api, port: 0 } };
   const testLoader = new ConfigLoader(TEST_GLOBAL_DIR);
@@ -379,8 +382,11 @@ describe('GET /fs/*?ws=（显式指定工作空间根）', () => {
     mkdirSync(join(WS_B, 'sub'), { recursive: true });
     writeFileSync(join(WS_B, 'ONLY_B.md'), '# B\n\nonly b needle\n', 'utf-8');
     writeFileSync(join(WS_B, 'sub', 'b.txt'), 'B_SPACE_NEEDLE\n', 'utf-8');
-    // 第二空间落 meta.json → 进入 listAllWorkspaces，成为「已注册工作空间」
-    await new SessionStore(WS_B, false, join(TEST_DIR, 'sessions')).init();
+    // 第二空间落真实会话 → 进入 listAllWorkspaces，成为「已注册工作空间」
+    // 需求 20261113-002 D1：init() 不再写 meta.json，必须真实建会话才会登记该空间
+    const wsBStore = new SessionStore(WS_B, false, join(TEST_DIR, 'sessions'));
+    await wsBStore.init();
+    await wsBStore.createSession('space b', [{ role: 'user', content: 'space b' }]);
   });
 
   it('?ws=B：树根切到 B，只列 B 的条目', async () => {

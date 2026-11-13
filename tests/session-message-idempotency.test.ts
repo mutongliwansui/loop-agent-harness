@@ -12,7 +12,7 @@
  * - 降级读取：尾部残留时仍可读，且写回前备份原始文件为 .torn
  * - 并发落盘：临时文件名唯一，正式文件始终是合法 JSON（不撕裂）
  */
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -85,6 +85,8 @@ describe('msgId：写入分配与读取稳定', () => {
         { role: 'user', content: '旧消息A' },
       ],
     };
+    // 需求 20261113-002 D1：init() 不再预建 sessions/<wsId>/，直接构造「旧数据文件」前需自行建目录
+    await mkdir(join(userDir, 'sessions', workspaceId(join(root, 'workspace'))), { recursive: true });
     await writeFile(sessionFile(id), JSON.stringify(legacy, null, 2), 'utf-8');
 
     const first = (await store.loadSession(id)).messages;

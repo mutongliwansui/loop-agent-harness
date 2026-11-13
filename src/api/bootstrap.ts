@@ -66,9 +66,21 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
 
   // 记忆初始化（serve 时序：起服务之前；initAgentMemory 走 agent.initMemory 自建路径，
   // 仅用于启动期自检与旧目录迁移——池内实例的运行时记忆由 initAgent 钩子注入共享 kit）
+  //
+  // 需求 20261113-002 D3：改为「已有记忆才初始化」——全新空间启动不再凭空生成
+  // memory/<wsId>/ 与 index.sqlite（原实现每次启动必落盘，与 D1 同类问题）。
+  // 已有记忆的空间行为完全不变（自检、旧目录迁移照旧）；运行时记忆仍按需
+  // （rt.getMemoryKit() 首次调用才建目录）。探测口径与 createMemoryKit 共享 memoryDirFor。
   const t3 = Date.now();
-  await initAgentMemory(rt.root);
-  console.log(`  ├─ 记忆系统初始化 (+${Date.now() - t3}ms)`);
+  const { existsSync } = await import('node:fs');
+  const { memoryDirFor } = await import('./memory-kit.js');
+  const hasMemory = existsSync(memoryDirFor(rt.root, {}, cfg.memory.episodic.dir));
+  if (hasMemory) {
+    await initAgentMemory(rt.root);
+    console.log(`  ├─ 记忆系统初始化 (+${Date.now() - t3}ms)`);
+  } else {
+    console.log(`  ├─ 记忆系统跳过：本空间尚无记忆，按需创建 (+${Date.now() - t3}ms)`);
+  }
 
   // Agent 实例池（Task-20261021-002-05）：替代单例 agent，同工作空间多会话并发。
   // D1：容量默认 4（含 busy）；D2：记忆按 workspaceId 共享 kit，禁止每实例自建；
