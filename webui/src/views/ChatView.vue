@@ -14,7 +14,7 @@
 //          FilesView md 预览同款；动态 import 独立 chunk，主题跟随 prefers-color-scheme；
 //          解析失败保留代码块并标红；交互：工具栏 放大/缩小/适应宽度/全屏 + 滚轮缩放）
 
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   api,
   AuthError,
@@ -68,14 +68,18 @@ import {
   type ChatMsg,
   type Segment,
   type ToolSeg,
+  type MessageAttachmentVM,
+  parseUploadNotes,
 } from '../chat-stream.js';
 import { buildRenderItems, type RenderItem, type ToolCardVM } from '../tool-meta.js';
 import ToolCard from '../components/ToolCard.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
 import SubAgentResultCard from '../components/SubAgentResultCard.vue';
-import BackgroundDock from '../components/BackgroundDock.vue';
 import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
+// 附件文件类型图标（需求 20261113-006 D3）：待发送区与气泡内共用同一套族判定
+import { extLabelOf, fileIconSvg, imgTagOf, isImageName } from '../file-icon.js';
+import { fetchRawUploads } from '../api/uploads-view.js';
 import { nextTextareaHeight } from '../autogrow.js';
 import { createFollowState, type FollowState } from '../scroll-follow.js';
 import { buildPickerRows, resolvePill, type ModelProfileRow, type PickerRow } from '../model-picker.js';
@@ -109,11 +113,9 @@ interface UploadChip {
 
 // 消息与运行状态由 chat-stream 单例按 sessionId 持有：切换会话/离开页面不中断 run
 const messages = computed(() => messagesOf(activeId.value));
-// 已压缩历史（后端 is_compact=true）仍平铺渲染（原文完整可见），但必须在归档段起点
-// 明确提示「这段模型已经看不到了」——此前完全无标记，用户误以为模型仍能看到全部工具输出。
-// 计数只用于提示条，与后端归档数不一定相等（前端只拿到截断窗口），故文案不写死精确条数。
-const archivedCount = computed(() => messages.value.filter((m) => m.archived).length);
-const firstArchivedId = computed(() => messages.value.find((m) => m.archived)?.id ?? -1);
+// 已压缩历史（后端 is_compact=true）在界面上照常平铺展示（原文完整可见），
+// 不再插入「以下 N 条历史已归档」分隔提示——归档只影响模型上下文，不该打断用户阅读。
+
 /** 20261105-001 D3：user 消息整体为后台通知块 → 系统通知卡片（按 id 预解析，模板只查表） */
 const noticeMap = computed(() => {
   const map = new Map<number, BackgroundNoticeInfo>();
@@ -426,11 +428,232 @@ function onOpenPath(payload: { path: string; kind: 'file' | 'dir' }): void {
   void filesRef.value?.openPath(payload.path, payload.kind);
 }
 
+/**
+ * 用户气泡附件 chip 点击（需求 20261113-003 D9）。
+ *
+ * 优先用落盘的结构化 path（走 openPath → isUploadsPath → /uploads/view 受控预览）；
+ * attachments 缺失（存量消息）时退回文件名，此时无法定位文件，提示用户而非静默失败。
+ */
+function onOpenAttachment(m: { attachments?: MessageAttachmentVM[]; files?: string[] }, idx: number): void {
+  const path = m.attachments?.[idx]?.path;
+  if (!path) {
+    showToast('该附件为历史记录，磁盘未保存其路径，无法预览', 'error');
+    return;
+  }
+  onOpenPath({ path, kind: 'file' });
+}
+
+/* ================= 气泡内附件展示（需求 20261113-006 P1） ================= */
+
+/**
+ * 气泡内图片缩略图缓存：path → objectURL（D2）。
+ *
+ * 为什么不能直接 `<img src="/uploads/view?path=...&disp=raw">`：
+ * 该端点经 requireAuth 校验，`api.token` 非空时**强制** `authorization` 头
+ * （src/api/http-utils.ts:88-91），而浏览器对 `<img>` 的请求无法附加自定义头 → 必然 401。
+ * 因此改为 fetch 取 blob 再 createObjectURL（与 FilesView.openControlled 同一链路）。
+ */
+const sentThumbs = reactive(new Map<string, string>());
+/** 取数失败/不可取的 path：降级为文档胶囊，且不重复重试（D8） */
+const sentThumbFailed = reactive(new Set<string>());
+/** 进行中的请求：同一 path 并发渲染时只发一次 */
+const sentThumbPending = new Set<string>();
+
+/** 读取已缓存的缩略图 URL（模板用；未就绪返回 undefined，不触发副作用） */
+function sentThumb(path: string): string | undefined {
+  return sentThumbs.get(path);
+}
+
+/** 该附件是否已判定缩略图不可用（模板据此走文档胶囊） */
+function sentThumbBroken(path: string): boolean {
+  return sentThumbFailed.has(path);
+}
+
+/**
+ * 解码失败兜底：blob 取到了但内容不是浏览器能解的图片（损坏文件、扩展名撒谎）。
+ * 此时 `sentThumbs` 已有 URL，若不回退会渲染成破图 → 记入 failed 并 revoke，降级文档胶囊。
+ */
+function markThumbBroken(path: string): void {
+  if (!path || sentThumbFailed.has(path)) return;
+  const url = sentThumbs.get(path);
+  sentThumbs.delete(path);
+  if (url) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // 环境不支持时忽略
+    }
+  }
+  sentThumbFailed.add(path);
+}
+
+/**
+ * 确保某个图片附件的缩略图已就绪（幂等，失败不重试）。
+ * 只对「有 path + 判定为图片 + 未失败 + 未缓存」的附件发请求。
+ * force=true 供 mime 显示为图片但扩展名不可信（存量数据）时使用。
+ */
+function ensureSentThumb(path: string, force = false): void {
+  if (!path) return;
+  if (sentThumbs.has(path) || sentThumbFailed.has(path) || sentThumbPending.has(path)) return;
+  if (!force && !isImageName(path)) return;
+  sentThumbPending.add(path);
+  void (async () => {
+    try {
+      const blob = await fetchRawUploads(path);
+      const url = URL.createObjectURL(blob);
+      sentThumbs.set(path, url);
+    } catch {
+      // 文件已删、越权、网络异常：一律降级文档胶囊，不打断渲染
+      sentThumbFailed.add(path);
+    } finally {
+      sentThumbPending.delete(path);
+    }
+  })();
+}
+
+/** 释放全部气泡内缩略图（组件卸载时调用，避免 objectURL 泄漏） */
+function releaseAllSentThumbs(): void {
+  for (const url of sentThumbs.values()) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // 环境不支持时忽略（不影响功能）
+    }
+  }
+  sentThumbs.clear();
+}
+
+/**
+ * 为当前会话所有图片附件预热缩略图。
+ *
+ * 用 watch 驱动而非模板内调用：模板表达式必须无副作用，且 `<img v-if>` 分支
+ * 首屏不渲染时表达式不会求值，会漏掉首次加载。
+ */
+function warmSentThumbs(list: readonly ChatMsg[]): void {
+  for (const m of list) {
+    if (m.role !== 'user' || !m.attachments?.length) continue;
+    for (const a of m.attachments) {
+      const byMime = (a.mime ?? '').startsWith('image/');
+      if (!byMime && !isImageName(a.fileName)) continue;
+      ensureSentThumb(a.path, byMime && !isImageName(a.fileName));
+    }
+  }
+}
+
+/** 气泡内附件项：带上在原 attachments 数组里的下标，供 onOpenAttachment 精确定位 */
+interface AttEntry {
+  att: MessageAttachmentVM;
+  idx: number;
+}
+
+/**
+ * 气泡内附件分组（D9）：图片一行、文档一行，各自保持原始顺序。
+ *
+ * 不混排的理由：图片要够大（88px）才看得清，文档胶囊要够扁（30px）才不臃肿，
+ * 强行同高会让两者都变形（原型实测混排时上下沿错位 34px）。
+ * 图片判定同时看扩展名与 mime——存量数据可能只有 mime 没有可信扩展名。
+ */
+function isImgAtt(att: MessageAttachmentVM): boolean {
+  return isImageName(att.fileName) || (att.mime ?? '').startsWith('image/');
+}
+
+/**
+ * 该附件是否应渲染为图片砖（D8 的唯一判据，图片行与文档行共用，避免两边口径漂移）。
+ * 三种情况落到文档胶囊：非图片、`path` 缺失（存量数据，无从取图）、缩略图已判定取不到。
+ * 这样失败/无路径的图片不会留在图片行里冒充「正常但只有图标」的图片
+ * （原型 D8：降级文档胶囊，不出破图）。
+ */
+function canShowThumb(att: MessageAttachmentVM): boolean {
+  return isImgAtt(att) && !!att.path && !sentThumbBroken(att.path);
+}
+
+/** 气泡内图片附件（仅能真正出缩略图的） */
+function imgAtts(m: { attachments?: MessageAttachmentVM[] }): AttEntry[] {
+  const out: AttEntry[] = [];
+  (m.attachments ?? []).forEach((att, idx) => {
+    if (canShowThumb(att)) out.push({ att, idx });
+  });
+  return out;
+}
+
+/** 气泡内文档类附件（图片之外的全部 + 缩略图降级下来的图片） */
+function docAtts(m: { attachments?: MessageAttachmentVM[] }): AttEntry[] {
+  const out: AttEntry[] = [];
+  (m.attachments ?? []).forEach((att, idx) => {
+    if (!canShowThumb(att)) out.push({ att, idx });
+  });
+  return out;
+}
+
+/**
+ * 气泡是否「只有附件、没有正文」（用户只发文件不发文字）。
+ * 用于去掉附件行底部 7px 内距，否则气泡底部会多出一条空白。
+ */
+function attOnly(m: ChatMsg): boolean {
+  const hasText = m.segments.some((s) => s.type === 'text' && s.text.trim() !== '');
+  return !hasText;
+}
+
+/**
+ * 上传 chip → 附件元信息（需求 20261113-003）。
+ *
+ * uploadRaw 只返回 contextNote（不回路径），故用与后端落盘同一套 note 解析规则反推
+ * 出 {fileName,bytes,path,mime}，保证「刚发送」与「刷新后」两个来源展示完全一致。
+ * 解析不出（note 格式异常）时退回 chip 自身字段，path 缺失则 chip 点击给出提示而非静默。
+ */
+function chipsSnapshotOf(chips: UploadChip[]): MessageAttachmentVM[] {
+  return chips.map((c) => {
+    const parsed = parseUploadNotes(c.contextNote)[0];
+    return parsed ?? { fileName: c.fileName, bytes: c.bytes, path: '' };
+  });
+}
+
 let chipSeq = 0;
 let composing = false; // 中文输入法组词中的 Enter 不发送
 /** 模板经此函数改写 composing：vue-tsc 对模板内直接赋值顶层 let 存在字面量收窄误报（TS2322） */
 function setComposing(v: boolean): void {
   composing = v;
+}
+
+/* ================= 附件展示派生（需求 20261113-006 P0） ================= */
+
+/** 待发送区折叠阈值：超过 3 个折叠为「+N」（D5） */
+const CHIP_FOLD_AT = 3;
+/** 折叠展开态：会话级临时态，不持久化（重置见 watch(uploads)） */
+const chipsExpanded = ref(false);
+
+/** 待发送附件总字节；无附件时为 0（模板 v-if 已保证不渲染顶行） */
+const totalUploadBytes = computed(() => uploads.value.reduce((sum, u) => sum + (u.bytes || 0), 0));
+
+/** 折叠后可见的附件（展开态返回全量） */
+const visibleUploads = computed(() =>
+  chipsExpanded.value ? uploads.value : uploads.value.slice(0, CHIP_FOLD_AT),
+);
+
+/** 被折叠的数量；展开后为 0（不渲染「收起」，收起靠删除附件自然回落） */
+const foldCount = computed(() =>
+  chipsExpanded.value ? 0 : Math.max(0, uploads.value.length - CHIP_FOLD_AT),
+);
+
+/** 附件数回落到阈值内时自动收起，避免「展开后删到 2 个仍停留在展开态」 */
+watch(
+  () => uploads.value.length,
+  (n) => {
+    if (n <= CHIP_FOLD_AT) chipsExpanded.value = false;
+  },
+);
+
+/** 文件类型图标内联 SVG（待发送区 24px / 气泡内 16px） */
+function iconSvgOf(name: string, size: number): string {
+  return fileIconSvg(name, size);
+}
+
+/**
+ * 待发送区缩略图解码失败（本地 blob 损坏等）：清掉 thumbUrl 让该条回落为文档卡，
+ * 避免出现破图占位（与气泡内 D8 的降级口径一致）。
+ */
+function onThumbErr(u: UploadChip): void {
+  releaseChip(u);
 }
 
 function fmtBytes(n: number): string {
@@ -796,8 +1019,12 @@ async function send(): Promise<void> {
   // contextNote 拼接进 message 文本（POST messages 无独立 contextNote 字段）
   const notes = uploads.value.map((u) => u.contextNote);
   const full = [...notes, text].filter(Boolean).join('\n\n');
-
+  // 需求 20261113-003：乐观气泡的附件 chip 需要结构化元信息（含路径，点击可预览）。
+  // uploadRaw 只回 contextNote 不回路径，这里复用 note 解析（与后端落盘同一套规则），
+  // 保证「刚发完」与「刷新后」两种展示来源一致。
   const chipsSnapshot = uploads.value;
+  const attachments = chipsSnapshotOf(chipsSnapshot);
+
   const draftSnapshot = draft.value;
   uploads.value = [];
   draft.value = '';
@@ -808,6 +1035,7 @@ async function send(): Promise<void> {
     message: full,
     text,
     files: chipsSnapshot.map((u) => u.fileName),
+    attachments,
     // D2：输入区不再暴露流式开关，恒为流式
     stream: true,
     // D4：会话级模型覆盖（空串 = 不覆盖，走全局）
@@ -843,6 +1071,17 @@ function onEnter(e: KeyboardEvent): void {
 
 /* ================= 对话内上传 ================= */
 
+/**
+ * 上传成功后构造待发送附件卡（需求 20261113-006 P0）：两条上传路径（选择文件 / 粘贴）共用，
+ * 保证图片砖缩略图与视觉可用性告警在两处口径一致。
+ */
+function makeChip(fileName: string, bytes: number, contextNote: string, local?: File, warn?: string | null): UploadChip {
+  const chip: UploadChip = { id: ++chipSeq, fileName, bytes, contextNote };
+  if (local && isImageName(fileName)) chip.thumbUrl = URL.createObjectURL(local);
+  if (warn) chip.warn = warn;
+  return chip;
+}
+
 async function onPickFiles(ev: Event): Promise<void> {
   const input = ev.target as HTMLInputElement;
   const files = [...(input.files ?? [])];
@@ -850,12 +1089,14 @@ async function onPickFiles(ev: Event): Promise<void> {
   if (files.length === 0) return;
   const sessionId = ensureSession();
   if (!sessionId) return;
+  const gate = await loadVisionGate();
   upBusy.value = true;
   try {
     for (const f of files) {
       try {
         const r = await uploadRaw(f, sessionId);
-        uploads.value.push({ id: ++chipSeq, fileName: r.fileName, bytes: r.bytes, contextNote: r.contextNote });
+        const warn = gate ? visionSkipReason(f.name, f.type, f.size, gate) : null;
+        uploads.value.push(makeChip(r.fileName, r.bytes, r.contextNote, f, warn));
         showToast(`已上传 → ${r.fileName}（${fmtBytes(r.bytes)}）`, 'success');
       } catch (e) {
         if (e instanceof AuthError) break;
@@ -941,16 +1182,8 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
     for (const p of accepted) {
       try {
         const r = await uploadRaw(p.file, sessionId, p.name);
-        const chip: UploadChip = {
-          id: ++chipSeq,
-          fileName: r.fileName,
-          bytes: r.bytes,
-          contextNote: r.contextNote,
-        };
-        if (p.isImage) chip.thumbUrl = URL.createObjectURL(p.file);
         const warn = gate ? visionSkipReason(p.name, p.file.type, p.file.size, gate) : null;
-        if (warn) chip.warn = warn;
-        uploads.value.push(chip);
+        uploads.value.push(makeChip(r.fileName, r.bytes, r.contextNote, p.file, warn));
         showToast(`已粘贴 → ${r.fileName}（${fmtBytes(r.bytes)}）`, 'success');
       } catch (e) {
         if (e instanceof AuthError) break;
@@ -1101,6 +1334,16 @@ function onDocClick(e: MouseEvent): void {
   modelOpen.value = false;
 }
 
+/**
+ * 消息列表变化即预热图片附件缩略图（新发消息、切换会话、历史回填都覆盖）。
+ * 监听 messages 引用即可：切会话/重载历史都会整体替换数组。
+ */
+watch(
+  messages,
+  (list) => warmSentThumbs(list),
+  { immediate: true },
+);
+
 onMounted(() => {
   setChatViewMounted(true);
   setActiveSession(activeId.value);
@@ -1144,6 +1387,7 @@ onUnmounted(() => {
   if (scrollRaf) cancelAnimationFrame(scrollRaf);
   clearRenderTimer(); // 流式图表渲染的节流定时器
   releaseChips(uploads.value); // 粘贴附件的缩略图 blob URL（task-20261028-005 D7）
+  releaseAllSentThumbs(); // 气泡内附件缩略图 objectURL（需求 20261113-006 D2）
 });
 </script>
 
@@ -1190,29 +1434,55 @@ onUnmounted(() => {
               选择左侧会话，或点击「＋ 新建对话」开始
             </div>
             <template v-for="m in messages" :key="m.id">
-            <!-- 归档段起点：明确告诉用户「以下历史模型已经看不到原文，只剩摘要」 -->
-            <div v-if="m.archived && m.id === firstArchivedId" class="arch-divider">
-              <span>以下 {{ archivedCount }} 条历史已归档（仅保存在本地，模型上下文只保留摘要）</span>
-            </div>
             <div
               class="msg"
-              :class="[m.role, { notice: noticeMap.has(m.id), 'is-summary': !!m.summary }]"
+              :class="[m.role, { notice: noticeMap.has(m.id) }]"
             >
               <!-- 20261105-001：后台任务完成通知渲染为系统卡片，不占用户气泡 -->
               <BackgroundNoticeCard v-if="noticeMap.get(m.id)" :info="noticeMap.get(m.id)!" />
               <!-- 20261107-002 D8：后台子任务完成结果卡片（服务端主动落盘） -->
               <SubAgentResultCard v-else-if="m.subResult" :info="m.subResult" :session-id="activeId" />
-              <!-- L1 压缩摘要：此前被 is_show=false 静默丢弃，用户不知道模型已看不到更早的工具输出 -->
-              <details v-else-if="m.summary" class="summary-card">
-                <summary>已压缩历史摘要（模型当前只能看到这段摘要）</summary>
-                <div class="plain">{{ m.summary }}</div>
-              </details>
+              <!-- 需求 20261113-005：L1 压缩摘要占位此前渲染为可展开卡片，属实现细节，
+                   用户无需关注（模型上下文与磁盘数据均不受影响），改为完全不展示 -->
               <template v-else>
               <div v-if="m.role === 'assistant'" class="m-head">
                 <div class="ava">L</div><span class="m-role">Loop Agent</span>
               </div>
               <div :class="m.role === 'user' ? 'bubble' : 'body'">
-                <div v-if="m.files?.length" class="msg-files">📎 {{ m.files.join('、') }}</div>
+                <!-- 用户气泡附件（需求 20261113-006 P1）：按族分组——图片一行（88×88 真实缩略图砖）、
+                     文档一行（30px 胶囊：族图标 + 名 + 扩展名字标 + 大小）。
+                     图片尺寸必须够大才看得清、文档胶囊要够扁才不臃肿，故分两行而非混排（D9） -->
+                <div v-if="m.attachments?.length" :class="['msg-files', { only: attOnly(m) }]">
+                  <div v-if="imgAtts(m).length" class="att-imgs">
+                    <button
+                      v-for="e in imgAtts(m)"
+                      :key="`i-${e.idx}`"
+                      class="s-img"
+                      :title="`${e.att.fileName}${e.att.bytes ? `（${fmtBytes(e.att.bytes)}）` : ''}（点击预览）`"
+                      @click="onOpenAttachment(m, e.idx)"
+                    >
+                      <!-- 有真实缩略图才渲染 <img>；取数中显示族图标占位（失败已降级到文档行，不会停留在此，D8） -->
+                      <img v-if="sentThumb(e.att.path)" :src="sentThumb(e.att.path)" alt="" @error="markThumbBroken(e.att.path)">
+                      <span v-else class="si-ph" v-html="iconSvgOf(e.att.fileName, 28)"></span>
+                      <span class="si-tag">{{ imgTagOf(e.att.fileName) }}</span>
+                      <span v-if="e.att.bytes" class="si-foot">{{ fmtBytes(e.att.bytes) }}</span>
+                    </button>
+                  </div>
+                  <div v-if="docAtts(m).length" class="att-docs">
+                    <button
+                      v-for="e in docAtts(m)"
+                      :key="`d-${e.idx}`"
+                      class="s-doc"
+                      :title="`${e.att.fileName}${e.att.bytes ? `（${fmtBytes(e.att.bytes)}）` : ''}（点击预览）`"
+                      @click="onOpenAttachment(m, e.idx)"
+                    >
+                      <span class="sd-ico" v-html="iconSvgOf(e.att.fileName, 16)"></span>
+                      <span class="sd-name">{{ e.att.fileName }}</span>
+                      <span v-if="extLabelOf(e.att.fileName)" class="sd-ext">{{ extLabelOf(e.att.fileName) }}</span>
+                      <span v-if="e.att.bytes" class="sd-size">{{ fmtBytes(e.att.bytes) }}</span>
+                    </button>
+                  </div>
+                </div>
                 <template
                   v-for="it in renderItems(m)"
                   :key="it.kind === 'tool' ? `t${it.card.index}` : `s${it.index}`"
@@ -1439,42 +1709,81 @@ onUnmounted(() => {
       </div>
 
       <div class="composer">
-        <!-- 后台任务常驻指示器（需求 20261112-006：命令任务 + 子任务统一展示）：
-             无论消息滚到哪里都能看到「运行中 N」。
-             宽度与消息列对齐（800 - 20×2），否则会顶到面板边缘、比对话卡片更宽 -->
-        <div class="composer-dock">
-          <BackgroundDock :session-id="activeId" />
-        </div>
         <div class="composer-inner">
           <div class="dock">
-            <!-- 附件 pill（task-20261025-002 ③）：SVG + 文件名 + 大小 + 圆形删除 -->
-            <div v-if="uploads.length" class="chips">
-              <span
-                v-for="u in uploads"
-                :key="u.id"
-                class="file-pill"
-                :class="{ 'is-img': u.thumbUrl }"
-                :title="u.contextNote + '（将随下一条消息注入）'"
-              >
-                <img v-if="u.thumbUrl" class="fp-thumb" :src="u.thumbUrl" alt="" />
-                <svg v-else class="fp-ic" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-                  <path
-                    d="M10.6 4.6 6.2 9a1.6 1.6 0 0 0 2.3 2.3l4.6-4.6a3 3 0 0 0-4.2-4.2L4.2 7.2a4.4 4.4 0 0 0 6.2 6.2l3.3-3.3"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                  />
-                </svg>
-                <span class="fp-name">{{ u.fileName }}</span>
-                <span class="fp-size">{{ fmtBytes(u.bytes) }}</span>
-                <span v-if="u.warn" class="fp-warn" :title="u.warn" role="img" aria-label="视觉可用性警告">⚠</span>
-                <button class="fp-x" title="移除（不再注入，服务器文件保留）" @click="removeChip(u)">
-                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-                    <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                  </svg>
+            <!-- 待发送附件区（需求 20261113-006 P0）：顶行统计 + 图片砖/文档卡混排流 + 折叠。
+                 图片用 52×52 缩略图砖（本地 blob），文档用同高 52px 卡（族图标 + 名 + 大小 + 扩展名字标） -->
+            <div v-if="uploads.length" class="att-zone">
+              <div class="att-zone-head">
+                <span class="az-title">附件</span>
+                <span class="az-sum">共 {{ uploads.length }} 个 · 共 {{ fmtBytes(totalUploadBytes) }}</span>
+                <button class="az-clear" type="button" title="清空上传目录（含服务器文件）" @click="onCleanUploads">
+                  清空
                 </button>
-              </span>
+              </div>
+              <div class="att-flow">
+                <template v-for="u in visibleUploads" :key="u.id">
+                  <!-- 图片砖：外层不带 overflow:hidden，删除按钮位于卡片右上角外侧 -->
+                  <div v-if="u.thumbUrl" class="att-img" :title="u.contextNote + '（将随下一条消息注入）'">
+                    <span class="ai-in">
+                      <img :src="u.thumbUrl" alt="" @error="onThumbErr(u)">
+                    </span>
+                    <span v-if="u.warn" class="att-warn" :title="u.warn" role="img" aria-label="视觉可用性警告">
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M8 5.6v3.2M8 11.2v.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                        <path d="M8 2.2 14.2 13H1.8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none" />
+                      </svg>
+                    </span>
+                    <button
+                      class="att-x"
+                      type="button"
+                      title="移除（不再注入，服务器文件保留）"
+                      @click="removeChip(u)"
+                    >
+                      <svg viewBox="0 0 12 12" aria-hidden="true">
+                        <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                      </svg>
+                    </button>
+                  </div>
+                  <!-- 文档卡：与图片砖同高 52px，保证整行上下沿齐平 -->
+                  <div v-else class="att-doc" :title="u.contextNote + '（将随下一条消息注入）'">
+                    <span class="ad-ico" v-html="iconSvgOf(u.fileName, 24)"></span>
+                    <span class="ad-meta">
+                      <span class="ad-name">{{ u.fileName }}</span>
+                      <span class="ad-sub">
+                        <span>{{ fmtBytes(u.bytes) }}</span>
+                        <span v-if="extLabelOf(u.fileName)" class="ad-ext">{{ extLabelOf(u.fileName) }}</span>
+                      </span>
+                    </span>
+                    <span v-if="u.warn" class="att-warn in-card" :title="u.warn" role="img" aria-label="视觉可用性警告">
+                      <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M8 5.6v3.2M8 11.2v.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                        <path d="M8 2.2 14.2 13H1.8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none" />
+                      </svg>
+                    </span>
+                    <button
+                      class="att-x"
+                      type="button"
+                      title="移除（不再注入，服务器文件保留）"
+                      @click="removeChip(u)"
+                    >
+                      <svg viewBox="0 0 12 12" aria-hidden="true">
+                        <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                      </svg>
+                    </button>
+                  </div>
+                </template>
+                <!-- 折叠（D5）：超过 3 个时第 4 个起折叠，点击展开 -->
+                <button
+                  v-if="foldCount > 0"
+                  class="att-more"
+                  type="button"
+                  :title="`展开其余 ${foldCount} 个附件`"
+                  @click="chipsExpanded = true"
+                >
+                  +{{ foldCount }}
+                </button>
+              </div>
             </div>
 
             <textarea
@@ -1861,61 +2170,6 @@ onUnmounted(() => {
 }
 /* 用户消息：无头像，右对齐气泡；助手消息：头像+名称在上，正文平铺 */
 .msg { margin-bottom: 18px; }
-
-/* 归档段分隔：告知「以下历史模型已看不到原文」，不阻断阅读，灰线 + 小字 */
-.arch-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 4px 0 14px;
-  color: var(--muted);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-.arch-divider::before,
-.arch-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-}
-.arch-divider span {
-  flex: none;
-  padding: 0 2px;
-  text-align: center;
-}
-
-/* L1 压缩摘要卡片：默认收起，点开可见模型当前持有的全部历史摘要 */
-.msg.user.is-summary { justify-content: flex-start; }
-.summary-card {
-  width: 100%;
-  max-width: 680px;
-  padding: 8px 12px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 10px;
-  background: var(--panel);
-  color: var(--text-2);
-  font-size: 12.5px;
-}
-.summary-card > summary {
-  cursor: pointer;
-  color: var(--muted);
-  user-select: none;
-  list-style: none;
-}
-.summary-card > summary::-webkit-details-marker { display: none; }
-.summary-card > summary::before {
-  content: '▸ ';
-  color: var(--muted);
-}
-.summary-card[open] > summary::before { content: '▾ '; }
-.summary-card .plain {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line-soft);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
 .msg .ava {
   width: 22px;
   height: 22px;
@@ -1988,7 +2242,72 @@ onUnmounted(() => {
 .md :deep(th) { background: var(--code-bg); }
 .md :deep(td code) { overflow-wrap: anywhere; }
 /* mermaid 图表容器样式已全局化至 ../mermaid.css（与 FilesView 共用） */
-.msg-files { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+/* ================= 气泡内附件（需求 20261113-006 P1） =================
+   图片一行（88×88 真实缩略图砖）+ 文档一行（30px 胶囊），两行各 6px 间距。
+   分组而非混排：图片要够大才看得清，文档胶囊要够扁才不臃肿，
+   强行同高会让两者都变形（原型实测混排上下沿错位 34px） */
+.msg-files { display: grid; gap: 6px; margin-bottom: 7px; }
+.msg-files.only { margin-bottom: 0; }
+/* min-width:0 必须给到两个分组容器本身：它们是 .msg-files（grid）的直接网格项，
+   默认 min-width:auto 会按 min-content 撑开，长文件名（尤其中文无断点）能把
+   整条胶囊顶出气泡边界（实测 642.8px 胶囊塞进 550px 可用宽）。 */
+.att-imgs { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.att-docs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+
+/* 图片砖：品牌色细描边 + hover 抬升；取数中/失败时退回族图标占位，不出破图 */
+.s-img {
+  position: relative; width: 88px; height: 88px; border-radius: 10px; overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--brand) 55%, transparent);
+  background: var(--att-cap); cursor: pointer; padding: 0; flex: none;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.s-img:hover { border-color: var(--brand); box-shadow: var(--shadow-card); transform: translateY(-1px); }
+.s-img:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.s-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.s-img .si-ph {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--text-2); opacity: .8;
+}
+/* 底部渐变兜底文字可读性：任意图片上都清晰（尺寸） */
+.s-img .si-foot {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 5px 3px;
+  font: 600 9.5px/1 var(--mono); color: #fff; text-align: right;
+  background: linear-gradient(to top, rgba(0, 0, 0, .55), rgba(0, 0, 0, 0));
+}
+/* 类型字标：左上角「IMG」，让「这张是不是图」一眼可辨 */
+.s-img .si-tag {
+  position: absolute; top: 3px; left: 3px; padding: 1px 3px; border-radius: 3px;
+  font: 700 8px/1.4 var(--mono); letter-spacing: .3px;
+  background: rgba(0, 0, 0, .5); color: #fff; backdrop-filter: blur(2px);
+}
+
+/* 文档胶囊：独立派生色阶保证「始终比气泡底亮一档」，亮暗都成立 */
+.s-doc {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0;
+  height: 30px; padding: 0 9px 0 8px; cursor: pointer;
+  background: var(--att-card-bg);
+  border: 1px solid var(--att-card-line);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  transition: border-color .15s, background .15s, box-shadow .15s;
+}
+.s-doc:hover {
+  background: var(--att-card-bg-hover);
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
+  box-shadow: var(--shadow-card);
+}
+.s-doc:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.s-doc .sd-ico { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--text-2); }
+.s-doc .sd-ico svg { width: 16px; height: 16px; }
+.s-doc .sd-name {
+  min-width: 0; font-size: 12px; color: var(--text); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.s-doc .sd-size { flex: none; font-size: 10.5px; color: var(--text-2); }
+.s-doc .sd-ext {
+  flex: none; font: 600 9px/1 var(--mono); letter-spacing: .3px; color: var(--text-2);
+  background: var(--code-bg); border-radius: 3px; padding: 2px 3px; text-transform: uppercase;
+}
 .meta-line { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .fatal {
   color: var(--danger);
@@ -2337,57 +2656,92 @@ onUnmounted(() => {
   .model-pill .mp-ic { display: none; }
 }
 
-/* ===== 上传 pill 与面板 ===== */
-.chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 4px 4px; }
-.file-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  padding: 2px 4px 2px 8px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 11.5px;
-  color: var(--text-2);
+/* ===== 待发送附件区（需求 20261113-006 P0） =====
+   图片砖 52×52 与文档卡 52px 同高混排，整行上下沿齐平；顶行给「共 N 个 · 共多大」与清空 */
+.att-zone { display: grid; gap: 8px; padding: 0 4px 6px; }
+.att-zone-head {
+  display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted);
 }
-.file-pill .fp-ic { flex: none; color: var(--muted); }
-/* 图片 chip：24×24 缩略图（task-20261028-005 D6），左内边距收紧保持与文本 chip 同高 */
-.file-pill.is-img { padding-left: 3px; }
-.file-pill .fp-thumb {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  object-fit: cover;
-  border-radius: 4px;
-  border: 1px solid var(--line);
-  background: var(--panel);
+.att-zone-head .az-title { font-weight: 600; color: var(--text-2); }
+.att-zone-head .az-sum { color: var(--muted); }
+.att-zone-head .az-clear {
+  margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer;
+  font: inherit; font-size: 11.5px; padding: 2px 4px; border-radius: 5px;
 }
-/* 视觉可用性警告角标（D8）：只着色，不改 chip 主色，原因走 title */
-.file-pill .fp-warn { flex: none; color: var(--warn); font-size: 11px; line-height: 1; cursor: help; }
-.file-pill .fp-name {
-  min-width: 0;
-  max-width: 190px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.att-zone-head .az-clear:hover { background: var(--hover); color: var(--danger); }
+
+.att-flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+
+/* 文档卡：与图片砖同高 52px，保证整行上下沿齐平。
+   宽度取「230px 与容器宽取小」：固定 230px 在极窄输入坞（窄屏/侧栏展开）会顶出边界 */
+.att-doc {
+  display: flex; align-items: center; gap: 8px;
+  max-width: min(230px, 100%); min-width: 0; height: 52px; padding: 0 9px 0 10px;
+  background: var(--att-bg); border: 1px solid var(--line);
+  border-radius: 10px; cursor: pointer; position: relative;
+  transition: border-color .15s, box-shadow .15s, background .15s;
 }
-.file-pill .fp-size { flex: none; color: var(--muted); font-size: 10.5px; }
-.file-pill .fp-x {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
+.att-doc:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); }
+.att-doc:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.att-doc .ad-ico { flex: none; width: 26px; height: 26px; display: grid; place-items: center; color: var(--text-2); }
+.att-doc .ad-ico svg { width: 24px; height: 24px; }
+.att-doc .ad-meta { min-width: 0; display: grid; gap: 1px; }
+.att-doc .ad-name {
+  font-size: 12.5px; color: var(--text); line-height: 1.35;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.file-pill .fp-x:hover { background: var(--danger-weak); color: var(--danger); }
+.att-doc .ad-sub { font-size: 10.5px; color: var(--muted); display: flex; gap: 5px; align-items: center; }
+.att-doc .ad-ext {
+  font: 600 9.5px/1 var(--mono); letter-spacing: .4px; color: var(--text-2);
+  background: var(--code-bg); border-radius: 3px; padding: 2px 4px; text-transform: uppercase;
+}
+
+/* 图片砖（52×52）。外层不能带 overflow:hidden——删除按钮浮在卡片右上角外侧，
+   裁切会切掉约 2.7px（圆角裁切交给内层 .ai-in） */
+.att-img { position: relative; width: 52px; height: 52px; border-radius: 10px; padding: 0; flex: none; }
+.att-img .ai-in {
+  display: block; width: 100%; height: 100%; border-radius: 9px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--att-cap);
+  transition: border-color .15s, box-shadow .15s;
+}
+.att-img:hover .ai-in { border-color: var(--line-strong); box-shadow: var(--shadow-card); }
+.att-img:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.att-img .ai-in img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* 删除按钮：悬停/聚焦浮出，图片砖与文档卡通用 */
+.att-x {
+  position: absolute; top: -5px; right: -5px; width: 17px; height: 17px; border-radius: 50%;
+  display: grid; place-items: center; padding: 0; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line-strong); color: var(--muted);
+  opacity: 0; transform: scale(.85);
+  transition: opacity .12s, transform .12s, color .12s, background .12s;
+  box-shadow: var(--shadow-card); flex: none; z-index: 2;
+}
+.att-doc:hover .att-x,
+.att-img:hover .att-x,
+.att-x:focus-visible { opacity: 1; transform: scale(1); }
+.att-x:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+.att-x svg { width: 9px; height: 9px; }
+
+/* 视觉不可用警告角标：只着色并在 title 里说明原因（沿用既有 fp-warn 语义） */
+.att-warn {
+  position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--warn-weak); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); cursor: help; z-index: 2;
+}
+.att-warn svg { width: 9px; height: 9px; }
+/* 文档卡内的警告角标改为行内元素参与布局，避免绝对定位压住文件名与大小 */
+.att-warn.in-card { position: static; flex: none; }
+
+/* 多附件折叠：超过 3 个时第 4 个起折叠为「+N」 */
+.att-more {
+  display: inline-flex; align-items: center; height: 52px; min-width: 42px; padding: 0 10px;
+  cursor: pointer; font: 600 12.5px/1 inherit; color: var(--text-2);
+  background: var(--att-bg); border: 1px dashed var(--line-strong); border-radius: 10px;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.att-more:hover { border-color: var(--brand); color: var(--brand); background: var(--hover); }
+.att-more:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
 
 .up-pop {
   position: absolute;

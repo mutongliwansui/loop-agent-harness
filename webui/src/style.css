@@ -18,6 +18,16 @@
   --code-bg: #f1f3f5;
   --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
 
+  /* 附件展示令牌（需求 20261113-006）：均为现有令牌的派生值，不引入新颜色 */
+  --att-bg: var(--panel);        /* 待发送区文档卡底色 */
+  --att-cap: var(--code-bg);     /* 图片砖/缩略图占位底色 */
+  /* 气泡内文档胶囊：必须恒比气泡底（--brand-weak）亮一档。
+     暗色下 --panel 反而比 --brand-weak 更暗、会看成凹陷，故亮暗各给值；
+     表面明度差仅约 1.1 倍，边界感由 0.16/0.26 的描边承担 */
+  --att-card-bg: rgba(255, 255, 255, .88);
+  --att-card-bg-hover: #ffffff;
+  --att-card-line: rgba(34, 37, 42, .16);
+
   /* 图表容器外框令牌（Task-20261023-003，取值同原型亮色套） */
   --line-soft: #eef0f3;
   --line-strong: #d3d8de;
@@ -90,6 +100,12 @@
     --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
     --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
 
+    /* 附件令牌（需求 20261113-006）：暗色下卡片改用白色低透明叠加，
+       保证始终比 --brand-weak 气泡底亮一档（--panel 在暗色下更暗，会看成凹陷） */
+    --att-card-bg: rgba(255, 255, 255, .10);
+    --att-card-bg-hover: rgba(255, 255, 255, .17);
+    --att-card-line: rgba(255, 255, 255, .26);
+
     /* 终端配色令牌（暗色：低饱和，避免纯色刺眼） */
     --term-bg: #14171c;
     --term-fg: #d7dbe0;
@@ -145,6 +161,11 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
   --shadow-card-hover: 0 1px 2px rgba(0, 0, 0, .34), 0 18px 40px -18px rgba(0, 0, 0, .62);
   --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+
+  /* 附件令牌（需求 20261113-006）：手动暗色与跟随系统暗色同值 */
+  --att-card-bg: rgba(255, 255, 255, .10);
+  --att-card-bg-hover: rgba(255, 255, 255, .17);
+  --att-card-line: rgba(255, 255, 255, .26);
 
   /* 终端配色令牌（暗色：低饱和，避免纯色刺眼） */
   --term-bg: #14171c;

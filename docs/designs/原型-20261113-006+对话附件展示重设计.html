@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>原型 · 对话附件展示重设计（20261113-006）</title>
+<style>
+  /* ===== 设计令牌：逐值对齐 webui/src/style.css（亮/暗两套） ===== */
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6ea; --text: #22252a; --muted: #6b7280;
+    --brand: #0e9f6e; --brand-weak: #e6f6ef; --brand-on: #ffffff;
+    --danger: #dc2626; --danger-weak: #fdecec;
+    --warn: #b45309; --warn-weak: #fef3c7;
+    --ok: #059669; --ok-weak: #d1fae5;
+    --code-bg: #f1f3f5;
+    --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    --line-soft: #eef0f3; --line-strong: #d3d8de;
+    --hover: rgba(17, 24, 39, .055); --active: rgba(17, 24, 39, .1);
+    --text-2: #4b5563; --bar-bg: #fbfcfd;
+    --radius-card: 12px; --radius-ctl: 7px;
+    --shadow-card: 0 1px 2px rgba(16, 24, 40, .04), 0 10px 28px -18px rgba(16, 24, 40, .2);
+    --shadow-pop: 0 2px 4px rgba(16, 24, 40, .06), 0 12px 28px -12px rgba(16, 24, 40, .28);
+    /* 本原型新增（均为派生值，落地时用现有令牌表达，见文末「令牌映射」） */
+    --att-bg: var(--panel);
+    --att-cap: var(--code-bg);   /* 缩略图/文件砖底色 */
+    /* 气泡内附件卡：恒定「比气泡底色更亮一档」，亮暗两套各自给值，
+       避免暗色下 --panel 比 --brand-weak 更暗、卡片看起来像凹陷。
+       表面明度差仅 ~1.1 倍，边界感由描边承担，故描边取 0.16 而非 0.10 */
+    --att-card-bg: rgba(255, 255, 255, .88);
+    --att-card-bg-hover: #fff;
+    --att-card-line: rgba(34, 37, 42, .16);
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #14171c; --panel: #1b1f26; --line: #2b313a; --text: #e6e8eb; --muted: #9aa1ab;
+    --brand: #34d399; --brand-weak: #143528; --brand-on: #0b221a;
+    --danger: #f87171; --danger-weak: #3b1a1a;
+    --warn: #fbbf24; --warn-weak: #3a2e10;
+    --ok: #34d399; --ok-weak: #143528;
+    --code-bg: #22272f;
+    --line-soft: #242a32; --line-strong: #3a424d;
+    --hover: rgba(255, 255, 255, .07); --active: rgba(255, 255, 255, .12);
+    --text-2: #b6bdc6; --bar-bg: #1f242b;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 30px -18px rgba(0, 0, 0, .55);
+    --shadow-pop: 0 2px 6px rgba(0, 0, 0, .4), 0 14px 32px -12px rgba(0, 0, 0, .6);
+    --att-bg: var(--panel);
+    --att-cap: var(--code-bg);
+    --att-card-bg: rgba(255, 255, 255, .10);
+
+    --att-card-bg-hover: rgba(255, 255, 255, .17);
+    --att-card-line: rgba(255, 255, 255, .26);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 26px 20px 80px; background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .page { max-width: 900px; margin: 0 auto; }
+
+  /* ===== 页头与工具条 ===== */
+  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+  .page-head h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+  .page-head p { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; }
+  .tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 8px; overflow: hidden; background: var(--panel); }
+  .seg button {
+    border: 0; background: transparent; color: var(--text-2); padding: 6px 12px; cursor: pointer;
+    font: inherit; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .seg button[aria-pressed="true"] { background: var(--brand-weak); color: var(--brand); font-weight: 600; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg svg { width: 14px; height: 14px; }
+
+  /* ===== 评审分区 ===== */
+  .sec { margin-top: 26px; }
+  .sec > h2 {
+    font-size: 13.5px; margin: 0 0 4px; letter-spacing: .3px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .sec > h2 .no {
+    display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 5px;
+    background: var(--brand-weak); color: var(--brand); font-size: 11px; font-weight: 700; flex: none;
+  }
+  .sec > .desc { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .sec > .desc code, .note code { font-family: var(--mono); font-size: 11.5px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+
+  .board {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card); padding: 16px; display: grid; gap: 14px;
+  }
+  .board.tint { background: var(--bg); }
+  .row-label { font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .3px; margin-bottom: -4px; }
+
+  /* ============ 对话区骨架（与 ChatView 消息列同宽 800 / 气泡 76%） ============ */
+  .stream { display: grid; gap: 14px; }
+  .msg { display: flex; }
+  .msg.user { justify-content: flex-end; }
+  /* 用户气泡：逐值对齐 .msg.user .bubble */
+  .bubble {
+    max-width: 76%; padding: 9px 14px; border-radius: 12px;
+    background: var(--brand-weak); border-top-right-radius: 4px;
+  }
+  .plain { white-space: pre-wrap; word-break: break-word; }
+
+  /* ============================================================
+     一、待发送区（composer 附件区）—— 方案 A：图片砖 + 文档卡混排流
+     高度 56px，图片走 56×56 缩略图砖，文档走「折角图标 + 名 + 大小」卡
+     ============================================================ */
+  .att-zone { display: grid; gap: 8px; }
+  .att-zone-head {
+    display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted);
+  }
+  .att-zone-head .az-title { font-weight: 600; color: var(--text-2); }
+  .att-zone-head .az-sum { color: var(--muted); }
+  .att-zone-head .az-clear {
+    margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer;
+    font: inherit; font-size: 11.5px; padding: 2px 4px; border-radius: 5px;
+  }
+  .att-zone-head .az-clear:hover { background: var(--hover); color: var(--danger); }
+
+  .att-flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+
+  /* --- 文档卡（非图片）：与图片砖同高 52px，保证整行上下沿齐平 --- */
+  .att-doc {
+    display: flex; align-items: center; gap: 8px;
+    max-width: 230px; height: 52px; padding: 0 9px 0 10px;
+    background: var(--att-bg); border: 1px solid var(--line);
+    border-radius: 10px; cursor: pointer; position: relative;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .att-doc:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card); }
+  .att-doc:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+  .att-doc .ad-ico { flex: none; width: 26px; height: 26px; display: grid; place-items: center; }
+  .att-doc .ad-ico svg { width: 24px; height: 24px; }
+  .att-doc .ad-meta { min-width: 0; display: grid; gap: 1px; }
+  .att-doc .ad-name {
+    font-size: 12.5px; color: var(--text); line-height: 1.35;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .att-doc .ad-sub { font-size: 10.5px; color: var(--muted); display: flex; gap: 5px; align-items: center; }
+  .att-doc .ad-ext {
+    font: 600 9.5px/1 var(--mono); letter-spacing: .4px; color: var(--text-2);
+    background: var(--code-bg); border-radius: 3px; padding: 2px 4px; text-transform: uppercase;
+  }
+
+  /* --- 图片砖（52×52，与文档卡同高） ---
+     外层必需不带 overflow:hidden——删除按钮位于卡片右上角外侧，
+     若裁切会被 overflow:hidden 切掉实测 2.7px（圆角裁切只作用于内层图片） */
+  .att-img {
+    position: relative; width: 52px; height: 52px; border-radius: 10px;
+    padding: 0; flex: none;
+  }
+  .att-img .ai-in {
+    display: block; width: 100%; height: 100%; border-radius: 9px; overflow: hidden;
+    border: 1px solid var(--line); background: var(--att-cap);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .att-img:hover .ai-in { border-color: var(--line-strong); box-shadow: var(--shadow-card); }
+  .att-img:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+  .att-img .ai-in img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  /* --- 删除按钮（悬停浮出，图片砖/文档卡通用） --- */
+  .att-x {
+    position: absolute; top: -5px; right: -5px; width: 17px; height: 17px; border-radius: 50%;
+    display: grid; place-items: center; padding: 0; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line-strong); color: var(--muted);
+    opacity: 0; transform: scale(.85); transition: opacity .12s, transform .12s, color .12s, background .12s;
+    box-shadow: var(--shadow-card); flex: none; z-index: 2;
+  }
+  .att-doc:hover .att-x, .att-img:hover .att-x, .att-x:focus-visible { opacity: 1; transform: scale(1); }
+  .att-x:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .att-x svg { width: 9px; height: 9px; }
+
+  /* --- 上传中态 --- */
+  .att-doc.is-uploading { border-style: dashed; border-color: var(--brand); cursor: progress; }
+  .att-img.is-uploading .ai-in > span { opacity: .4; }
+  .att-img.is-uploading::after {
+    content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px;
+    border: 2px solid color-mix(in srgb, var(--brand) 35%, transparent);
+    border-top-color: var(--brand); border-radius: 50%; animation: spin .7s linear infinite;
+    pointer-events: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ad-bar { height: 2px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 2px; }
+  .ad-bar i { display: block; height: 100%; background: var(--brand); border-radius: 2px; transition: width .2s; }
+
+  /* --- 失败态 --- */
+  .att-doc.is-failed { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 4%, var(--panel)); }
+  .att-doc.is-failed .ad-name { color: var(--danger); }
+  .att-doc .ad-retry {
+    flex: none; height: 22px; padding: 0 7px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--danger); background: var(--danger-weak); color: var(--danger);
+    font: 600 11px/1 inherit;
+  }
+
+  /* --- 视觉不可用警告角标（沿用既有 fp-warn 语义） --- */
+  .att-warn {
+    position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--warn-weak); color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); cursor: help;
+  }
+  .att-warn svg { width: 9px; height: 9px; }
+
+  /* ============================================================
+     二、已发送气泡 —— 图片砖（同行）+ 文档胶囊（文字色阶，高对比）
+     ============================================================ */
+  /* 已发送气泡：图片一行（88px 缩略图网格）+ 文档胶囊一行，两行各 6px 间距。
+     分组渲染而非混排——图片要够大才看得清，文档胶囊要够扁才不臃肿，
+     强行同高会让两者都变形（实测 64px 图 + 30px 胶囊混排上下沿错位 34px） */
+  .att-sent { display: grid; gap: 6px; margin-bottom: 7px; }
+  .att-sent.only { margin-bottom: 0; }
+  .att-imgs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .att-docs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+  /* 图片砖：气泡内 88×88，圆角 10px，品牌色细描边，hover 抬升 + 描边加实 */
+  .s-img {
+    position: relative; width: 88px; height: 88px; border-radius: 10px; overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--brand) 55%, transparent);
+    background: var(--att-cap); cursor: pointer; padding: 0; flex: none;
+    transition: border-color .15s, box-shadow .15s, transform .15s;
+  }
+  .s-img:hover { border-color: var(--brand); box-shadow: var(--shadow-card); transform: translateY(-1px); }
+  .s-img:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  .s-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* 底部渐变 + 尺寸，保证任意图片上文字可读 */
+  .s-img .si-foot {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 5px 3px;
+    font: 600 9.5px/1 var(--mono); color: #fff; text-align: right;
+    background: linear-gradient(to top, rgba(0, 0, 0, .55), rgba(0, 0, 0, 0));
+  }
+  /* 类型字标：图片左上角「IMG」，让「这张是不是图」一眼可辨 */
+  .s-img .si-tag {
+    position: absolute; top: 3px; left: 3px; padding: 1px 3px; border-radius: 3px;
+    font: 700 8px/1.4 var(--mono); letter-spacing: .3px;
+    background: rgba(0, 0, 0, .5); color: #fff; backdrop-filter: blur(2px);
+  }
+
+  /* 文档胶囊：用独立派生色阶保证「始终比气泡底亮一档」，亮暗都成立 */
+  .s-doc {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+    height: 30px; padding: 0 9px 0 8px; cursor: pointer;
+    background: var(--att-card-bg);
+    border: 1px solid var(--att-card-line);
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, .06);
+    transition: border-color .15s, background .15s, box-shadow .15s;
+  }
+  .s-doc:hover {
+    background: var(--att-card-bg-hover); border-color: color-mix(in srgb, var(--brand) 55%, transparent);
+    box-shadow: var(--shadow-card);
+  }
+  .s-doc:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  .s-doc .sd-ico { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--text-2); }
+  .s-doc .sd-ico svg { width: 16px; height: 16px; }
+  .s-doc .sd-name {
+    min-width: 0; font-size: 12px; color: var(--text); line-height: 1.4;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .s-doc .sd-size { flex: none; font-size: 10.5px; color: var(--text-2); }
+  .s-doc .sd-ext {
+    flex: none; font: 600 9px/1 var(--mono); letter-spacing: .3px; color: var(--text-2);
+    background: var(--code-bg); border-radius: 3px; padding: 2px 3px; text-transform: uppercase;
+  }
+
+  /* 多附件折叠：超过 3 个时第 4 个起折叠为「+N」 */
+  .s-more {
+    display: inline-flex; align-items: center; height: 30px; padding: 0 10px; cursor: pointer;
+    background: var(--att-card-bg);
+    border: 1px dashed var(--att-card-line);
+    border-radius: 8px; font: 600 11.5px/1 inherit; color: var(--text-2);
+  }
+  .s-more:hover { background: var(--panel); border-color: var(--brand); color: var(--brand); }
+
+  /* ============================================================
+     三、对照（现状 vs 建议）
+     ============================================================ */
+  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .cmp > div { min-width: 0; }
+  .cmp h4 { margin: 0 0 8px; font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
+  .cmp h4.bad { color: var(--danger); }
+  .cmp h4.good { color: var(--ok); }
+  /* 现状复刻：.msg-file-chip 逐值照抄 ChatView.vue:1992 */
+  .chip-old {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    padding: 3px 9px 3px 7px; font-size: 12px; line-height: 1.5; color: var(--muted);
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+    border-radius: 999px; cursor: pointer;
+  }
+  .chip-old .mf-ico { flex: none; opacity: .75; }
+  .chip-old .mf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ============================================================
+     四、文件类型图标（16/24 双尺寸，线性 stroke 1.6，项目规范）
+     ============================================================ */
+  .ico-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; }
+  .ico-cell {
+    display: grid; place-items: center; gap: 6px; padding: 10px 6px;
+    border: 1px solid var(--line); border-radius: 9px; background: var(--bg);
+  }
+  .ico-cell .ic-ic { color: var(--text-2); }
+  .ico-cell .ic-ic svg { width: 24px; height: 24px; }
+  .ico-cell .ic-lb { font-size: 11px; color: var(--muted); text-align: center; }
+
+  /* ============================================================
+     五、交互演示：预览浮层 / 多附件展开
+     ============================================================ */
+  .demo-note { font-size: 12px; color: var(--muted); }
+  .btn-line {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border: 1px solid var(--line-strong); background: var(--panel); color: var(--text-2);
+    border-radius: 8px; font: 600 12px/1 inherit; cursor: pointer;
+  }
+  .btn-line:hover { border-color: var(--brand); color: var(--brand); }
+  .btn-line svg { width: 14px; height: 14px; }
+
+  /* 预览浮层 */
+  .lb-mask {
+    position: fixed; inset: 0; z-index: 90; display: none; place-items: center;
+    background: rgba(16, 24, 40, .62); padding: 32px; backdrop-filter: blur(2px);
+  }
+  .lb-mask.on { display: grid; }
+  .lb-box {
+    position: relative; background: var(--panel); border-radius: var(--radius-card);
+    box-shadow: var(--shadow-pop); max-width: min(720px, 92vw); max-height: 86vh;
+    display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line);
+  }
+  .lb-head {
+    display: flex; align-items: center; gap: 9px; padding: 10px 12px;
+    border-bottom: 1px solid var(--line); flex: none;
+  }
+  .lb-head .lh-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-head .lh-sub { font-size: 11px; color: var(--muted); flex: none; }
+  .lb-close {
+    margin-left: auto; flex: none; width: 26px; height: 26px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text-2); display: grid; place-items: center;
+  }
+  .lb-close:hover { border-color: var(--line-strong); color: var(--text); }
+  .lb-close svg { width: 14px; height: 14px; }
+  .lb-body { padding: 12px; overflow: auto; display: grid; place-items: center; background: var(--bg); }
+  .lb-body img { max-width: 100%; max-height: 62vh; border-radius: 8px; display: block; }
+
+  /* ============================================================
+     六、规格表
+     ============================================================ */
+  table.spec { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.spec th, table.spec td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; }
+  table.spec thead th { background: var(--code-bg); font-weight: 600; font-size: 11.5px; color: var(--text-2); }
+  table.spec td.num { text-align: right; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+  table.spec code { font-family: var(--mono); font-size: 11px; }
+
+  .note {
+    margin-top: 12px; padding: 10px 12px; border-radius: 9px; font-size: 12px; line-height: 1.65;
+    background: var(--warn-weak); color: var(--text-2);
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  }
+  .note b { color: var(--warn); }
+  .note.info { background: var(--brand-weak); border-color: color-mix(in srgb, var(--brand) 28%, transparent); }
+  .note.info b { color: var(--brand); }
+
+  /* 窄容器（对话区被右侧文件面板挤压时，内容宽约 462px） */
+  @container (max-width: 520px) {
+    .att-doc { max-width: 100%; }
+  }
+  @media (max-width: 720px) {
+    .cmp { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="page-head">
+    <div>
+      <h1>对话附件展示重设计</h1>
+      <p>需求 20261113-006 · 待发送区 + 已发送气泡 · 与 <code>ChatView.vue</code> 现有令牌同源（亮/暗双主题）</p>
+    </div>
+    <div class="tools">
+      <div class="seg" id="themeSeg">
+        <button data-theme-val="light" aria-pressed="true">☀ 亮色</button>
+        <button data-theme-val="dark" aria-pressed="false">🌙 暗色</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="desc" style="color:var(--muted);font-size:12.5px;margin:8px 0 0;line-height:1.65">
+    同一批附件现在有 <b>两套互不一致</b> 的形态：待发送区是回形针胶囊，气泡内是文档图标胶囊；<b>图片在气泡里也显示成文档图标</b>，
+    回看时无法辨认哪张是图——这是「不好看」之外更实质的信息丢失。
+  </p>
+
+  <!-- ================= 症状对照 ================= -->
+  <section class="sec">
+    <h2><span class="no">0</span>症状对照：现状 vs 本设计</h2>
+    <p class="desc">左为 <code>ChatView.vue</code> 现状（逐值复刻），右为建议形态。同一份内容：一张截图 + 一个 PDF + 一个 Excel。</p>
+    <div class="board">
+      <div class="cmp">
+        <div>
+          <h4 class="bad">✕ 现状（.msg-file-chip）</h4>
+          <div class="msg user">
+            <div class="bubble">
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+                <span class="chip-old">
+                  <svg class="mf-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M19 8.5V20a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V4a1.5 1.5 0 0 1 1.5-1.5H14z"/></svg>
+                  <span class="mf-name">20261113-094256-paste.png</span>
+                </span>
+                <span class="chip-old">
+                  <svg class="mf-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M19 8.5V20a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V4a1.5 1.5 0 0 1 1.5-1.5H14z"/></svg>
+                  <span class="mf-name">需求说明-v3.pdf</span>
+                </span>
+                <span class="chip-old">
+                  <svg class="mf-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M19 8.5V20a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20V4a1.5 1.5 0 0 1 1.5-1.5H14z"/></svg>
+                  <span class="mf-name">台区清单.xlsx</span>
+                </span>
+              </div>
+              <div class="plain">这三份材料里，台区清单的第三列是什么含义？</div>
+            </div>
+          </div>
+          <p class="demo-note" style="margin:8px 0 0">
+            图片退化为文档图标 · 无大小 · 无类型字标 · 灰字 6% 底落在浅绿气泡上几乎融底 · hover 用的 <code>--fg</code> / <code>--accent</code> 令牌不存在（悬停与聚焦实际无效）
+          </p>
+        </div>
+        <div>
+          <h4 class="good">✓ 建议（本设计）</h4>
+          <div class="msg user">
+            <div class="bubble">
+              <div class="att-sent">
+                <div class="att-imgs">
+                  <button class="s-img" type="button" data-preview="1" title="20261113-094256-paste.png（71.3KB，点击放大）">
+                    <!-- 用纯 CSS 渐变示意缩略图；真实实现为 /uploads/view?disp=raw 取 blob -->
+                    <span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#cfe3ff,#9fc4f5 45%,#7aa9e8)"></span>
+                    <span class="si-tag">PNG</span>
+                    <span class="si-foot">71.3KB</span>
+                  </button>
+                </div>
+                <div class="att-docs">
+                  <button class="s-doc" type="button" title="需求说明-v3.pdf（1.8MB，点击预览）">
+                    <span class="sd-ico" data-ico="pdf"></span>
+                    <span class="sd-name">需求说明-v3.pdf</span>
+                    <span class="sd-ext">PDF</span>
+                    <span class="sd-size">1.8MB</span>
+                  </button>
+                  <button class="s-doc" type="button" title="台区清单.xlsx（246KB，点击预览）">
+                    <span class="sd-ico" data-ico="xls"></span>
+                    <span class="sd-name">台区清单.xlsx</span>
+                    <span class="sd-ext">XLSX</span>
+                    <span class="sd-size">246KB</span>
+                  </button>
+                </div>
+              </div>
+              <div class="plain">这三份材料里，台区清单的第三列是什么含义？</div>
+            </div>
+          </div>
+          <p class="demo-note" style="margin:8px 0 0">
+            图片显示真实缩略图 + <code>IMG</code> 字标 + 尺寸 · 文档有专属折角图标、扩展名字标与大小 · 文档胶囊改用白底 + <code>--text</code> 正文色，脱离融底
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 待发送区 ================= -->
+  <section class="sec">
+    <h2><span class="no">1</span>待发送区（composer 附件区）</h2>
+    <p class="desc">
+      52px 高度带：图片走 <b>52×52 缩略图砖</b>，文档走 <b>「折角图标 + 文件名 + 扩展名字标 + 大小」卡</b>，两者同高以保证整行上下沿齐平。
+      顶部一行汇总（数量 + 总量 + 清空），删除按钮悬停浮出于卡片右上角，不再常驻占位。悬停任一卡片可看到删除按钮与抬升反馈。
+    </p>
+    <div class="board">
+      <div class="att-zone">
+        <div class="att-zone-head">
+          <span class="az-title">附件 4 个</span>
+          <span class="az-sum">共 2.4MB</span>
+          <button class="az-clear" type="button">清空</button>
+        </div>
+        <div class="att-flow">
+          <!-- 图片砖：按钮外层不裁切（否则右上角删除按钮会被切），圆角裁切交给内层 -->
+          <button class="att-img" type="button" aria-label="移出该图片">
+            <span class="ai-in"><span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#cfe3ff,#9fc4f5 45%,#7aa9e8)"></span></span>
+            <span class="att-x" title="移出（服务器文件保留）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></span>
+          </button>
+          <button class="att-img" type="button" aria-label="移出该图片（超过视觉模型上限）">
+            <span class="ai-in"><span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#ffe0c2,#f9bd7c 50%,#e69a4e)"></span></span>
+            <span class="att-warn" title="图片超过视觉模型 10MB 上限，将跳过图片理解"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 7v7M12 18v.01"/></svg></span>
+            <span class="att-x" title="移出（服务器文件保留）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></span>
+          </button>
+          <!-- 文档卡 -->
+          <div class="att-doc" tabindex="0" title="需求说明-v3.pdf（1.8MB）">
+            <span class="ad-ico" data-ico-big="pdf"></span>
+            <span class="ad-meta">
+              <span class="ad-name">需求说明-v3.pdf</span>
+              <span class="ad-sub"><span class="ad-ext">PDF</span><span>1.8MB</span></span>
+            </span>
+            <span class="att-x" title="移出（服务器文件保留）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></span>
+          </div>
+          <div class="att-doc" tabindex="0" title="台区清单.xlsx（246KB）">
+            <span class="ad-ico" data-ico-big="xls"></span>
+            <span class="ad-meta">
+              <span class="ad-name">台区清单.xlsx</span>
+              <span class="ad-sub"><span class="ad-ext">XLSX</span><span>246KB</span></span>
+            </span>
+            <span class="att-x" title="移出（服务器文件保留）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></span>
+          </div>
+          <!-- 长文件名：中段省略 -->
+          <div class="att-doc" tabindex="0" title="20261113-现场排查记录与台区关联关系核对表-终版.md（12.4KB）">
+            <span class="ad-ico" data-ico-big="md"></span>
+            <span class="ad-meta">
+              <span class="ad-name">20261113-现场排查记录…核对表-终版.md</span>
+              <span class="ad-sub"><span class="ad-ext">MD</span><span>12.4KB</span></span>
+            </span>
+            <span class="att-x" title="移出（服务器文件保留）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row-label" style="margin:14px 0 6px">过程态：上传中 / 失败重试 / 上传中（图片）</div>
+    <div class="board">
+      <div class="att-flow">
+        <div class="att-doc is-uploading" title="正在上传 需求说明-v3.pdf">
+          <span class="ad-ico" data-ico-big="pdf"></span>
+          <span class="ad-meta">
+            <span class="ad-name">需求说明-v3.pdf</span>
+            <span class="ad-sub"><span class="ad-ext">PDF</span><span>上传中 62%</span></span>
+            <span class="ad-bar"><i style="width:62%"></i></span>
+          </span>
+        </div>
+        <div class="att-doc is-failed" title="上传失败：超过单文件上限 100MB">
+          <span class="ad-ico" data-ico-big="zip"></span>
+          <span class="ad-meta">
+            <span class="ad-name">日志归档.zip</span>
+            <span class="ad-sub"><span style="color:var(--danger)">超过单文件上限 100MB</span></span>
+          </span>
+          <button class="ad-retry" type="button">重试</button>
+        </div>
+        <button class="att-img is-uploading" type="button" title="正在上传图片" aria-label="正在上传图片">
+          <span class="ai-in"><span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#cfe3ff,#9fc4f5)"></span></span>
+        </button>
+      </div>
+      <p class="demo-note">
+        现状是 <code>await uploadRaw()</code> 完成后才出现 chip，上传期间零反馈、失败只有 toast 一闪。改为<b>先占位再上传</b>：虚线品牌描边 + 进度条 / 图片砖 spinner，失败就地转红并给「重试」按钮。
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= 已发送气泡 ================= -->
+  <section class="sec">
+    <h2><span class="no">2</span>已发送气泡（刷新后同样如此）</h2>
+    <p class="desc">
+      图片走 <b>88×88 缩略图</b>（真实缩略图，来源 <code>/uploads/view?disp=raw</code>，已有端点、无新增），与文档胶囊<b>分两行排列</b>：
+      图片一行、文档一行。分组的原因见下方注释——图片要够大才看得清，胶囊要够扁才不臃肿，硬凑同高两边都会变形。
+    </p>
+    <div class="board tint">
+      <div class="stream">
+
+        <!-- 单图 -->
+        <div class="msg user">
+          <div class="bubble">
+            <div class="att-sent">
+              <div class="att-imgs">
+                <button class="s-img" type="button" data-preview="1" title="20261113-094256-paste.png（71.3KB，点击放大）">
+                  <span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#cfe3ff,#9fc4f5 45%,#7aa9e8)"></span>
+                  <span class="si-tag">PNG</span>
+                  <span class="si-foot">71.3KB</span>
+                </button>
+              </div>
+            </div>
+            <div class="plain">这张截图里的报错是哪一步抛出的？</div>
+          </div>
+        </div>
+
+        <!-- 图文混排 + 折叠 -->
+        <div class="msg user">
+          <div class="bubble">
+            <div class="att-sent">
+              <div class="att-imgs">
+                <button class="s-img" type="button" data-preview="1" title="现场照片-1.jpg（2.1MB，点击放大）">
+                  <span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#ffe0c2,#f9bd7c 50%,#e69a4e)"></span>
+                  <span class="si-tag">JPG</span>
+                  <span class="si-foot">2.1MB</span>
+                </button>
+              </div>
+              <div class="att-docs">
+                <button class="s-doc" type="button" title="需求说明-v3.pdf（1.8MB，点击预览）">
+                  <span class="sd-ico" data-ico="pdf"></span>
+                  <span class="sd-name">需求说明-v3.pdf</span>
+                  <span class="sd-size">1.8MB</span>
+                </button>
+                <button class="s-doc" type="button" title="台区清单.xlsx（246KB，点击预览）">
+                  <span class="sd-ico" data-ico="xls"></span>
+                  <span class="sd-name">台区清单.xlsx</span>
+                  <span class="sd-size">246KB</span>
+                </button>
+                <button class="s-more" type="button" title="展开其余 2 个附件">+2</button>
+              </div>
+            </div>
+            <div class="plain">对照这三份材料，把第四列的口径统一一下。</div>
+          </div>
+        </div>
+
+        <!-- 纯附件（无正文） -->
+        <div class="msg user">
+          <div class="bubble">
+            <div class="att-sent only">
+              <div class="att-docs">
+                <button class="s-doc" type="button" title="20261113-现场排查记录与台区关联关系核对表-终版.md（12.4KB，点击预览）">
+                  <span class="sd-ico" data-ico="md"></span>
+                  <span class="sd-name">20261113-现场排查记录与台区关联关系核对表-终版.md</span>
+                  <span class="sd-size">12.4KB</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 多图 -->
+        <div class="msg user">
+          <div class="bubble">
+            <div class="att-sent">
+              <div class="att-imgs">
+                <button class="s-img" type="button" data-preview="1" title="现场照片-1.jpg（2.1MB，点击放大）">
+                  <span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#ffe0c2,#f9bd7c 50%,#e69a4e)"></span>
+                  <span class="si-tag">JPG</span>
+                  <span class="si-foot">2.1MB</span>
+                </button>
+                <button class="s-img" type="button" data-preview="1" title="现场照片-2.jpg（1.6MB，点击放大）">
+                  <span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#d6f0d8,#95d69b 50%,#69bb72)"></span>
+                  <span class="si-tag">JPG</span>
+                  <span class="si-foot">1.6MB</span>
+                </button>
+                <button class="s-img" type="button" data-preview="1" title="现场照片-3.jpg（1.9MB，点击放大）">
+                  <span style="display:block;width:100%;height:100%;background:linear-gradient(135deg,#e9dcff,#c3a8f0 50%,#a081dd)"></span>
+                  <span class="si-tag">JPG</span>
+                  <span class="si-foot">1.9MB</span>
+                </button>
+              </div>
+            </div>
+            <div class="plain">这三张照片拍的是同一台区吗？</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div class="note info">
+      <b>缩略图为什么不新增端点：</b>气泡里的 <code>attachments[].path</code> 是上传后的绝对路径，
+      <code>GET /uploads/view?path=&amp;disp=raw</code>（需求 20261028-006）已支持受控只读取原始字节，
+      前端 <code>fetch</code> 带 Bearer 后用 <code>URL.createObjectURL</code> 显示，卸载时 <code>revokeObjectURL</code> 释放，
+      与 FilesView 既有的图片预览同一套写法。失败（404/403）降级为文档胶囊，不出现破图。
+    </div>
+  </section>
+
+  <!-- ================= 类型图标 ================= -->
+  <section class="sec">
+    <h2><span class="no">3</span>文件类型图标体系</h2>
+    <p class="desc">
+      延续项目「16px 内联线性 SVG、<code>stroke-width:1.6</code>、<code>currentColor</code>、圆头圆角」规范（<code>tool-meta.ts</code> / <code>chart-box.ts</code> 同源写法）。
+      <b>不使用文件类型彩色</b>——避免与品牌绿体系和暗色主题抢色；靠「折角形状 + 内部标识线」区分大类，扩展名交给字标文本。
+    </p>
+    <div class="board">
+      <div class="ico-grid" id="icoGrid"></div>
+      <p class="demo-note">
+        分四族即可覆盖上传场景：<b>图片</b>（山形 + 太阳）、<b>文档</b>（折角页 + 文本线）、<b>表格</b>（折角页 + 网格）、<b>代码/文本</b>（折角页 + <code>&lt;/&gt;</code>）。
+        PDF 复用文档族但在页内加 <code>PDF</code> 竖条语义线，ZIP 用拉链页形。
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= 规格表 ================= -->
+  <section class="sec">
+    <h2><span class="no">4</span>规格（可直接照抄进 ChatView.vue）</h2>
+    <div class="board">
+      <table class="spec">
+        <thead>
+          <tr><th style="width:150px">元素</th><th>尺寸与取值</th><th style="width:88px">令牌</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>附件区顶行</td><td>字号 11.5px / 数量与总量 <code>--muted</code>，「清空」右对齐 hover 转 <code>--danger</code></td><td>—</td></tr>
+          <tr><td>卡片间距</td><td>8px（原 <code>.chips</code> 为 6px，收紧后改为 8px 更透气）</td><td>—</td></tr>
+          <tr><td>文档卡</td><td>高 <code>52px</code>（与图片砖同高）、圆角 <code>10px</code>、内距 <code>0 9px 0 10px</code>、最大宽 <code>230px</code>、图标 <code>24×24</code>、名 12.5px <code>--text</code>、副行 10.5px <code>--muted</code></td><td><code>--line</code></td></tr>
+          <tr><td>扩展名字标</td><td>9.5px / 600 / mono / <code>--code-bg</code> 底 / 圆角 3px / 大写</td><td><code>--code-bg</code></td></tr>
+          <tr><td>图片砖（待发送）</td><td><code>52×52</code>、圆角 <code>10px</code>、<code>object-fit:cover</code>、描边 <code>--line</code></td><td><code>--line</code></td></tr>
+          <tr><td>图片砖（气泡内）</td><td><code>88×88</code>、圆角 <code>10px</code>、描边 <code>color-mix(in srgb, var(--brand) 55%, transparent)</code>、hover 转实品牌色 + <code>translateY(-1px)</code>；<b>与文档胶囊分两行</b></td><td><code>--brand</code></td></tr>
+          <tr><td>图片角标</td><td><code>IMG/JPG/PNG</code> 8px/700/mono、黑 50% 底 + 白字 + <code>blur(2px)</code>；尺寸在底部渐变带内 9.5px</td><td>—</td></tr>
+          <tr><td>文档胶囊（气泡内）</td><td>高 <code>30px</code>、圆角 <code>8px</code>、<code>--att-card-bg</code> 底 + <code>--att-card-line</code> 描边、名 12px <code>--text</code>、大小 10.5px <code>--text-2</code></td><td><code>--att-card-bg</code></td></tr>
+          <tr><td>删除按钮</td><td><code>17×17</code> 圆形，右上角偏移 <code>(-5px,-5px)</code>，默认 <code>opacity:0 scale(.85)</code>，卡片 hover 或自聚焦时浮出；hover 转 <code>--danger</code> 实底白叉</td><td><code>--danger</code></td></tr>
+          <tr><td>上传中</td><td>文档卡虚线品牌描边 + 2px 进度条；图片砖内容 <code>opacity:.4</code> + 14px spinner</td><td><code>--brand</code></td></tr>
+          <tr><td>失败</td><td>描边 <code>--danger</code>、底色红 4% 混色、文件名转红、右侧「重试」22px 高按钮</td><td><code>--danger</code></td></tr>
+          <tr><td>折叠</td><td>超过 3 个时第 4 个起折叠为「+N」虚线胶囊（高 30px），点击展开</td><td><code>--line-strong</code></td></tr>
+          <tr><td>长文件名</td><td>中段省略（保留首尾），<code>title</code> 给全文；气泡内文档胶囊最大宽 <code>100%</code> 不撑破气泡</td><td>—</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        <b>顺带修掉的既有缺陷：</b><code>.msg-file-chip:hover</code> 用了 <code>var(--fg)</code>、<code>:focus-visible</code> 用了 <code>var(--accent)</code>，
+        这两个令牌在 <code>style.css</code> 中<b>都不存在</b>（全仓检索 0 处定义），所以现在的悬停变色与键盘聚焦描边<b>实际都不生效</b>。本设计全部改用真实令牌（<code>--text</code> / <code>--brand</code>）。
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 落地映射与待决 ================= -->
+  <section class="sec">
+    <h2><span class="no">5</span>落地映射与待确认项</h2>
+    <div class="board">
+      <table class="spec">
+        <thead><tr><th style="width:190px">原型新增令牌</th><th>落地表达式（不新增全局令牌）</th></tr></thead>
+        <tbody>
+          <tr><td><code>--att-bg</code></td><td><code>var(--panel)</code></td></tr>
+          <tr><td><code>--att-line</code></td><td><code>var(--line)</code>（hover 转 <code>--line-strong</code>）</td></tr>
+          <tr><td><code>--att-cap</code></td><td><code>var(--code-bg)</code></td></tr>
+          <tr><td><code>--att-card-bg</code> / <code>-hover</code> / <code>-line</code></td><td>亮：<code>rgba(255,255,255,.88)</code> / <code>#fff</code> / <code>rgba(34,37,42,.16)</code><br>暗：<code>rgba(255,255,255,.10)</code> / <code>.17</code> / <code>.26</code><br><b>不可换成 <code>--panel</code></b>：气泡底是 <code>--brand-weak</code>，卡片须恒定更亮一档，而暗色下 <code>--panel</code> 比它更暗、会看成凹陷；表面明度差仅 ~1.1 倍，边界感靠描边承担</td></tr>
+        </tbody>
+      </table>
+      <table class="spec" style="margin-top:12px">
+        <thead><tr><th style="width:52px">编号</th><th>决策点</th><th style="width:210px">推荐</th></tr></thead>
+        <tbody>
+          <tr><td><b>D1</b></td><td>待发送区形态：混排流（图片砖 + 文档卡） vs 统一胶囊</td><td>混排流（图片一眼可辨）</td></tr>
+          <tr><td><b>D2</b></td><td>气泡内是否显示真实缩略图</td><td>显示（复用 <code>/uploads/view?disp=raw</code>）</td></tr>
+          <tr><td><b>D3</b></td><td>文件图标是否用类型彩色</td><td>不用（中性 + 扩展名字标）</td></tr>
+          <tr><td><b>D4</b></td><td>删除按钮常驻还是悬停浮出</td><td>悬停浮出（省宽度、降视觉噪声）</td></tr>
+          <tr><td><b>D5</b></td><td>多附件是否折叠</td><td>超过 3 个折叠为「+N」</td></tr>
+          <tr><td><b>D6</b></td><td>是否补上传中 / 失败重试态</td><td>补（改为先占位再上传）</td></tr>
+          <tr><td><b>D7</b></td><td>气泡内文档卡是否显示大小</td><td>显示（与待发送区一致）</td></tr>
+          <tr><td><b>D8</b></td><td>缩略图加载失败降级</td><td>降级为文档胶囊，不出破图</td></tr>
+        </tbody>
+      </table>
+      <div class="note info">
+        <b>下一步：</b>确认 D1–D8 后出任务文档（分 P0 待发送区 / P1 气泡与缩略图 / P2 过程态与折叠），再改代码。本原型<b>未改动任何源码</b>，也<b>未重启</b>正在运行的服务。
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- 预览浮层 -->
+<div class="lb-mask" id="lbMask">
+  <div class="lb-box">
+    <div class="lb-head">
+      <span class="sd-ico" data-ico="img" style="color:var(--muted)"></span>
+      <span class="lh-name">20261113-094256-paste.png</span>
+      <span class="lh-sub">71.3KB · PNG</span>
+      <button class="lb-close" type="button" id="lbClose" title="关闭（Esc）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg>
+      </button>
+    </div>
+    <div class="lb-body">
+      <div style="width:420px;height:280px;border-radius:8px;background:linear-gradient(135deg,#cfe3ff,#9fc4f5 45%,#7aa9e8)"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===== 线性 SVG 图标表（16×16 视口，stroke 1.6 —— 项目规范） ===== */
+const P = {
+  img: '<rect x="2.6" y="3.6" width="12.8" height="10.8" rx="2"/><circle cx="6.2" cy="7.2" r="1.2"/><path d="M3.4 12.6l3.6-3.2 2.6 2.3 2.1-1.8 3.5 3.1"/>',
+  doc: '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M6 9.2h5.2M6 12h4"/>',
+  pdf:  '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M6.2 12.4V9.4h1.1a.9.9 0 0 1 0 1.8H6.2M9.6 12.4V9.4h.9a1.5 1.5 0 0 1 0 3z"/>',
+  xls:  '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M5.6 9h6.2v4.4H5.6zM8.7 9v4.4M5.6 11.2h8.3"/>',
+  md:   '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M5.9 12.3V9.6l1.5 1.7 1.5-1.7v2.7M10.6 9.6v2.7h1.4"/>',
+  code: '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M7.3 9.8L6 11.2l1.3 1.4M10.6 9.8l1.3 1.4-1.3 1.4"/>',
+  zip:  '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M7.6 2.6v1.6M7.6 4.8v1.6M7.6 7v1.6M6.9 9.4h1.4v2.2a.7.7 0 0 1-1.4 0z"/>',
+  ppt:  '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M6.2 12.4V9.4h1.4a.9.9 0 0 1 0 1.8H6.2M9.5 9.4h1.3a.9.9 0 0 1 0 1.8H9.5v1.2"/>',
+  txt:  '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M6.2 9.4h5M6.2 11h5M6.2 12.6h3"/>',
+  csv:  '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M5.8 12.6v-3M6.7 12.6h.8a.7.7 0 0 0 0-1.4h-.8M8.9 10.8l1.1 1.8M10 10.8l-1.1 1.8"/>',
+  audio: '<path d="M10.2 2.2H5.4a1.6 1.6 0 0 0-1.6 1.6v10.4a1.6 1.6 0 0 0 1.6 1.6h7.2a1.6 1.6 0 0 0 1.6-1.6V6.4z"/><path d="M10 2.4v4h4"/><path d="M7 12.2V9.4l2.6-.6v2.8"/><circle cx="6.4" cy="12.4" r=".9"/><circle cx="9" cy="11.8" r=".9"/>'
+};
+function svg(path, size) {
+  return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 16 16" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + path + '</svg>';
+}
+
+/* 扩展名 → 图标族 */
+const ICO_OF = {
+  png: 'img', jpg: 'img', jpeg: 'img', gif: 'img', webp: 'img', bmp: 'img', svg: 'img', ico: 'img',
+  pdf: 'pdf',
+  xls: 'xls', xlsx: 'xls', csv: 'csv',
+  doc: 'doc', docx: 'doc', rtf: 'doc', odt: 'doc',
+  ppt: 'ppt', pptx: 'ppt',
+  md: 'md', markdown: 'md',
+  js: 'code', ts: 'code', py: 'code', json: 'code', html: 'code', css: 'code', sh: 'code', ps1: 'code', java: 'code', sql: 'code',
+  zip: 'zip', rar: 'zip', gz: 'zip', tar: 'zip', '7z': 'zip',
+  txt: 'txt', log: 'txt',
+  mp3: 'audio', wav: 'audio', m4a: 'audio'
+};
+
+/* 填充所有占位 */
+document.querySelectorAll('[data-ico]').forEach((el) => {
+  el.innerHTML = svg(P[el.dataset.ico] || P.doc, el.closest('.sd-ico') ? 16 : 16);
+});
+document.querySelectorAll('[data-ico-big]').forEach((el) => {
+  el.innerHTML = svg(P[el.dataset.icoBig] || P.doc, 24);
+});
+
+/* 图标体系展示 */
+const grid = document.getElementById('icoGrid');
+grid.innerHTML = [
+  ['img', '图片 / 截图'], ['doc', '文档（通用）'], ['pdf', 'PDF'], ['xls', 'Excel 表格'],
+  ['csv', 'CSV 文本表'], ['ppt', '演示文稿'], ['md', 'Markdown'], ['code', '代码 / 配置'],
+  ['txt', '纯文本 / 日志'], ['zip', '压缩包'], ['audio', '音频']
+].map(([k, lb]) => '<div class="ico-cell"><span class="ic-ic">' + svg(P[k], 24) + '</span><span class="ic-lb">'
+  + lb + '<br><code style="font-size:10px;color:var(--muted)">' + k + '</code></span></div>').join('');
+
+/* 主题切换 */
+document.getElementById('themeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-theme-val]');
+  if (!b) return;
+  document.documentElement.setAttribute('data-theme', b.dataset.themeVal);
+  document.querySelectorAll('#themeSeg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+});
+
+/* 预览浮层 */
+const mask = document.getElementById('lbMask');
+document.querySelectorAll('[data-preview]').forEach((b) => {
+  b.addEventListener('click', () => mask.classList.add('on'));
+});
+document.getElementById('lbClose').addEventListener('click', () => mask.classList.remove('on'));
+mask.addEventListener('click', (e) => { if (e.target === mask) mask.classList.remove('on'); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') mask.classList.remove('on'); });
+
+/* 折叠展开演示 */
+document.querySelectorAll('.s-more').forEach((b) => {
+  b.addEventListener('click', () => {
+    const wrap = b.parentElement;
+    const extra = ['会议纪要.docx', '日志归档.zip'];
+    const icons = { docx: 'doc', zip: 'zip' };
+    b.remove();
+    extra.forEach((n) => {
+      const ext = n.split('.').pop().toLowerCase();
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 's-doc';
+      el.title = n + '（点击预览）';
+      el.innerHTML = '<span class="sd-ico">' + svg(P[icons[ext] || 'doc'], 16) + '</span>'
+        + '<span class="sd-name">' + n + '</span><span class="sd-size">' + (ext === 'zip' ? '3.2MB' : '86KB') + '</span>';
+      wrap.appendChild(el);
+    });
+  });
+});
+
+/* URL 参数状态化：?theme=dark 便于评审截图 */
+(function () {
+  const t = new URLSearchParams(location.search).get('theme');
+  if (t === 'dark' || t === 'light') {
+    document.documentElement.setAttribute('data-theme', t);
+    document.querySelectorAll('#themeSeg button').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.themeVal === t)));
+  }
+})();
+</script>
+</body>
+</html>

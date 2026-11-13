@@ -179,12 +179,6 @@ export interface ChatMsg {
   /** 后台子任务结果卡片（20261107-002 D8）：渲染为独立卡片，不占用户气泡 */
   subResult?: SubAgentResultVM;
   /**
-   * L1 压缩总结文本（后端 is_show=false / kind=summary 的消息）。
-   * 该消息会替代被折叠的历史进入 LLM 上下文，但原文在界面上原本被直接丢弃——
-   * 用户必须知道「更早的工具输出模型已经看不到了」，因此渲染为可展开的摘要卡片。
-   */
-  summary?: string;
-  /**
    * 已被 L1 压缩折叠进摘要的历史消息（后端 is_compact=true）。
    * 这类消息不进入恢复视图（不计 seq、不可重试），但磁盘上完好保留，
    * 界面与普通历史一样平铺渲染——否则用户会看到「前面的对话凭空消失」。
@@ -423,23 +417,15 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
       continue;
     }
     const historyIdx = archived ? undefined : viewIdx++;
-    // 不展示的消息：压缩总结消息（is_show=false）——它替代了被折叠的历史进入模型上下文，
-    // 但界面上原本被直接丢弃，用户看不到「模型已经只认摘要」这件事。
-    // 现在渲染为可展开的摘要卡片（role 仍按 user 承载，seq 计入恢复视图下标，锚点语义不变）。
+    // 压缩总结消息（is_show=false / kind=summary）：只为模型上下文服务，界面完全不展示。
+    // 它替代被折叠的历史进入 LLM 上下文，属于实现细节，用户无需关注（需求 20261113-005）。
+    // 关键：historyIdx 已在上一行自增——该消息仍占用一个恢复视图下标（与后端 entry.history 对齐），
+    // 跳过渲染不能让后续消息的 seq 整体前移，否则重试锚点会错位。
+    // flush 保留：摘要占位是「归档区」与「保留区」的分界，归档段的 assistant 必须在此收束成独立气泡。
     if (m.is_show === false) {
-      // 空摘要没有展示价值，仍按原逻辑静默跳过，避免渲染出空气泡。
-      // 存量会话的旧占位可能仍带 [历史摘要] 前缀，展示时剥掉。
-      const summaryText = (m.content ?? '').replace(/^\[历史摘要\]\s*/, '');
-      if (m.role === 'user' && summaryText.trim()) {
-        flush();
-        out.push({
-          id: nextMsgId(),
-          role: 'user',
-          segments: [],
-          seq: historyIdx,
-          summary: summaryText,
-        });
-      }
+      // 仅当摘要确有内容时才切分：摘要占位是「归档区」与「保留区」的分界，
+      // 归档段的 assistant 必须在此收束成独立气泡（空摘要不产生分界，与旧行为一致）。
+      if (m.role === 'user' && (m.content ?? '').replace(/^\[历史摘要\]\s*/, '').trim()) flush();
       continue;
     }
     if (m.role === 'user') {
@@ -1593,13 +1579,13 @@ function sameTimeline(a: ChatMsg[], b: ChatMsg[]): boolean {
 function preserveOptimisticTail(disk: ChatMsg[], local: ChatMsg[]): void {
   // 子任务结果卡片不是用户输入，不能参与「本地比磁盘多几条」的判断
   const countUser = (list: ChatMsg[]): number =>
-    list.filter((m) => m.role === 'user' && !m.subResult && !m.summary).length;
+    list.filter((m) => m.role === 'user' && !m.subResult).length;
   const diskUsers = countUser(disk);
   if (countUser(local) <= diskUsers) return;
   let seen = 0;
   for (let i = 0; i < local.length; i++) {
     const m = local[i];
-    if (m.role === 'user' && !m.subResult && !m.summary && ++seen > diskUsers) {
+    if (m.role === 'user' && !m.subResult && ++seen > diskUsers) {
       disk.push(...local.slice(i));
       return;
     }
@@ -1608,11 +1594,11 @@ function preserveOptimisticTail(disk: ChatMsg[], local: ChatMsg[]): void {
 
 /** 磁盘 user 消息的 content 含附件 note / 记忆前缀：展示层沿用本地乐观气泡的原文与附件 */
 function keepLocalUserBubbles(disk: ChatMsg[], local: ChatMsg[]): void {
-  const users = local.filter((m) => m.role === 'user' && !m.summary);
+  const users = local.filter((m) => m.role === 'user' && !m.subResult);
   let i = 0;
   for (const m of disk) {
-    // 结果卡片 / 摘要卡片是系统风格卡片，不参与用户气泡对齐（否则后续气泡会错位）
-    if (m.role !== 'user' || m.subResult || m.summary) continue;
+    // 结果卡片是系统风格卡片，不参与用户气泡对齐（否则后续气泡会错位）
+    if (m.role !== 'user' || m.subResult) continue;
     const l = users[i++];
     if (!l) break;
     const seg = l.segments[0];
@@ -1746,8 +1732,7 @@ export async function retryMessage(id: string, opts: RetryOptions): Promise<Send
   }
   let userIdx = -1;
   for (let i = idx - 1; i >= 0; i--) {
-    // 摘要卡片也用 role=user 承载，但不是用户输入，不能作为重试锚点
-    if (st.messages[i].role === 'user' && !st.messages[i].summary) {
+    if (st.messages[i].role === 'user' && !st.messages[i].subResult) {
       userIdx = i;
       break;
     }
