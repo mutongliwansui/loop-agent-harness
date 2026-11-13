@@ -9,6 +9,7 @@ import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
 import { markWorkspaceUsed, resolveRecentRoot } from './recent-workspace.js';
 import { reportGhostWorkspaces } from './ghost-workspaces.js';
+import { createShutdownState } from './shutdown.js';
 
 export interface StartApiServerOptions {
   /** 会话/记忆/自愈扫描根目录覆盖（默认 ~/.loop-agent；单测注入临时目录） */
@@ -116,6 +117,14 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   // 不依赖运行时文件读取与 import.meta，避免 CJS 产物中版本恒为空
   const version = pkg.version;
 
+  // 关停状态机（任务 20261112-007-02 / D2-1）：信号与 HTTP 端点共用同一把标志，保证幂等。
+  // 序列实现依赖 createApiServer 返回的 server，存在先有鸡先有蛋的循环，
+  // 故先用 holder 占位，待 server 组装完再赋值（见下方 shutdownImpl）。
+  let shutdownImpl: ((reason: string) => Promise<void>) | null = null;
+  const shutdownState = createShutdownState((reason) => {
+    void shutdownImpl?.(reason);
+  });
+
   const t4 = Date.now();
   const server = createApiServer({
     // D4：每 run 从池租用独立 agent 实例（历史经 options.messages 显式传入，不依赖实例状态）
@@ -142,6 +151,8 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
     registry,
     // 记忆晋升调度器（Task-20261026-002 D11）：手动端点与定时/关停共用同一把进程内锁
     dreamScheduler,
+    // 关停请求入口（任务 20261112-007-02）：桌面端 POST /admin/shutdown 经此触发
+    requestShutdown: (reason: string) => shutdownState.request(reason),
   });
   console.log(`  ├─ API Server 组装 (+${Date.now() - t4}ms)`);
 
@@ -165,17 +176,21 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   // - 信号面：SIGINT（Ctrl+C，全平台）+ SIGTERM（Linux/macOS 主路径）+ SIGBREAK（Windows）
   // - 二次信号：立即强退，给用户「别等了」的出口
   dreamScheduler.start();
-  let shuttingDown = false;
-  const onSignal = async (sig: string): Promise<void> => {
-    if (shuttingDown) {
-      console.log(`\n[api] 再次收到 ${sig}，立即退出（未完成的晋升会被丢弃）`);
-      process.exit(0);
-    }
-    shuttingDown = true;
+
+  /**
+   * 优雅关停序列（任务 20261112-007-02 / D2-1）。
+   *
+   * 顺序（不能调换）：停调度器 → 跑晋升（受 shutdownBudgetMs 约束）→ server.close() → 断 MCP → exit。
+   * 不能先 server.close()：等待存量连接关闭可能被 SSE 长连接挂住，晋升就永远排不上。
+   *
+   * 两条触发路径共用本函数：信号（SIGINT/SIGTERM/SIGBREAK）与 POST /admin/shutdown。
+   * 调用方负责幂等判定，本函数只保证「执行一次」由单一入口进入。
+   */
+  shutdownImpl = async (reason: string): Promise<void> => {
     dreamScheduler.stop();
     const budget = configLoader.load().config.memory.dreaming.shutdownBudgetMs;
     console.log('');
-    console.log(`[api] 收到 ${sig}，正在整理记忆（Dreaming），最多等待 ${Math.round(budget / 1000)}s；再按一次 Ctrl+C 立即退出`);
+    console.log(`[api] 收到 ${reason}，正在整理记忆（Dreaming），最多等待 ${Math.round(budget / 1000)}s`);
     await dreamScheduler.runAllForShutdown(budget).catch(() => []);
     await server.close().catch(() => {});
     mcpMonitor.stop();
@@ -183,9 +198,17 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
     await mcpManager.disconnectAll().catch(() => {});
     process.exit(0);
   };
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
-    process.on(sig, () => void onSignal(sig));
-  }
 
+  // 信号面：SIGINT（Ctrl+C，全平台）+ SIGTERM（Linux/macOS 主路径）+ SIGBREAK（Windows）
+  // 二次信号：立即强退，给用户「别等了」的出口（--serve + Ctrl+C 行为与改动前完全一致）
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
+    process.on(sig, () => {
+      if (shutdownState.shuttingDown) {
+        console.log(`\n[api] 再次收到 ${sig}，立即退出（未完成的晋升会被丢弃）`);
+        process.exit(0);
+      }
+      shutdownState.request(sig);
+    });
+  }
   return server;
 }

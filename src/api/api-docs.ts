@@ -805,6 +805,17 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     response: '{ version, groups: [ { key, title, desc, items } ], stats: { total, documented, undocumented } }',
     example: 'curl /dev/api-docs',
   },
+
+  /* ================= 进程生命周期（任务 20261112-007-02） ================= */
+  'POST /admin/shutdown': {
+    summary:
+      '触发优雅关停：停调度器 → 整理记忆（Dreaming，受 shutdownBudgetMs 约束）→ 关服务 → 断 MCP → 退出。' +
+      '仅供桌面端关窗口时调用：**必须带请求头 X-LoopAgent-Client: desktop**，否则 403（该头会强制浏览器预检，' +
+      '借此防止任意网页静默触发关机）。无请求体。',
+    scope: 'write',
+    response: '202 { ok: true, shuttingDown: true }；409 { ok: false, code: "ALREADY_SHUTTING_DOWN" }（幂等）；501（宿主未启用）',
+    example: 'curl -X POST -H "X-LoopAgent-Client: desktop" /admin/shutdown',
+  },
 };
 
 /** 分组定义（数组顺序即页面展示顺序） */
@@ -870,6 +881,12 @@ export const API_DOC_GROUPS: readonly ApiDocGroup[] = [
     title: '开发者',
     desc: '面向二次开发者的自描述端点（本页即由 /dev/api-docs 提供）。',
     prefixes: ['/dev'],
+  },
+  {
+    key: 'admin',
+    title: '进程生命周期',
+    desc: '桌面端专用：关窗口时触发优雅关停（含记忆整理）。需自定义请求头，不在 WebUI 暴露。',
+    prefixes: ['/admin'],
   },
 ];
 

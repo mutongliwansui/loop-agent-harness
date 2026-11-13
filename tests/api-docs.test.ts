@@ -40,8 +40,8 @@ const hasCjk = (s: string): boolean => /[\u4e00-\u9fa5]/.test(s);
 describe('api-docs：反射全集（D1）', () => {
   it('stats.total 等于 createRoutes() 实际条数', () => {
     expect(payload.stats.total).toBe(routes.length);
-    // 88 = 87 + 20261112-006 新增 GET /sessions/:id/jobs（后台任务统一快照）
-    expect(payload.stats.total).toBe(88);
+    // 89 = 88 + 20261112-007 新增 POST /admin/shutdown（桌面端关窗口优雅关停）
+    expect(payload.stats.total).toBe(89);
   });
 
   it('路由表无重复的 METHOD + path（重复会导致文档条目被覆盖）', () => {
@@ -136,6 +136,8 @@ describe('api-docs：分组归属（最长前缀匹配）', () => {
       'memory',
       'insight',
       'dev',
+      // 20261112-007：/admin/shutdown（桌面端优雅关停）独占 admin 分组
+      'admin',
     ]);
     for (const g of API_DOC_GROUPS) {
       expect(g.title.trim().length).toBeGreaterThan(0);

@@ -95,6 +95,12 @@ export interface ApiServerDeps {
    * 缺省时不注入 — handler 回落原有「即走即忘」行为（既有单测零改动）。
    */
   dreamScheduler?: DreamScheduler;
+  /**
+   * 关停请求入口（任务 20261112-007-02 / D2-1）：serve 模式由 bootstrap 注入，
+   * 与信号关停共用同一把 shuttingDown 标志，保证幂等。
+   * 未注入时（既有单测/嵌入用法）端点返回 501，不影响其他功能。
+   */
+  requestShutdown?: (reason: string) => boolean;
 }
 
 export interface ApiServer {

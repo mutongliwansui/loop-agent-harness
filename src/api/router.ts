@@ -26,6 +26,7 @@ import { memoryDreamRoutes } from './handlers/memory-dream.js';
 import { visionRoutes } from './handlers/vision.js';
 import { doctorRoutes } from './handlers/doctor.js';
 import { terminalRoutes } from './handlers/terminal.js';
+import { adminRoutes } from './handlers/admin.js';
 import { backgroundRoutes } from './handlers/background.js';
 import { devRoutes } from './handlers/dev.js';
 import type { ApiServerDeps } from './server.js';
@@ -168,6 +169,8 @@ export function createRoutes(): Route[] {
     ...backgroundRoutes(),
     // 需求 20261104-002：开发者中心（/dev/api-docs 反射本函数返回值，故传 getter 避免循环依赖）
     ...devRoutes(() => createRoutes()),
+    // 任务 20261112-007-02：桌面端关停入口（自定义头守卫，详见 handlers/admin.ts）
+    ...adminRoutes(),
   ];
 }
 

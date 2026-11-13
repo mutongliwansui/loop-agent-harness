@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'readonly'
   | 'bad_gateway'
   | 'payload_too_large'
+  | 'not_implemented'
   | 'internal';
 
 /** 统一错误码 → HTTP 状态映射 */
@@ -25,6 +26,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   readonly: 409,
   bad_gateway: 502,
   payload_too_large: 413,
+  not_implemented: 501,
   internal: 500,
 };
 

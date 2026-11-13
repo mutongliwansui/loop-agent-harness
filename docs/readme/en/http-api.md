@@ -242,7 +242,15 @@ Fields added by requirement `20261026-003` (legacy fields are kept for one relea
 
 `/dev/api-docs` shares the same auth policy as every other endpoint (loopback-only when no token; `Authorization: Bearer` required once `api.token` is set) and reads **no files from disk**: it works under the single-file SEA distribution where `docs/` does not exist. The WebUI "Developer Center" (`#/dev`) consumes this endpoint to render grouped lists, parameter tables and curl examples.
 
-Errors are uniform `{error: {code, message}}`: 400 bad request / 401 unauthorized / 403 non-loopback / 404 not found / 405 method not allowed / 409 conflict (session busy / active model rejected / memory disabled) / 413 body over 2MB / 500 internal / 502 upstream connect failure (MCP).
+**admin (process lifecycle, task 20261112-007-02)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/admin/shutdown` | Trigger a graceful shutdown (stop scheduler → run Dreaming memory consolidation → close server → disconnect MCP → exit). **Requires the request header `X-LoopAgent-Client: desktop`**, otherwise 403. First accepted request → 202 `{ok: true, shuttingDown: true}`; already shutting down → 409 `{ok: false, code: "ALREADY_SHUTTING_DOWN"}`; host did not wire shutdown support → 501. |
+
+This endpoint exists only for the desktop shell to call when the window closes, and is **not exposed in the WebUI**. The custom header is required rather than relying on loopback + token alone: this server has no CORS or OPTIONS preflight handling, and "POST with no custom header" is a CORS *simple request* — any web page can send it silently (the same-origin policy only blocks reading the response, not sending). If only loopback were checked, opening a malicious page would be enough to shut LoopAgent down. A custom header forces a preflight, which the browser blocks because the server returns no CORS headers; Node-side callers are not subject to CORS, so the desktop shell simply sends it.
+
+Errors are uniform `{error: {code, message}}`: 400 bad request / 401 unauthorized / 403 non-loopback or missing desktop client header / 404 not found / 405 method not allowed / 409 conflict (session busy / active model rejected / memory disabled / already shutting down) / 413 body over 2MB / 500 internal / 501 capability not enabled by host / 502 upstream connect failure (MCP).
 
 Semantic conventions:
 
