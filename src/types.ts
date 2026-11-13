@@ -215,6 +215,26 @@ export interface TurnUsage {
 }
 
 /**
+ * WebUI 上传附件元信息（需求 20261113-003 D3）。
+ *
+ * 附件信息原本只以文本形式编码在 content 的 `[文件上传]` note 里，磁盘无结构化记录，
+ * 刷新后前端拿不到路径与文件名，只能把 note 原文裸渲进气泡。本结构随用户消息落盘，
+ * 供前端渲染可点击 chip（走 /uploads/view 受控预览）与重试时重建完整 content 用。
+ *
+ * 仅存盘/展示语义：调用 LLM 前由 LLMClient.normalizeMessages 剥离，模型侧只认 content。
+ */
+export interface MessageAttachment {
+  /** 上传后文件名（含时间戳前缀，如 20261113-094256-paste.png） */
+  fileName: string;
+  /** 字节数（解析不出时为 0） */
+  bytes: number;
+  /** 上传后的绝对路径（用于 /uploads/view 预览与重试重建 note） */
+  path: string;
+  /** 图片 MIME（非图片或未识别时缺省） */
+  mime?: string;
+}
+
+/**
  * 会话持久化标记（仅存盘语义，调用 LLM 前由 LLMClient.normalizeMessages 统一剥离）
  */
 export interface SessionMessageFlags {
@@ -242,6 +262,12 @@ export interface SessionMessageFlags {
    * 仅存盘语义，调用 LLM 前由 LLMClient.normalizeMessages 剥离。
    */
   msgId?: string;
+  /**
+   * 上传附件元信息（需求 20261113-003 D3）：仅用户消息携带，由落盘时从 content 的
+   * `[文件上传]` note 解析填充。缺省表示该消息无附件；存量数据缺该字段时由前端
+   * 解析 content 兜底。不进入 LLM 请求（normalizeMessages 剥离）。
+   */
+  attachments?: MessageAttachment[];
 }
 
 /**

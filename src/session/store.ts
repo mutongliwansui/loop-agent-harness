@@ -16,6 +16,7 @@ import type { ChatMessage } from '../types.js';
 import { isDisplayOnlyContent, isSubAgentResultContent } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
+import { parseUploadNotes, stripUploadNotes } from '../upload/manager.js';
 import { isSummaryMessage } from '../memory/summary-message.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
@@ -212,8 +213,16 @@ function toStoredMessage(
   else if (m.role === 'user' && isSubAgentResultContent(out.content)) out.kind = 'subagent_result';
   else delete out.kind;
   if (m.role === 'user' && typeof m.content === 'string') {
-    // content 为原始用户输入（存量数据可能含 L2 记忆前缀）；展示内容单独存 show_content
-    const stripped = stripMemorySection(m.content);
+    // content 为原始用户输入（存量数据可能含 L2 记忆前缀、上传附件 note）；展示内容单独存 show_content
+    let stripped = stripMemorySection(m.content);
+    // 需求 20261113-003 D1/D3：上传附件 note 只对模型有意义（含绝对路径与 MIME），
+    // 展示层要剥掉它、另以结构化 attachments 承载，否则刷新后 note 原文会裸渲进气泡。
+    // content 一字不动——模型侧仍能看到完整路径，视觉工具（analyzeImage）才取得到图。
+    const notes = parseUploadNotes(stripped);
+    if (notes.length > 0) {
+      out.attachments = notes;
+      stripped = stripUploadNotes(stripped);
+    }
     if (stripped !== m.content) out.show_content = stripped;
   }
   return out;

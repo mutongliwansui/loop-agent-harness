@@ -137,6 +137,18 @@ export interface ApiHistoryMsg {
   kind?: string;
   /** 子 Agent 轨迹（20261107-002 D4）：挂在该轮 delegate 的 tool 消息上 */
   sub?: SubAgentTraceVM;
+  /**
+   * 上传附件元信息（需求 20261113-003 D3）：落盘侧从 content 的 `[文件上传]` note 解析得到。
+   * 存量会话缺该字段，回读时由前端解析 content 兜底（D6）。
+   */
+  attachments?: MessageAttachmentVM[];
+}
+/** 前端附件元信息（与后端 MessageAttachment 同形） */
+export interface MessageAttachmentVM {
+  fileName: string;
+  bytes: number;
+  path: string;
+  mime?: string;
 }
 export interface ChatMsg {
   id: number;
@@ -150,6 +162,11 @@ export interface ChatMsg {
   /** 本轮 token 统计（需求 20261106-006）：历史来自落盘 usage，流式中由 llm_stats 实时镜像 */
   turnTokens?: TurnTokenStats;
   files?: string[]; // 该消息附带的上传文件名（仅用户消息展示）
+  /**
+   * 上传附件元信息（需求 20261113-003 D3）：刷新后从磁盘恢复，用于渲染可点击附件 chip
+   * （点击走 /uploads/view 受控预览）。files 由本字段派生，避免两套真相（D10）。
+   */
+  attachments?: MessageAttachmentVM[];
   streaming?: boolean;
   compacting?: boolean; // 压缩中 loading（compaction_start 置 true，compaction 结束事件置 false）
   failed?: boolean;
@@ -427,16 +444,21 @@ function rebuildChatMsgs(list: ApiHistoryMsg[]): ChatMsg[] {
     }
     if (m.role === 'user') {
       flush();
-      // content 为 LLM 可见原文（可能含记忆注入前缀），展示优先用 show_content 还原；
+      // content 为 LLM 可见原文（可能含记忆注入前缀、上传附件 note），展示优先用 show_content 还原；
       // 需求 20261108-003：show_content 缺失时（存量数据/特殊落盘路径）前端兜底剥离，
       // 不再单点依赖后端写入的 show_content——否则「## 相关历史记忆…<<<LOOP_AGENT_MEMORY_END…>>>」
-      // 会裸渲到界面上
-      const text = stripMemorySection(m.show_content || m.content || '');
+      // 会裸渲到界面上。
+      // 需求 20261113-003 D6：同理，上传附件 note 无条件剥离（后端 store 已写净版 show_content，
+      // 但存量会话没有），附件改为结构化 chip；磁盘 attachments 缺失时解析 content 兜底。
+      const raw = stripMemorySection(m.show_content || m.content || '');
+      const text = stripUploadNotes(raw);
+      const attaches = safeAttachments(m, raw);
       out.push({
         id: nextMsgId(),
         role: 'user',
         segments: [{ type: 'text', text }],
         seq: historyIdx,
+        ...(attaches.length > 0 ? { attachments: attaches, files: attaches.map((a) => a.fileName) } : {}),
         ...(archived ? { archived: true } : {}),
       });
     } else if (m.role === 'assistant') {
@@ -499,6 +521,116 @@ function stripMemorySection(content: string): string {
     cur = cur.slice(tailIdx + MEMORY_SECTION_TAIL.length);
   }
   return cur;
+}
+
+/* ============ 上传 note 解析 / 剥离（需求 20261113-003 D5/D6；与后端 manager.ts 同形） ============ */
+
+// note 结构行固定标签（须与后端 buildContextNote 逐字节一致）
+const NOTE_HEAD = '[文件上传] ';
+const NOTE_PATH = '  上传路径: ';
+const NOTE_SIZE = '  大小: ';
+const NOTE_IMAGE_TYPE = '  类型: 图片 ';
+
+/** 判断从第 i 行起是否为完整 note（需紧跟「上传路径」行，防用户手打同名字样被误剥） */
+function isNoteStart(lines: string[], i: number): boolean {
+  if (!lines[i].startsWith(NOTE_HEAD)) return false;
+  return i + 1 < lines.length && lines[i + 1].startsWith(NOTE_PATH);
+}
+
+/** 人性化字节串 → 字节数（后端 formatBytes 的逆运算；解析不出返回 0） */
+function parseSizeText(text: string): number {
+  const m = text.match(/^([\d.]+)\s*(B|KB|MB|GB)$/i);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return 0;
+  const unit = m[2].toUpperCase();
+  const factor = unit === 'GB' ? 1024 ** 3 : unit === 'MB' ? 1024 ** 2 : unit === 'KB' ? 1024 : 1;
+  return Math.round(n * factor);
+}
+
+/** 解析单段 note → 元信息与结束行下标；非 note 返回 null */
+function parseOneNote(
+  lines: string[],
+  start: number,
+): { attachment: MessageAttachmentVM; end: number } | null {
+  if (!isNoteStart(lines, start)) return null;
+  const fileName = lines[start].slice(NOTE_HEAD.length).trim();
+  const path = lines[start + 1].slice(NOTE_PATH.length).trim();
+  if (!fileName || !path) return null;
+  let bytes = 0;
+  let mime: string | undefined;
+  let end = start + 2;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (line.startsWith(NOTE_SIZE)) {
+      bytes = parseSizeText(line.slice(NOTE_SIZE.length).trim());
+      end++;
+      continue;
+    }
+    if (line.startsWith(NOTE_IMAGE_TYPE)) {
+      const rest = line.slice(NOTE_IMAGE_TYPE.length);
+      mime = rest.split(/[（(]/)[0].trim() || undefined;
+      end++;
+      continue;
+    }
+    break;
+  }
+  return { attachment: { fileName, bytes, path, ...(mime ? { mime } : {}) }, end };
+}
+
+/** 从 content 解析附件元信息（存量数据兜底：磁盘无 attachments 字段时用） */
+export function parseUploadNotes(content: string): MessageAttachmentVM[] {
+  if (typeof content !== 'string' || !content.includes(NOTE_HEAD)) return [];
+  const lines = content.split('\n');
+  const out: MessageAttachmentVM[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const one = parseOneNote(lines, i);
+    if (!one) continue;
+    out.push(one.attachment);
+    i = one.end - 1;
+  }
+  return out;
+}
+
+/** 从 content 剥离上传 note 段，返回纯净正文；无 note 时原样返回 */
+export function stripUploadNotes(content: string): string {
+  if (typeof content !== 'string' || !content.includes(NOTE_HEAD)) return content;
+  const lines = content.split('\n');
+  const keep: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const one = parseOneNote(lines, i);
+    if (!one) {
+      keep.push(lines[i]);
+      continue;
+    }
+    i = one.end - 1;
+    while (i + 1 < lines.length && lines[i + 1].trim() === '') i++;
+  }
+  while (keep.length > 0 && keep[0].trim() === '') keep.shift();
+  return keep.join('\n');
+}
+
+/**
+ * 取消息的附件元信息（需求 20261113-003 D3/D6）。
+ *
+ * 优先用落盘的结构化 attachments；缺失（存量会话）或结构损坏时解析 content 兜底，
+ * 解析失败静默降级为「无附件」——展示层不应因为一个可选字段坏掉就整条消息报错。
+ */
+function safeAttachments(m: ApiHistoryMsg, fallbackContent: string): MessageAttachmentVM[] {
+  const raw = m.attachments;
+  if (Array.isArray(raw)) {
+    const ok = raw.filter(
+      (a): a is MessageAttachmentVM =>
+        !!a && typeof a.fileName === 'string' && typeof a.path === 'string',
+    );
+    if (ok.length > 0) return ok;
+  }
+  try {
+    // fallbackContent 已剥记忆前缀，与首次落盘的 note 位置一致
+    return parseUploadNotes(fallbackContent);
+  } catch {
+    return [];
+  }
 }
 
 function parseSubAgentResultCard(content: string, sub?: SubAgentTraceVM): SubAgentResultVM | undefined {
@@ -1459,7 +1591,7 @@ function sameTimeline(a: ChatMsg[], b: ChatMsg[]): boolean {
  * （用户气泡 + 助手占位/已收片段）原样接回重建结果。
  */
 function preserveOptimisticTail(disk: ChatMsg[], local: ChatMsg[]): void {
-  // 摘要卡片与子任务结果卡片不是用户输入，不能参与「本地比磁盘多几条」的判断
+  // 子任务结果卡片不是用户输入，不能参与「本地比磁盘多几条」的判断
   const countUser = (list: ChatMsg[]): number =>
     list.filter((m) => m.role === 'user' && !m.subResult && !m.summary).length;
   const diskUsers = countUser(disk);
@@ -1486,6 +1618,7 @@ function keepLocalUserBubbles(disk: ChatMsg[], local: ChatMsg[]): void {
     const seg = l.segments[0];
     if (seg && seg.type === 'text') m.segments = [{ type: 'text', text: seg.text }];
     if (l.files) m.files = l.files;
+    if (l.attachments) m.attachments = l.attachments;
   }
 }
 
@@ -1567,6 +1700,11 @@ export interface SendOptions {
   /** 气泡展示文本（用户输入原文） */
   text: string;
   files: string[];
+  /**
+   * 附件元信息（需求 20261113-003）：供乐观气泡渲染可点击 chip；
+   * 刷新后由磁盘 attachments 恢复（D6），两条路径展示一致。
+   */
+  attachments?: MessageAttachmentVM[];
   stream: boolean;
   /**
    * 会话级模型覆盖（task-20261025-002 D4）：别名或空串。
@@ -1651,6 +1789,8 @@ async function runTurn(
     role: 'user',
     segments: [{ type: 'text', text: opts.text }],
     files: opts.files.length > 0 ? opts.files : undefined,
+    // 需求 20261113-003：乐观气泡同样挂 attachments，保证发送后立刻可点预览
+    attachments: opts.attachments?.length ? opts.attachments : undefined,
   };
   const asst = reactive<ChatMsg>({
     id: nextMsgId(),

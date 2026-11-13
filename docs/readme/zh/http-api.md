@@ -93,6 +93,8 @@ HTTP API 服务已启动
 
 `contextNote` 是注入 Agent 上下文的文本块：`[文件上传] <落盘名>` + 上传路径 + 大小；图片文件（png/jpg/jpeg/webp/gif/bmp）额外追加一行 `类型: 图片 <mime>（可用 analyzeImage / ocrImage 查看）`——否则主模型看到 `paste.png` 并不知道这是能看的图，容易用 `fileRead` 读出二进制垃圾。
 
+**消息上的展示字段（需求 20261113-003）**：`GET /sessions/:id` 返回的 `messages` 中，用户消息可能额外带 `show_content`（剥掉记忆前缀与上传 note 的纯净正文，供气泡渲染）与 `attachments`（`{fileName, bytes, path, mime?}[]`，供附件 chip 与重试重建 note）。`content` 保持原文不变，模型仍按它取路径与 MIME；`attachments` 只在落盘读取侧出现，`POST /sessions/:id/messages` 的请求体不需要（也不接受）该字段——它会在发往模型前被统一剥离。无附件的普通消息不带这两个字段。
+
 **config（/config 命令）**
 
 | 方法 | 路径 | 说明 |

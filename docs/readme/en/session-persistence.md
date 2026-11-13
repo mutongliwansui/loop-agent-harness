@@ -53,6 +53,24 @@ On startup the server **scans read-only** for such residue and, if found, warns 
 > The detection rule is deliberately conservative: if a directory contains anything other than `meta.json` / `sessions.json` (`sess_*` session bodies, a `runs/` subdirectory, any other stray file), it is treated as a real workspace and never reported — under-reporting is preferred over risking the deletion of a workspace in use.
 
 
+### Message fields: content / show_content / attachments
+
+A persisted message may carry three display-related fields (requirement 20261113-003):
+
+| Field | Meaning | Consumer |
+|---|---|---|
+| `content` | **The exact text the LLM sees**, never rewritten. A user message may contain the L2 memory prefix and upload attachment notes (absolute path + MIME) | Model requests (prefix caching is based on it too) |
+| `show_content` | **Clean display body**: what remains after stripping the memory prefix and upload notes | Front-end bubble body, L1 compaction payload |
+| `attachments` | **Structured attachment metadata** `{fileName, bytes, path, mime?}[]` parsed from the notes | Front-end attachment chips (clicking previews via `/uploads/view`), note rebuilding on retry |
+
+Three invariants:
+
+- **Zero bloat**: `show_content` is written only when it actually differs from `content`; `attachments` only when notes were parsed. Plain text messages gain neither field on disk.
+- **Model isolation**: `attachments` is a session-storage marker, and `normalizeMessages()` strips it before every request — miss it and the non-standard field reaches the API and triggers a 400.
+- **No rewriting of existing data**: sessions persisted before this requirement lack both fields and are never batch-migrated; the client strips the note itself and falls back to parsing `content`.
+
+> For an attachment-only message (files uploaded with no text typed) `show_content` is the empty string, which is expected — the client renders a bubble containing only the attachment chips.
+
 ### Encryption
 
 - **Master key**: A 256-bit random key is auto-generated on first use and stored in `~/.loop-agent/.keyfile` (mode `0600`); no user password required

@@ -94,6 +94,8 @@ Three auth modes:
 
 `contextNote` is the text block injected into the Agent context: `[文件上传] <on-disk name>` plus the upload path and size. Image files (png/jpg/jpeg/webp/gif/bmp) get one extra line, `类型: 图片 <mime>（可用 analyzeImage / ocrImage 查看）` — without it the main model sees `paste.png` and has no idea it is an image it can look at, and tends to `fileRead` raw binary instead.
 
+**Display fields on messages (requirement 20261113-003)**: in the `messages` returned by `GET /sessions/:id`, a user message may additionally carry `show_content` (the clean body after stripping the memory prefix and upload notes, used for the bubble) and `attachments` (`{fileName, bytes, path, mime?}[]`, used for attachment chips and for rebuilding notes on retry). `content` stays untouched, so the model still gets the path and MIME from it; `attachments` exists only on the persistence/read side — the `POST /sessions/:id/messages` request body neither needs nor accepts it, and it is stripped before anything is sent to the model. Plain messages without attachments carry neither field.
+
 **config (`/config` command)**
 
 | Method | Path | Description |

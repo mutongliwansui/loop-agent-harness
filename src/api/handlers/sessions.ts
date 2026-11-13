@@ -36,6 +36,7 @@ import { ReActAgent, type CompactNowResult } from '../../agent/react-agent.js';
 import { subAgentRegistry } from '../../agent/subagent-registry.js';
 import { listJobs, type JobKind, type JobStatus } from '../../background/jobs.js';
 import { runMessageTurn } from './messages.js';
+import { rebuildContextNote } from '../../upload/manager.js';
 
 /** 枚举本机盘符（Windows；返回 'C:\' 形式，非 Windows 返回空） */
 async function listDrives(): Promise<string[]> {
@@ -562,8 +563,16 @@ export async function handleRetrySession(
     throw new ApiHttpError('bad_request', '未找到该轮的用户消息，无法重试');
   }
   const userMsg = entry.history[userIdx];
-  // show_content 为展示原文，content 为 LLM 可见原文（含上传附件的 contextNote）
-  const text = (userMsg.show_content ?? userMsg.content ?? '').trim();
+  // content 为 LLM 可见原文（含上传附件的 contextNote），show_content 为纯净展示正文。
+  // 需求 20261113-003 D4：不能直接把 show_content 当整条消息重发——那会丢掉附件 note，
+  // 模型看不到图片路径，「这张图里有什么」就会答错。故用 attachments 重建 note 段拼回正文；
+  // 无 attachments（存量消息）时回退 content 原文，保证重试输入与首轮等价。
+  const displayBody = (userMsg.show_content ?? '').trim();
+  const rebuilt = (userMsg.attachments ?? [])
+    .map(rebuildContextNote)
+    .join('\n\n');
+  const text =
+    [rebuilt, displayBody].filter(Boolean).join('\n\n') || (userMsg.content ?? '').trim();
   if (!text) throw new ApiHttpError('bad_request', '该轮用户消息为空，无法重试');
 
   // ===== 存储截断（视图下标 → 存储下标）=====

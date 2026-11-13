@@ -6,6 +6,7 @@ import { copyFile, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { MIME_BY_EXT } from '../tools/vision/image.js';
+import type { MessageAttachment } from '../types.js';
 import { loopAgentHome } from '../user-home.js';
 
 const execAsync = promisify(exec);
@@ -366,5 +367,130 @@ export function buildContextNote(entry: UploadEntry): string {
   if (mime) {
     lines.push(`  类型: 图片 ${mime}（可用 analyzeImage 查看）`);
   }
+  return lines.join('\n');
+}
+
+/* ================= note 解析 / 剥离 / 重建（需求 20261113-003 D1/D4/D5） ================= */
+
+/** note 内各结构行的固定标签（与 buildContextNote 逐字节对应，改动须同步） */
+const NOTE_HEAD = '[文件上传] ';
+const NOTE_PATH = '  上传路径: ';
+const NOTE_SIZE = '  大小: ';
+const NOTE_IMAGE_TYPE = '  类型: 图片 ';
+
+/**
+ * 判断从第 i 行开始是否为一段完整的 note（D5 误剥防护）。
+ *
+ * 用户完全可能手打「[文件上传] xxx」这行字，只看首行会误判。这里要求首行之后
+ * **紧跟**一条 `  上传路径: ` 行才算 note——该缩进双空格 + 固定中文标签的组合
+ * 是 buildContextNote 独有的结构特征。
+ */
+function isNoteStart(lines: string[], i: number): boolean {
+  if (!lines[i].startsWith(NOTE_HEAD)) return false;
+  return i + 1 < lines.length && lines[i + 1].startsWith(NOTE_PATH);
+}
+
+/** 解析单段 note（lines[start] 为首行）→ 元信息与结束行下标 */
+function parseOneNote(
+  lines: string[],
+  start: number,
+): { attachment: MessageAttachment; end: number } | null {
+  if (!isNoteStart(lines, start)) return null;
+  const fileName = lines[start].slice(NOTE_HEAD.length).trim();
+  const path = lines[start + 1].slice(NOTE_PATH.length).trim();
+  if (!fileName || !path) return null;
+  let bytes = 0;
+  let mime: string | undefined;
+  let end = start + 2; // 已消费首行与路径行
+  // 后续结构行（大小 / 类型）按固定标签吸收；遇到非结构行即本段结束
+  while (end < lines.length) {
+    const line = lines[end];
+    if (line.startsWith(NOTE_SIZE)) {
+      bytes = parseSizeText(line.slice(NOTE_SIZE.length).trim());
+      end++;
+      continue;
+    }
+    if (line.startsWith(NOTE_IMAGE_TYPE)) {
+      // 形如「  类型: 图片 image/png（可用 analyzeImage 查看）」
+      const rest = line.slice(NOTE_IMAGE_TYPE.length);
+      mime = rest.split(/[（(]/)[0].trim() || undefined;
+      end++;
+      continue;
+    }
+    break;
+  }
+  return { attachment: { fileName, bytes, path, ...(mime ? { mime } : {}) }, end };
+}
+
+/** 人性化字节串 → 字节数（formatBytes 的逆运算；解析不出返回 0） */
+function parseSizeText(text: string): number {
+  const m = text.match(/^([\d.]+)\s*(B|KB|MB|GB)$/i);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return 0;
+  const unit = m[2].toUpperCase();
+  const factor = unit === 'GB' ? 1024 ** 3 : unit === 'MB' ? 1024 ** 2 : unit === 'KB' ? 1024 : 1;
+  return Math.round(n * factor);
+}
+
+/**
+ * 从 content 解析附件元信息（需求 20261113-003 D5）。
+ *
+ * 按固定中文标签逐行匹配，不依赖路径正则——content 里是 Windows 绝对路径
+ * （`C:\Users\...`），用盘符/分隔符正则会在 POSIX 或 UNC 场景失效。
+ * 解析不出（含用户手打同名字样）返回 []。
+ */
+export function parseUploadNotes(content: string): MessageAttachment[] {
+  if (typeof content !== 'string' || !content.includes(NOTE_HEAD)) return [];
+  const lines = content.split('\n');
+  const out: MessageAttachment[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const one = parseOneNote(lines, i);
+    if (!one) continue;
+    out.push(one.attachment);
+    i = one.end - 1; // 跳过已消费的结构行
+  }
+  return out;
+}
+
+/**
+ * 从 content 剥离上传 note 段，返回纯净正文（需求 20261113-003 D1）。
+ *
+ * 仅删除被 parseOneNote 认定成功的 note 段（含其后的空行），其余内容原样保留；
+ * 无 note 时返回原文（保证「无附件消息」逐字节不变，满足 D2 零膨胀）。
+ */
+export function stripUploadNotes(content: string): string {
+  if (typeof content !== 'string' || !content.includes(NOTE_HEAD)) return content;
+  const lines = content.split('\n');
+  const keep: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const one = parseOneNote(lines, i);
+    if (!one) {
+      keep.push(lines[i]);
+      continue;
+    }
+    i = one.end - 1;
+    // 吞掉 note 与正文之间的分隔空行（note 之间及末条 note 之后）
+    while (i + 1 < lines.length && lines[i + 1].trim() === '') i++;
+  }
+  // 前导空行（正文为空、只有附件时会产生）一并去掉
+  while (keep.length > 0 && keep[0].trim() === '') keep.shift();
+  return keep.join('\n');
+}
+
+/**
+ * 由附件元信息重建 note 段（需求 20261113-003 D4，重试用）。
+ *
+ * 输出与 buildContextNote({fileName,targetPath,bytes}) 逐字节一致——注意 images 行
+ * 依赖文件名扩展名推断 MIME，与首次落盘时的判定口径相同，故重试的 content 与首轮等价。
+ */
+export function rebuildContextNote(a: MessageAttachment): string {
+  const lines = [
+    `${NOTE_HEAD}${a.fileName}`,
+    `${NOTE_PATH}${a.path}`,
+    `${NOTE_SIZE}${formatBytes(a.bytes)}`,
+  ];
+  const mime = a.mime ?? MIME_BY_EXT[extname(a.fileName).toLowerCase()];
+  if (mime) lines.push(`${NOTE_IMAGE_TYPE}${mime}（可用 analyzeImage 查看）`);
   return lines.join('\n');
 }
