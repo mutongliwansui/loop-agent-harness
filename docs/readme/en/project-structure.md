@@ -125,9 +125,6 @@ loop-agent-command/
 │   ├── plan.md                       # 📋 Overall dev plan and milestones
 │   ├── openclaw_memory_management.md # 🧠 Memory management design reference (OpenClaw style)
 │   └── tasks/                        # 📂 Per-task docs (15 tasks, incl. memory Phases 1-5 and LLM stats)
-├── .loop-agent/                      # 📋 Workspace config and Skills (.agent-config.json + skills/, all git-ignored)
-│   ├── .agent-config.json            # ⚙️ Workspace config (optional, generated at runtime)
-│   └── skills/                       # 🎯 Workspace Skills (example-skill, py-pptx, etc.)
 ├── memory/                           # 🧠 L2 episodic memory (generated at runtime, split by day)
 ├── SOUL.md                           # 🧠 L3: agent persona
 ├── USER.md                           # 🧠 L3: user profile

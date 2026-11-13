@@ -125,9 +125,6 @@ loop-agent-command/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
 │   ├── openclaw_memory_management.md # 🧠 记忆管理设计参考（OpenClaw 风格）
 │   └── tasks/                        # 📂 逐任务文档（15 个任务，含记忆管理 Phase 1-5 与 LLM 统计）
-├── .loop-agent/                      # 📋 工作空间配置与 Skill（.agent-config.json + skills/，整体不进入版本控制）
-│   ├── .agent-config.json            # ⚙️ 工作空间配置（可选，运行时生成）
-│   └── skills/                       # 🎯 工作空间 Skill（example-skill、py-pptx 等）
 ├── memory/                           # 🧠 L2 情景记忆（运行时生成，按天分文件）
 ├── SOUL.md                           # 🧠 L3：Agent 人格
 ├── USER.md                           # 🧠 L3：用户画像

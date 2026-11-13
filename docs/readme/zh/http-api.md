@@ -57,13 +57,26 @@ HTTP API 服务已启动
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康探针 `{status, version, model}` |
-| POST | `/sessions` | 创建空会话（body 可带 `{title?, workspacePath?}`；带 `workspacePath` 时**直接建在目标空间**，不切换"当前空间"）→ 201 `{id, title, createdAt, workspace: {path, id, switched}}`（`switched` 字段保留、恒为 `false`） |
-| GET | `/sessions` | 当前空间（最近使用指针）的会话列表 `{sessions: [...]}` |
-| GET | `/workspaces` | 跨工作空间聚合 `{workspaces: [{id, name, current, sessions}]}`（`current` 由最近使用指针标注；会话项含 `running` 与 `lastRun` 概要） |
+| POST | `/sessions` | 创建空会话，body **必须**带 `{workspacePath}`（`title` 可选；缺失或空串 → 400 `bad_request`）→ 201 `{id, title, createdAt, workspace: {path, id, switched}}`。会话**直接建在目标空间**，不切换「当前空间」（`switched` 保留、恒为 `false`） |
+| GET | `/sessions` | **指定空间**的会话列表 `{sessions: [...]}`；`?ws=`（绝对路径）**必填**，缺失或空串 → 400 `bad_request`（不再回落进程启动空间）；跨空间全貌请用 `GET /workspaces` |
+| GET | `/workspaces` | 跨工作空间聚合 `{workspaces: [{id, name, path, createdAt, lastAccessedAt, sessions}]}`（空间之间完全并列，**无「当前空间」标记**；会话项含 `running` 与 `lastRun` 概要） |
 | GET | `/sessions/:id` | 会话详情 `{meta, messages, run, lastRun, workspace}`（按 id 定位归属空间读取，**纯读不改变服务端状态**；`messages` 为全量历史，system 与压缩总结消息带 `is_show=false` 由前端过滤） |
 | DELETE | `/sessions/:id` | 删除会话 `{deleted: true}`（归属空间内 in-flight 时 409；其他空间的运行不影响） |
 | POST | `/sessions/:id/messages` | 发消息（默认 SSE 流式，`"stream": false` 切非流式 JSON；按 id 定位归属空间执行） |
-| GET | `/sessions/:id/subagents` | 后台子任务列表快照（需求 20261107-002 D9）：`{tasks: [{taskId, status, task, elapsedMs, iterations, …}]}`，供 WebUI「后台子任务运行中 N」指示器 2s 轮询，不依赖 SSE（刷新页面/错过事件不失联） |
+| GET | `/sessions/:id/subagents` | 后台子任务列表快照（需求 20261107-002 D9）：`{items: [{taskId, status, task, elapsedMs, iterations, …}]}`，仍保留供旧调用方使用 |
+| GET | `/sessions/:id/jobs` | 后台任务统一快照（需求 20261112-006）：`{items: [{id, kind: command\|subagent, title, status: running\|done\|failed\|stopped\|lost, startedAt, elapsedMs, canStop, …}], run}`；范围 = 当前会话 + 无归属任务，供 WebUI 指示器 2s 轮询 |
+
+**工作空间文件（/fs/*）**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/fs/dirs?path=` | 服务端目录浏览器（新建会话「选择工作空间」弹窗用）→ `{path, parent, dirs, drives}`。缺省 `path` 时的起点为**最近使用空间**，无最近使用记录回落 `os.homedir()`（需求 20261113-001 D3：此处 MRU 仅作*推荐起点*，不再是隐式工作空间） |
+| GET | `/fs/tree?path=&ws=` | 工作空间目录树单层；`ws` **必填**——缺参 400、未知空间 403（需求 20261113-001 D2） |
+| GET | `/fs/file?path=&ws=` | 读取文本文件（`ws` 必填；>512KB 截断，二进制拒绝） |
+| GET | `/fs/search?q=&ws=` | 文件名 / 目录名 / 内容三路全文搜索（`ws` 必填） |
+| GET | `/fs/fingerprint?path=&ws=` | 目录指纹，供前端识别目录是否变更（`ws` 必填） |
+
+> 需求 20261113-001 D2：`/fs/tree`、`/fs/file`、`/fs/search`、`/fs/fingerprint`（以及共用同一解析器的其他空间内读写端点）**不再回落「最近使用空间」**。缺 `ws` 的请求返回 `400 bad_request`，而不是静默读到用户没点名的目录。只有「选择空间」的浏览器 `/fs/dirs` 保留推荐起点——它的职责正是帮用户挑一个。
 
 #### 命令资源化（CLI 命令 → REST，10 组 40 端点）
 
@@ -87,7 +100,7 @@ HTTP API 服务已启动
 | GET | `/config` | 全量配置（secret 遮蔽） |
 | GET | `/config/path` | 配置文件路径 `{globalPath, workspacePath, workspaceExists}` |
 | GET | `/config/:key` | 单键读取 `{key, value, scope}`（secret 遮蔽） |
-| PUT | `/config/:key` | 写单键 `{value, scope?}`（默认 workspace；api.* 返回 restartRequired） |
+| PUT | `/config/:key` | 写单键 `{value, scope?}`（只写全局；api.* 返回 restartRequired） |
 | DELETE | `/config/:key?scope=` | 删单键 `{deleted}` |
 
 **status（REPL /status 快照）**
@@ -125,7 +138,7 @@ HTTP API 服务已启动
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/mcp/servers` | 服务器列表 `{servers: [{name, transport, status, toolCount, state, lastError?, nextRetryAt?, scope}]}`（`scope` 为登记范围 workspace/global，20261109-002 D9） |
+| GET | `/mcp/servers` | 服务器列表 `{servers: [{name, transport, status, toolCount, state, lastError?, nextRetryAt?, scope}]}`（`scope` 恒为 global，20261112-008 后配置只剩全局） |
 | GET | `/mcp/tool-meta` | MCP 工具展示元信息 `{tools: McpToolMeta[], summary}`（需求 20261104-001：中文展示名、参数标签、翻译状态；无 server 连接时返回空表而非 404，不参与 `toOpenAITools()`） |
 | GET | `/mcp/servers/:name` | 服务器详情（含工具清单） |
 | POST | `/mcp/servers` | 登记并连接 `{name, transport, command?/url?, ...}` → 201（同名 409；连接失败 502 但配置已落盘） |
@@ -140,6 +153,7 @@ HTTP API 服务已启动
 | GET | `/skills` | 已加载技能 `{skills: [{name, description, scope, path}]}` |
 | GET | `/skills/:name` | 技能详情（含正文） |
 | POST | `/skills` | 从源目录安装 `{sourcePath, scope?, overwrite?}` → 201（同名未 overwrite 409） |
+| POST | `/skills/upload` | 上传技能 zip 包安装 `{rootName, zipBase64, scope?, overwrite?}` → 201（上限 20MB，自动剥离顶层目录） |
 | DELETE | `/skills/:name?scope=` | 卸载技能 `{deleted, scope}` |
 | POST | `/skills/reload` | 重载技能 `{loaded}` |
 
@@ -149,7 +163,7 @@ HTTP API 服务已启动
 |------|------|------|
 | GET | `/memory/status` | 分层状态 `{enabled, layers, counts, dreaming?}`（未启用恒 200 `{enabled:false,...}`；`dreaming` 为自动晋升状态，见下） |
 | GET | `/memory/workspaces` | 聚合「有会话 ∪ 有记忆」的空间清单 `{workspaces: [{id, name, path, hasMemory, hasSession}]}`（会话侧来自 sessions 索引扫描，记忆侧来自 `{memoryDir}/*/` 目录扫描；仅有记忆的孤儿空间也列出） |
-| GET | `/memory/curated?ws=` | 整理层三层文件全文 `{entries}`（`ws` 可选：空间 id 或绝对路径；缺省=缺省空间（最近使用，需求 20261027-004）；未知空间 404） |
+| GET | `/memory/curated?ws=` | 整理层三层文件全文 `{entries}`（`ws` 可选：空间 id 或绝对路径；缺省=**启动空间**，需求 20261113-001 起不再随最近使用漂移；未知空间 404） |
 | GET | `/memory/episodic?limit=&ws=` | 情景层日志 `{entries}`（`ws` 可选，语义同 curated；`limit` 1–90 天） |
 | GET | `/memory/search?q=&limit=` | 跨层检索 `{results: [{content, score, layer}]}`（q 必填；当前空间） |
 | GET | `/memory/gate` | 提升门阈值 + 近期判定 |
@@ -157,7 +171,7 @@ HTTP API 服务已启动
 | GET | `/memory/dream/schedule` | 读取当前定时排期 `{enabled, cron, describe, misfireGraceMin, nextRunAt, nextRunTimes, intervalMode}` |
 | PUT | `/memory/dream/schedule` | 改排期 `{enabled?, cron?, misfireGraceMin?}` → 校验通过即**热重排（无需重启）**；非法 cron → 400 且**不落盘、不改现有排期** |
 | GET | `/memory/dream/preview?cron=` | 输入期预览：`{ok:true, describe, next:[…5 个时刻], timezoneOffsetMin}`；非法 → **200** `{ok:false, error, fieldIndex?}`（预览不属于错误请求，前端单分支处理） |
-| GET | `/memory/dream/history?limit=&scope=&ws=` | 最近触发记录 `{scope, runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?, workspaceId?, workspaceName?, workspacePath?}]}`；`scope=all` 文件扫描聚合全部空间（不要求已装载），`scope=ws`（缺省）= 缺省空间（最近使用）；另有 `no-new-content` / `runtime-unavailable` 两种跳过原因 |
+| GET | `/memory/dream/history?limit=&scope=&ws=` | 最近触发记录 `{scope, runs:[{startedAt, finishedAt, durationMs, reason, ok, daysBack, promoted, skipped, errors, skippedBecause?, errorMessage?, catchup?, workspaceId?, workspaceName?, workspacePath?}]}`；`scope=all` 文件扫描聚合全部空间（不要求已装载），`scope=ws`（缺省）= **启动空间**（需求 20261113-001 起不再随最近使用漂移）；另有 `no-new-content` / `runtime-unavailable` 两种跳过原因 |
 | DELETE | `/memory/dream/history?scope=&ws=` | 清空触发记录 `{deleted}`（跟随筛选范围；`all` 时遍历清空各空间记录，文件保留） |
 | POST | `/memory/init` | 初始化分层目录（幂等） |
 
@@ -230,7 +244,7 @@ HTTP API 服务已启动
 语义约定：
 
 - **动词即确认**：DELETE/PUT/PATCH 替代 CLI 的 y/N 确认；skill 同名覆盖用 `overwrite: true` 显式声明；删当前激活模型直接 409（比确认更严格）
-- **scope 统一**：写配置类端点一律 `?scope=workspace|global`（默认 workspace），与 CLI `--global` flag 对齐
+- **scope 统一**：配置只剩全局一份（需求 20261112-008），写配置类端点无需 `scope` 参数；传 `?scope=workspace` 一律返回 400，传 `global` 与省略等价
 - **诊断语义**：`/vision/test`、`/models/:alias/test`、`/mcp/servers/:name/test`、`/doctor` 检测失败也返回 200（`ok: false` + 明细），不失败端点
 
 ### SSE 流式事件
@@ -296,4 +310,5 @@ curl -X DELETE http://127.0.0.1:3000/sessions/sess_8dcc67b6_20261016_103000
 - **跨工作空间并行**：每个空间由 `WorkspaceRegistry` 懒建独立的 `WorkspaceRuntime`（会话存储、配置、技能、记忆、Agent 池，LRU 上限 4）；进程级 `process.chdir` 已移除，工具相对路径以会话所属空间根为基准；全局并发信号量（8）限制同时运行的 run 总数
 - **sessionId 空间命名空间**：新 id 形如 `sess_<wsId8>_<时间戳>`（如 `sess_8dcc67b6_20261016_103000`），按 id 即可定位归属空间，`GET /sessions/:id` 等端点不再触发"切换空间"；老格式 `sess_<时间戳>` 永久兼容读取
 - **配置变更**（token/port/host）需重启服务生效
+- **无隐式缺省空间**（需求 20261113-001）：空间内读写端点缺 `ws` 一律 400，不再静默落到「最近使用空间」；`/fs/dirs` 缺省起点为 `最近使用空间 \|\| os.homedir()`。`POST /sessions` **必须**显式给 `workspacePath`、`GET /sessions` **必须**显式给 `ws`（缺失/空串一律 400，不会在任何空间偷偷建会话、也不会回落进程启动空间，见 D6/D8）；需要跨空间全貌时用 `GET /workspaces`；`/memory/dream*` 全空间语义不需要 `ws`
 - **run journal（Task-20261021-002-06）**：每次 run 的生命周期（running/done/failed/aborted）落到 `<用户目录>/.loop-agent/sessions/<空间ID>/runs/<会话ID>.json`（随会话删除联动清理）；服务重启时启动扫描把上个进程遗留的 `running` 记录改写为 `interrupted`。`GET /sessions/:id` 响应含 `lastRun` 字段（journal 磁盘态），`GET /workspaces` 的会话项含 `lastRun: {status, finishedAt}` 概要——前端据此展示「上次运行被中断（服务已重启）」注记与侧栏 ⚠ 标记。诊断日志另写 `~/.loop-agent/logs/runs-YYYY-MM-DD.jsonl`（start/finish/abort/failed/interrupted 事件流）

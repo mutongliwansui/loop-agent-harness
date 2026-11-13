@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 配置视图（P1 §3.5）
-// 端点映射：GET /config（遮蔽树）· GET /config/path · GET/PUT/DELETE /config/:key（scope 可选，缺省 workspace）
+// 端点映射：GET /config（遮蔽树）· GET /config/path · GET/PUT/DELETE /config/:key
+// 需求 20261112-008：配置只剩全局一份，不再提供 scope 选择，请求也不再带 scope 参数
 // 语义：api.* 写入后响应附 restartRequired: true（需重启生效）；DELETE 返回 {deleted: existed}
 import { computed, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
@@ -21,8 +22,7 @@ interface Row { key: string; value: unknown; display: string; masked: boolean }
 interface Section { name: string; rows: Row[] }
 
 const tree = ref<Record<string, unknown> | null>(null);
-const paths = ref<{ globalPath: string; workspacePath: string; workspaceExists: boolean } | null>(null);
-const scope = ref<'workspace' | 'global'>('workspace');
+const paths = ref<{ globalPath: string | null } | null>(null);
 const busy = ref(false);
 
 const editingKey = ref<string | null>(null);
@@ -106,7 +106,7 @@ async function refresh(): Promise<void> {
   try {
     const [cfg, p] = await Promise.all([
       api<{ config: Record<string, unknown> }>('/config'),
-      api<{ globalPath: string; workspacePath: string; workspaceExists: boolean }>('/config/path'),
+      api<{ globalPath: string | null }>('/config/path'),
     ]);
     tree.value = cfg.config;
     paths.value = p;
@@ -132,9 +132,9 @@ async function saveEdit(key: string): Promise<void> {
   try {
     const res = await api<{ key: string; scope: string; restartRequired?: boolean }>(`/config/${encodeURIComponent(key)}`, {
       method: 'PUT',
-      json: { value: parseLoose(editValue.value), scope: scope.value },
+      json: { value: parseLoose(editValue.value) },
     });
-    showToast(res.restartRequired ? `已写入 ${key}，需重启服务生效` : `已写入 ${key}（${res.scope}）`, 'success');
+    showToast(res.restartRequired ? `已写入 ${key}，需重启服务生效` : `已写入 ${key}`, 'success');
     cancelEdit();
     await refresh();
   } catch (e) {
@@ -147,8 +147,8 @@ async function saveEdit(key: string): Promise<void> {
 async function del(key: string): Promise<void> {
   busy.value = true;
   try {
-    const res = await api<{ deleted: boolean }>(`/config/${encodeURIComponent(key)}?scope=${scope.value}`, { method: 'DELETE' });
-    showToast(res.deleted ? `已从 ${scope.value} 删除 ${key}` : `${scope.value} 层未设置此键，无需删除`, res.deleted ? 'success' : 'info');
+    const res = await api<{ deleted: boolean }>(`/config/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    showToast(res.deleted ? `已删除 ${key}` : `未设置此键，无需删除`, res.deleted ? 'success' : 'info');
     await refresh();
   } catch (e) {
     guard(e, '删除失败');
@@ -182,11 +182,6 @@ onMounted(refresh);
       <StatusBadge kind="dim">GET /config</StatusBadge>
       <StatusBadge kind="brand">模型/工具配置请前往 <a href="#/models" style="color:inherit;font-weight:600">模型</a> · <a href="#/tools" style="color:inherit;font-weight:600">工具</a> 模块</StatusBadge>
       <span class="spacer"></span>
-      <span class="muted">写入 scope：</span>
-      <select v-model="scope">
-        <option value="workspace">workspace（工作空间）</option>
-        <option value="global">global（全局）</option>
-      </select>
       <button :disabled="busy" @click="refresh">⟳ 刷新</button>
     </div>
 
@@ -277,7 +272,6 @@ onMounted(refresh);
         </div>
         <div v-if="keyResult" class="form-row" style="margin-top:10px">
           <span>值：<span class="mono" style="word-break:break-all">{{ displayValue(keyResult.value) }}</span></span>
-          <StatusBadge kind="brand">来源 {{ keyResult.scope }}</StatusBadge>
         </div>
       </div>
     </div>
@@ -287,9 +281,7 @@ onMounted(refresh);
       <div class="card-b" v-if="paths">
         <div class="form-row"><span class="muted" style="width:80px">全局</span><span class="mono">{{ paths.globalPath }}</span></div>
         <div class="form-row" style="margin-top:6px">
-          <span class="muted" style="width:80px">工作空间</span>
-          <span class="mono">{{ paths.workspacePath }}</span>
-          <StatusBadge :kind="paths.workspaceExists ? 'ok' : 'dim'">{{ paths.workspaceExists ? '已存在' : '未创建' }}</StatusBadge>
+          <span class="muted">配置只剩全局一份，工作空间级配置已移除</span>
         </div>
       </div>
     </div>

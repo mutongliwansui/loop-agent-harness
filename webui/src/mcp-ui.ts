@@ -5,7 +5,8 @@
 import { mcpNameOf, prettifyName, type McpToolMeta } from './mcp-tool-meta.js';
 
 export type McpState = 'pending' | 'connecting' | 'connected' | 'failed';
-export type McpScope = 'workspace' | 'global';
+/** 配置只剩全局一份（需求 20261112-008），scope 字段保留恒 'global' 以兼容旧响应 */
+export type McpScope = 'global';
 export type McpTab = 'all' | 'ok' | 'bad';
 export type McpSort = 'status' | 'name' | 'tools';
 
@@ -153,10 +154,8 @@ export function parseKv(text: string): Record<string, string> {
   return out;
 }
 
-/** 来源配置路径（登记 / 移除范围卡与抽屉展示用） */
-export function scopePath(scope: string): string {
-  return scope === 'global' ? '~/.loop-agent/config.json' : '.loop-agent/.agent-config.json';
-}
+/** 全局配置文件路径（MCP 配置只剩全局一份，登记/移除/抽屉展示统一用它） */
+export const MCP_CONFIG_PATH = '~/.loop-agent/config.json';
 
 export interface McpToolView {
   /** 中文展示名（缺元信息时回落名字美化） */

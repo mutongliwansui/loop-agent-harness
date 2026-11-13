@@ -63,8 +63,8 @@ describe('/setup match 与声明', () => {
     expect(setupCommand.match('/doctor')).toBe(false);
   });
 
-  it('声明二级子命令 --global/--workspace', () => {
-    expect(setupCommand.subcommands).toEqual(['--global', '--workspace', 'help']);
+  it('声明二级子命令（008 后仅 help；--global/--workspace 已移除）', () => {
+    expect(setupCommand.subcommands).toEqual(['help']);
   });
 });
 
@@ -92,19 +92,17 @@ describe('/setup 执行', () => {
     expect(logs).toContain('✓ 模型配置已写入，后续对话即时生效');
   });
 
-  it('--global：向导默认写入全局配置', async () => {
+  it('008 后：向导不再接收 preferredScope（配置一律写全局）', async () => {
     const { ctx } = makeCtx(cfgWith({ t: 1 }, { v: 1 }), cfgWith({ t: 2 }, { v: 2 }));
     await setupCommand.execute('/setup --global', ctx);
-    expect((runWizardMock.mock.calls[0][2] as Record<string, unknown>).preferredScope).toBe(
-      'global',
-    );
+    const opts = runWizardMock.mock.calls[0][2] as Record<string, unknown>;
+    expect(opts.preferredScope).toBeUndefined();
   });
 
-  it('--workspace：向导默认写入工作空间配置', async () => {
-    const { ctx } = makeCtx(cfgWith({ t: 1 }, { v: 1 }), cfgWith({ t: 2 }, { v: 2 }));
+  it('--workspace：明确报错中止，不进入向导', async () => {
+    const { ctx, lines } = makeCtx(cfgWith({ t: 1 }, { v: 1 }), cfgWith({ t: 2 }, { v: 2 }));
     await setupCommand.execute('/setup --workspace', ctx);
-    expect((runWizardMock.mock.calls[0][2] as Record<string, unknown>).preferredScope).toBe(
-      'workspace',
-    );
+    expect(runWizardMock).not.toHaveBeenCalled();
+    expect(logsOf(lines)).toContain('工作空间级配置已移除');
   });
 });

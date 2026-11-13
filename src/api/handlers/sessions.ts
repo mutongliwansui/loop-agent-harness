@@ -1,8 +1,7 @@
 // /sessions 与 /sessions/:id 的 CRUD 处理器
 //
-// POST /sessions 支持 { title?, workspacePath? }（原型-20261017-004）：
-// - 同空间：直接创建空会话
-// - 异空间：校验目录 → 直接在目标空间的 runtime 创建（task-04 起不再全局 busy 互斥；
+// POST /sessions 须带 { workspacePath }（title 可选，缺 workspacePath → 400）：
+// - 校验目录 → 直接在目标空间的 runtime 创建（task-04 起不再全局 busy 互斥；
 //   不改变任何全局状态，不影响其他空间运行中的 run）
 // - GET /fs/dirs：服务端目录浏览（新建会话选择工作空间；纯 Web 拿不到本地绝对路径）
 // - GET /sessions/:id / DELETE /sessions/:id：按 sessionId 定位归属 runtime（D17），
@@ -19,22 +18,23 @@
 import { type Dirent } from 'node:fs';
 import { access, readdir, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import type { HandlerContext } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
-import { ensureDirUsable, type WorkspaceRuntime } from '../workspace-runtime.js';
-import { markWorkspaceUsed } from '../recent-workspace.js';
+import { type WorkspaceRuntime } from '../workspace-runtime.js';
+import { currentWorkspaceRoot, markWorkspaceUsed } from '../recent-workspace.js';
 import { locateSession } from '../session-locator.js';
 import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
 import { SessionStore } from '../../session/index.js';
 import type { SessionManager } from '../session-manager.js';
-import { defaultBootstrapPaths, ensureScaffold } from '../../bootstrap/index.js';
 import { readJournal, dropJournal } from '../run-journal.js';
 import { estimateMessageTokens } from '../../memory/working.js';
 import { isDisplayOnlyContent, type ChatMessage } from '../../types.js';
 import { ReActAgent, type CompactNowResult } from '../../agent/react-agent.js';
 import { subAgentRegistry } from '../../agent/subagent-registry.js';
+import { listJobs, type JobKind, type JobStatus } from '../../background/jobs.js';
 import { runMessageTurn } from './messages.js';
 
 /** 枚举本机盘符（Windows；返回 'C:\' 形式，非 Windows 返回空） */
@@ -53,10 +53,21 @@ async function listDrives(): Promise<string[]> {
   return found;
 }
 
-/** GET /fs/dirs?path=：列出目录下的子目录；path 缺省为当前空间，盘根 parent=null，drives 供跳盘 */
+/**
+ * GET /fs/dirs?path=：列出目录下的子目录，供「新建会话选择工作空间」使用。
+ *
+ * 需求 20261113-001 D3：缺省 path 的起点是 **MRU（最近使用空间）‖ 用户主目录**。
+ * - 有推荐（MRU 指针非空）→ 按推荐预填，减少用户点击；
+ * - 无推荐（全新安装/无任何会话）→ 落 os.homedir()，用户从这里向上可到盘根、向右可跳盘。
+ *
+ * 注意与 `/fs/*` 的区别：那些端点语义是「已在某空间内读写」，缺 ws 一律 400（D2）；
+ * 本端点语义是「选空间的浏览器」，缺省必须给一个可浏览的真实目录，不能报错。
+ * homedir() 是真实绝对目录，故 path/parent/dirs/drives 四字段语义完全不变，前端零改动。
+ */
 export async function handleListDirs(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
-  const target = lexicalWorkspacePath(query.get('path')?.trim() || ctx.defaultRoot());
+  const explicitPath = query.get('path')?.trim();
+  const target = lexicalWorkspacePath(explicitPath || currentWorkspaceRoot() || homedir());
   let isDir: boolean;
   try {
     isDir = (await stat(target)).isDirectory();
@@ -99,57 +110,47 @@ export async function resolveWorkspaceRuntime(ctx: HandlerContext, target: strin
   markWorkspaceUsed(root);
 
   // 指针刷新：以下字段均来自 runtime（实例本身不可变，仅替换 handler 的引用）
+  // 需求 20261112-008 D8：config/skill 一律进程级单例，不再随空间改写——
+  // 否则「本该读全局的 handler」会读到某空间的实例。
   ctx.deps.sessionStore = rt.store;
   ctx.deps.runAgent = (sessionId, input, options) => rt.runAgent(sessionId, input, options);
-  // 鉴权 token / 模型名等随当前空间配置生效
-  ctx.deps.getConfig = () => rt.configLoader.load().config;
   ctx.sessions = rt.sessions;
-  ctx.configLoader = rt.configLoader;
-  ctx.configWriter = rt.configWriter;
-  ctx.skillLoader = rt.skillLoader;
   ctx.createMemoryKit = () => rt.getMemoryKit();
 
-  // 初始化新空间目录骨架：两级 skills 目录 + 工作空间配置骨架文件（幂等，已存在跳过）
-  try {
-    await ensureScaffold(defaultBootstrapPaths(rt.root));
-  } catch (e) {
-    ctx.log(`[api] 工作空间初始化失败: ${e instanceof Error ? e.message : String(e)}`);
-  }
   return rt;
 }
 
-/** POST /sessions：创建空会话；body 可带 { title?, workspacePath? }
- *  task-04：带 workspacePath 时直接在目标空间创建（无 busy 判定、不改变任何全局状态）；
- *  响应 workspace.switched 字段保留但恒 false（L2，task-05 前端移除依赖）。缺省时落启动空间。 */
+/**
+ * POST /sessions：创建空会话；body 必带 { workspacePath }（title 可选）
+ *
+ * task-04：带 workspacePath 时直接在目标空间创建（无 busy 判定、不改变任何全局状态）；
+ * 响应 workspace.switched 字段保留但恒 false（L2，task-05 前端移除依赖）。
+ *
+ * 需求 20261113-001 D6：缺 `workspacePath` **一律 400**，不存在"缺省空间"。
+ * 语义依据：WebUI/serve 形态下「发消息」必然发生在「已选定空间的会话」内
+ * （新建会话的前提就是选空间），故没有"无会话时自动建"这条路径需要兜底；
+ * 静默落某个空间只会让会话出现在用户没预期的地方。
+ * 目录校验（not_found/forbidden）由 resolveWorkspaceRuntime 内的 ensureRoot 统一完成。
+ */
 export async function handleCreateSession(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJsonBody(req);
   const title = typeof body.title === 'string' ? body.title : '';
   const requested = typeof body.workspacePath === 'string' ? body.workspacePath.trim() : '';
-
-  let rt: WorkspaceRuntime | null = null;
-  if (requested) {
-    // 空间身份按 canonical 形式比较（'D:' 特例 + 绝对化 + win32 真实大小写，D2/L2）
-    const target = await canonicalWorkspacePath(requested);
-    // 需求 20261027-004：缺省空间 = 最近使用空间（defaultRoot），不再是「启动空间」
-    const startup = await canonicalWorkspacePath(ctx.defaultRoot());
-    if (!isSameWorkspace(target, startup)) {
-      // 目录校验先于创建（保持改造前错误优先级）
-      if (ctx.registry) await ctx.registry.ensureRoot(target);
-      else await ensureDirUsable(target);
-      rt = await resolveWorkspaceRuntime(ctx, target);
-    } else {
-      // 显式指定恰好等于缺省空间：也走一次 resolve，统一完成指针改写与 touch
-      rt = await resolveWorkspaceRuntime(ctx, target);
-    }
+  if (!requested) {
+    throw new ApiHttpError('bad_request', '缺少 workspacePath：创建会话须显式指定工作空间');
   }
 
-  // 需求 20261027-004：未显式指定空间 → 缺省落「最近使用空间」的 runtime
-  // （resolveDefaultRuntime 内部复用 resolveWorkspaceRuntime：懒装载 + 指针改写 + touch）
-  const sessions = rt?.sessions ?? (ctx.registry ? (await ctx.resolveDefaultRuntime()).sessions : ctx.sessions);
-  const store = rt?.store ?? (ctx.registry ? (await ctx.resolveDefaultRuntime()).store : ctx.deps.sessionStore);
+  // 空间身份按 canonical 形式比较（'D:' 特例 + 绝对化 + win32 真实大小写，D2/L2）
+  const target = await canonicalWorkspacePath(requested);
+  const rt = ctx.registry
+    ? await resolveWorkspaceRuntime(ctx, target)
+    : await resolveEmbeddedRuntime(ctx, target);
+
+  const sessions = rt.sessions;
+  const store = rt.store;
   const meta = await sessions.createSessionSafe(title, []);
   sessions.set(meta.id, { history: [], inFlight: null });
-  ctx.log(`[api] 会话已创建: ${meta.id}${rt ? `（目标工作空间: ${store.path}）` : ''}`);
+  ctx.log(`[api] 会话已创建: ${meta.id}（目标工作空间: ${store.path}）`);
   sendJson(res, 201, {
     id: meta.id,
     title: meta.title,
@@ -160,19 +161,38 @@ export async function handleCreateSession(ctx: HandlerContext, req: IncomingMess
   });
 }
 
-/** GET /sessions：缺省空间（最近使用）的会话列表；?ws= 显式指定（绝对路径）时切目标空间 */
-export async function handleListSessions(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  // 需求 20261027-004：显式 ?ws= 优先（走 ensureRoot 校验 + 指针改写），
-  // 缺省 = 最近使用空间 runtime（懒装载）。无 registry（既有单测）回落 deps.sessionStore。
-  const ws = new URL(req.url ?? '/', 'http://localhost').searchParams.get('ws')?.trim();
-  let store: SessionStore;
-  if (ws && ctx.registry) {
-    store = (await resolveWorkspaceRuntime(ctx, await ctx.registry.ensureRoot(ws))).store;
-  } else if (ctx.registry) {
-    store = (await ctx.resolveDefaultRuntime()).store;
-  } else {
-    store = ctx.deps.sessionStore;
+/**
+ * 无 registry 的嵌入形态（既有单测 / 嵌入式 API）：进程内只有 `deps.sessionStore` 一个空间。
+ *
+ * 请求仍须显式给 workspacePath——但必须与那唯一空间一致，否则 404。
+ * 不采用「忽略 workspacePath 直接落 store」：那会让调用方以为会话建在 A，实际落在 B。
+ */
+async function resolveEmbeddedRuntime(ctx: HandlerContext, target: string): Promise<WorkspaceRuntime> {
+  const own = await canonicalWorkspacePath(ctx.deps.sessionStore.path);
+  if (!isSameWorkspace(target, own)) {
+    throw new ApiHttpError('not_found', `未知工作空间: ${target}`);
   }
+  return ctx.resolveDefaultRuntime();
+}
+
+
+/**
+ * GET /sessions：列出**指定空间**的会话列表；`?ws=`（绝对路径）必填。
+ *
+ * 需求 20261113-001 D6/D8 延伸：缺 `ws` **一律 400**，不再回落到「进程启动空间」。
+ * 语义依据与 POST /sessions 一致——会话永远属于某个空间，没有"哪个空间的都行"这种
+ * 调用意图；静默回落只会让调用方以为拿到的是目标空间的列表。跨空间全貌走 GET /workspaces。
+ */
+export async function handleListSessions(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const ws = new URL(req.url ?? '/', 'http://localhost').searchParams.get('ws')?.trim();
+  if (!ws) {
+    throw new ApiHttpError('bad_request', '缺少 ws：列出会话须显式指定工作空间（跨空间全貌请用 GET /workspaces）');
+  }
+  // 无 registry 的嵌入形态（既有单测 / 嵌入式 API）：请求仍须显式给 ws，
+  // 且必须与那唯一空间一致，否则 404（与 POST /sessions 的 resolveEmbeddedRuntime 同构）。
+  const store = ctx.registry
+    ? (await resolveWorkspaceRuntime(ctx, await ctx.registry.ensureRoot(ws))).store
+    : (await resolveEmbeddedRuntime(ctx, await canonicalWorkspacePath(ws))).store;
   const list = await store.listSessions();
   sendJson(res, 200, { sessions: list });
 }
@@ -328,6 +348,37 @@ export async function handleListSubAgents(
   }));
   // run 概况（需求 20261107-011）：后台子任务完成后主 Agent 可能被唤醒并启动新一轮，
   // 前端轮询据此发现「服务端已开始新 run」并及时 attach 续传（同一标签页没有 run-started 广播）。
+  sendJson(res, 200, { items, run: ctx.runs.snapshot(id) });
+}
+
+/**
+ * GET /sessions/:id/jobs：后台任务统一快照（需求 20261112-006）
+ *
+ * 范围 = 当前会话 + sessionId 为空的无归属任务（用户已确认），两类任务混合按时间倒序。
+ * 原 /sessions/:id/subagents 保留；本端点同时返回 run 状态，供前端沿用唤醒接管逻辑。
+ */
+export async function handleListJobs(
+  ctx: HandlerContext,
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  const { sessions } = await resolveSessionScope(ctx, id);
+  await sessions.ensureEntry(id);
+
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const kindParam = url.searchParams.get('kind');
+  const statusParam = url.searchParams.get('status');
+  const kind: JobKind | undefined =
+    kindParam === 'command' || kindParam === 'subagent' ? kindParam : undefined;
+  const validStatus: JobStatus[] = ['running', 'done', 'failed', 'stopped', 'lost'];
+  const status = validStatus.includes(statusParam as JobStatus)
+    ? (statusParam as JobStatus)
+    : undefined;
+  const limitRaw = Number(url.searchParams.get('limit'));
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : undefined;
+
+  const items = listJobs({ sessionId: id, includeUnowned: true, kind, status, limit });
   sendJson(res, 200, { items, run: ctx.runs.snapshot(id) });
 }
 

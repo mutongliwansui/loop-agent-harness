@@ -9,9 +9,7 @@ export type BootstrapIssueId =
   | 'model-apiKey'
   | 'model-name'
   | 'global-config'
-  | 'workspace-config'
-  | 'skills-global'
-  | 'skills-workspace';
+  | 'skills-global';
 
 export interface BootstrapIssue {
   id: BootstrapIssueId;
@@ -29,12 +27,10 @@ export interface BootstrapReport {
   issues: BootstrapIssue[];
 }
 
-/** 引导检测所需的路径集合 */
+/** 引导检测所需的路径集合（需求 20261112-008：只保留全局项） */
 export interface BootstrapPaths {
   globalConfigPath: string;
-  workspaceConfigPath: string;
   skillsGlobalDir: string;
-  skillsWorkspaceDir: string;
 }
 
 export type ExistsProbe = (path: string) => boolean;
@@ -45,16 +41,14 @@ export const defaultExistsProbe: ExistsProbe = (path) => existsSync(path);
  * 按项目路径约定构造检测路径集合
  * 与 configWriter / skillLoader 的默认路径保持一致
  *
- * @param workspaceRoot 工作空间根（缺省为进程 cwd；CLI 单空间即启动目录，serve 侧由 runtime 传入）
+ * 需求 20261112-008：配置与 skill 一律全局（~/.loop-agent），不再按工作空间区分，
+ * 因此不再产出 workspace 配置路径与 workspace skills 目录。
  */
-export function defaultBootstrapPaths(workspaceRoot = process.cwd()): BootstrapPaths {
+export function defaultBootstrapPaths(): BootstrapPaths {
   const globalDir = loopAgentHome();
-  const workspaceDir = join(workspaceRoot, '.loop-agent');
   return {
     globalConfigPath: join(globalDir, 'config.json'),
-    workspaceConfigPath: join(workspaceDir, '.agent-config.json'),
     skillsGlobalDir: join(globalDir, 'skills'),
-    skillsWorkspaceDir: join(workspaceDir, 'skills'),
   };
 }
 
@@ -95,28 +89,12 @@ export function checkBootstrap(
       path: paths.globalConfigPath,
     });
   }
-  if (!exists(paths.workspaceConfigPath)) {
-    issues.push({
-      id: 'workspace-config',
-      level: 'missing',
-      message: '工作空间配置文件不存在',
-      path: paths.workspaceConfigPath,
-    });
-  }
   if (!exists(paths.skillsGlobalDir)) {
     issues.push({
       id: 'skills-global',
       level: 'missing',
       message: '全局 skills 目录不存在',
       path: paths.skillsGlobalDir,
-    });
-  }
-  if (!exists(paths.skillsWorkspaceDir)) {
-    issues.push({
-      id: 'skills-workspace',
-      level: 'missing',
-      message: '工作空间 skills 目录不存在',
-      path: paths.skillsWorkspaceDir,
     });
   }
 

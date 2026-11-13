@@ -1,4 +1,8 @@
-// 配置加载器：分层合并（CLI > 工作空间 > 全局 > .env > 默认值）
+// 配置加载器：分层合并（CLI > 全局 > .env > 默认值）
+//
+// 需求 20261112-008：配置作用域收敛为全局，工作空间层整体移除（五层降四层）。
+// 唯一配置事实源为 ~/.loop-agent/config.json；{ws}/.loop-agent/.agent-config.json
+// 不再参与合并，存量内容由 migrate.ts 一次性并入全局。
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -48,20 +52,13 @@ function loadDotEnvToProcessEnv(): void {
 }
 
 export class ConfigLoader {
-  private workspacePath: string;
   private globalDir: string;
 
-  // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根（D7）
-  constructor(workspacePath = process.cwd(), globalDir = loopAgentHome()) {
-    this.workspacePath = workspacePath;
+  // 需求 20261112-008（D2）：只接全局目录，不再持有工作空间路径。
+  constructor(globalDir = loopAgentHome()) {
     this.globalDir = globalDir;
     // 构造时读取 .env 文件到 process.env（幂等，不覆盖已有环境变量）
     loadDotEnvToProcessEnv();
-  }
-
-  get workspaceConfigPath(): string {
-    // Task：workspace 配置统一存放于 {workspace}/.loop-agent/.agent-config.json
-    return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
   get globalConfigPath(): string {
@@ -70,7 +67,7 @@ export class ConfigLoader {
 
   /**
    * 加载并合并所有层级的配置
-   * 优先级：cli > workspace > global > env > default
+   * 优先级：cli > global > env > default
    */
   load(cliOverrides: PartialAgentConfig = {}): ResolvedConfig {
     // 每次加载前确保 .env 文件已读取到 process.env（幂等，不覆盖已有环境变量）
@@ -79,7 +76,6 @@ export class ConfigLoader {
     const defaults = DEFAULT_CONFIG;
     const env = this.loadFromEnv();
     const global = this.loadGlobalSync();
-    const workspace = this.loadWorkspaceSync();
     // 进程级启动参数（--port 等）优先级最高，且对所有 ConfigLoader 实例生效
     const cli = deepMerge<PartialAgentConfig>(getCliOverrides(), cliOverrides);
 
@@ -88,17 +84,10 @@ export class ConfigLoader {
       defaults,
       env as Partial<AgentConfig>,
       global as Partial<AgentConfig>,
-      workspace as Partial<AgentConfig>,
       cli as Partial<AgentConfig>,
     );
 
-    const sources = this.resolveSources({
-      defaults,
-      env,
-      global,
-      workspace,
-      cli,
-    });
+    const sources = this.resolveSources({ defaults, env, global, cli });
 
     return { config: merged, sources };
   }
@@ -111,7 +100,6 @@ export class ConfigLoader {
     const defaults = DEFAULT_CONFIG;
     const env = this.loadFromEnv();
     const global = await this.loadGlobal();
-    const workspace = await this.loadWorkspace();
     // 进程级启动参数（--port 等）优先级最高，且对所有 ConfigLoader 实例生效
     const cli = deepMerge<PartialAgentConfig>(getCliOverrides(), cliOverrides);
 
@@ -119,33 +107,17 @@ export class ConfigLoader {
       defaults,
       env as Partial<AgentConfig>,
       global as Partial<AgentConfig>,
-      workspace as Partial<AgentConfig>,
       cli as Partial<AgentConfig>,
     );
 
-    const sources = this.resolveSources({
-      defaults,
-      env,
-      global,
-      workspace,
-      cli,
-    });
+    const sources = this.resolveSources({ defaults, env, global, cli });
 
     return { config: merged, sources };
-  }
-
-  /** 读工作空间配置（异步） */
-  async loadWorkspace(): Promise<PartialAgentConfig> {
-    return readJsonSafe<PartialAgentConfig>(this.workspaceConfigPath);
   }
 
   /** 读全局配置（异步） */
   async loadGlobal(): Promise<PartialAgentConfig> {
     return readJsonSafe<PartialAgentConfig>(this.globalConfigPath);
-  }
-
-  loadWorkspaceSync(): PartialAgentConfig {
-    return readJsonSafeSync<PartialAgentConfig>(this.workspaceConfigPath);
   }
 
   loadGlobalSync(): PartialAgentConfig {
@@ -203,7 +175,6 @@ export class ConfigLoader {
     defaults: AgentConfig;
     env: PartialAgentConfig;
     global: PartialAgentConfig;
-    workspace: PartialAgentConfig;
     cli: PartialAgentConfig;
   }): Record<string, ConfigSource> {
     const sources: Record<string, ConfigSource> = {};
@@ -213,7 +184,6 @@ export class ConfigLoader {
       { name: 'default', cfg: layers.defaults },
       { name: 'env', cfg: layers.env },
       { name: 'global', cfg: layers.global },
-      { name: 'workspace', cfg: layers.workspace },
       { name: 'cli', cfg: layers.cli },
     ];
 
@@ -248,7 +218,6 @@ export class ConfigLoader {
       layers.defaults,
       layers.env as Partial<AgentConfig>,
       layers.global as Partial<AgentConfig>,
-      layers.workspace as Partial<AgentConfig>,
       layers.cli as Partial<AgentConfig>,
     );
     walk('', [], [], merged);
@@ -267,7 +236,8 @@ function layerHas(cfg: PartialAgentConfig, path: string[]): boolean {
   return true;
 }
 
-async function readJsonSafe<T>(path: string): Promise<T> {
+/** 读 JSON 文件，失败返回空对象（供迁移与内部复用） */
+export async function readJsonSafe<T>(path: string): Promise<T> {
   try {
     const content = await readFile(path, 'utf-8');
     // 剥 BOM：部分编辑器（如 PowerShell UTF8、记事本）写入带 \uFEFF，会导致 JSON.parse 失败
@@ -277,7 +247,7 @@ async function readJsonSafe<T>(path: string): Promise<T> {
   }
 }
 
-function readJsonSafeSync<T>(path: string): T {
+export function readJsonSafeSync<T>(path: string): T {
   try {
     const content = readFileSync(path, 'utf-8') as string;
     return JSON.parse(content.replace(/^\uFEFF/, '')) as T;

@@ -3,6 +3,7 @@
 import { formatSkillList, installSkillDirs, pickDirectoryViaDialog, removeSkills, scanSkillsDir } from '../skill/index.js';
 import { parseUploadArgs } from '../upload/manager.js';
 import { COLORS } from '../ui/colors.js';
+import { WORKSPACE_FLAG_REMOVED } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
 /** /skill upload：取 upload 之后的原文（保留引号，交给 parseUploadArgs 归一） */
@@ -18,20 +19,24 @@ function removeArgText(input: string): string {
 }
 
 /**
- * /skill upload [目录...] [--global|--workspace]（Task-20261015-001）
- * 默认工作空间（D2）；无路径弹系统目录选择框（D3）；同名冲突 y/N 询问（D5）；装完自动 reload（D6）
+ * /skill upload [目录...]（Task-20261015-001）
+ * 需求 20261112-008：skill 目录收敛为全局唯一（~/.loop-agent/skills），--workspace 已移除；
+ * 无路径弹系统目录选择框（D3）；同名冲突 y/N 询问（D5）；装完自动 reload（D6）
  */
 async function runSkillUpload(ctx: CommandContext, rest: string): Promise<void> {
   const { out, skillLoader } = ctx;
 
-  // D2：剥离作用域 flag（位置无关），默认工作空间；两者同现时 --global 优先
-  const scope: 'global' | 'workspace' = /(^|\s)--global(?=\s|$)/i.test(rest) ? 'global' : 'workspace';
+  if (/(^|\s)--workspace(?=\s|$)/i.test(rest)) {
+    out.blank();
+    out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+    out.blank();
+    return;
+  }
   const pathText = rest
     .replace(/(^|\s)--global(?=\s|$)/gi, '$1')
     .replace(/(^|\s)--workspace(?=\s|$)/gi, '$1')
     .trim();
-  const targetRoot =
-    scope === 'global' ? skillLoader.globalDir : skillLoader.getWorkspaceDir(process.cwd());
+  const targetRoot = skillLoader.globalDir;
 
   let paths = parseUploadArgs(pathText);
   if (paths.length === 0) {
@@ -62,37 +67,36 @@ async function runSkillUpload(ctx: CommandContext, rest: string): Promise<void> 
 
   const result = await installSkillDirs(paths, { targetRoot, confirmOverwrite });
 
-  const scopeTag = scope === 'global' ? '全局' : '工作空间';
   out.blank();
   for (const e of result.installed) {
     out.log(`${COLORS.green}✓ ${e.name}${COLORS.reset}`);
-    out.log(`  ${COLORS.gray}→ ${e.targetDir}（${scopeTag}）${COLORS.reset}`);
+    out.log(`  ${COLORS.gray}→ ${e.targetDir}（全局）${COLORS.reset}`);
   }
   for (const f of result.failed) {
     out.log(`${COLORS.red}✗ ${f.path}：${f.reason}${COLORS.reset}`);
   }
   if (result.installed.length > 0) {
     // D6：自动 reload，/skill list 立即可见
-    skillLoader.reload(process.cwd());
+    skillLoader.reload();
     out.log(`${COLORS.gray}已重新扫描 Skill，立即可用${COLORS.reset}`);
   }
   out.blank();
 }
 
 /**
- * /skill remove <name...> [--global|--workspace]（Task-20261015-002）
- * 无参报错提示用法（D4）；默认 auto 工作空间优先 → 全局 fallback（D2）；
- * 逐个 y/N 确认，无 --yes（D3）；删完自动 reload（D6）
+ * /skill remove <name...>（Task-20261015-002）
+ * 需求 20261112-008：skill 目录收敛为全局唯一，--workspace 已移除；
+ * 无参报错提示用法（D4）；逐个 y/N 确认，无 --yes（D3）；删完自动 reload（D6）
  */
 async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> {
   const { out, skillLoader } = ctx;
 
-  // 剥离作用域 flag（位置无关），与 upload 同款
-  const scope: 'auto' | 'global' | 'workspace' = /(^|\s)--global(?=\s|$)/i.test(rest)
-    ? 'global'
-    : /(^|\s)--workspace(?=\s|$)/i.test(rest)
-      ? 'workspace'
-      : 'auto';
+  if (/(^|\s)--workspace(?=\s|$)/i.test(rest)) {
+    out.blank();
+    out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+    out.blank();
+    return;
+  }
   const nameText = rest
     .replace(/(^|\s)--global(?=\s|$)/gi, '$1')
     .replace(/(^|\s)--workspace(?=\s|$)/gi, '$1')
@@ -100,15 +104,13 @@ async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> 
 
   const names = parseUploadArgs(nameText);
   if (names.length === 0) {
-    out.log(`${COLORS.red}用法: /skill remove <name...> [--global|--workspace]${COLORS.reset}`);
+    out.log(`${COLORS.red}用法: /skill remove <name...>${COLORS.reset}`);
     out.blank();
     return;
   }
 
-  // auto 需要同时看到工作空间与全局（list() 合并视图会遮蔽同名全局项），直接扫两个目录
   const globalDir = skillLoader.globalDir;
-  const workspaceDir = skillLoader.getWorkspaceDir(process.cwd());
-  const skills = [...scanSkillsDir(workspaceDir, 'workspace'), ...scanSkillsDir(globalDir, 'global')];
+  const skills = scanSkillsDir(globalDir, 'global');
 
   // D3：逐项确认（统一走 ctx.askConfirm，禁止新建临时 readline——其 close 会 pause 共享 stdin 导致进程退出）
   const confirm = (name: string, dir: string): Promise<boolean> =>
@@ -116,12 +118,11 @@ async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> 
       `${COLORS.yellow}确认删除 Skill「${name}」？(${dir}) (y/N):${COLORS.reset} `,
     );
 
-  const result = await removeSkills(names, { skills, scope, globalDir, workspaceDir, confirm });
+  const result = await removeSkills(names, { skills, rootDir: globalDir, confirm });
 
   out.blank();
   for (const e of result.removed) {
-    const scopeTag = e.scope === 'global' ? '全局' : '工作空间';
-    out.log(`${COLORS.green}✓ ${e.name}${COLORS.reset} ${COLORS.gray}（${scopeTag}）${COLORS.reset}`);
+    out.log(`${COLORS.green}✓ ${e.name}${COLORS.reset} ${COLORS.gray}（全局）${COLORS.reset}`);
     out.log(`  ${COLORS.gray}→ 已删除 ${e.dir}${COLORS.reset}`);
   }
   for (const f of result.failed) {
@@ -129,7 +130,7 @@ async function runSkillRemove(ctx: CommandContext, rest: string): Promise<void> 
   }
   if (result.removed.length > 0) {
     // D6：自动 reload，/skill list 立即不可见
-    skillLoader.reload(process.cwd());
+    skillLoader.reload();
     out.log(`${COLORS.gray}已重新扫描 Skill${COLORS.reset}`);
   }
   out.blank();
@@ -140,11 +141,11 @@ export const skillCommand: CommandHandler = {
   description: 'Skill 管理（list/reload/show/upload/remove）',
   subcommands: ['list', 'reload', 'show', 'upload', 'remove', 'help'],
   subcommandHelp: {
-    list: '列出已发现的 Skill（含作用域）',
+    list: '列出已发现的 Skill（全局唯一目录）',
     reload: '重新扫描 Skill 目录',
     show: '查看指定 Skill 的完整内容（/skill show <name>）',
-    upload: '安装 Skill 目录（--workspace|--global；无参弹目录选择框）',
-    remove: '删除已安装 Skill（--workspace|--global；逐个确认）',
+    upload: '安装 Skill 目录（无参弹目录选择框；--workspace 已移除）',
+    remove: '删除已安装 Skill（逐个确认；--workspace 已移除）',
   },
   match: (input) => input.toLowerCase().startsWith('/skill'),
   async execute(input, ctx) {
@@ -164,11 +165,10 @@ export const skillCommand: CommandHandler = {
       out.blank();
       out.log(`${COLORS.bold}可用 Skill 列表 (${skills.length} 个):${COLORS.reset}`);
       if (skills.length === 0) {
-        out.log(`  ${COLORS.gray}（暂无 Skill，可在 ~/.loop-agent/skills/ 或 <cwd>/.loop-agent/skills/ 下创建）${COLORS.reset}`);
+        out.log(`  ${COLORS.gray}（暂无 Skill，可在 ~/.loop-agent/skills/ 下创建）${COLORS.reset}`);
       } else {
         for (const s of skills) {
-          const scopeTag = s.scope === 'workspace' ? `${COLORS.green}[工作空间]${COLORS.reset}` : `${COLORS.magenta}[全局]${COLORS.reset}`;
-          out.log(`  ${COLORS.bold}${s.name}${COLORS.reset} ${scopeTag}`);
+          out.log(`  ${COLORS.bold}${s.name}${COLORS.reset} ${COLORS.magenta}[全局]${COLORS.reset}`);
           out.log(`    ${COLORS.gray}${s.description}${COLORS.reset}`);
         }
       }
@@ -179,7 +179,7 @@ export const skillCommand: CommandHandler = {
     if (sub === 'reload') {
       out.blank();
       out.log(`${COLORS.gray}重新扫描 Skill...${COLORS.reset}`);
-      const skills = skillLoader.reload(process.cwd());
+      const skills = skillLoader.reload();
       out.log(`${COLORS.green}✓${COLORS.reset} 已发现 ${skills.length} 个 Skill`);
       out.log(formatSkillList(skills));
       out.blank();
@@ -200,7 +200,7 @@ export const skillCommand: CommandHandler = {
         return;
       }
       out.blank();
-      out.log(`${COLORS.bold}${content.metadata.name}${COLORS.reset} ${COLORS.gray}(${content.metadata.scope === 'workspace' ? '工作空间' : '全局'})${COLORS.reset}`);
+      out.log(`${COLORS.bold}${content.metadata.name}${COLORS.reset} ${COLORS.gray}(全局)${COLORS.reset}`);
       out.log(`${COLORS.gray}描述:${COLORS.reset} ${content.metadata.description}`);
       out.log(`${COLORS.gray}路径:${COLORS.reset} ${content.metadata.path}`);
       out.log(`${COLORS.gray}内容:${COLORS.reset}`);

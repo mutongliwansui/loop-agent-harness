@@ -1,11 +1,8 @@
 // 配置系统入口：统一导出
-export { configLoader, ConfigLoader } from './loader.js';
-export {
-  configWriter,
-  ConfigWriter,
-  type ConfigScope,
-} from './writer.js';
+export { configLoader, ConfigLoader, readJsonSafe, readJsonSafeSync } from './loader.js';
+export { configWriter, ConfigWriter } from './writer.js';
 export { deepMerge } from './merge.js';
+export { migrateWorkspaceConfigToGlobal, type MigrateResult } from './migrate.js';
 export {
   DEFAULT_CONFIG,
   type AgentConfig,

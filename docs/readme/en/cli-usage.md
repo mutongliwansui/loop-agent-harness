@@ -37,6 +37,7 @@ Agent> Read the version from package.json
 | `/help` | Show global help; append `help` to any command (e.g. `/mcp help`) to see its subcommand usage |
 | `/reset` `/clear` | Clear the multi-turn conversation history and start a new session |
 | `/status` | Show the current session status (messages / tools / MCP tools / Skills) |
+| `/jobs` | List background jobs (command + sub-agent; current session + unowned); `/jobs show <id>` for a summary |
 | `/tools` | Tool management (list / enable / disable / reload) |
 | `/config` | Config management (get / set / delete / list / path) |
 | `/mcp` | MCP management (list / add / remove / reload / test / view) |
@@ -46,7 +47,7 @@ Agent> Read the version from package.json
 | `/vision` | Vision model management (status / test) |
 | `/model` | Multi-model management (list / use / add / remove / test / bench) |
 | `/upload` | File upload (copies into the session-isolated upload directory and injects into Agent context; list / clean) |
-| `/setup` | Re-run the bootstrap config wizard (--global / --workspace to choose the write scope) |
+| `/setup` | Re-run the bootstrap config wizard (always writes global config) |
 | `/doctor` | Startup health check: verifies model config / config files / skills directories item by item (read-only) |
 | `exit` / `quit` / `退出` | Exit the program (pressing Ctrl+C twice also works) |
 | `Ctrl+C` | **While answering**: interrupts only the current answer (stops streaming and tool execution, keeps the generated content in the session so you can keep asking); **While an interruptible command runs** (e.g. `/model bench`): interrupts only that command and keeps the samples already collected; **When idle**: press twice within 3 seconds to exit (mis-touch protection) |
@@ -82,14 +83,17 @@ The project is named loop-agent-command with version 0.1.0.
 
 Reads/writes configuration at two levels: workspace (default) and global.
 
+Configuration exists only globally (workspace-level config was removed in req 20261112-008):
+
 ```
 /config list                    # Show the effective config (with a source tag per field)
 /config get <key>               # Show one config item (e.g. model.name)
-/config set <key> <value>       # Set a config item (written to the workspace by default)
-/config set <key> <value> --global  # Write to the global config
+/config set <key> <value>       # Set a config item (writes global; --global may be omitted)
 /config delete <key>            # Delete a config item
-/config path                    # Show the config file path
+/config path                    # Show the global config file path
 ```
+
+`--workspace` has been removed and fails with an explicit error; `--global` is still accepted but may be omitted.
 
 Values are auto-typed: `true`/`false` become booleans, numbers become Numbers, and `{...}` or `[...]` are parsed as JSON.
 
@@ -141,19 +145,19 @@ Session data is stored with AES-256-GCM encryption under `~/.loop-agent/sessions
 #### `/skill` — Skill Management
 
 ```
-/skill list                     # List all available Skills (global + workspace, with source tags)
+/skill list                     # List all available Skills (single global directory)
 /skill reload                   # Rescan the Skill directories
 /skill show <name>              # Show the full SKILL.md content of the specified Skill
-/skill upload <dirs...>         # Install local Skill directories (workspace by default; --global for global; asks before overwriting name conflicts)
+/skill upload <dirs...>         # Install local Skill directories (always global; asks before overwriting name conflicts)
 /skill upload                   # No args: open the native directory picker (auto-detects available tools on Windows/macOS/Linux)
-/skill remove <names...>        # Remove installed Skills (workspace first by default; --global/--workspace to restrict; per-item y/N confirmation)
+/skill remove <names...>        # Remove installed Skills (single global directory; per-item y/N confirmation)
 ```
 
-Skills are auto-scanned from the global `~/.loop-agent/skills/` and the workspace `<cwd>/.loop-agent/skills/` directories; the workspace version takes precedence when names collide. See [🎯 Skills](skills.md).
+Skills are auto-scanned from the global `~/.loop-agent/skills/` directory only (workspace Skill directories are no longer used after req 20261112-008). See [🎯 Skills](skills.md).
 
 `/skill upload` supports dragging directories into the terminal (quoted paths / `file://` URIs are normalized automatically) and batch installation of multiple directories. Each target is validated for a proper `SKILL.md` (name/description) before installation, a single failure does not block the rest, and Skills are rescanned automatically after installation.
 
-`/skill remove` locates Skills by frontmatter `name` and deletes the entire Skill directory: when the same name exists in both scopes, the workspace one is removed by default (`--global` / `--workspace` restrict to a single scope), each deletion requires confirmation (default N), and a path guard rejects targets that are not direct children of the skills root (path-traversal protection). After removal, Skills are rescanned automatically and disappear from `/skill list` immediately. Batch removal is supported; a single failure does not block the rest.
+`/skill remove` locates Skills by frontmatter `name` and deletes the entire Skill directory (the skills directory is now global-only, and both `--global` / `--workspace` flags were removed — passing `--workspace` fails with an explicit error): each deletion requires confirmation (default N), and a path guard rejects targets that are not direct children of the skills root (path-traversal protection). After removal, Skills are rescanned automatically and disappear from `/skill list` immediately. Batch removal is supported; a single failure does not block the rest.
 
 #### `/memory` — Memory Management
 
@@ -195,9 +199,7 @@ Register multiple OpenAI-protocol models into the registry (`models.profiles`, k
 ```
 /model list                  # List the registry and the effective snapshot (masked apiKey, drift hints)
 /model use <alias>           # Switch to a registered model (syncs the active pointer and snapshot, effective immediately)
-/model use <alias> --global  # Switch the global layer; conflicting workspace keys can be cleaned interactively
-/model add <alias>           # Register a new model (interactive scope prompt, Enter defaults to workspace)
-/model add <alias> --global  # Register into the global layer (explicit flag skips the scope prompt)
+/model add <alias>           # Register a new model (writes global)
 /model remove <alias>        # Remove a model from the registry (does not touch the effective snapshot)
 /model test <alias>          # Run a connectivity test on a registered model (does not change the active state)
 ```
@@ -205,11 +207,11 @@ Register multiple OpenAI-protocol models into the registry (`models.profiles`, k
 Design notes:
 
 - **Registry + active pointer**: `models.profiles` is a pure registry, `models.active` points to the currently active alias; `/model use` writes both the active pointer and the `model.*` effective snapshot — the runtime only reads `model.*`, so the main model, the vision fallback triplet and the memory system (Dreaming / compaction) all follow the new model.
-- **Layer merging**: the registry is deep-merged layer by layer (global → workspace; workspace leaves win for the same alias); models without a registered `temperature` do not override the current sampling temperature when switched to.
+- **Single global layer**: the registry lives only in the global config; there is no global → workspace layer merging any more. Models without a registered `temperature` do not override the current sampling temperature when switched to.
 - **Drift detection**: `/model list` and the startup banner compare the active alias against the effective snapshot (name + baseUrl only; apiKey rotation is not drift) and suggest `/model use <alias>` to re-sync when they differ.
 - **Wizard integration**: when the first-launch wizard writes a model and the registry is empty, the model is auto-registered as the `default` alias, so a later `/model use default` switches right back.
 
-Config example (workspace `.loop-agent/.agent-config.json`):
+Config example (global `~/.loop-agent/config.json`):
 
 ```json
 {
@@ -292,12 +294,10 @@ Design notes:
 
 #### `/setup` — Re-run the Bootstrap Wizard
 
-Re-runs the first-launch config wizard inside the REPL with the same flow: baseUrl → apiKey (masked input) → model name → connectivity check → choose write scope. When it finishes, the config is reloaded and tool registration is refreshed immediately, so the following conversation takes effect without a restart:
+Re-runs the first-launch config wizard inside the REPL with the same flow: baseUrl → apiKey (masked input) → model name → connectivity check. Config is always written to the global `~/.loop-agent/config.json` (the write scope was collapsed to global; both `--global` and `--workspace` were removed, and passing `--workspace` fails with an explicit error). When it finishes, the config is reloaded and tool registration is refreshed immediately, so the following conversation takes effect without a restart:
 
 ```
-/setup                     # without a scope flag, the wizard's default suggestion applies
-/setup --global            # write to the global config ~/.loop-agent/config.json
-/setup --workspace         # write to the workspace config .loop-agent/.agent-config.json
+/setup                     # re-run the wizard, writing global config
 ```
 
 If the target file exists but is corrupted (invalid JSON), it is backed up as `.bak-<timestamp>` before writing.
@@ -320,4 +320,4 @@ Startup health check report
   This command is read-only and never modifies any file
 ```
 
-There are 6 check items in total: main model apiKey, main model name, global config file, workspace config file, global skills directory and workspace skills directory; ✗ items come with a fix hint (e.g. "run /setup to reconfigure").
+There are 4 check items in total: main model apiKey, main model name, global config file and global skills directory; ✗ items come with a fix hint (e.g. "run /setup to reconfigure").

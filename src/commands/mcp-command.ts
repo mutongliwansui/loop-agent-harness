@@ -1,8 +1,7 @@
 // /mcp 命令处理器
-// 支持: list, add <name>, remove <name> [--workspace|--global], reload, test <name>
+// 支持: list, add <name>, remove <name>, reload, test <name>
 import {
   ConfigWriter,
-  type ConfigScope,
   type PartialAgentConfig,
   type ToolsConfig,
 } from '../config/index.js';
@@ -14,7 +13,7 @@ import type {
   StreamableHttpConfig,
 } from '../tools/index.js';
 import { COLORS } from '../ui/colors.js';
-import { parseScope } from './utils.js';
+import { parseScope, WORKSPACE_FLAG_REMOVED } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
 /** 渲染单个 MCP Server 的配置摘要（headers 仅列键名，脱敏，D7） */
@@ -40,12 +39,11 @@ export function describeServer(s: MCPServerConfig): string {
 async function interactiveAddMcp(
   rl: CommandContext['rl'],
   name: string,
-  scope: ConfigScope,
   ctx: CommandContext,
 ): Promise<void> {
   const { out, configWriter, mcpManager } = ctx;
   out.blank();
-  out.log(`${COLORS.bold}添加 MCP Server: ${name} (写入 ${scope === 'workspace' ? '工作空间' : '全局'} 配置)${COLORS.reset}`);
+  out.log(`${COLORS.bold}添加 MCP Server: ${name} (写入全局配置)${COLORS.reset}`);
 
   const q = (prompt: string): Promise<string> =>
     new Promise((resolve) => rl.question(prompt, resolve));
@@ -104,8 +102,8 @@ async function interactiveAddMcp(
   const partial: PartialAgentConfig = { tools: {} };
   (partial.tools as ToolsConfig).mcpServers = { [name]: cfg };
   try {
-    await configWriter.updateScope(scope, partial);
-    out.log(`${COLORS.green}✓${COLORS.reset} 已写入 ${scope === 'workspace' ? '工作空间' : '全局'} 配置`);
+    await configWriter.update(partial);
+    out.log(`${COLORS.green}✓${COLORS.reset} 已写入全局配置`);
     if (test.ok) {
       await mcpManager.loadServers({ [name]: cfg });
       out.log(`${COLORS.green}✓${COLORS.reset} ${name} 已加载并注册工具`);
@@ -126,7 +124,7 @@ export const mcpCommand: CommandHandler = {
   subcommandHelp: {
     list: '列出所有 MCP Server 配置及连接状态',
     add: '交互式添加新 MCP Server（stdio / sse / http）',
-    remove: '移除指定 MCP Server（--workspace|--global）',
+    remove: '移除指定 MCP Server',
     reload: '重新加载全部 MCP 配置',
     test: '测试连接指定 MCP Server',
     view: '查看指定 Server 的信息与工具清单',
@@ -168,17 +166,22 @@ export const mcpCommand: CommandHandler = {
 
     if (sub === 'remove') {
       if (args.length === 0) {
-        out.log(`${COLORS.red}用法: /mcp remove <name> [--workspace|--global]${COLORS.reset}`);
+        out.log(`${COLORS.red}用法: /mcp remove <name>${COLORS.reset}`);
         out.blank();
         return;
       }
-      const { scope, rest } = parseScope(args);
+      const { workspaceFlag, rest } = parseScope(args);
+      if (workspaceFlag) {
+        out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+        out.blank();
+        return;
+      }
       const name = rest[0];
       const key = `tools.mcpServers.${name}`;
       try {
-        await configWriter.deleteScopeKey(scope, ConfigWriter.parseKey(key));
+        await configWriter.deleteKey(ConfigWriter.parseKey(key));
         await mcpManager.unloadServer(name);
-        out.log(`${COLORS.bold}${COLORS.green}✓${COLORS.reset} 已从 ${scope} 配置删除并卸载 MCP Server: ${name}`);
+        out.log(`${COLORS.bold}${COLORS.green}✓${COLORS.reset} 已从全局配置删除并卸载 MCP Server: ${name}`);
         out.blank();
       } catch (e) {
         out.error(`${COLORS.bold}${COLORS.red}[Error]${COLORS.reset} 删除失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -254,13 +257,18 @@ export const mcpCommand: CommandHandler = {
 
     if (sub === 'add') {
       if (args.length === 0) {
-        out.log(`${COLORS.red}用法: /mcp add <name> [--workspace|--global]${COLORS.reset}`);
+        out.log(`${COLORS.red}用法: /mcp add <name>${COLORS.reset}`);
         out.blank();
         return;
       }
-      const { scope, rest } = parseScope(args);
+      const { workspaceFlag, rest } = parseScope(args);
+      if (workspaceFlag) {
+        out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+        out.blank();
+        return;
+      }
       const name = rest[0];
-      await interactiveAddMcp(rl, name, scope, ctx);
+      await interactiveAddMcp(rl, name, ctx);
       return;
     }
 

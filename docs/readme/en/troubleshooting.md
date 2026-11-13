@@ -68,7 +68,7 @@ Error: MCP server xxx failed to connect
 Error: Skill "xxx" not found. Available Skills: ...
 ```
 
-**Fix**: Confirm the Skill is placed in `~/.loop-agent/skills/` (global) or `<cwd>/.loop-agent/skills/` (workspace), and that `SKILL.md` contains a valid `name` and `description` frontmatter. View scan results via `/skill list`, and rescan via `/skill reload`.
+**Fix**: Confirm the Skill is placed in `~/.loop-agent/skills/` (the only Skills directory since req 20261112-008; workspace directories are no longer scanned), and that `SKILL.md` contains a valid `name` and `description` frontmatter. View scan results via `/skill list`, and rescan via `/skill reload`.
 
 ### Memory System Not Enabled
 
@@ -76,7 +76,7 @@ Error: Skill "xxx" not found. Available Skills: ...
 ⚠ Memory system not enabled. Please set memory.enabled=true in the config
 ```
 
-**Fix**: Enable via `/config set memory.enabled true`, or edit `.loop-agent/.agent-config.json` directly. `/memory status` shows the current enabled state and per-tier stats.
+**Fix**: Enable via `/config set memory.enabled true`, or edit `~/.loop-agent/config.json` directly. `/memory status` shows the current enabled state and per-tier stats.
 
 ### Session Cannot Be Loaded / Decryption Failure
 

@@ -21,7 +21,7 @@ export function buildSystemPrompt(
   const skillSection = skills.length > 0
     ? `\n## 可用 Skill（技能包）
 当用户的需求与以下 Skill 的描述匹配时，使用 activateSkill 工具激活对应 Skill，获取详细的执行指令。
-${skills.map((s) => `- **${s.name}**: ${s.description} ${s.scope === 'workspace' ? '(工作空间)' : '(全局)'}`).join('\n')}
+${skills.map((s) => `- **${s.name}**: ${s.description} (全局)`).join('\n')}
 - 以上即为当前全部可用 Skill；当用户询问「有哪些技能 / 当前有什么技能」时，请直接依据该列表回答，不要通过检索文件系统去寻找技能目录。
 `
     : `\n## 可用 Skill（技能包）

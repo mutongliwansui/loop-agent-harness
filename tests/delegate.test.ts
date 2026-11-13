@@ -36,9 +36,9 @@ vi.mock('../src/llm/client.js', () => ({
 const BASE = join(tmpdir(), 'loop-agent-tests', 'delegate');
 
 function writeWorkspaceConfig(wsDir: string): void {
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -172,7 +172,7 @@ describe('内置工具注册与 excludeTools', () => {
     mockFinalAnswer('直接回答');
     const wsDir = join(BASE, 'exclude');
     writeWorkspaceConfig(wsDir);
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     agent.setWorkspaceRoot(wsDir);
     let seenTools: Array<{ function: { name: string } }> = [];
     mocks.chatStream.mockImplementation(async function* (_messages: ChatMessage[], tools: Array<{ function: { name: string } }>) {
@@ -194,7 +194,7 @@ describe('内置工具注册与 excludeTools', () => {
     registerBuiltinTools();
     const wsDir = join(BASE, 'hallucinate');
     writeWorkspaceConfig(wsDir);
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     agent.setWorkspaceRoot(wsDir);
     let secondCallMessages: ChatMessage[] = [];
     let call = 0;
@@ -228,7 +228,7 @@ describe('内置工具注册与 excludeTools', () => {
     registerBuiltinTools();
     const wsDir = join(BASE, 'subagent-creds');
     writeWorkspaceConfig(wsDir);
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     agent.setWorkspaceRoot(wsDir);
 
     const seenOpts: Array<{ model?: string; baseUrl?: string; apiKey?: string }> = [];

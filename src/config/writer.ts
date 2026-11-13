@@ -1,40 +1,27 @@
-// 配置写入器：工作空间/全局写入，支持部分更新
+// 配置写入器：统一写全局（~/.loop-agent/config.json）
+//
+// 需求 20261112-008：配置作用域收敛为全局，写侧不再有工作空间分支。
+// 原来的 updateScope(scope, partial) / deleteScopeKey(scope, key) 收敛为
+// update(partial) / deleteKey(key)，writeWorkspace 与 workspaceConfigPath 删除。
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import type { PartialAgentConfig, AgentConfig } from './schema.js';
+import { join } from 'node:path';import type { PartialAgentConfig, AgentConfig } from './schema.js';
 import { deepMerge } from './merge.js';
 import { configLoader } from './loader.js';
 import { loopAgentHome } from '../user-home.js';
 
-export type ConfigScope = 'workspace' | 'global';
-
 export class ConfigWriter {
-  private workspacePath: string;
   private globalDir: string;
 
-  // 共享默认值：CLI 单空间时不传参数，即以启动目录为空间根；serve 侧由 runtime 构造时显式传根（D7）
+  // 需求 20261112-008（D2）：只接全局目录，不再持有工作空间路径。
   constructor(
-    workspacePath = process.cwd(),
     globalDir = loopAgentHome(),
     private loader = configLoader,
   ) {
-    this.workspacePath = workspacePath;
     this.globalDir = globalDir;
-  }
-
-  get workspaceConfigPath(): string {
-    // Task：workspace 配置统一存放于 {workspace}/.loop-agent/.agent-config.json
-    return join(this.workspacePath, '.loop-agent', '.agent-config.json');
   }
 
   get globalConfigPath(): string {
     return join(this.globalDir, 'config.json');
-  }
-
-  /** 写入工作空间配置（完整覆盖） */
-  async writeWorkspace(config: PartialAgentConfig): Promise<void> {
-    await mkdir(dirname(this.workspaceConfigPath), { recursive: true });
-    await writeJson(this.workspaceConfigPath, config);
   }
 
   /** 写入全局配置（完整覆盖） */
@@ -43,40 +30,22 @@ export class ConfigWriter {
     await writeJson(this.globalConfigPath, config);
   }
 
-  /** 读取现有配置后合并再写回（部分更新） */
-  async updateScope(scope: ConfigScope, partial: PartialAgentConfig): Promise<void> {
-    if (scope === 'workspace') {
-      const current = await this.loader.loadWorkspace();
-      const merged = deepMerge<AgentConfig>(
-        {} as AgentConfig,
-        current as Partial<AgentConfig>,
-        partial as Partial<AgentConfig>,
-      );
-      await this.writeWorkspace(merged as PartialAgentConfig);
-    } else {
-      const current = await this.loader.loadGlobal();
-      const merged = deepMerge<AgentConfig>(
-        {} as AgentConfig,
-        current as Partial<AgentConfig>,
-        partial as Partial<AgentConfig>,
-      );
-      await this.writeGlobal(merged as PartialAgentConfig);
-    }
+  /** 读取现有全局配置后合并再写回（部分更新） */
+  async update(partial: PartialAgentConfig): Promise<void> {
+    const current = await this.loader.loadGlobal();
+    const merged = deepMerge<AgentConfig>(
+      {} as AgentConfig,
+      current as Partial<AgentConfig>,
+      partial as Partial<AgentConfig>,
+    );
+    await this.writeGlobal(merged as PartialAgentConfig);
   }
 
-  /** 删除某个 scope 中的指定字段（用 undefined 覆盖后再去掉 undefined） */
-  async deleteScopeKey(scope: ConfigScope, keyPath: string[]): Promise<void> {
-    const current =
-      scope === 'workspace'
-        ? await this.loader.loadWorkspace()
-        : await this.loader.loadGlobal();
-
+  /** 删除全局配置中的指定字段（用 undefined 覆盖后再去掉 undefined） */
+  async deleteKey(keyPath: string[]): Promise<void> {
+    const current = await this.loader.loadGlobal();
     deleteByPath(current, keyPath);
-    if (scope === 'workspace') {
-      await this.writeWorkspace(current);
-    } else {
-      await this.writeGlobal(current);
-    }
+    await this.writeGlobal(current);
   }
 
   /**

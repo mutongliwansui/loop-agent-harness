@@ -55,9 +55,9 @@ function summaryPlaceholder(text: string): ChatMessage {
 }
 
 function writeWorkspaceConfig(wsDir: string, autoSave: boolean): void {
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave, autoRestore: false, encryptionEnabled: false },
@@ -311,7 +311,7 @@ describe('方案 B：完整轨迹补归档', () => {
     }
     const meta = await store.createSession('种子会话', [msg('system', '你是助手'), ...longHistory]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 

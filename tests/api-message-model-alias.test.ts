@@ -71,7 +71,7 @@ async function req(method: string, path: string, body?: unknown): Promise<Res> {
 }
 
 async function newSession(): Promise<string> {
-  const res = await req('POST', '/sessions');
+  const res = await req('POST', '/sessions', { workspacePath: TEST_WORKSPACE });
   expect(res.status).toBe(201);
   return ((await res.json()) as { id: string }).id;
 }

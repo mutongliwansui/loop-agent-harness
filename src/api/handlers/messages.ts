@@ -652,8 +652,27 @@ export function scheduleBackgroundWake(
 ): void {
   setTimeout(() => {
     void (async () => {
-      if (ctx.runs.isRunning(id)) return; // 情况1：活跃 run 会自行消费通知
-      if (peekBackgroundNotices(id).length === 0) return; // 通知已被消费/清空
+      // 单飞：监听器唤醒与收尾兜底可能在同一时刻各排一个定时器，
+      // 只允许第一个进入——否则第二个在通知已被首个 wake run drain 后仍会
+      // 发起一轮「0 条通知待处理」的空唤醒（白跑一轮 LLM）。
+      // 锁被占用时不能直接丢弃：置 again 让持有者收尾后再补排一次，
+      // 保证期间新到的通知不会漏唤醒。
+      if (pendingBackgroundWakes.has(id)) {
+        const cur = pendingBackgroundWakes.get(id)!;
+        cur.again = true;
+        return;
+      }
+      const state = { again: false };
+      pendingBackgroundWakes.set(id, state);
+      if (ctx.runs.isRunning(id)) {
+        pendingBackgroundWakes.delete(id);
+        return; // 情况1：活跃 run 会自行消费通知
+      }
+      if (peekBackgroundNotices(id).length === 0) {
+        pendingBackgroundWakes.delete(id);
+        return; // 通知已被消费/清空
+      }
+      let retryDelay: number | null = null;
       try {
         // 唤醒轮沿用会话落盘的模型选择，避免后台任务把回答切回全局默认模型
         const store = ctx.registry
@@ -671,12 +690,18 @@ export function scheduleBackgroundWake(
       } catch (e) {
         // 通知留在队列（未 drain 即未消费），交给后续 run 注入；有限重试互斥窗口
         if (attempt < 2) {
-          scheduleBackgroundWake(ctx, id, 500, attempt + 1);
-          return;
+          retryDelay = 500;
+        } else {
+          ctx.log(
+            `[api] 后台任务唤醒失败（通知已留在队列）: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
-        ctx.log(
-          `[api] 后台任务唤醒失败（通知已留在队列）: ${e instanceof Error ? e.message : String(e)}`,
-        );
+      } finally {
+        pendingBackgroundWakes.delete(id);
+        // 重试与「期间又来了新唤醒」都统一在释放锁之后再排，
+        // 否则重试会被上面的互斥直接折成 0 延迟，退避形同虚设。
+        if (retryDelay !== null) scheduleBackgroundWake(ctx, id, retryDelay, attempt + 1);
+        else if (state.again) scheduleBackgroundWake(ctx, id);
       }
     })();
   }, delayMs);
@@ -684,6 +709,13 @@ export function scheduleBackgroundWake(
 
 /** 唤醒输入前缀：run 首轮迭代 drain 到通知后，据此把「触发器」从落盘历史中剥离 */
 export const BACKGROUND_WAKE_PREFIX = '[后台任务完成通知]';
+
+/**
+ * 会话级唤醒单飞锁：同一会话同一时刻只允许一个 wake run 在跑。
+ * 锁被占用时新到的唤醒请求只记录 again，由持有者收尾后补排，
+ * 既避免空唤醒（0 条通知）又不丢通知。
+ */
+const pendingBackgroundWakes = new Map<string, { again: boolean }>();
 
 /**
  * 唤醒触发器输入（需求 20261108-002）：只做「敲门」，不携带日志尾部——

@@ -6,7 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { sendJson } from './http-utils.js';
-import { handleCompactSession, handleCreateSession, handleDeleteSession, handleGetSession, handleGetSessionContext, handleListDirs, handleListSessions, handleListSubAgents, handleListWorkspaces, handleRetrySession } from './handlers/sessions.js';
+import { handleCompactSession, handleCreateSession, handleDeleteSession, handleGetSession, handleGetSessionContext, handleListDirs, handleListJobs, handleListSessions, handleListSubAgents, handleListWorkspaces, handleRetrySession } from './handlers/sessions.js';
 import { handleSetSessionModelAlias } from './handlers/session-model.js';
 import { handleMessage } from './handlers/messages.js';
 import { handleStop } from './handlers/stop.js';
@@ -86,13 +86,16 @@ export interface HandlerContext {
   /** 性能测试 run 注册表（SSE 进度 / 中断） */
   benchRuns: BenchRunHub;
   /**
-   * 缺省空间（需求 20261027-004 D1/D3）：进程内「最近使用空间」指针的同步读。
-   * 替代原「缺省回落 deps.sessionStore.path（启动空间）」的语义——handler 缺省回落一律用此。
-   */
-  defaultRoot: () => string;
-  /**
-   * 解析缺省空间 runtime（懒装载 + 指针改写 + MRU touch）。
-   * 无 registry（既有单测/嵌入用法）时抛 internal——此类场景不存在跨空间语义。
+   * 缺省空间（需求 20261113-001 D8）：解析**进程启动空间** runtime（懒装载 + ctx 指针改写）。
+   *
+   * 历史：原为「缺省空间」同步读「最近使用空间」指针的方法，被 9 处 handler 直接调用，
+   * 形成一条「请求不带 ws 就静默落到用户上次去过的空间」的暗线。该字段已按 D8 彻底删除
+   * （不保留 deprecated 别名——保留一个「没人该用」的字段只会诱导后续代码用它）。
+   *
+   * 保留本方法用于「确实需要一个具体空间、且缺省必须可预测」的场合：
+   * `GET /sessions` 未带 ws、以及 `POST /sessions` 在无 registry 的嵌入形态下校验过
+   * workspacePath 后取那唯一空间的 runtime。语义是**启动空间**（`deps.sessionStore` 所属），
+   * 请求本身即可推知。无 registry（既有单测/嵌入用法）时由 server.ts 回落 deps 对应伪 runtime。
    */
   resolveDefaultRuntime: () => Promise<WorkspaceRuntime>;
 }
@@ -138,6 +141,8 @@ export function createRoutes(): Route[] {
     { method: 'GET', path: '/sessions/:id/context', handler: (ctx, _req, res, p) => handleGetSessionContext(ctx, res, p.id) },
     // 需求 20261107-002 D9：后台子任务列表（3 段静态尾段，先于 2 段 /sessions/:id）
     { method: 'GET', path: '/sessions/:id/subagents', handler: (ctx, _req, res, p) => handleListSubAgents(ctx, res, p.id) },
+    // 需求 20261112-006：后台任务统一快照（命令任务 + 子任务，当前会话 + 无归属）
+    { method: 'GET', path: '/sessions/:id/jobs', handler: (ctx, req, res, p) => handleListJobs(ctx, req, res, p.id) },
     { method: 'POST', path: '/sessions/:id/compact', handler: (ctx, _req, res, p) => handleCompactSession(ctx, res, p.id) },
     { method: 'POST', path: '/sessions/:id/retry', handler: (ctx, req, res, p) => handleRetrySession(ctx, req, res, p.id) },
   // 会话级模型选择（task-20261025-002 D7）：只写元数据，不改全局激活

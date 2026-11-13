@@ -63,18 +63,33 @@ const ok = (body: unknown, status = 200): Response =>
 const POLL_MS = 2000;
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** /subagents 返回的任务列表（测试中途可改） */
+/** /jobs 返回的子任务列表（测试中途可改；统一读模型条目） */
 let subItems: { taskId: string; task: string; status: string; startedAt?: number; elapsedMs?: number; iterations?: number }[];
 /** GET /sessions/:id 返回的消息列表 */
 let detailMessages: unknown[];
 /** 统计各路径请求次数 */
 let calls: { detail: number; subs: number };
 
+/** 旧用例数据 → 统一 jobs 条目（kind=subagent） */
+function toJob(it: (typeof subItems)[number]): Record<string, unknown> {
+  return {
+    id: it.taskId,
+    kind: 'subagent',
+    title: it.task,
+    status: it.status === 'aborted' ? 'stopped' : it.status,
+    startedAt: it.startedAt ?? Date.now(),
+    elapsedMs: it.elapsedMs,
+    iterations: it.iterations,
+    canStop: false,
+    canReadLogs: false,
+  };
+}
+
 function installFetch(): void {
   fetchMock = vi.fn(async (url: string) => {
-    if (url.includes('/subagents')) {
+    if (url.includes('/jobs')) {
       calls.subs++;
-      return ok({ items: subItems });
+      return ok({ items: subItems.map(toJob), run: null });
     }
     if (url.includes('/context')) {
       return ok({ contextTokens: 0, maxTokens: 1000, threshold: 800, source: 'estimate' });

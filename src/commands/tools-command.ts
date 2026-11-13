@@ -17,7 +17,7 @@ import {
 import type { PartialAgentConfig } from '../config/index.js';
 import { COLORS } from '../ui/colors.js';
 import { printTools } from '../ui/renderer.js';
-import { parseScope } from './utils.js';
+import { parseScope, WORKSPACE_FLAG_REMOVED } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
 /** 内置工具名（供 /tools enable|disable 校验与 Tab 补全复用） */
@@ -61,8 +61,8 @@ export const toolsCommand: CommandHandler = {
   subcommands: ['list', 'enable', 'disable', 'reload', 'help'],
   subcommandHelp: {
     list: '列出所有已注册工具（内置 + MCP）',
-    enable: '启用内置工具（--workspace|--global）',
-    disable: '禁用内置工具（--workspace|--global）',
+    enable: '启用内置工具（写全局；--workspace 已移除）',
+    disable: '禁用内置工具（写全局；--workspace 已移除）',
     reload: '重新加载所有工具',
   },
   match: (input) => input.toLowerCase().startsWith('/tools'),
@@ -99,11 +99,16 @@ export const toolsCommand: CommandHandler = {
 
     if (sub === 'enable' || sub === 'disable') {
       if (args.length === 0) {
-        out.log(`${COLORS.red}用法: /tools ${sub} <name> [--workspace|--global]${COLORS.reset}`);
+        out.log(`${COLORS.red}用法: /tools ${sub} <name>${COLORS.reset}`);
         out.blank();
         return;
       }
-      const { scope, rest } = parseScope(args);
+      const { workspaceFlag, rest } = parseScope(args);
+      if (workspaceFlag) {
+        out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+        out.blank();
+        return;
+      }
       const toolName = rest[0];
       const builtinNames = BUILTIN_TOOL_NAMES;
       if (!builtinNames.includes(toolName)) {
@@ -130,14 +135,14 @@ export const toolsCommand: CommandHandler = {
         tools: { enabled, disabled },
       };
       try {
-        await configWriter.updateScope(scope, partial);
+        await configWriter.update(partial);
         if (sub === 'enable') {
           const t = BUILTIN_TOOL_MAP[toolName];
           if (t && !registry.has(toolName)) registry.register(t as never);
         } else {
           if (registry.has(toolName)) registry.unregister(toolName);
         }
-        out.log(`${COLORS.bold}${COLORS.green}✓${COLORS.reset} 已写入 ${scope} 配置并${sub === 'enable' ? '启用' : '禁用'}工具: ${toolName}`);
+        out.log(`${COLORS.bold}${COLORS.green}✓${COLORS.reset} 已写入全局配置并${sub === 'enable' ? '启用' : '禁用'}工具: ${toolName}`);
         out.blank();
       } catch (e) {
         out.error(`${COLORS.bold}${COLORS.red}[Error]${COLORS.reset} 写入失败: ${e instanceof Error ? e.message : String(e)}`);

@@ -2,19 +2,18 @@
 
 > [⬅ Back to README](../../../README.md)
 
-A multi-layer configuration system is supported. Priority, from high to low: **CLI args > workspace config > global config > environment variables > defaults**.
+A multi-layer configuration system is supported. Priority, from high to low: **CLI args > global config > environment variables > defaults** (the workspace layer was removed in req 20261112-008, so configuration exists only globally).
 
 ### Config Layers
 
 | Layer | File Location | Description |
 |---|---|---|
 | CLI args | Passed at runtime | Highest priority; in-memory only (the `--serve` startup flags `--port` / `--host` / `--token` / `--web-root` belong to this layer) |
-| Workspace | `{project dir}/.loop-agent/.agent-config.json` | Project-level config (the whole `.loop-agent/` is kept out of version control) |
-| Global | `~/.loop-agent/config.json` | User-level config, shared across projects |
+| Global | `~/.loop-agent/config.json` | The only config file, shared across projects (the former workspace layer `.loop-agent/.agent-config.json` was removed) |
 | Environment | `.env` or `process.env` | Backward compatible, supports the existing env vars |
 | Defaults | `DEFAULT_CONFIG` | Defaults built into the code |
 
-> **Multiple workspaces (serve mode)**: each workspace holds its own ConfigLoader / ConfigWriter instance whose paths are fixed at construction time and never rebound at runtime — a `/config` read/write in workspace A never affects workspace B. The CLI single-workspace mode uses the launch directory; behavior is unchanged.
+> **Multiple workspaces (serve mode)**: the config loader and writer are process-level singletons shared by every workspace; sessions, memory and other content remain isolated per workspace. The CLI single-workspace mode behaves the same way.
 
 ### Config Structure
 
@@ -87,7 +86,6 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
   "skill": {
     "enabled": true,
     "globalDir": "~/.loop-agent/skills",
-    "workspaceDir": "skills",
     "autoLoad": true
   },
   "memory": {
@@ -166,7 +164,7 @@ A multi-layer configuration system is supported. Priority, from high to low: **C
 | `session` | `autoSave` | Auto-save the session to disk after `run()` | `true` |
 | `session` | `autoRestore` | Auto-restore the most recent session on startup | `true` |
 | `session` | `encryptionEnabled` | Whether session files are stored encrypted (AES-256-GCM) | `true` |
-| `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill toggles and scan directories | all enabled |
+| `skill` | `enabled` / `globalDir` / `autoLoad` | Skill toggles and scan directory (single global directory; the workspace directory was removed) | all enabled |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | Three-tier memory system config (incl. retrieval enhancement) | all enabled |
 | `memory.dreaming` | `onExit` | Auto-promote on process shutdown (semantics widened from "CLI exit" to "any host process shutdown": CLI `quit`/`exit`/`Ctrl+C` and `--serve` `Ctrl+C`/`SIGTERM`/`SIGBREAK` share it) | `true` |
 | `memory.dreaming` | `schedule.enabled` | Enable periodic auto-promotion in `--serve`/WebUI (independent of `onExit`; the CLI never schedules) | `true` |
@@ -215,13 +213,13 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 
 ### Runtime Config Management
 
-Use the CLI's built-in `/config` command to modify config directly (written to `.loop-agent/.agent-config.json`):
+Use the CLI's built-in `/config` command to modify config directly (written to the global `~/.loop-agent/config.json`):
 
 ```bash
 # Show the complete effective config and its sources
 /config list
 
-# Change the model name (written to the workspace config)
+# Change the model name (written to the global config)
 /config set model.name deepseek-chat
 
 # Change the max iterations

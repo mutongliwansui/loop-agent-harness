@@ -35,9 +35,9 @@ vi.mock('../src/llm/client.js', () => ({
 const BASE = join(tmpdir(), 'loop-agent-tests', 'subagent-background');
 
 function writeWorkspaceConfig(wsDir: string): void {
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -88,7 +88,7 @@ describe('后台子 Agent 端到端接线', () => {
     registerBuiltinTools();
     const wsDir = join(BASE, 'ok');
     writeWorkspaceConfig(wsDir);
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     agent.setWorkspaceRoot(wsDir);
 
     const events: SubAgentEventInfo[] = [];
@@ -170,7 +170,7 @@ describe('后台子 Agent 端到端接线', () => {
     writeWorkspaceConfig(wsDir);
     // 直接把配置改成关闭（writeWorkspaceConfig 后覆写）
     writeFileSync(
-      join(wsDir, '.loop-agent', '.agent-config.json'),
+      join(wsDir, 'global', 'config.json'),
       JSON.stringify({
         skill: { enabled: false },
         session: { autoSave: false, autoRestore: false },
@@ -186,7 +186,7 @@ describe('后台子 Agent 端到端接线', () => {
       }),
       'utf-8',
     );
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     agent.setWorkspaceRoot(wsDir);
 
     let observation = '';

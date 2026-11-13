@@ -99,7 +99,7 @@ async function jsonOf(res: Res): Promise<any> {
 }
 
 async function createSessionViaApi(): Promise<string> {
-  const res = await req('POST', '/sessions');
+  const res = await req('POST', '/sessions', { workspacePath: TEST_WORKSPACE });
   expect(res.status).toBe(201);
   return ((await jsonOf(res)) as { id: string }).id;
 }

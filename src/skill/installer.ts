@@ -165,21 +165,21 @@ export interface SkillRemoveResult {
 }
 
 /**
- * 批量删除 skill（Task-20261015-002，D1/D2/D3/D5）。
+ * 批量删除 skill（Task-20261015-002，D1/D3/D5）。
+ *
+ * 需求 20261112-008：skill 目录收敛为全局唯一一份，`scope`/`workspaceDir` 参数已移除。
  * - D1：仅按 frontmatter name 定位，不做目录名兜底
- * - D2：auto 工作空间优先 → 全局 fallback；global/workspace 严格限定
  * - D3：逐项 confirm（默认 N 由调用方实现）
- * - D5：护栏——目标必须是对应 skills 根的直接子目录，防路径穿越
+ * - D5：护栏——目标必须是 skills 根的直接子目录，防路径穿越
  * @param names 待删除 skill 名列表
- * @param opts.skills 候选元数据（auto 时应同时含工作空间与全局，工作空间在前）
+ * @param opts.skills 候选元数据（同一目录扫描结果）
+ * @param opts.rootDir skills 根目录（护栏基准）
  */
 export async function removeSkills(
   names: string[],
   opts: {
     skills: SkillMetadata[];
-    scope: 'auto' | 'global' | 'workspace';
-    globalDir: string;
-    workspaceDir: string;
+    rootDir: string;
     confirm: (name: string, dir: string, scope: SkillScope) => Promise<boolean>;
   },
 ): Promise<SkillRemoveResult> {
@@ -188,24 +188,15 @@ export async function removeSkills(
 
   for (const name of names) {
     try {
-      let target: SkillMetadata | undefined;
-      if (opts.scope === 'global') {
-        target = opts.skills.find((s) => s.name === name && s.scope === 'global');
-      } else if (opts.scope === 'workspace') {
-        target = opts.skills.find((s) => s.name === name && s.scope === 'workspace');
-      } else {
-        target =
-          opts.skills.find((s) => s.name === name && s.scope === 'workspace') ??
-          opts.skills.find((s) => s.name === name && s.scope === 'global');
-      }
+      const target = opts.skills.find((s) => s.name === name);
       if (!target) {
         result.failed.push({ name, reason: '未找到已安装的 Skill' });
         continue;
       }
 
-      // D5 护栏：resolve(dir) 必须是对应 skills 根的直接子目录
+      // D5 护栏：resolve(dir) 必须是 skills 根的直接子目录
       const abs = resolve(target.dir);
-      const root = resolve(target.scope === 'global' ? opts.globalDir : opts.workspaceDir);
+      const root = resolve(opts.rootDir);
       if (dirname(abs) !== root) {
         result.failed.push({ name, reason: '目标路径异常，拒绝删除' });
         continue;

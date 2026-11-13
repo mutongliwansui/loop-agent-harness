@@ -1,10 +1,13 @@
 // 配置向导单测：注入 ask/校验/写盘依赖，模拟输入序列（Task-20261011-001 6.7/6.11/6.13/6.14）
-// P1 追加：apiKey 遮蔽回显（纯函数 + PassThrough 集成）、deps.rl 注入、preferredScope、损坏配置备份接线
+// P1 追加：apiKey 遮蔽回显（纯函数 + PassThrough 集成）、deps.rl 注入、损坏配置备份接线
+//
+// 需求 20261112-008（D2/D5）：配置一律全局，向导不再询问写入层（scope 概念移除），
+// WriteConfigFn 只收候选三元组，RegisterProfileFn 收 (alias, candidate)。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtemp, rm, mkdir, writeFile, readFile, readdir, access } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, access, rm } from 'node:fs/promises';
 import readline from 'node:readline';
 import {
   runWizard,
@@ -17,7 +20,7 @@ import { configWriter } from '../src/config/index.js';
 import { DEFAULT_CONFIG } from '../src/config/schema.js';
 import type { BootstrapReport } from '../src/bootstrap/doctor.js';
 
-// 备份接线测试用：configWriter mock 到临时固定路径（updateScope 不真写盘）
+// 备份接线测试用：configWriter mock 到临时固定路径（update 不真写盘）
 vi.mock('../src/config/index.js', async () => {
   const { join } = await import('node:path');
   const { tmpdir } = await import('node:os');
@@ -25,8 +28,7 @@ vi.mock('../src/config/index.js', async () => {
   return {
     configWriter: {
       globalConfigPath: join(dir, 'config.json'),
-      workspaceConfigPath: join(dir, '.agent-config.json'),
-      updateScope: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
     },
   };
 });
@@ -42,7 +44,7 @@ const blockerReport: BootstrapReport = {
 interface Harness {
   deps: WizardDeps;
   out: string[];
-  writes: Array<{ scope: 'global' | 'workspace'; candidate: ModelCandidate }>;
+  writes: Array<{ candidate: ModelCandidate }>;
   scaffoldCount: () => number;
   closeCount: () => number;
 }
@@ -62,8 +64,8 @@ function makeHarness(
   const deps: WizardDeps = {
     ask: async () => answers[ai++] ?? '',
     checkConnectivity: async () => checkResults[Math.min(ci++, checkResults.length - 1)],
-    writeConfig: async (scope, candidate) => {
-      writes.push({ scope, candidate });
+    writeConfig: async (candidate) => {
+      writes.push({ candidate });
       return '/fake/config.json';
     },
     scaffold: async () => {
@@ -83,12 +85,11 @@ function outText(out: string[]): string {
 }
 
 describe('runWizard（初次启动配置向导）', () => {
-  it('完整流程：默认值回车跳过、校验通过、默认写入全局', async () => {
-    const h = makeHarness(['', 'sk-test-1234', '', '']);
+  it('完整流程：默认值回车跳过、校验通过、写入全局', async () => {
+    const h = makeHarness(['', 'sk-test-1234', '']);
     await runWizard(blockerReport, DEFAULT_CONFIG, h.deps);
 
     expect(h.writes).toHaveLength(1);
-    expect(h.writes[0].scope).toBe('global');
     expect(h.writes[0].candidate.baseUrl).toBe(DEFAULT_CONFIG.model.baseUrl);
     expect(h.writes[0].candidate.apiKey).toBe('sk-test-1234');
     expect(h.writes[0].candidate.name).toBe(DEFAULT_CONFIG.model.name);
@@ -98,6 +99,7 @@ describe('runWizard（初次启动配置向导）', () => {
     expect(text).toContain('主模型 apiKey 未配置');
     expect(text).toContain('已创建: /fake/skills');
     expect(text).toContain('初始化完成');
+    expect(text).toContain('写入位置：全局');
     expect(text).toContain('****1234');
     expect(text).not.toContain('sk-test-1234');
     expect(text).toContain('已验证');
@@ -106,7 +108,7 @@ describe('runWizard（初次启动配置向导）', () => {
   });
 
   it('apiKey 空输入时重新提示', async () => {
-    const h = makeHarness(['', '', 'sk-abc', '', '']);
+    const h = makeHarness(['', '', 'sk-abc', '']);
     await runWizard(blockerReport, DEFAULT_CONFIG, h.deps);
 
     expect(h.writes[0].candidate.apiKey).toBe('sk-abc');
@@ -114,7 +116,7 @@ describe('runWizard（初次启动配置向导）', () => {
   });
 
   it('校验失败选择仍保存：摘要标注未验证', async () => {
-    const h = makeHarness(['', 'sk-x', '', 's', ''], [
+    const h = makeHarness(['', 'sk-x', '', 's'], [
       { ok: false, error: 'apiKey 无效或无权限' },
     ]);
     await runWizard(blockerReport, DEFAULT_CONFIG, h.deps);
@@ -127,7 +129,7 @@ describe('runWizard（初次启动配置向导）', () => {
   });
 
   it('校验失败选择重试：重试成功后标注已验证', async () => {
-    const h = makeHarness(['', 'sk-x', '', 'r', ''], [
+    const h = makeHarness(['', 'sk-x', '', 'r'], [
       { ok: false, error: '无法连接到服务地址：ECONNREFUSED' },
       { ok: true, elapsedMs: 10 },
     ]);
@@ -139,7 +141,7 @@ describe('runWizard（初次启动配置向导）', () => {
 
   it('校验失败选择重新输入：以新三元组重新校验并写入', async () => {
     const h = makeHarness(
-      ['', 'sk-bad', '', 'e', 'https://api.example.com/v1', 'sk-good', 'deepseek-chat', ''],
+      ['', 'sk-bad', '', 'e', 'https://api.example.com/v1', 'sk-good', 'deepseek-chat'],
       [{ ok: false, error: '模型名或服务地址可能有误' }, { ok: true, elapsedMs: 5 }],
     );
     await runWizard(blockerReport, DEFAULT_CONFIG, h.deps);
@@ -151,15 +153,29 @@ describe('runWizard（初次启动配置向导）', () => {
     expect(outText(h.out)).toContain('已验证');
   });
 
-  it('写入位置选择 workspace 时按工作空间写盘', async () => {
-    const h = makeHarness(['', 'sk-1', '', 'workspace']);
-    await runWizard(blockerReport, DEFAULT_CONFIG, h.deps);
+  it('不再询问写入层：仅 3 次提问（baseUrl/apiKey/name），无 scope 提示', async () => {
+    const prompts: string[] = [];
+    const answers = ['', 'sk-1', ''];
+    let ai = 0;
+    await runWizard(blockerReport, DEFAULT_CONFIG, {
+      ask: async (p) => {
+        prompts.push(p);
+        return answers[ai++] ?? '';
+      },
+      checkConnectivity: async () => ({ ok: true, elapsedMs: 1 }),
+      writeConfig: async () => '/fake/config.json',
+      scaffold: async () => [],
+      out: () => {},
+      close: () => {},
+    });
 
-    expect(h.writes[0].scope).toBe('workspace');
+    expect(prompts).toHaveLength(3);
+    expect(prompts.join('\n')).not.toContain('workspace');
+    expect(prompts.join('\n')).not.toContain('写入位置');
   });
 
   it('支持自定义 baseUrl 与模型名', async () => {
-    const h = makeHarness(['https://api.deepseek.com/v1', 'sk-1', 'deepseek-chat', '']);
+    const h = makeHarness(['https://api.deepseek.com/v1', 'sk-1', 'deepseek-chat']);
     await runWizard(blockerReport, DEFAULT_CONFIG, h.deps);
 
     expect(h.writes[0].candidate.baseUrl).toBe('https://api.deepseek.com/v1');
@@ -245,12 +261,12 @@ describe('runWizard（deps.rl 注入：/setup 复用 REPL readline，6.12）', (
   }
 
   it('全部提问走注入的 rl，结束时不关闭外部接口（无 close 方法可调）', async () => {
-    const { rl, prompts } = makeRlStub(['', 'sk-rl-1', '', '']);
+    const { rl, prompts } = makeRlStub(['', 'sk-rl-1', '']);
     const out: string[] = [];
     let closed = false;
     await runWizard(blockerReport, DEFAULT_CONFIG, {
       rl,
-      // 未注入时会走真实网络 ping；此处 stub 掉以保证连通性检查通过、提问恰为 4 个
+      // 未注入时会走真实网络 ping；此处 stub 掉以保证连通性检查通过、提问恰为 3 个
       checkConnectivity: async () => ({ ok: true, elapsedMs: 1 }),
       out: (l = '') => out.push(l),
       close: () => {
@@ -258,26 +274,23 @@ describe('runWizard（deps.rl 注入：/setup 复用 REPL readline，6.12）', (
       },
     });
 
-    expect(prompts).toHaveLength(4);
+    expect(prompts).toHaveLength(3);
     expect(prompts[1]).toContain('apiKey');
     expect(out.join('\n')).toContain('初始化完成');
     expect(closed).toBe(true); // deps.close 仍被调用
   });
 
-  it('preferredScope=workspace 时空回车默认写 workspace，输入 g 切回 global（6.12 flag）', async () => {
-    const h1 = makeHarness(['', 'sk-1', '', '']);
-    await runWizard(blockerReport, DEFAULT_CONFIG, { ...h1.deps, preferredScope: 'workspace' });
-    expect(h1.writes[0].scope).toBe('workspace');
-
-    const h2 = makeHarness(['', 'sk-1', '', 'g']);
-    await runWizard(blockerReport, DEFAULT_CONFIG, { ...h2.deps, preferredScope: 'workspace' });
-    expect(h2.writes[0].scope).toBe('global');
+  it('preferredScope 仅支持 global：写盘仍走全局', async () => {
+    const h = makeHarness(['', 'sk-1', '']);
+    await runWizard(blockerReport, DEFAULT_CONFIG, { ...h.deps, preferredScope: 'global' });
+    expect(h.writes).toHaveLength(1);
+    expect(outText(h.out)).toContain('写入位置：全局');
   });
 });
 
 describe('runWizard 损坏配置自动备份（默认写盘路径接线，6.14）', () => {
   beforeEach(async () => {
-    vi.mocked(configWriter.updateScope).mockClear();
+    vi.mocked(configWriter.update).mockClear();
   });
 
   afterEach(async () => {
@@ -289,7 +302,7 @@ describe('runWizard 损坏配置自动备份（默认写盘路径接线，6.14�
     await writeFile(BAK_GLOBAL, '{broken json!!', 'utf-8');
     const out: string[] = [];
     let ai = 0;
-    const answers = ['', 'sk-bak', '', ''];
+    const answers = ['', 'sk-bak', ''];
     await runWizard(blockerReport, DEFAULT_CONFIG, {
       ask: async () => answers[ai++] ?? '',
       checkConnectivity: async () => ({ ok: true, elapsedMs: 1 }),
@@ -304,14 +317,18 @@ describe('runWizard 损坏配置自动备份（默认写盘路径接线，6.14�
     const bak = (await readdir(BAK_DIR)).find((f) => f.startsWith('config.json.bak-'));
     expect(bak).toBeDefined();
     await expect(readFile(join(BAK_DIR, bak as string), 'utf-8')).resolves.toBe('{broken json!!');
-    expect(vi.mocked(configWriter.updateScope).mock.calls[0][0]).toBe('global');
+    // 首次 update 写主模型三元组（全局唯一一份配置，无 scope 参数）
+    const first = vi.mocked(configWriter.update).mock.calls[0][0] as {
+      model?: { apiKey?: string };
+    };
+    expect(first.model?.apiKey).toBe('sk-bak');
   });
 
-  it('配置文件不存在时不备份、不输出提示，updateScope 仍被调用', async () => {
+  it('配置文件不存在时不备份、不输出提示，update 仍被调用', async () => {
     await rm(BAK_DIR, { recursive: true, force: true });
     const out: string[] = [];
     let ai = 0;
-    const answers = ['', 'sk-bak', '', ''];
+    const answers = ['', 'sk-bak', ''];
     await runWizard(blockerReport, DEFAULT_CONFIG, {
       ask: async () => answers[ai++] ?? '',
       checkConnectivity: async () => ({ ok: true, elapsedMs: 1 }),
@@ -322,24 +339,23 @@ describe('runWizard 损坏配置自动备份（默认写盘路径接线，6.14�
 
     expect(out.join('\n')).not.toContain('已自动备份为');
     // P1 向导联动：writeConfig 一次 + 登记 default profile 一次
-    expect(vi.mocked(configWriter.updateScope)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(configWriter.update)).toHaveBeenCalledTimes(2);
     expect(out.join('\n')).toContain('已登记：profile default');
   });
 });
 
 describe('runWizard 向导联动（Task-20261011-002 P1 5.6：登记 default profile）', () => {
-  it('profiles 为空：registerProfile 收到（scope, default, 候选三元组），输出提示', async () => {
-    const h = makeHarness(['', 'sk-reg', '', '']);
-    const registered: Array<{ scope: 'global' | 'workspace'; alias: string; candidate: ModelCandidate }> = [];
+  it('profiles 为空：registerProfile 收到（default, 候选三元组），输出提示', async () => {
+    const h = makeHarness(['', 'sk-reg', '']);
+    const registered: Array<{ alias: string; candidate: ModelCandidate }> = [];
     await runWizard(blockerReport, DEFAULT_CONFIG, {
       ...h.deps,
-      registerProfile: async (scope, alias, candidate) => {
-        registered.push({ scope, alias, candidate });
+      registerProfile: async (alias, candidate) => {
+        registered.push({ alias, candidate });
       },
     });
 
     expect(registered).toHaveLength(1);
-    expect(registered[0].scope).toBe('global');
     expect(registered[0].alias).toBe('default');
     expect(registered[0].candidate.apiKey).toBe('sk-reg');
     expect(outText(h.out)).toContain('已登记：profile default');
@@ -354,7 +370,7 @@ describe('runWizard 向导联动（Task-20261011-002 P1 5.6：登记 default pro
         profiles: { legacy: { name: 'old-model', baseUrl: 'https://old.example.com/v1', apiKey: 'sk-old' } },
       },
     };
-    const h = makeHarness(['', 'sk-new', '', '']);
+    const h = makeHarness(['', 'sk-new', '']);
     const registered: unknown[] = [];
     await runWizard(blockerReport, cfgWithProfiles, {
       ...h.deps,
@@ -368,7 +384,7 @@ describe('runWizard 向导联动（Task-20261011-002 P1 5.6：登记 default pro
   });
 
   it('登记失败不阻断：黄字提示 + 摘要照常输出', async () => {
-    const h = makeHarness(['', 'sk-x', '', '']);
+    const h = makeHarness(['', 'sk-x', '']);
     await runWizard(blockerReport, DEFAULT_CONFIG, {
       ...h.deps,
       registerProfile: async () => {

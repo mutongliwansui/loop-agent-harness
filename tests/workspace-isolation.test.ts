@@ -1,11 +1,16 @@
 /**
  * 两空间隔离验收（Task-20261021-010-03 6.4）
  *
+ * 需求 20261112-008 后语义变更：
+ * - 配置（ConfigLoader/ConfigWriter）与 Skill（SkillLoader）已收敛为**进程级单例**，
+ *   不再随工作空间各持一份；本文件相应断言改为「共享同一实例」。
+ * - 仍然按空间隔离的是：SessionStore（会话文件）、AgentPool、memory kit（L2 目录）。
+ *
  * 覆盖：
- * - 每空间独立 runtime：store / ConfigLoader / ConfigWriter / SkillLoader / AgentPool 各一实例
+ * - 每空间 runtime：store / AgentPool / SessionManager 各一实例，Config/Skill 为进程级共享
  * - 会话文件按 workspaceId 落盘，两空间互不覆盖（A5：id 公式不变，存量目录仍可见）
- * - 工作空间配置分层读写互不串（D7 构造期定根）
- * - 技能扫描按实例隔离：两空间交替 scan/reload 不互相 clear 覆盖（D14 / A7.2）
+ * - 全局配置写入对所有空间可见（不再是「写 A 不影响 B」的分层语义）
+ * - 技能扫描只扫全局目录，不再按空间隔离（D5 / D14 已被 008 取代）
  * - 记忆 L2 目录按 workspaceId 隔离（D8）
  */
 
@@ -17,6 +22,10 @@ import { WorkspaceRegistry } from '../src/api/workspace-runtime.js';
 import { createMemoryKit } from '../src/api/memory-kit.js';
 import { canonicalWorkspacePath } from '../src/session/path-utils.js';
 import { workspaceId } from '../src/session/index.js';
+import { configLoader } from '../src/config/loader.js';
+import { configWriter } from '../src/config/writer.js';
+import { skillLoader } from '../src/skill/loader.js';
+import { loopAgentHome } from '../src/user-home.js';
 import type { WorkspaceRuntime } from '../src/api/workspace-runtime.js';
 
 const ROOT = join(tmpdir(), 'loop-agent-tests', 'test-workspace-isolation');
@@ -31,23 +40,10 @@ let rtB: WorkspaceRuntime;
 let rootA = '';
 let rootB = '';
 
-/** 在两个空间各放一个同名 skill，用于验证实例级扫描互不覆盖 */
-function seedSkill(workspace: string, name: string): void {
-  const dir = join(workspace, '.loop-agent', 'skills', name);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, 'SKILL.md'),
-    `---\nname: ${name}\ndescription: 隔离测试用 ${name}\n---\n\n# ${name}\n`,
-    'utf-8',
-  );
-}
-
 beforeAll(async () => {
   rmSync(ROOT, { recursive: true, force: true });
   mkdirSync(WS_A, { recursive: true });
   mkdirSync(WS_B, { recursive: true });
-  seedSkill(WS_A, 'skill-only-a');
-  seedSkill(WS_B, 'skill-only-b');
 
   registry = new WorkspaceRegistry({ userDir: USER_DIR });
   rtA = await registry.get(WS_A);
@@ -66,14 +62,22 @@ afterAll(() => {
 });
 
 describe('6.4.1 每空间独立实例', () => {
-  it('store / ConfigLoader / ConfigWriter / SkillLoader / AgentPool 均不共享', () => {
+  it('store / AgentPool / SessionManager 不共享', () => {
     expect(rtA).not.toBe(rtB);
     expect(rtA.store).not.toBe(rtB.store);
-    expect(rtA.configLoader).not.toBe(rtB.configLoader);
-    expect(rtA.configWriter).not.toBe(rtB.configWriter);
-    expect(rtA.skillLoader).not.toBe(rtB.skillLoader);
     expect(rtA.pool).not.toBe(rtB.pool);
     expect(rtA.sessions).not.toBe(rtB.sessions);
+  });
+
+  it('配置与 skill 不再挂在 runtime 上（进程级单例，D8）', () => {
+    // 008 后 runtime 不再持有这三个组件，避免「指向某空间」的错觉
+    expect('configLoader' in rtA).toBe(false);
+    expect('configWriter' in rtA).toBe(false);
+    expect('skillLoader' in rtA).toBe(false);
+    // 进程级单例可正常导入且各空间共享同一引用
+    expect(configLoader).toBe(configLoader);
+    expect(configWriter).toBe(configWriter);
+    expect(skillLoader).toBe(skillLoader);
   });
 
   it('根与 workspaceId 一一对应且公式未改变（A5）', () => {
@@ -85,7 +89,7 @@ describe('6.4.1 每空间独立实例', () => {
   });
 });
 
-describe('6.4.2 会话存储与配置按空间隔离', () => {
+describe('6.4.2 会话存储按空间隔离、配置全局共享', () => {
   it('两空间创建会话落在各自 workspaceId 目录，互不可见', async () => {
     const metaA = await rtA.store.createSession('空间A的会话', []);
     // 跨空间同秒 id 撞名与写入路由消歧属 task-04（D5）范围；本任务用间隔规避，聚焦存储隔离
@@ -107,14 +111,6 @@ describe('6.4.2 会话存储与配置按空间隔离', () => {
     expect(listB).not.toContain(metaA.id);
   });
 
-  it('工作空间配置写 A 不影响 B（构造期定根，D7）', async () => {
-    await rtA.configWriter.writeWorkspace({ skill: { enabled: false } });
-
-    expect(rtA.configLoader.loadWorkspaceSync().skill?.enabled).toBe(false);
-    expect(rtB.configLoader.loadWorkspaceSync().skill?.enabled).toBeUndefined();
-    expect(rtA.configWriter.workspaceConfigPath).not.toBe(rtB.configWriter.workspaceConfigPath);
-  });
-
   it('listAllWorkspaces 从任一 store 均可看全两个空间（无"当前"标记）', async () => {
     const fromA = await rtA.store.listAllWorkspaces();
     expect(fromA).toHaveLength(2);
@@ -126,32 +122,37 @@ describe('6.4.2 会话存储与配置按空间隔离', () => {
   });
 });
 
-describe('6.4.3 技能扫描实例级隔离（D14 / A7.2）', () => {
-  it('两空间交替 reload 互不 clear；scan(root) 对同一根结果稳定', () => {
-    rtA.skillLoader.reload(rootA);
-    rtB.skillLoader.reload(rootB);
-    rtA.skillLoader.reload(rootA);
+describe('6.4.3 skill 只扫全局目录（008 D5 取代旧的实例级隔离）', () => {
+  it('工作空间内放置的 skill 不再被扫描；scan() 无参数且结果稳定', () => {
+    // 在空间目录里放一个 skill：008 后不应被任何 loader 扫到
+    const wsSkillDir = join(WS_A, '.loop-agent', 'skills', 'skill-only-a');
+    mkdirSync(wsSkillDir, { recursive: true });
+    writeFileSync(
+      join(wsSkillDir, 'SKILL.md'),
+      '---\nname: skill-only-a\ndescription: 空间内 skill（008 后应被忽略）\n---\n\n# a\n',
+      'utf-8',
+    );
 
-    const namesA = rtA.skillLoader.list().map((s) => s.name);
-    const namesB = rtB.skillLoader.list().map((s) => s.name);
-    expect(namesA).toContain('skill-only-a');
-    expect(namesA).not.toContain('skill-only-b');
-    expect(namesB).toContain('skill-only-b');
-    expect(namesB).not.toContain('skill-only-a');
+    // 全局目录是唯一扫描目标（路径由 loopAgentHome() 解析，测试下被 LOOP_AGENT_HOME 重定向）
+    expect(skillLoader.globalDir).toBe(join(loopAgentHome(), 'skills'));
 
-    // A7.2 双语义：同一 root 反复 scan 结果一致
-    const again = rtA.skillLoader.reload(rootA).map((s) => s.name);
-    expect(again).toEqual(rtA.skillLoader.list().map((s) => s.name));
+    const first = skillLoader.scan().map((s) => s.name);
+    const again = skillLoader.reload().map((s) => s.name);
+    expect(again).toEqual(first);
+    // 空间目录里的 skill 不应出现
+    expect(first).not.toContain('skill-only-a');
+    // 协议字段 scope 恒为 global
+    expect(skillLoader.list().every((s) => s.scope === 'global')).toBe(true);
   });
 });
 
 describe('6.4.4 记忆 L2 目录按空间隔离（D8）', () => {
   it('同一 memoryRoot 下两空间各自独立目录', async () => {
-    const kitA = await createMemoryKit(rootA, rtA.configLoader, {
+    const kitA = await createMemoryKit(rootA, configLoader, {
       memoryRoot: MEMORY_ROOT,
       globalCuratedDir: join(ROOT, 'curated'),
     });
-    const kitB = await createMemoryKit(rootB, rtB.configLoader, {
+    const kitB = await createMemoryKit(rootB, configLoader, {
       memoryRoot: MEMORY_ROOT,
       globalCuratedDir: join(ROOT, 'curated'),
     });

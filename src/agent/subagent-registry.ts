@@ -27,6 +27,9 @@ export interface SubAgentTaskRecord {
   controller?: AbortController;
 }
 
+/** 内存任务表上限：超出淘汰最老的终态记录（running 永不淘汰），与命令任务表口径一致 */
+const MAX_TASKS = 200;
+
 class SubAgentRegistry {
   private readonly tasks = new Map<string, SubAgentTaskRecord>();
   /** CLI 后台完成提示队列：在下一次用户输入前 drain 打印（D13，避免和输入行抢光标） */
@@ -41,7 +44,21 @@ class SubAgentRegistry {
   create(record: Omit<SubAgentTaskRecord, 'status' | 'startedAt'>): SubAgentTaskRecord {
     const full: SubAgentTaskRecord = { ...record, status: 'running', startedAt: Date.now() };
     this.tasks.set(full.taskId, full);
+    this.evictIfNeeded();
     return full;
+  }
+
+  /** 表上限淘汰：>200 时移除最老的终态记录（运行中的任务永不淘汰） */
+  private evictIfNeeded(): void {
+    while (this.tasks.size > MAX_TASKS) {
+      let oldest: SubAgentTaskRecord | undefined;
+      for (const t of this.tasks.values()) {
+        if (t.status === 'running') continue;
+        if (!oldest || t.startedAt < oldest.startedAt) oldest = t;
+      }
+      if (!oldest) return;
+      this.tasks.delete(oldest.taskId);
+    }
   }
 
   /** 某个会话当前运行中的后台任务数（并发上限判定） */

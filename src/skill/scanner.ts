@@ -77,6 +77,6 @@ export function scanSkillsDir(dir: string, scope: SkillScope): SkillMetadata[] {
 export function formatSkillList(skills: SkillMetadata[]): string {
   if (skills.length === 0) return '  (无可用 Skill)';
   return skills
-    .map((s) => `  [${s.scope === 'workspace' ? 'W' : 'G'}] ${s.name}: ${s.description}`)
+    .map((s) => `  [G] ${s.name}: ${s.description}`)
     .join('\n');
 }

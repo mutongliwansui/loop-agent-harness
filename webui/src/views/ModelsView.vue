@@ -66,7 +66,7 @@ type Tab = 'all' | 'active' | 'attention';
 
 const profiles = ref<ProfileRow[]>([]);
 const current = ref<{ model: { name: string; baseUrl: string; apiKey: string; temperature?: number; advanced?: ModelAdvanced }; active: string | null } | null>(null);
-const scope = ref<'workspace' | 'global'>('workspace');
+// 需求 20261112-008：模型配置只有全局一份，不再有 scope 选择
 const busy = ref(false);
 /** 首屏是否已加载完成（区分骨架与空态） */
 const loaded = ref(false);
@@ -128,7 +128,7 @@ const benchRun = ref<{ start: () => Promise<void>; stop: () => Promise<void> } |
 
 const icon = (key: ModelIconKey, w = 1.6): string => modelIconSvg(key, w);
 
-const scopeText = computed(() => (scope.value === 'workspace' ? '工作空间' : '全局'));
+
 const activeCount = computed(() => profiles.value.filter((p) => p.isCurrent).length);
 const failedAliases = computed(() =>
   profiles.value.filter((p) => isFailed(p)).map((p) => p.alias),
@@ -430,7 +430,6 @@ async function submit(): Promise<void> {
       await api(`/models/${encodeURIComponent(alias)}`, {
         method: 'PATCH',
         json: {
-          scope: scope.value,
           profile: {
             name,
             baseUrl,
@@ -448,14 +447,13 @@ async function submit(): Promise<void> {
         delete rest[alias];
         tests.value = rest;
       }
-      showToast(`已保存 ${alias} 的修改（${scopeText.value}）${changed ? ' · 建议重新测试连通性' : ''}`, 'success');
+      showToast(`已保存 ${alias} 的修改${changed ? ' · 建议重新测试连通性' : ''}`, 'success');
     } else {
       const temperature = tempRaw === '' ? undefined : Number(tempRaw);
       await api('/models', {
         method: 'POST',
         json: {
           alias: form.value.alias.trim(),
-          scope: scope.value,
           profile: {
             name,
             baseUrl,
@@ -465,7 +463,7 @@ async function submit(): Promise<void> {
           },
         },
       });
-      showToast(`已登记模型 ${form.value.alias.trim()}（${scopeText.value}）`, 'success');
+      showToast(`已登记模型 ${form.value.alias.trim()}`, 'success');
     }
     closeForm();
     await refresh();
@@ -479,8 +477,8 @@ async function submit(): Promise<void> {
 async function activate(alias: string): Promise<void> {
   busy.value = true;
   try {
-    await api('/model', { method: 'PUT', json: { alias, scope: scope.value } });
-    showToast(`已切换生效模型：${alias}（${scopeText.value}）`, 'success');
+    await api('/model', { method: 'PUT', json: { alias } });
+    showToast(`已切换生效模型：${alias}`, 'success');
     await refresh();
   } catch (e) {
     guard(e, '切换失败');
@@ -519,8 +517,8 @@ function askDelete(alias: string): void {
 async function removeModel(alias: string): Promise<void> {
   busy.value = true;
   try {
-    await api(`/models/${encodeURIComponent(alias)}?scope=${scope.value}`, { method: 'DELETE' });
-    showToast(`已移除模型 ${alias}（${scopeText.value}）`, 'success');
+    await api(`/models/${encodeURIComponent(alias)}`, { method: 'DELETE' });
+    showToast(`已移除模型 ${alias}`, 'success');
     const restTests = { ...tests.value };
     delete restTests[alias];
     tests.value = restTests;
@@ -639,7 +637,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 工具条：搜索 + 状态分段 + 排序 + 写入位置 + 计数 -->
+    <!-- 工具条：搜索 + 状态分段 + 排序 + 计数 -->
     <div class="mv-toolbar">
       <div class="mv-search">
         <span v-html="icon('search', 1.5)"></span>
@@ -656,13 +654,6 @@ onBeforeUnmount(() => {
         <option value="alias">别名 A→Z</option>
         <option value="ttft">TTFT 升序</option>
       </select>
-      <span class="mv-scope-wrap">
-        写入位置
-        <div class="seg" role="group" aria-label="写入位置">
-          <button :class="{ on: scope === 'workspace' }" :aria-pressed="scope === 'workspace'" title="写入当前工作空间配置" @click="scope = 'workspace'">工作空间</button>
-          <button :class="{ on: scope === 'global' }" :aria-pressed="scope === 'global'" title="写入全局配置，所有工作空间共享" @click="scope = 'global'">全局</button>
-        </div>
-      </span>
       <span class="mv-count">显示 {{ rows.length }} / {{ profiles.length }}</span>
     </div>
 
@@ -984,20 +975,13 @@ onBeforeUnmount(() => {
             <div>
               <b>移除模型</b>
               <p v-if="detail.isCurrent">当前生效模型不能移除，请先把其他模型设置为默认。</p>
-              <p v-else>从{{ scopeText }}配置中删除该接入点，明文 Key 一并移除，不可撤销。</p>
+              <p v-else>删除该接入点，明文 Key 一并移除，不可撤销。</p>
             </div>
             <button class="mv-btn sm danger-outline" :disabled="detail.isCurrent || busy" @click="askDelete(detail.alias)">移除</button>
           </div>
         </div>
 
         <div class="mv-drv-foot">
-          <span class="mv-scope-line">
-            写入位置
-            <div class="seg" role="group" aria-label="写入位置">
-              <button :class="{ on: scope === 'workspace' }" @click="scope = 'workspace'">工作空间</button>
-              <button :class="{ on: scope === 'global' }" @click="scope = 'global'">全局</button>
-            </div>
-          </span>
           <span class="sp"></span>
           <button class="mv-btn" @click="closeDetail">关闭</button>
           <button v-if="detail.isCurrent" class="mv-btn primary" disabled>当前生效</button>
@@ -1228,15 +1212,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="scope-line">
-            <span class="t">写入位置</span>
-            <div class="seg" role="group" aria-label="写入位置">
-              <button :class="{ on: scope === 'workspace' }" :aria-pressed="scope === 'workspace'" @click="scope = 'workspace'">工作空间</button>
-              <button :class="{ on: scope === 'global' }" :aria-pressed="scope === 'global'" @click="scope = 'global'">全局</button>
-            </div>
-            <span class="sp"></span>
-            <span class="t mono" style="font-size:11px">{{ scope === 'workspace' ? '当前工作空间配置' : '全局配置（所有工作空间共享）' }}</span>
-          </div>
         </div>
 
         <div class="mv-drv-foot">
@@ -1254,7 +1229,7 @@ onBeforeUnmount(() => {
       <div class="mv-modal" role="dialog" aria-modal="true" aria-labelledby="mv-confirm-title">
         <h3 id="mv-confirm-title">移除模型？</h3>
         <p>
-          将从{{ scopeText }}配置中移除「{{ confirmAlias }}」<template v-if="confirmTarget">（{{ confirmTarget.name }}）</template>，不可撤销。
+          将移除「{{ confirmAlias }}」<template v-if="confirmTarget">（{{ confirmTarget.name }}）</template>，不可撤销。
         </p>
         <div class="mv-modal-acts">
           <button class="mv-btn" @click="confirmAlias = null">取消</button>

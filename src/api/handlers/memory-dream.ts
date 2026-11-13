@@ -4,7 +4,7 @@
 // 的独立关注点，且与 scheduler / cron 引擎强耦合，独立文件便于单测与后续演进（如多空间独立 cron）。
 //
 // 端点：
-//   PUT    /memory/dream/schedule  校验 → 落 workspace 配置 → reschedule() 热重排（免重启）
+//   PUT    /memory/dream/schedule  校验 → 落全局配置 → reschedule() 热重排（免重启）
 //   GET    /memory/dream/preview   只算不存，输入期防抖预览未来 5 次
 //   GET    /memory/dream/history   最近运行记录（新 → 旧）
 //   DELETE /memory/dream/history   清空历史（不触碰 .dreaming-state.json 的增量进度）
@@ -63,16 +63,19 @@ function sessionsBaseDir(ctx: HandlerContext): string {
 
 /**
  * 解析 history 端点的目标空间根：
- * - 缺省 ?ws= → 启动空间（现行为不变）；
  * - 绝对路径 → registry.ensureRoot 校验（not_found/forbidden 与 fs 组同语义）；
- * - wsId → 经 sessions 索引反查 path（查不到 → not_found，无法定位增量状态目录）。
- * 无 registry（单测/嵌入）时仅允许缺省/绝对路径走 ensureRoot 失败回落——
- * 为保持既有单测零改动，无 registry 一律回落启动空间。
+ * - wsId → 经 sessions 索引反查 path（查不到 → not_found，无法定位增量状态目录）；
+ * - 缺省 ws → **进程启动空间**（`deps.sessionStore.path`）。
+ *
+ * 需求 20261113-001 D5：缺省值不再取「最近使用空间」（MRU）。history 需要「一个具体空间」，
+ * 但缺省必须**可预测**——不能因为用户上次在别的空间活动过就读到另一个空间的历史。
+ * 启动空间是进程级常量，请求本身即可推知。
+ * 想看跨空间全貌请显式用 `scope=all`（已有能力，见 handleHistory）。
  */
 async function resolveHistoryTargetRoot(ctx: HandlerContext, wsParam: string): Promise<string> {
-  if (!wsParam) return ctx.defaultRoot();
+  if (!wsParam) return ctx.deps.sessionStore.path;
   const registry = ctx.registry;
-  if (!registry) return ctx.defaultRoot();
+  if (!registry) return ctx.deps.sessionStore.path;
   if (/^[A-Za-z]:[\\/]/.test(wsParam) || wsParam.startsWith('/')) {
     return registry.ensureRoot(wsParam);
   }
@@ -102,7 +105,7 @@ function readRunsForRoot(ctx: HandlerContext, root: string): DreamRunRecord[] {
  * PUT /memory/dream/schedule
  * body: `{ enabled?: boolean; cron?: string; misfireGraceMin?: number }`
  *
- * 三步顺序不可换：先校验（非法即 400，磁盘与现有排期零改动）→ 落 workspace 配置 → reschedule()。
+ * 三步顺序不可换：先校验（非法即 400，磁盘与现有排期零改动）→ 落全局配置（需求 20261112-008）→ reschedule()。
  * 响应里的 nextRunAt / nextRunTimes 取自调度器 statusFor（权威值），避免「写盘成功但调度器没接住」
  * 时给前端一个假的下次时间（多工作空间下会出现，见任务文档 E5）。
  */
@@ -151,17 +154,18 @@ async function handlePutSchedule(
     fields = parsed.fields;
   }
 
-  // ---- 2. 落 workspace 配置（按点路径写入，由 ConfigWriter 深合并）----
+  // ---- 2. 落全局配置（按点路径写入，由 ConfigWriter 深合并）----
   const partial: Record<string, unknown> = {};
   ConfigWriter.setByKey(partial, 'memory.dreaming.schedule.enabled', enabled);
   ConfigWriter.setByKey(partial, 'memory.dreaming.schedule.cron', cron);
   ConfigWriter.setByKey(partial, 'memory.dreaming.schedule.misfireGraceMin', grace);
-  await ctx.configWriter.updateScope('workspace', partial as PartialAgentConfig);
+  await ctx.configWriter.update(partial as PartialAgentConfig);
   ctx.log(`[api] 记忆定时已更新：enabled=${enabled} cron="${cron}" grace=${grace}min`);
 
   // ---- 3. 热重排（不重启即生效）----
   ctx.dreamScheduler?.reschedule();
-  const status = await ctx.dreamScheduler?.statusFor(ctx.defaultRoot()).catch(() => null);
+  // 需求 20261113-001 D5：状态查询改全空间聚合（本端点只消费全局配置字段，与 root 无关）
+  const status = await ctx.dreamScheduler?.statusAll().catch(() => null);
 
   sendJson(res, 200, {
     ok: true,

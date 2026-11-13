@@ -205,14 +205,16 @@ async function handleGate(ctx: HandlerContext, _req: IncomingMessage, res: Serve
 async function handleDream(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
   const scheduler = ctx.dreamScheduler;
   if (scheduler) {
-    const root = ctx.defaultRoot();
-    if (scheduler.isRunning(root)) {
+    // 需求 20261113-001 D4：手动触发改**全空间**语义，不需要 ws 参数。
+    // 调度器本身早已全空间参与（enumerateAllSpaces），此前传单个空间根只是为了
+    // 满足「单空间」签名——那会让「立即梳理」退化成只整理最近使用的那一个空间。
+    if (await scheduler.isAnyRunning().catch(() => false)) {
       sendJson(res, 202, { accepted: false, reason: 'manual', skippedBecause: 'already-running' });
       return;
     }
     sendJson(res, 202, { accepted: true, reason: 'manual' });
     // 即走即忘：并发竞态由调度器自身单飞锁兜底（后到者直接跳过，不会重复晋升）
-    void scheduler.runFor(root, 'manual').catch((e: unknown) => {
+    void scheduler.runAll('manual').catch((e: unknown) => {
       ctx.log(`[api] memory dream 失败: ${e instanceof Error ? e.message : String(e)}`);
     });
     return;
@@ -257,8 +259,10 @@ async function handleMemoryStatus(ctx: HandlerContext, _req: IncomingMessage, re
     return;
   }
   const kit = await ctx.createMemoryKit();
-  // Task-20261026-002 D9：附带自动晋升状态（调度器未注入或该空间未装载时不返回该字段）
-  const dreaming = await ctx.dreamScheduler?.statusFor(ctx.defaultRoot()).catch(() => null);
+  // Task-20261026-002 D9：附带自动晋升状态
+  // 需求 20261113-001 D5：改全空间聚合——statusFor(root) 的 root 只影响
+  // running/lastRunAt/lastProcessedDay 三项，其余全是全局配置推导，单 root 语义不成立
+  const dreaming = await ctx.dreamScheduler?.statusAll().catch(() => null);
   sendJson(res, 200, {
     enabled: true,
     layers: {

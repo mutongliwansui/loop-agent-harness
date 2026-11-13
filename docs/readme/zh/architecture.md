@@ -100,10 +100,10 @@
 
 ```
 加载优先级（高 → 低）：
-  CLI 参数 > 工作空间配置 (.loop-agent/.agent-config.json)
-           > 全局配置 (~/.loop-agent/config.json)
+  CLI 参数 > 全局配置 (~/.loop-agent/config.json)
            > 环境变量 (.env)
            > 默认值 (DEFAULT_CONFIG)
+  （工作空间层 .loop-agent/.agent-config.json 已在需求 20261112-008 中移除）
 ```
 
 ### 工作空间运行时（WorkspaceRuntime）
@@ -115,11 +115,12 @@ WorkspaceRegistry（懒建 + LRU，上限 4）
   key   = canonicalWorkspacePath(root) → workspaceId
   value = WorkspaceRuntime（不可变）
             ├─ SessionStore         会话存储（每空间一例）
-            ├─ ConfigLoader/Writer  配置加载/写入（每空间一例，构造期定根）
-            ├─ SkillLoader          技能加载（以空间根扫描）
             ├─ sessions             会话调度（busy 仅约束同空间同会话）
             ├─ AgentPool            Agent 池（按 sessionId 租用）
             └─ memoryKit            三层记忆（随 LRU 淘汰释放句柄）
+
+进程级单例（跨空间共享，不随 LRU 淘汰）：
+  ConfigLoader / ConfigWriter / SkillLoader / McpManager / McpMonitor
 
 兜底与限流：
   ├─ AsyncLocalStorage<{root,id}>：漏改的深层代码可读到当前空间

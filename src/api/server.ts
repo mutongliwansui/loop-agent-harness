@@ -153,32 +153,34 @@ export function createApiServer(deps: ApiServerDeps): ApiServer {
     userDir: rt.userDir,
     runBench: rt.runBench ?? runBench,
     benchRuns: new BenchRunHub(),
-    // 需求 20261027-004：缺省空间 = 进程内「最近使用空间」指针（bootstrap 启动时置为冷启动推导值）。
-    // 无 registry（既有单测/嵌入用法）时回落 deps.sessionStore.path，保持旧「启动空间」行为零破坏。
-    defaultRoot: () => currentWorkspaceRoot() || deps.sessionStore.path,
-    // 缺省空间 runtime：复用 resolveWorkspaceRuntime（懒装载 + ctx 指针改写 + ensureScaffold + MRU touch）。
+    // 缺省空间 runtime（需求 20261113-001 D8）：语义已从「最近使用空间」改为**启动空间**。
+    // 复用 resolveWorkspaceRuntime（懒装载 + ctx 指针改写）。
     // 无 registry（既有单测/嵌入用法）时回落 deps 对应的伪 runtime——此类场景不存在跨空间语义，
-    // 保证 status 等端点在旧单测下行为不变。
+    // 保证 status / POST /sessions 等端点在旧单测下行为不变。
     resolveDefaultRuntime: async () => {
       if (!deps.registry) {
         return {
           root: deps.sessionStore.path,
           id: deps.sessionStore.id,
           store: deps.sessionStore,
-          sessions: deps.sessions,
+          // 必须是 ctx.sessions（= deps.sessions ?? new SessionManager(store)），
+          // 而非 deps.sessions——后者在既有单测/嵌入用法下为 undefined
+          sessions: ctx.sessions,
         } as unknown as WorkspaceRuntime;
       }
-      return resolveWorkspaceRuntime(ctx, currentWorkspaceRoot() || deps.sessionStore.path);
+      return resolveWorkspaceRuntime(ctx, deps.sessionStore.path);
     },
   };
 
   /**
    * 终端工作目录解析（Task-20261027-001）：与 /fs/* 同口径——
-   * ?ws=<绝对路径> 必须是已注册工作空间，缺省回落启动空间。
+   * ?ws=<绝对路径> 必须是已注册工作空间，缺省回落**启动空间**。
+   * 需求 20261113-001 D2：缺省不再取「最近使用空间」——终端 cwd 决定命令实际落点，
+   * 随用户上次活动漂移属误伤面。
    */
   async function resolveTerminalCwd(wsParam: string | null): Promise<string> {
     const raw = wsParam?.trim();
-    if (!raw) return currentWorkspaceRoot() || deps.sessionStore.path;
+    if (!raw) return deps.sessionStore.path;
     const target = await canonicalWorkspacePath(raw);
     const known = await deps.sessionStore.listAllWorkspaces();
     for (const w of known) {

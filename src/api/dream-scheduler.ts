@@ -117,7 +117,7 @@ export interface DreamTimer {
 
 export interface DreamSchedulerDeps {
   registry: WorkspaceRegistry;
-  /** 进程级配置读取（定时节奏、关停预算、onExit；每空间的记忆配置另由 runtime 的 configLoader 读） */
+  /** 进程级配置读取（定时节奏、关停预算、onExit、记忆配置；需求 20261112-008：记忆配置也一律读全局） */
   getConfig: () => AgentConfig;
   log: (msg: string) => void;
   /** 时钟注入（单测用；默认 Date.now） */
@@ -271,6 +271,45 @@ export class DreamScheduler {
   }
 
   /**
+   * 全空间手动触发（需求 20261113-001 D4）：逐空间 runFor(reason)，不要求 ws。
+   *
+   * 与 `tick()` 的差别只有一处——**不做 `busy` 跳过**：
+   * `tick()` 的 `reason==='schedule'` 会让「该空间有对话在跑」的空间本轮让位，
+   * 那是定时轮的配额礼貌；而用户点「立即梳理」是显式意图，不该被对话挡住。
+   * 单飞（同一空间重复触发）仍由 `runFor` 内的 `inflight` 兜底，且这里再叠一层
+   * `ticking` 防重入，避免连点两次起两轮全空间扫描。
+   */
+  async runAll(reason: DreamTriggerReason = 'manual'): Promise<DreamRunSummary[]> {
+    if (this.ticking) {
+      debug.log('[dream] 上一轮全空间任务仍在执行，本次跳过');
+      return [];
+    }
+    this.ticking = true;
+    const out: DreamRunSummary[] = [];
+    try {
+      for (const root of await this.enumerateCandidateRoots()) {
+        // 预判口径与定时轮一致：空转空间零 LLM（磁盘小文件粗筛）
+        if (this.enumerateAllSpaces && !(await this.shouldAttempt(root))) {
+          out.push(
+            this.skipSummary(root, toWorkspaceId(root), reason, 'no-new-content', new Date(this.now()).toISOString(), this.now()),
+          );
+          continue;
+        }
+        out.push(await this.runFor(root, reason));
+      }
+    } finally {
+      this.ticking = false;
+    }
+    return out;
+  }
+
+  /** 全空间是否存在在跑的晋升（供 handler 同步判定，避免阻塞到晋升结束） */
+  async isAnyRunning(): Promise<boolean> {
+    const roots = await this.enumerateCandidateRoots();
+    return roots.some((root) => this.inflight.has(root));
+  }
+
+  /**
    * 定时轮：遍历全部已装载 runtime 逐个尝试（D8：有 in-flight run 的空间本轮让位）。
    * 返回每个空间的摘要（含跳过），便于日志与单测断言。
    *
@@ -387,7 +426,7 @@ export class DreamScheduler {
     }
     if (!rt) return this.skipSummary(root, '', reason, 'no-runtime', startedAt, startedMs, catchup);
 
-    const mem = rt.configLoader.load().config.memory;
+    const mem = this.getConfig().memory;
     if (!mem.enabled || mem.dreaming.enabled === false) {
       return this.skipSummary(root, rt.id, reason, 'disabled', startedAt, startedMs, catchup);
     }
@@ -504,7 +543,7 @@ export class DreamScheduler {
   async statusFor(root: string): Promise<DreamSchedulerStatus | null> {
     const rt = this.registry.peek(root);
     if (!rt) return null;
-    const mem = rt.configLoader.load().config.memory;
+    const mem = this.getConfig().memory;
     const schedule = mem.dreaming.schedule;
     const rec = this.records.get(root);
     const nowMs = this.now();
@@ -544,6 +583,94 @@ export class DreamScheduler {
     }
     return status;
   }
+  /**
+   * 全空间聚合的晋升状态（需求 20261113-001 D5）。
+   *
+   * 为什么需要它：`statusFor(root)` 的 root 只影响 `running` / `lastRunAt` /
+   * `lastProcessedDay` / `lastSummary` 四项，**其余全是全局配置推导**（cron、nextRunTimes、
+   * intervalMode…）。而调度器本身早已全空间参与（`enumerateAllSpaces`），
+   * 传单个 root 只是为了满足签名——语义上不成立。handler 侧更没有理由凭空挑一个空间。
+   *
+   * 聚合口径（不装载 runtime，直接读磁盘与内存）：
+   * - 全局字段：直接复用「任一空间」的推导结果（与 root 无关）；
+   * - `running`：任一空间在跑即为 true；
+   * - `lastRunAt`：取全部空间中最新的一个（用户视角是「最近一次梳理」）；
+   * - `lastSummary`：跟随 `lastRunAt` 的归属空间；
+   * - `lastProcessedDay`：取全部空间中最小的一个（最落后 = 最需要关注）。
+   */
+  async statusAll(): Promise<DreamSchedulerStatus> {
+    const roots = await this.enumerateCandidateRoots();
+    const mem = this.getConfig().memory;
+    const schedule = mem.dreaming.schedule;
+    const nowMs = this.now();
+    const cron = (schedule?.cron ?? '').trim();
+    const parsed = cron ? parseCron(cron) : null;
+    const fields = parsed?.ok ? parsed.fields : undefined;
+
+    const status: DreamSchedulerStatus = {
+      enabled: mem.enabled && mem.dreaming.enabled !== false,
+      scheduleEnabled: schedule?.enabled !== false,
+      intervalHours: positive(schedule?.intervalHours, 24),
+      startupDelayMin: positive(schedule?.startupDelayMin, 5),
+      cron,
+      cronValid: parsed === null ? true : parsed.ok,
+      cronError: parsed && !parsed.ok ? parsed.error : this.cronError,
+      describe: fields ? describeCron(fields) : undefined,
+      timezoneOffsetMin: timezoneOffsetMin(nowMs),
+      misfireGraceMin: nonNegative(schedule?.misfireGraceMin, 60),
+      intervalMode: this.mode,
+      nextRunTimes: fields ? nextFireTimes(fields, nowMs, 3).map((t) => new Date(t).toISOString()) : [],
+      running: roots.some((root) => this.inflight.has(root)),
+      nextRunAt: this.nextRunAt ? new Date(this.nextRunAt).toISOString() : undefined,
+    };
+    if (!status.enabled) return status;
+
+    // ---- 逐空间聚合「最近一次」与「最落后一天」 ----
+    let latestMs = Number.NEGATIVE_INFINITY;
+    for (const root of roots) {
+      // 内存记录（本进程跑过的）优先，缺省回落磁盘状态文件（上个进程留下的）
+      const rec = this.records.get(root);
+      const disk = await this.readStateFile(root);
+      const runAt = rec?.lastRunAt ?? disk.lastRunAt;
+      if (runAt) {
+        const ms = Date.parse(runAt);
+        if (Number.isFinite(ms) && ms > latestMs) {
+          latestMs = ms;
+          status.lastRunAt = runAt;
+          status.lastSummary = rec?.lastSummary ?? disk.lastSummary ?? status.lastSummary;
+        }
+      }
+      const day = disk.lastProcessedDay;
+      if (day && (status.lastProcessedDay === undefined || day < status.lastProcessedDay)) {
+        status.lastProcessedDay = day;
+      }
+    }
+    return status;
+  }
+
+  /**
+   * 读单个空间的状态文件（供 statusAll 聚合；不装载 runtime）。
+   * 读不到/解析失败一律返回空对象——聚合口径下单个空间坏掉不该影响整体。
+   */
+  private async readStateFile(root: string): Promise<{
+    lastProcessedDay?: string;
+    lastRunAt?: string;
+    lastSummary?: DreamSchedulerStatus['lastSummary'];
+  }> {
+    const file = join(this.userDir, 'memory', toWorkspaceId(root), '.dreaming-state.json');
+    try {
+      const raw = await readFile(file, 'utf-8');
+      const st = JSON.parse(raw) as {
+        lastProcessedDay?: string;
+        lastRunAt?: string;
+        lastSummary?: DreamSchedulerStatus['lastSummary'];
+      };
+      return st ?? {};
+    } catch {
+      return {};
+    }
+  }
+
 
   // ---- Task-20261026-003：运行历史读写（供 /memory/dream/history 端点） ----
 
@@ -829,7 +956,7 @@ export class DreamScheduler {
   private async logFor(root: string): Promise<DreamRunLog | null> {
     const rt = this.registry.peek(root);
     if (!rt) return null;
-    const limit = normalizeHistoryLimit(rt.configLoader.load().config.memory.dreaming.historyLimit);
+    const limit = normalizeHistoryLimit(this.getConfig().memory.dreaming.historyLimit);
     if (limit <= 0) return null;
     const kit = await rt.getMemoryKit();
     return new DreamRunLog({ file: join(kit.episodic.getMemoryDir(), RUNS_FILE), limit });

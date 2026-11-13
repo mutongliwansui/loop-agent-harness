@@ -5,27 +5,27 @@ import type { SkillMetadata, SkillContent } from './types.js';
 import { config } from '../config.js';
 import { loopAgentHome } from '../user-home.js';
 
-/** Skill 加载器：扫描、解析、渐进式加载 */
+/**
+ * Skill 加载器：扫描、解析、渐进式加载
+ *
+ * 需求 20261112-008（D5）：skill 目录收敛为全局唯一一份 `~/.loop-agent/skills`。
+ * - `getWorkspaceDir()` 已删除，`{ws}/.loop-agent/skills` 不再被扫描
+ * - `SkillMetadata.scope` 字段保留（协议稳定）但恒为 `'global'`
+ */
 export class SkillLoader {
   private skills: Map<string, SkillMetadata> = new Map();
 
-  /** 全局 Skill 目录 */
+  /** 全局 Skill 目录（唯一目录） */
   get globalDir(): string {
     return join(loopAgentHome(), 'skills');
   }
 
-  /** 扫描并加载所有 Skill 元信息 */
-  scan(cwd: string): SkillMetadata[] {
-    // Task：workspace Skill 统一存放于 {cwd}/.loop-agent/skills
-    const workspaceDir = join(cwd, '.loop-agent', 'skills');
+  /** 扫描并加载所有 Skill 元信息（只扫全局目录） */
+  scan(): SkillMetadata[] {
+    const skills = scanSkillsDir(this.globalDir, 'global');
 
-    const globalSkills = scanSkillsDir(this.globalDir, 'global');
-    const workspaceSkills = scanSkillsDir(workspaceDir, 'workspace');
-
-    // 先加载全局，再加载工作空间（后者覆盖前者）
     this.skills.clear();
-    for (const s of globalSkills) this.skills.set(s.name, s);
-    for (const s of workspaceSkills) this.skills.set(s.name, s);
+    for (const s of skills) this.skills.set(s.name, s);
 
     return this.list();
   }
@@ -56,14 +56,9 @@ export class SkillLoader {
     return this.skills.get(name);
   }
 
-  /** 获取工作空间 Skill 目录 */
-  getWorkspaceDir(cwd: string): string {
-    return join(cwd, '.loop-agent', 'skills');
-  }
-
-  /** 重新扫描 */
-  reload(cwd: string): SkillMetadata[] {
-    return this.scan(cwd);
+  /** 重新扫描（全局目录） */
+  reload(): SkillMetadata[] {
+    return this.scan();
   }
 
   /** 当前是否启用 Skill */

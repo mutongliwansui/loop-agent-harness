@@ -1,16 +1,17 @@
 <script setup lang="ts">
-// 后台子任务常驻指示器（需求 20261107-008 G1；2026-11-07 样式重设计）
+// 后台任务常驻指示器（需求 20261112-006：命令任务 + 后台子 Agent 任务统一展示）
 //
-// 为什么需要它：后台任务状态原本只存在于消息流的卡片里，滚走、切页、刷新后就看不见了，
-// 用户反馈「提交后前台完全无感知、结束也不知道」。本组件常驻在输入区上方，
-// 数据源是轮询快照（subAgentTasksOf），**不依赖 SSE**——主 run 结束、SSE 关闭后依然有效。
+// 原为「后台子任务常驻指示器」（需求 20261107-008 G1）。统一的读模型上线后，
+// 数据源改为 /sessions/:id/jobs 轮询快照（jobsOf），一次覆盖两类任务；
+// 不依赖 SSE——主 run 结束、SSE 关闭后依然有效。
 //
-// 样式重设计要点（docs/prototypes/20261107-008-后台子任务指示器样式重设计原型.html）：
-// - 不再是「左侧色条 + 彩色加粗字」的告警条观感，改为与工具卡片同形制的软边框面板；
-// - 收起态用「#序号 + 实时耗时」chips + 聚合耗时，避免多个任务摘要截断成同一句；
-// - 展开行以任务标题为主，taskId / 轮次降为次要 meta，失败行附一行错误摘要。
+// 展示规则：
+// - 收起态用「#序号 + 实时耗时」chips + 聚合耗时；
+// - 展开行以任务标题为主，kind 徽标区分「命令 / 子任务」；
+// - 命令任务可停止（canStop），子任务本期不提供停止；
+// - 失败行附一行错误摘要。
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { subAgentTasksOf, type SubAgentTaskVM } from '../chat-stream.js';
+import { jobsOf, type JobTaskVM } from '../chat-stream.js';
 import {
   dockChips,
   dockErrorLine,
@@ -22,6 +23,7 @@ import {
   dockTotalElapsed,
   formatDockElapsed,
 } from '../subagent-dock.js';
+import { api } from '../api/client.js';
 import { showToast } from '../toast.js';
 
 const props = defineProps<{ sessionId: string | null }>();
@@ -31,7 +33,7 @@ const expanded = ref(false);
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | null = null;
 
-const tasks = computed<SubAgentTaskVM[]>(() => subAgentTasksOf(props.sessionId));
+const tasks = computed<JobTaskVM[]>(() => jobsOf(props.sessionId));
 const running = computed(() => tasks.value.filter((t) => t.status === 'running'));
 const done = computed(() => tasks.value.filter((t) => t.status !== 'running'));
 
@@ -81,6 +83,20 @@ async function copyId(taskId: string): Promise<void> {
     showToast('复制失败：需 https 或 localhost 环境', 'error');
   }
 }
+
+/** 停止命令任务（子任务 canStop=false，不渲染按钮） */
+async function stopTask(t: JobTaskVM): Promise<void> {
+  if (t.stopping) return;
+  t.stopping = true;
+  try {
+    await api(`/background/${encodeURIComponent(t.taskId)}/stop`, { method: 'POST' });
+    showToast(`已请求停止 ${t.taskId}`, 'success');
+  } catch (e) {
+    showToast(e instanceof Error ? e.message : '停止失败', 'error');
+  } finally {
+    t.stopping = false;
+  }
+}
 </script>
 
 <template>
@@ -98,7 +114,7 @@ async function copyId(taskId: string): Promise<void> {
           <path d="M5.1 2.7h2.1a1.4 1.4 0 1 1 1.7 0h2a.6.6 0 0 1 .6.6v2.1a1.4 1.4 0 1 0 0 1.7v2.1a.6.6 0 0 1-.6.6H8.9a1.4 1.4 0 1 0-1.7 0H5.1a.6.6 0 0 1-.6-.6V7.1a1.4 1.4 0 1 0 0-1.7V3.3a.6.6 0 0 1 .6-.6z" />
         </svg>
       </span>
-      <span class="sad-title">后台子任务</span>
+      <span class="sad-title">后台任务</span>
       <span class="sad-count">{{ running.length }} 运行中</span>
 
       <span class="sad-chips">
@@ -125,6 +141,7 @@ async function copyId(taskId: string): Promise<void> {
         <div class="sad-main">
           <div class="sad-line">
             <span class="sad-n">#{{ i + 1 }}</span>
+            <span class="sad-kind" :data-k="t.kind">{{ t.kind === 'command' ? '命令' : '子任务' }}</span>
             <span class="sad-task" :title="dockTaskTitle(t.task)">{{ dockTaskTitle(t.task) }}</span>
           </div>
           <div class="sad-meta">
@@ -142,6 +159,16 @@ async function copyId(taskId: string): Promise<void> {
               @click.stop="copyId(t.taskId)"
             >
               {{ t.taskId }}
+            </button>
+            <button
+              v-if="t.canStop"
+              type="button"
+              class="sad-stop"
+              :disabled="t.stopping"
+              title="停止该后台命令任务"
+              @click.stop="stopTask(t)"
+            >
+              {{ t.stopping ? '停止中…' : '停止' }}
             </button>
           </div>
           <div v-if="t.status === 'failed' && dockErrorLine(t.error)" class="sad-err">
@@ -314,6 +341,18 @@ async function copyId(taskId: string): Promise<void> {
 .sad-main { flex: 1; min-width: 0; }
 .sad-line { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .sad-n { flex: none; font-family: var(--mono); font-weight: 600; font-size: 10.5px; color: var(--muted); }
+/* 任务类型徽标：命令 / 子任务 */
+.sad-kind {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--text-2);
+  background: var(--code-bg);
+  border: 1px solid var(--line-soft, var(--line));
+}
+.sad-kind[data-k='subagent'] { color: var(--brand); background: var(--brand-weak); }
 .sad-task {
   font-size: 12.5px;
   line-height: 1.55;
@@ -350,6 +389,18 @@ async function copyId(taskId: string): Promise<void> {
   white-space: nowrap;
 }
 .sad-id:hover { opacity: 1; text-decoration: underline; }
+
+/* 停止按钮：仅命令任务出现，弱化成链接样式，避免抢状态词视觉 */
+.sad-stop {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 10.5px;
+  color: var(--danger);
+  cursor: pointer;
+}
+.sad-stop:hover { text-decoration: underline; }
+.sad-stop:disabled { opacity: .5; cursor: not-allowed; text-decoration: none; }
 
 .sad-st { flex: none; align-self: center; font-size: 11px; color: var(--muted); }
 .sad-row[data-s='running'] .sad-st { color: var(--brand); }

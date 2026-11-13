@@ -107,10 +107,10 @@
 
 ```
 Load priority (high → low):
-  CLI args > workspace config (.loop-agent/.agent-config.json)
-           > global config (~/.loop-agent/config.json)
+  CLI args > global config (~/.loop-agent/config.json)
            > environment variables (.env)
            > defaults (DEFAULT_CONFIG)
+  (the workspace layer .loop-agent/.agent-config.json was removed in req 20261112-008)
 ```
 
 ### Workspace Runtime
@@ -122,11 +122,12 @@ WorkspaceRegistry (lazy creation + LRU, up to 4)
   key   = canonicalWorkspacePath(root) → workspaceId
   value = WorkspaceRuntime (immutable)
             ├─ SessionStore         session storage (one per workspace)
-            ├─ ConfigLoader/Writer  config load/write (one per workspace, root fixed at construction)
-            ├─ SkillLoader          skill loading (scanned from the workspace root)
             ├─ sessions             session scheduling (busy only applies to the same workspace + session)
             ├─ AgentPool            agent pool (leased by sessionId)
             └─ memoryKit            three-tier memory (handles released on LRU eviction)
+
+Process-level singletons (shared across workspaces, never evicted by the LRU):
+  ConfigLoader / ConfigWriter / SkillLoader / McpManager / McpMonitor
 
 Fallback and throttling:
   ├─ AsyncLocalStorage<{root,id}>: deep code paths that missed the refactor can still read the current workspace

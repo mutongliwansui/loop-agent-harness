@@ -106,8 +106,8 @@ beforeAll(async () => {
   const store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions-store'));
   await store.init();
 
-  const loader = new ConfigLoader(TEST_WORKSPACE, join(TEST_DIR, 'global'));
-  const writer = new ConfigWriter(TEST_WORKSPACE, join(TEST_DIR, 'global'), loader);
+  const loader = new ConfigLoader(join(TEST_DIR, 'global'));
+  const writer = new ConfigWriter(join(TEST_DIR, 'global'), loader);
 
   // 最小 fake registry：只为 ensureRoot 提供目录校验（?ws= 绝对路径形态用）；
   // peek 返回 undefined 表示「目标空间未装载」——跨空间端点不依赖 runtime 装载。

@@ -5,37 +5,29 @@
 //   经 meta.json 的 workspacePath 映射回真实路径（canonical 化）。
 // - 运行期：进程内 MRU 指针（模块级），touch 点收口两处（resolveWorkspaceRuntime 成功路径 /
 //   handleMessage locateSession 成功路径），用户可感知的活动即刷新。
-// - 兜底：无任何可用会话目录 / 映射缺失 / canonical 失败 → 回落启动期注入的 cwd 兜底
-//   （setCwdFallback，由入口 index.ts 注入；A4 白名单收口，本模块零 process.cwd()）。
+// - 兜底：无任何可用会话目录 / 映射缺失 / canonical 失败 → 回落 os.homedir()。
 //   canonicalWorkspacePath 对不存在路径回退词法值不抛错，永不失败。
+//
+// 需求 20261113-001 D9：原「cwd 兜底」机制整条退场（注入函数与「缺省空间」同步读取函数一并删除）。
+// 它唯一用途是给那个已删函数提供兜底值，而它的消费者已按 D2/D3/D4/D5 全部清零；
+// 兜底改用 homedir()——它是真实存在的绝对目录，语义上比「进程启动目录」更贴近「用户当前所在」。
 //
 // 为什么不用会话 meta.json 的 updatedAt：需要 JSON.parse 全部目录（本机 ~180 空间），
 // stat mtime 成本低一个量级；recency 粒度对「最近使用」语义足够。
 
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalWorkspacePath } from '../session/path-utils.js';
 import { debug } from '../debug.js';
 import { loopAgentHome } from '../user-home.js';
 
-/** 最近使用空间指针（模块级：进程内唯一事实源；defaultRoot() 同步读） */
+/** 最近使用空间指针（模块级：进程内唯一事实源；currentWorkspaceRoot() 同步读） */
 let mruRoot = '';
-/** cwd 兜底（A4：本模块不直接依赖 process.cwd()，由 cli/start.ts 启动期注入一次） */
-let cwdFallback = '';
-
-/** 注入 cwd 兜底值（A4 白名单收口：仅 cli/start.ts 等白名单文件调用） */
-export function setCwdFallback(root: string): void {
-  cwdFallback = root;
-}
 
 /** 记录一次空间活动（本模块不做 canonical 化，调用方传 canonical root） */
 export function markWorkspaceUsed(root: string): void {
   if (root) mruRoot = root;
-}
-
-/** 读缺省空间（进程启动后恒有值：指针为空时回落注入的 cwd 兜底；未注入为空串=未初始化） */
-export function defaultRoot(): string {
-  return mruRoot || cwdFallback;
 }
 
 /** 读当前指针（可空：供 server 闭包回落 deps.sessionStore.path，保持单测/嵌入旧行为） */
@@ -47,7 +39,7 @@ export function currentWorkspaceRoot(): string {
  * 冷启动推导「最近使用空间」。
  *
  * @param userDir 会话/记忆根目录（默认 ~/.loop-agent；单测注入临时目录）
- * @returns canonical 空间根（推导成功）或 canonical(cwd)（无任何可用映射时）；绝不抛错
+ * @returns canonical 空间根（推导成功）或 canonical(homedir)（无任何可用映射时）；绝不抛错
  */
 export async function resolveRecentRoot(userDir?: string): Promise<string> {
   const base = userDir ?? loopAgentHome();
@@ -58,7 +50,7 @@ export async function resolveRecentRoot(userDir?: string): Promise<string> {
       .filter((d) => d.isDirectory())
       .map((d) => join(sessionsDir, d.name));
   } catch {
-    return await canonicalWorkspacePath(cwdFallbackValue());
+    return await canonicalWorkspacePath(homedir());
   }
   let best: { root: string; mtimeMs: number } | null = null;
   for (const dir of dirs) {
@@ -72,12 +64,7 @@ export async function resolveRecentRoot(userDir?: string): Promise<string> {
     debug.log(`[recent] 冷启动缺省空间（最近使用）: ${best.root}`);
     return best.root;
   }
-  return await canonicalWorkspacePath(cwdFallbackValue());
-}
-
-/** cwd 兜底读值（setCwdFallback 未注入时为空串——由调用方持有兜底语义） */
-function cwdFallbackValue(): string {
-  return cwdFallback;
+  return await canonicalWorkspacePath(homedir());
 }
 
 /** 目录树内最新 mtime（目录自身 + 一层子项 + 二层子文件；全部失败 → null） */

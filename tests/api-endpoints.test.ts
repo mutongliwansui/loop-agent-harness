@@ -66,8 +66,8 @@ beforeAll(async () => {
   config = { ...config, api: { ...config.api, port: 0 } };
 
   // D8：临时目录实例注入（不触真实 ~/.loop-agent 与工作区配置）
-  testLoader = new ConfigLoader(TEST_WORKSPACE, TEST_GLOBAL_DIR);
-  testWriter = new ConfigWriter(TEST_WORKSPACE, TEST_GLOBAL_DIR, testLoader);
+  testLoader = new ConfigLoader(TEST_GLOBAL_DIR);
+  testWriter = new ConfigWriter(TEST_GLOBAL_DIR, testLoader);
 
   const api = createApiServer({
     runAgent: async () => { throw new Error('本套件不触达 runAgent'); },
@@ -89,8 +89,8 @@ beforeAll(async () => {
   const { port } = await api.start();
   base = `http://127.0.0.1:${port}`;
 
-  // 共享会话
-  const res = await req('POST', '/sessions');
+  // 共享会话（需求 20261113-001 D6：POST /sessions 须显式指定 workspacePath，无隐式缺省空间）
+  const res = await req('POST', '/sessions', { workspacePath: TEST_WORKSPACE });
   sessionId = ((await res.json()) as { id: string }).id;
 });
 
@@ -203,10 +203,12 @@ describe('uploads 组（POST / GET / DELETE /uploads）', () => {
 });
 
 // ===== 2. config 组 =====
+// 需求 20261112-008：配置作用域收敛为全局，工作空间级已移除。
+// - PUT/DELETE 恒写全局，响应 scope 恒 'global'
+// - 显式 scope=workspace 一律 400（可纠正的报错，而非静默落全局）
 
 describe('config 组（GET /config、/config/path、GET|PUT|DELETE /config/:key）', () => {
   it('GET /config 返回全量生效配置；写入 secret 后回读被遮蔽', async () => {
-    // 预置：写一个 token 到 workspace（同时覆盖 restartRequired 用例的前置）
     const put = await req('PUT', '/config/api.token', { value: 'my-secret-token' });
     expect(put.status).toBe(200);
 
@@ -217,13 +219,13 @@ describe('config 组（GET /config、/config/path、GET|PUT|DELETE /config/:key�
     expect(body.config.api.token).toBe('****oken'); // 仅尾 4 位
   });
 
-  it('GET /config/path 指向临时目录（静态段不被 :key 吞掉）', async () => {
+  it('GET /config/path 只有全局路径；workspacePath 恒 null（静态段不被 :key 吞掉）', async () => {
     const res = await req('GET', '/config/path');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { globalPath: string; workspacePath: string; workspaceExists: boolean };
+    const body = (await res.json()) as { globalPath: string; workspacePath: string | null; workspaceExists: boolean };
     expect(body.globalPath).toBe(join(TEST_GLOBAL_DIR, 'config.json'));
-    expect(body.workspacePath).toBe(join(TEST_WORKSPACE, '.loop-agent', '.agent-config.json'));
-    expect(body.workspaceExists).toBe(true); // 前序 PUT 已写盘
+    expect(body.workspacePath).toBeNull();
+    expect(body.workspaceExists).toBe(false);
   });
 
   it('GET /config/:key 返回 {key, value, scope}；键不存在 → 404', async () => {
@@ -232,29 +234,30 @@ describe('config 组（GET /config、/config/path、GET|PUT|DELETE /config/:key�
     const body = (await res.json()) as { key: string; value: number; scope: string };
     expect(body.key).toBe('model.temperature');
     expect(typeof body.value).toBe('number');
-    expect(['cli', 'workspace', 'global', 'env', 'default']).toContain(body.scope);
+    // scope 只剩四层来源，不再有 'workspace'
+    expect(['cli', 'global', 'env', 'default']).toContain(body.scope);
 
     const miss = await req('GET', '/config/no.such.key');
     expect(miss.status).toBe(404);
     expect(((await miss.json()) as { error: { code: string } }).error.code).toBe('not_found');
   });
 
-  it('PUT 默认写 workspace：盘上生效、GET 回读一致、响应 {key, scope, value}', async () => {
+  it('PUT 无 scope 参数 → 写全局：盘上生效、GET 回读一致、响应 {key, scope:global, value}', async () => {
     const res = await req('PUT', '/config/model.temperature', { value: 0.7 });
     expect(res.status).toBe(200);
     expect((await res.json()) as { key: string; scope: string; value: number })
-      .toEqual({ key: 'model.temperature', scope: 'workspace', value: 0.7 });
+      .toEqual({ key: 'model.temperature', scope: 'global', value: 0.7 });
 
-    const onDisk = await testLoader.loadWorkspace();
+    const onDisk = await testLoader.loadGlobal();
     expect((onDisk as { model?: { temperature?: number } }).model?.temperature).toBe(0.7);
 
     const get = await req('GET', '/config/model.temperature');
     const body = (await get.json()) as { value: number; scope: string };
     expect(body.value).toBe(0.7);
-    expect(body.scope).toBe('workspace');
+    expect(body.scope).toBe('global');
   });
 
-  it('PUT scope=global 写入全局文件；中间段键路径自动建对象', async () => {
+  it('PUT scope=global 语义等同省略 scope；中间段键路径自动建对象', async () => {
     const res = await req('PUT', '/config/agent.verbose', { value: false, scope: 'global' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { scope: string }).scope).toBe('global');
@@ -263,11 +266,15 @@ describe('config 组（GET /config、/config/path、GET|PUT|DELETE /config/:key�
     expect((onDisk as { agent?: { verbose?: boolean } }).agent?.verbose).toBe(false);
   });
 
-  it('PUT scope 非法 → 400；缺 value → 400', async () => {
+  it('PUT scope=workspace → 400（语义已移除）；scope 非法 → 400；缺 value → 400', async () => {
+    const ws = await req('PUT', '/config/model.name', { value: 'x', scope: 'workspace' });
+    expect(ws.status).toBe(400);
+    expect(((await ws.json()) as { error: { code: string } }).error.code).toBe('bad_request');
+
     expect((await req('PUT', '/config/model.name', { value: 'x', scope: 'session' })).status).toBe(400);
     expect((await req('PUT', '/config/model.name', {})).status).toBe(400);
     // 盘上未被误写
-    const onDisk = await testLoader.loadWorkspace();
+    const onDisk = await testLoader.loadGlobal();
     expect((onDisk as { model?: { name?: string } }).model?.name).toBeUndefined();
   });
 
@@ -283,26 +290,27 @@ describe('config 组（GET /config、/config/path、GET|PUT|DELETE /config/:key�
     const res = await req('PUT', '/config/vision.enabled', { value: true });
     expect(res.status).toBe(200);
     const get = await req('GET', '/config/vision.enabled');
-    expect((await get.json()) as { value: boolean }).toEqual({ key: 'vision.enabled', value: true, scope: 'workspace' });
+    expect((await get.json()) as { value: boolean }).toEqual({ key: 'vision.enabled', value: true, scope: 'global' });
   });
 
   it('DELETE 存在的键 → deleted:true 且盘上移除；重复删除 → deleted:false', async () => {
     const res = await req('DELETE', '/config/model.temperature');
     expect(res.status).toBe(200);
-    expect((await res.json()) as { deleted: boolean }).toEqual({ key: 'model.temperature', scope: 'workspace', deleted: true });
+    expect((await res.json()) as { deleted: boolean }).toEqual({ key: 'model.temperature', scope: 'global', deleted: true });
 
-    const onDisk = await testLoader.loadWorkspace();
+    const onDisk = await testLoader.loadGlobal();
     expect((onDisk as { model?: { temperature?: number } }).model?.temperature).toBeUndefined();
 
     const again = await req('DELETE', '/config/model.temperature');
-    expect((await again.json()) as { deleted: boolean }).toEqual({ key: 'model.temperature', scope: 'workspace', deleted: false });
+    expect((await again.json()) as { deleted: boolean }).toEqual({ key: 'model.temperature', scope: 'global', deleted: false });
   });
 
-  it('DELETE ?scope=global 删除全局键；scope 非法 → 400', async () => {
+  it('DELETE ?scope=global 删除全局键；?scope=workspace 与非法值 → 400', async () => {
     const res = await req('DELETE', '/config/agent.verbose?scope=global');
     expect(res.status).toBe(200);
     expect(((await res.json()) as { deleted: boolean }).deleted).toBe(true);
 
+    expect((await req('DELETE', '/config/agent.verbose?scope=workspace')).status).toBe(400);
     expect((await req('DELETE', '/config/agent.verbose?scope=bogus')).status).toBe(400);
   });
 
@@ -377,9 +385,9 @@ describe('tools 组（GET /tools、GET|PATCH /tools/:name、POST /tools/reload�
     const off = await req('PATCH', '/tools/fileRead', { enabled: false });
     expect(off.status).toBe(200);
     expect((await off.json()) as { name: string; enabled: boolean; scope: string })
-      .toEqual({ name: 'fileRead', enabled: false, scope: 'workspace' });
+      .toEqual({ name: 'fileRead', enabled: false, scope: 'global' });
 
-    const onDisk = await testLoader.loadWorkspace();
+    const onDisk = await testLoader.loadGlobal();
     const diskTools = (onDisk as { tools?: { enabled?: string[]; disabled?: string[] } }).tools;
     expect(diskTools?.disabled).toContain('fileRead');
 
@@ -420,7 +428,7 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     expect(res.status).toBe(201);
     const body = (await res.json()) as { alias: string; scope: string; profile: { name: string; apiKey: string; temperature: number } };
     expect(body.alias).toBe('test-model');
-    expect(body.scope).toBe('workspace');
+    expect(body.scope).toBe('global');
     expect(body.profile.name).toBe('gpt-test');
     expect(body.profile.apiKey).toMatch(/^\*{4}/); // 遮蔽
     expect(body.profile.temperature).toBe(0.5);
@@ -458,7 +466,7 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     const res = await req('PUT', '/model', { alias: 'test-model' });
     expect(res.status).toBe(200);
     expect((await res.json()) as { alias: string; scope: string; model: { name: string } })
-      .toEqual({ alias: 'test-model', scope: 'workspace', model: { name: 'gpt-test', baseUrl: 'http://127.0.0.1:9/v1' } });
+      .toEqual({ alias: 'test-model', scope: 'global', model: { name: 'gpt-test', baseUrl: 'http://127.0.0.1:9/v1' } });
 
     const cur = await req('GET', '/model');
     const curBody = (await cur.json()) as { model: { name: string }; active: string | null };
@@ -504,18 +512,18 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     // 快照键已删除；GET /model 回读的是默认配置里的 temperature: 0
     expect(curBody.model.temperature).toBe(0);
 
-    // 跨层归属：全局层存在但按默认 workspace 编辑 → 404 提示 ?scope=global
+    // 只有全局一层：另登记一个模型，编辑它不涉及跨层歧义；显式 scope=workspace → 400
     const g = await req('POST', '/models', {
       alias: 'global-edit-model',
       scope: 'global',
       profile: { name: 'gpt-global-edit', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-global-0001' },
     });
     expect(g.status).toBe(201);
-    const wrong = await req('PATCH', '/models/global-edit-model', { profile: { name: 'x' } });
-    expect(wrong.status).toBe(404);
-    expect(((await wrong.json()) as { error: { message: string } }).error.message).toContain('scope=global');
+    const wsEdit = await req('PATCH', '/models/global-edit-model', { scope: 'workspace', profile: { name: 'x' } });
+    expect(wsEdit.status).toBe(400);
     const ok = await req('PATCH', '/models/global-edit-model', { scope: 'global', profile: { name: 'gpt-global-edit-2' } });
     expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { profile: { name: string } }).profile.name).toBe('gpt-global-edit-2');
 
     // 非法入参 / 未知模型
     expect((await req('PATCH', '/models/test-model', {})).status).toBe(400);
@@ -584,10 +592,10 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     expect((await req('DELETE', '/models/adv-model')).status).toBe(200);
   });
 
-  it('DELETE 当前激活 → 409；跨层归属 → 404 提示 scope；目标层存在 → 200', async () => {
+  it('DELETE 当前激活 → 409；不存在 → 404；显式 scope=workspace → 400；普通删除 → 200', async () => {
     expect((await req('DELETE', '/models/test-model')).status).toBe(409);
 
-    // 全局层登记一个非激活模型
+    // 再登记一个非激活模型（全局唯一一层，不再有「跨层归属」问题）
     const g = await req('POST', '/models', {
       alias: 'global-model',
       scope: 'global',
@@ -595,13 +603,13 @@ describe('models 组（GET /models、GET|PUT /model、POST /models、DELETE /mod
     });
     expect(g.status).toBe(201);
 
-    // 默认 scope=workspace：目标层没有，但全局层有 → 404 带提示
-    const wrong = await req('DELETE', '/models/global-model');
-    expect(wrong.status).toBe(404);
-    expect(((await wrong.json()) as { error: { message: string } }).error.message).toContain('?scope=global');
+    // 工作空间级已移除：显式传 scope=workspace 一律 400
+    const wsScope = await req('DELETE', '/models/global-model?scope=workspace');
+    expect(wsScope.status).toBe(400);
+    expect(((await wsScope.json()) as { error: { code: string } }).error.code).toBe('bad_request');
 
-    // 指定 scope=global → 删除成功
-    const ok = await req('DELETE', '/models/global-model?scope=global');
+    // 省略 scope / scope=global 都是删同一份全局配置
+    const ok = await req('DELETE', '/models/global-model');
     expect(ok.status).toBe(200);
     expect((await ok.json()) as { deleted: boolean; alias: string; scope: string })
       .toEqual({ deleted: true, alias: 'global-model', scope: 'global' });
@@ -634,7 +642,7 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
     expect(body.error.message).toContain('disconnected');
 
     // 落盘验证
-    const onDisk = await testLoader.loadWorkspace();
+    const onDisk = await testLoader.loadGlobal();
     const server = (onDisk as { tools?: { mcpServers?: Record<string, unknown> } }).tools?.mcpServers?.['e2e-mcp'];
     expect(server).toMatchObject({ type: 'stdio', command: BAD_CMD });
 
@@ -648,8 +656,8 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
     expect(list.status).toBe(200);
     const body = (await list.json()) as { servers: { name: string; transport: string; status: string; toolCount: number }[] };
     const srv = body.servers.find((s) => s.name === 'e2e-mcp');
-    // D9：列表项携带来源范围（workspace 登记）
-    expect(srv).toMatchObject({ transport: 'stdio', status: 'disconnected', toolCount: 0, scope: 'workspace' });
+    // 需求 20261112-008：MCP 只剩全局一份，列表项 scope 恒 'global'
+    expect(srv).toMatchObject({ transport: 'stdio', status: 'disconnected', toolCount: 0, scope: 'global' });
 
     expect((await req('GET', '/mcp/servers/ghost')).status).toBe(404);
     expect((await req('GET', '/mcp/servers/e2e-mcp')).status).toBe(502);
@@ -669,8 +677,8 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
     expect(reloadBody.failed).toContain('e2e-mcp');
   });
 
-  it('DELETE → 范围不匹配 deleted:false 且配置保留；正确范围 deleted:true 且盘上移除', async () => {
-    // 全局登记一个 server（连接必败，但配置已落盘），验证列表 scope 与删除范围
+  it('DELETE 删除全局配置并断连；显式 scope=workspace → 400', async () => {
+    // 再登记一个 server（连接必败，但配置已落盘），验证列表 scope 与删除结果
     const globalReg = await req('POST', '/mcp/servers', {
       name: 'e2e-mcp-global', transport: 'stdio', command: BAD_CMD, scope: 'global',
     });
@@ -680,29 +688,27 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
     const listBody = (await list.json()) as { servers: { name: string; scope: string }[] };
     expect(listBody.servers.find((s) => s.name === 'e2e-mcp-global')).toMatchObject({ scope: 'global' });
 
-    // 用默认 workspace 范围删除全局 server：不误报成功，也不删全局配置
-    const wrong = await req('DELETE', '/mcp/servers/e2e-mcp-global');
-    expect(wrong.status).toBe(200);
-    expect((await wrong.json()) as { name: string; scope: string; deleted: boolean })
-      .toEqual({ name: 'e2e-mcp-global', scope: 'workspace', deleted: false });
+    // 工作空间级已移除：显式 scope=workspace 一律 400，且不误删配置
+    const wrong = await req('DELETE', '/mcp/servers/e2e-mcp-global?scope=workspace');
+    expect(wrong.status).toBe(400);
     expect((await testLoader.loadGlobal() as { tools?: { mcpServers?: Record<string, unknown> } })
       .tools?.mcpServers?.['e2e-mcp-global']).toBeTruthy();
 
-    // 切到 global 后删除成功
-    const g = await req('DELETE', '/mcp/servers/e2e-mcp-global?scope=global');
+    // 省略 scope 即删全局
+    const g = await req('DELETE', '/mcp/servers/e2e-mcp-global');
     expect(g.status).toBe(200);
     expect((await g.json()) as { name: string; scope: string; deleted: boolean })
       .toEqual({ name: 'e2e-mcp-global', scope: 'global', deleted: true });
     expect((await testLoader.loadGlobal() as { tools?: { mcpServers?: Record<string, unknown> } })
       .tools?.mcpServers?.['e2e-mcp-global']).toBeUndefined();
 
-    // workspace 登记项按默认范围删除
+    // 另一登记项同样删全局
     const res = await req('DELETE', '/mcp/servers/e2e-mcp');
     expect(res.status).toBe(200);
     expect((await res.json()) as { name: string; scope: string; deleted: boolean })
-      .toEqual({ name: 'e2e-mcp', scope: 'workspace', deleted: true });
+      .toEqual({ name: 'e2e-mcp', scope: 'global', deleted: true });
 
-    const onDisk = await testLoader.loadWorkspace();
+    const onDisk = await testLoader.loadGlobal();
     expect((onDisk as { tools?: { mcpServers?: Record<string, unknown> } }).tools?.mcpServers?.['e2e-mcp']).toBeUndefined();
   });
 });
@@ -710,7 +716,8 @@ describe('mcp 组（GET /mcp/servers、POST /mcp/servers、reload、test、DELET
 // ===== 7. skills 组（P1）=====
 
 describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE、reload）', () => {
-  // 独特名避免撞真实仓库 skill；workspace 根取 TEST_WORKSPACE，测试后用 API DELETE + 兜底 rmSync 清理
+  // 独特名避免撞真实仓库 skill；安装目录恒为全局 ~/.loop-agent/skills（测试由 LOOP_AGENT_HOME 隔离），
+  // 测试后用 API DELETE + 兜底 rmSync 清理
   const SKILL_NAME = 'api-e2e-skill-zz9';
   let sourceDir = '';
 
@@ -726,8 +733,8 @@ describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE�
   });
 
   afterAll(() => {
-    // 兜底清理：TEST_WORKSPACE/.loop-agent/skills 下的安装残留
-    rmSync(join(TEST_WORKSPACE, '.loop-agent', 'skills', SKILL_NAME), { recursive: true, force: true });
+    // 兜底清理：全局 skills 目录下的安装残留（LOOP_AGENT_HOME 已由 vitest setup 指向临时目录）
+    rmSync(join(process.env.LOOP_AGENT_HOME ?? '', 'skills', SKILL_NAME), { recursive: true, force: true });
   });
 
   it('POST 缺 sourcePath → 400；目录不存在 → 400', async () => {
@@ -735,17 +742,17 @@ describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE�
     expect((await req('POST', '/skills', { sourcePath: join(TEST_DIR, 'no-such-dir') })).status).toBe(400);
   });
 
-  it('POST 安装 → 201（workspace 目录）；GET 列表/详情可见', async () => {
+  it('POST 安装 → 201（全局目录）；GET 列表/详情可见', async () => {
     const res = await req('POST', '/skills', { sourcePath: sourceDir });
     expect(res.status).toBe(201);
     const body = (await res.json()) as { name: string; scope: string; path: string };
     expect(body.name).toBe(SKILL_NAME);
-    expect(body.scope).toBe('workspace');
-    expect(body.path).toContain(join('.loop-agent', 'skills', SKILL_NAME));
+    expect(body.scope).toBe('global');
+    expect(body.path).toContain(join('skills', SKILL_NAME));
 
     const list = await req('GET', '/skills');
     const listBody = (await list.json()) as { skills: { name: string; scope: string; path: string }[] };
-    expect(listBody.skills.some((s) => s.name === SKILL_NAME && s.scope === 'workspace')).toBe(true);
+    expect(listBody.skills.some((s) => s.name === SKILL_NAME && s.scope === 'global')).toBe(true);
 
     const detail = await req('GET', `/skills/${SKILL_NAME}`);
     expect(detail.status).toBe(200);
@@ -754,6 +761,11 @@ describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE�
     expect(detailBody.body).toContain('hello skill body');
 
     expect((await req('GET', '/skills/no-such-skill')).status).toBe(404);
+  });
+
+  it('POST scope=workspace → 400（工作空间级已移除）', async () => {
+    const res = await req('POST', '/skills', { sourcePath: sourceDir, scope: 'workspace', overwrite: true });
+    expect(res.status).toBe(400);
   });
 
   it('同名未 overwrite → 409（提示 overwrite）；overwrite:true → 201 覆盖', async () => {
@@ -771,7 +783,7 @@ describe('skills 组（GET /skills、GET /skills/:name、POST /skills、DELETE�
     expect(res.status).toBe(200);
     const body = (await res.json()) as { deleted: boolean; name: string; scope: string; dir: string };
     expect(body.deleted).toBe(true);
-    expect(body.scope).toBe('workspace');
+    expect(body.scope).toBe('global');
     expect(body.dir).toContain(SKILL_NAME);
 
     expect((await req('GET', `/skills/${SKILL_NAME}`)).status).toBe(404);
@@ -895,23 +907,22 @@ describe('vision 组（GET /vision、POST /vision/test）', () => {
 // ===== 10. doctor 组（P2）=====
 
 describe('doctor 组（GET /doctor）', () => {
-  it('GET /doctor → 6 项检查结构完整；单项失败不失败端点', async () => {
+  // 需求 20261112-008：配置与 skill 收敛为全局，检查项由 6 项降为 4 项
+  it('GET /doctor → 4 项检查结构完整；单项失败不失败端点', async () => {
     const res = await req('GET', '/doctor');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
       checks: { name: string; ok: boolean; level?: string; detail: string }[];
     };
-    expect(body.checks.length).toBe(6);
+    expect(body.checks.length).toBe(4);
     for (const c of body.checks) {
       expect(typeof c.name).toBe('string');
       expect(typeof c.ok).toBe('boolean');
       expect(typeof c.detail).toBe('string');
     }
     const names = body.checks.map((c) => c.name);
-    expect(names).toEqual([
-      '主模型 apiKey', '主模型名称', '全局配置文件', '工作空间配置文件', '全局 skills 目录', '工作空间 skills 目录',
-    ]);
+    expect(names).toEqual(['主模型 apiKey', '主模型名称', '全局配置文件', '全局 skills 目录']);
     // ok 总开关与 blocker 项一致性：存在 !ok && level==='blocker' 则总体 ok 必为 false
     const hasBlocker = body.checks.some((c) => !c.ok && c.level === 'blocker');
     expect(body.ok).toBe(!hasBlocker);
@@ -919,3 +930,4 @@ describe('doctor 组（GET /doctor）', () => {
     expect(body.checks.every((c) => c.ok || c.level !== undefined)).toBe(true);
   });
 });
+

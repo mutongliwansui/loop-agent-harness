@@ -185,12 +185,18 @@ async function listChildren(
 }
 
 /**
- * 解析文件面板根目录：?ws=<绝对路径> 指定必须为已注册工作空间（sessions 索引中存在），
- * 缺省回落启动空间。移除全局"当前空间"后，前端按活跃会话所属空间显式传 ws。
+ * 解析文件面板根目录：?ws=<绝对路径> 指定必须为已注册工作空间（sessions 索引中存在）。
+ *
+ * 需求 20261113-001 D2：**缺 ws 一律 400，不再隐式回落「最近使用空间」**。
+ * 这些端点是「已在某空间内读写」的语义（tree/file/search/fingerprint 共用本函数），
+ * 隐式回落会让一个「读文件」请求悄悄读到用户没预期的目录——属误伤面而非体验问题。
+ * 需要「选空间的目录浏览器」语义的是 `/fs/dirs`（见 sessions.ts），它另给推荐起点。
  */
 async function resolveFsRoot(ctx: HandlerContext, query: URLSearchParams): Promise<string> {
   const ws = query.get('ws')?.trim();
-  if (!ws) return ctx.defaultRoot();
+  if (!ws) {
+    throw new ApiHttpError('bad_request', '缺少 ws 参数：/fs 端点须显式指定工作空间');
+  }
   const target = await canonicalWorkspacePath(ws);
   const known = await ctx.deps.sessionStore.listAllWorkspaces();
   for (const w of known) {

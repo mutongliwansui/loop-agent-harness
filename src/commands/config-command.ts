@@ -1,6 +1,6 @@
 // /config 命令处理器
-// 支持: list, get <key>, set <key> <value> [--workspace|--global],
-//       delete <key> [--workspace|--global], path
+// 支持: list, get <key>, set <key> <value> [--global],
+//       delete <key> [--global], path
 import { existsSync } from 'node:fs';
 import {
   ConfigWriter,
@@ -10,7 +10,7 @@ import {
 import { registerBuiltinTools } from '../tools/index.js';
 import { VISION_TOOL_NAMES } from '../tools/vision/tools.js';
 import { COLORS, sourceColor } from '../ui/colors.js';
-import { parseScope, parseValue } from './utils.js';
+import { parseScope, parseValue, WORKSPACE_FLAG_REMOVED } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
 /**
@@ -104,9 +104,9 @@ export const configCommand: CommandHandler = {
   subcommandHelp: {
     list: '列出全部配置项（含来源）',
     get: '读取指定配置项，如 /config get model.name',
-    set: '设置配置项（--workspace|--global 指定写入层级）',
-    delete: '删除配置项（--workspace|--global）',
-    path: '显示全局 / 工作空间配置文件路径',
+    set: '设置配置项（写全局，--global 可省略；--workspace 已移除）',
+    delete: '删除配置项（--global 可省略；--workspace 已移除）',
+    path: '显示全局配置文件路径',
   },
   match: (input) => input.toLowerCase().startsWith('/config'),
   async execute(input, ctx) {
@@ -144,11 +144,16 @@ export const configCommand: CommandHandler = {
 
     if (sub === 'set') {
       if (args.length < 2) {
-        out.log(`${COLORS.red}用法: /config set <key> <value> [--workspace|--global]${COLORS.reset}`);
+        out.log(`${COLORS.red}用法: /config set <key> <value>${COLORS.reset}`);
         out.blank();
         return;
       }
-      const { scope, rest } = parseScope(args);
+      const { workspaceFlag, rest } = parseScope(args);
+      if (workspaceFlag) {
+        out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+        out.blank();
+        return;
+      }
       const key = rest[0];
       const valueRaw = rest.slice(1).join(' ');
       const value = parseValue(valueRaw);
@@ -156,8 +161,8 @@ export const configCommand: CommandHandler = {
       const partial: PartialAgentConfig = {};
       ConfigWriter.setByKey(partial as Record<string, unknown>, key, value);
       try {
-        await ctx.configWriter.updateScope(scope, partial);
-        out.log(`${COLORS.bold}${COLORS.green}✓ 已写入${COLORS.reset} ${COLORS.bold}${scope === 'workspace' ? '工作空间' : '全局'}${COLORS.reset} 配置: ${key} = ${JSON.stringify(value)}`);
+        await ctx.configWriter.update(partial);
+        out.log(`${COLORS.bold}${COLORS.green}✓ 已写入${COLORS.reset} ${COLORS.bold}全局${COLORS.reset} 配置: ${key} = ${JSON.stringify(value)}`);
         if (key === 'vision.enabled') syncVisionTools(ctx);
         out.blank();
       } catch (e) {
@@ -169,15 +174,20 @@ export const configCommand: CommandHandler = {
 
     if (sub === 'delete') {
       if (args.length === 0) {
-        out.log(`${COLORS.red}用法: /config delete <key> [--workspace|--global]${COLORS.reset}`);
+        out.log(`${COLORS.red}用法: /config delete <key>${COLORS.reset}`);
         out.blank();
         return;
       }
-      const { scope, rest } = parseScope(args);
+      const { workspaceFlag, rest } = parseScope(args);
+      if (workspaceFlag) {
+        out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+        out.blank();
+        return;
+      }
       const key = rest[0];
       try {
-        await ctx.configWriter.deleteScopeKey(scope, ConfigWriter.parseKey(key));
-        out.log(`${COLORS.bold}${COLORS.green}✓ 已从 ${scope === 'workspace' ? '工作空间' : '全局'} 配置删除: ${key}${COLORS.reset}`);
+        await ctx.configWriter.deleteKey(ConfigWriter.parseKey(key));
+        out.log(`${COLORS.bold}${COLORS.green}✓ 已从全局配置删除: ${key}${COLORS.reset}`);
         if (key === 'vision.enabled') syncVisionTools(ctx);
         out.blank();
       } catch (e) {
@@ -189,10 +199,9 @@ export const configCommand: CommandHandler = {
 
     if (sub === 'path') {
       out.blank();
-      const wp = ctx.configLoader.workspaceConfigPath;
       const gp = ctx.configLoader.globalConfigPath;
-      out.log(`  ${COLORS.bold}工作空间:${COLORS.reset} ${wp} ${existsSync(wp) ? `${COLORS.green}[存在]${COLORS.reset}` : `${COLORS.gray}[不存在]${COLORS.reset}`}`);
-      out.log(`  ${COLORS.bold}全局:${COLORS.reset}     ${gp} ${existsSync(gp) ? `${COLORS.green}[存在]${COLORS.reset}` : `${COLORS.gray}[不存在]${COLORS.reset}`}`);
+      out.log(`  ${COLORS.bold}全局:${COLORS.reset} ${gp} ${existsSync(gp) ? `${COLORS.green}[存在]${COLORS.reset}` : `${COLORS.gray}[不存在]${COLORS.reset}`}`);
+      out.log(`  ${COLORS.gray}（工作空间级配置已移除，配置文件只此一份）${COLORS.reset}`);
       out.blank();
       return;
     }

@@ -2,7 +2,7 @@
  * 需求 20261027-004 单测：移除 serve 启动工作空间预装
  *
  * 覆盖任务文档 6.x 清单：
- * - recent-workspace：冷启动推导（mtime 最新者胜）/ 孤儿空间跳过 / 全空兜底 cwd / MRU 指针
+ * - recent-workspace：冷启动推导（mtime 最新者胜）/ 孤儿空间跳过 / 全空兜底 homedir / MRU 指针
  * - dream-scheduler 全空间三段式（D4）：磁盘枚举 / shouldAttempt 预判 / runFor 懒装载
  * - evictIdle 定时接线（D6）：evictIntervalMs>0 触发释放 / =0 关闭
  * - runFor 懒装载：未装载空间 getCanonical 现建；目录失效收敛 no-runtime 摘要不抛
@@ -11,11 +11,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { canonicalWorkspacePath } from '../src/session/path-utils.js';
 import { workspaceId } from '../src/session/store.js';
 import {
-  defaultRoot,
+  currentWorkspaceRoot,
   markWorkspaceUsed,
   resolveRecentRoot,
 } from '../src/api/recent-workspace.js';
@@ -82,22 +82,21 @@ describe('recent-workspace（D2/D3：冷启动推导 + MRU 指针）', () => {
     expect(root.replace(/\\/g, '/').toLowerCase()).toBe(canonicalB.replace(/\\/g, '/').toLowerCase());
   });
 
-  it('sessions 目录不存在 / 全为孤儿 → 兜底 cwd 且不抛错', async () => {
+  it('sessions 目录不存在 / 全为孤儿 → 兜底 homedir 且不抛错', async () => {
     const missing = join(userDir, 'no-such-sessions');
+    const home = await canonicalWorkspacePath(homedir());
     const r1 = await resolveRecentRoot(missing);
-    expect(typeof r1).toBe('string');
-    expect(r1.length).toBeGreaterThan(0);
+    expect(r1.replace(/\\/g, '/').toLowerCase()).toBe(home.replace(/\\/g, '/').toLowerCase());
     const r2 = await resolveRecentRoot(userDir);
-    expect(typeof r2).toBe('string');
-    expect(r2.length).toBeGreaterThan(0);
+    expect(r2.replace(/\\/g, '/').toLowerCase()).toBe(home.replace(/\\/g, '/').toLowerCase());
   });
 
-  it('markWorkspaceUsed 后 defaultRoot 返回指针值；初始（未 mark）为 cwd', () => {
+  it('markWorkspaceUsed 后 currentWorkspaceRoot 返回指针值（缺省空间同步读取函数已按 D8/D9 退场）', () => {
     // 注意模块级指针：断言前先读基线，mark 后覆盖
-    const baseline = defaultRoot();
+    const baseline = currentWorkspaceRoot();
     expect(typeof baseline).toBe('string');
     markWorkspaceUsed('D:\\some\\workspace');
-    expect(defaultRoot()).toBe('D:\\some\\workspace');
+    expect(currentWorkspaceRoot()).toBe('D:\\some\\workspace');
   });
 });
 

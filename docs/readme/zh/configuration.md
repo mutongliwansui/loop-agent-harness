@@ -2,19 +2,18 @@
 
 > [⬅ 返回 README](../../../README.md)
 
-支持多层配置系统，优先级从高到低为：**CLI 参数 > 工作空间配置 > 全局配置 > 环境变量 > 默认值**。
+支持多层配置系统，优先级从高到低为：**CLI 参数 > 全局配置 > 环境变量 > 默认值**（需求 20261112-008 后工作空间层已移除，配置只剩全局一份）。
 
 ### 配置层级
 
 | 层级 | 文件位置 | 说明 |
 |---|---|---|
 | CLI 参数 | 运行时传入 | 最高优先级，仅内存中生效（`--serve` 的 `--port` / `--host` / `--token` / `--web-root` 启动参数即属此层） |
-| 工作空间 (workspace) | `{项目目录}/.loop-agent/.agent-config.json` | 项目级配置（.loop-agent/ 整体不进入版本控制） |
-| 全局 (global) | `~/.loop-agent/config.json` | 用户级配置，跨项目共享 |
+| 全局 (global) | `~/.loop-agent/config.json` | 唯一配置文件，跨项目共享（原工作空间层 `.loop-agent/.agent-config.json` 已移除） |
 | 环境变量 (env) | `.env` 或 `process.env` | 向后兼容，支持原有环境变量 |
 | 默认值 (default) | `DEFAULT_CONFIG` | 代码内置的默认值 |
 
-> **多工作空间（serve 模式）**：每个工作空间持有独立的 ConfigLoader / ConfigWriter 实例，路径在构造期固定，运行期不再重绑——A 空间的 `/config` 读写不会影响 B 空间。CLI 单空间模式即启动目录，行为不变。
+> **多工作空间（serve 模式）**：配置加载器与写入器为进程级单例，所有工作空间共用同一份全局配置；会话、记忆等内容仍按空间隔离。CLI 单空间模式行为一致。
 
 ### 配置结构
 
@@ -87,7 +86,6 @@
   "skill": {
     "enabled": true,
     "globalDir": "~/.loop-agent/skills",
-    "workspaceDir": "skills",
     "autoLoad": true
   },
   "memory": {
@@ -166,7 +164,7 @@
 | `session` | `autoSave` | `run()` 结束后自动保存会话到磁盘 | `true` |
 | `session` | `autoRestore` | 启动时自动恢复最近会话 | `true` |
 | `session` | `encryptionEnabled` | 会话文件是否加密存储（AES-256-GCM） | `true` |
-| `skill` | `enabled` / `globalDir` / `workspaceDir` / `autoLoad` | Skill 技能包开关与扫描目录 | 全部启用 |
+| `skill` | `enabled` / `globalDir` / `autoLoad` | Skill 技能包开关与扫描目录（唯一全局目录，工作空间目录已移除） | 全部启用 |
 | `memory` | `enabled` / `working` / `episodic` / `curated` / `dreaming` / `vectorSearch` | 三层记忆系统配置（含检索增强） | 全部启用 |
 | `memory.dreaming` | `onExit` | 进程关停时是否自动晋升（语义已由「CLI 退出」扩为「任何宿主进程关停」：CLI 的 `quit`/`exit`/`Ctrl+C` 与 `--serve` 的 `Ctrl+C`/`SIGTERM`/`SIGBREAK` 共用） | `true` |
 | `memory.dreaming` | `schedule.enabled` | `--serve`/WebUI 是否启用定时自动晋升（与 `onExit` 独立；CLI 不参与定时） | `true` |
@@ -215,13 +213,13 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 
 ### 运行时配置管理
 
-通过 CLI 内置的 `/config` 命令可直接修改配置（写入 `.loop-agent/.agent-config.json`）：
+通过 CLI 内置的 `/config` 命令可直接修改配置（写入全局 `~/.loop-agent/config.json`）：
 
 ```bash
 # 查看当前完整配置及来源
 /config list
 
-# 修改模型名称（写入工作空间配置）
+# 修改模型名称（写入全局配置）
 /config set model.name deepseek-chat
 
 # 修改最大迭代次数

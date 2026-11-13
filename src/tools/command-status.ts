@@ -9,6 +9,8 @@ import {
 } from './background-tasks.js';
 import { killProcessTree } from './process-tree.js';
 import { decodeByteRange } from './command-run-output.js';
+import { getJob, listJobs, type JobSummary } from '../background/jobs.js';
+import { subAgentRegistry } from '../agent/subagent-registry.js';
 
 /** 单次 commandLogs 返回上限（D4：超出截断并提示继续调用） */
 const LOG_CHUNK_MAX = 8 * 1024;
@@ -20,14 +22,26 @@ function compact(obj: Record<string, unknown>): string {
   return JSON.stringify(obj);
 }
 
-/** 任务摘要行（list 场景） */
-function taskLine(t: BackgroundTask): string {
+/** 统一任务摘要行（list 场景；命令与子任务共用一套字段名） */
+function jobLine(j: JobSummary): string {
+  if (j.kind === 'subagent') {
+    return compact({
+      taskId: j.id,
+      kind: 'subagent',
+      status: j.status,
+      task: j.title.length > 60 ? `${j.title.slice(0, 60)}…` : j.title,
+      iterations: j.iterations ?? 0,
+      startedAt: new Date(j.startedAt).toISOString(),
+    });
+  }
+  const t = backgroundTasks.get(j.id);
   return compact({
-    taskId: t.taskId,
-    status: t.status,
-    exitCode: t.exitCode ?? null,
-    command: t.command.length > 60 ? `${t.command.slice(0, 60)}…` : t.command,
-    startedAt: new Date(t.startedAt).toISOString(),
+    taskId: j.id,
+    kind: 'command',
+    status: j.status,
+    exitCode: t?.exitCode ?? null,
+    command: j.title.length > 60 ? `${j.title.slice(0, 60)}…` : j.title,
+    startedAt: new Date(j.startedAt).toISOString(),
   });
 }
 
@@ -36,29 +50,51 @@ function taskLine(t: BackgroundTask): string {
 export const commandStatus: Tool = {
   name: 'commandStatus',
   description:
-    '查询后台任务状态，返回 status / 退出码 / 耗时 / 日志大小；不带 taskId 时列出最近 5 个任务。',
+    '查询后台任务（命令与后台子 Agent）。不带 taskId 列出当前会话最近 5 个；带 taskId 返回详情。子任务不支持日志/停止。',
   parameters: {
     type: 'object',
     properties: {
       taskId: { type: 'string', description: '后台任务 id' },
     },
   },
-  async execute(args) {
+  async execute(args, ctx) {
     const taskId = args.taskId ? String(args.taskId) : '';
     if (!taskId) {
-      const recent = backgroundTasks.list().slice(0, 5);
+      const recent = listJobs({
+        sessionId: ctx?.sessionId,
+        includeUnowned: true,
+        limit: 5,
+      });
       if (recent.length === 0) return '当前没有后台任务记录';
       return compact({
-        hint: '以下为最近 5 个后台任务（新→旧），取 taskId 继续查询',
-        tasks: recent.map(taskLine),
+        hint: '以下为最近 5 个后台任务（新→旧，含命令与子任务），取 taskId 继续查询',
+        tasks: recent.map(jobLine),
       });
     }
+    const job = getJob(taskId);
+    if (!job) return notFound(taskId);
+
+    if (job.kind === 'subagent') {
+      return compact({
+        taskId: job.id,
+        kind: 'subagent',
+        status: job.status,
+        task: job.title,
+        iterations: job.iterations ?? 0,
+        durationMs: job.elapsedMs ?? 0,
+        error: job.error,
+        hint: '子任务结果由完成通知投递到会话；不支持 commandLogs/commandStop',
+      });
+    }
+
     const t = backgroundTasks.get(taskId);
     if (!t) return notFound(taskId);
     const logSize = safeStatSize(t.logPath);
     return compact({
       taskId: t.taskId,
-      status: t.status,
+      kind: 'command',
+      status: job.status,
+      rawStatus: t.status,
       exitCode: t.exitCode ?? null,
       pid: t.pid ?? null,
       durationMs: (t.finishedAt ?? Date.now()) - t.startedAt,
@@ -93,6 +129,9 @@ export const commandLogs: Tool = {
   },
   async execute(args) {
     const taskId = String(args.taskId ?? '');
+    if (!backgroundTasks.get(taskId) && subAgentRegistry.get(taskId)) {
+      return compact({ taskId, error: '这是后台子任务，不支持读取日志；完整结果由完成通知投递' });
+    }
     const t = backgroundTasks.get(taskId);
     if (!t) return notFound(taskId);
 
@@ -151,6 +190,9 @@ export const commandStop: Tool = {
   },
   async execute(args) {
     const taskId = String(args.taskId ?? '');
+    if (!backgroundTasks.get(taskId) && subAgentRegistry.get(taskId)) {
+      return compact({ taskId, error: '这是后台子任务，不支持停止；请等待完成或删除所属会话' });
+    }
     const t = backgroundTasks.get(taskId);
     if (!t) return notFound(taskId);
 

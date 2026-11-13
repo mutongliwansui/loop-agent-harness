@@ -21,11 +21,16 @@ export function hostnameOf(baseUrl: string): string {
 
 export async function handleStatus(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
   const cfg = ctx.deps.getConfig();
-  // 需求 20261027-004：会话数取缺省空间（最近使用）；无 registry（既有单测）回落 deps.sessionStore
-  const [sessions, uploadDirs] = await Promise.all([
+  // 需求 20261113-001 D5：会话数改为**全空间合计**。
+  // 原实现取「缺省空间（最近使用）」的会话数——/status 是应用级概览，
+  // 用某一个空间的会话数既不完整也会随用户上次活动漂移。
+  const [sessionCount, uploadDirs] = await Promise.all([
     ctx.registry
-      ? ctx.resolveDefaultRuntime().then((rt) => rt.store.listSessions())
-      : ctx.deps.sessionStore.listSessions(),
+      ? ctx.deps.sessionStore
+          .listAllWorkspaces()
+          .then((all) => all.reduce((n, w) => n + w.sessions.length, 0))
+          .catch(() => 0)
+      : ctx.deps.sessionStore.listSessions().then((list) => list.length),
     readdir(ctx.uploadsRoot, { withFileTypes: true }).catch(() => []),
   ]);
 
@@ -36,7 +41,7 @@ export async function handleStatus(ctx: HandlerContext, _req: IncomingMessage, r
       provider: hostnameOf(cfg.model.baseUrl),
       model: cfg.model.name,
     },
-    session: { current: null, count: sessions.length },
+    session: { current: null, count: sessionCount },
     tools: {
       total: registry.list().length,
       disabled: cfg.tools.disabled.length,

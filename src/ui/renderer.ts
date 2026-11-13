@@ -90,6 +90,7 @@ export function printBanner(opts: BannerOptions): void {
   console.log(`  ${C.bold}/doctor${C.reset}       → 配置与依赖体检`);
   console.log(`  ${C.bold}/reset${C.reset}        → 清空多轮对话历史，重新开始新会话`);
   console.log(`  ${C.bold}/status${C.reset}       → 查看当前会话状态（消息数 / 工具数）`);
+  console.log(`  ${C.bold}/jobs${C.reset}         → 后台任务（命令 + 子任务，/jobs show <id>）`);
   console.log(`  ${C.bold}exit/quit/退出${C.reset} → 退出程序（Ctrl+C 连按两次同样有效）`);
   console.log(`  ${C.bold}Ctrl+C${C.reset}          → 回答中：仅中断本次回答（已生成内容保留）；空闲：连按两次退出`);
   console.log(`  ${C.bold}Tab${C.reset}          → 命令自动补全（输入 /con 按 Tab 补全为 /config，/config 后可补子命令）`);

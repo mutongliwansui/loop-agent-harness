@@ -7,23 +7,21 @@ import { createApiServer, type ApiServer } from './server.js';
 import { DreamScheduler } from './dream-scheduler.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
-import { markWorkspaceUsed, resolveRecentRoot, setCwdFallback } from './recent-workspace.js';
+import { markWorkspaceUsed, resolveRecentRoot } from './recent-workspace.js';
 
 export interface StartApiServerOptions {
   /** 会话/记忆/自愈扫描根目录覆盖（默认 ~/.loop-agent；单测注入临时目录） */
   userDir?: string;
 }
 
-/** A4 收口：cwd 兜底值统一由此（白名单文件）读出，供 index.ts 等非白名单文件转交 */
-export function cwdFallbackValue(): string {
-  return process.cwd();
-}
-
 /** 启动选项（需求 20261027-004：userDir 供单测隔离冷启动推导与全盘自愈） */
 export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiServer> {
   const bootT0 = Date.now();
   console.log('[startup] 组装 HTTP API 服务...');
+  // 需求 20261112-008：配置与 skill 一律进程级单例（不再随空间构造）
   const { configLoader } = await import('../config/index.js');
+  const { configWriter } = await import('../config/writer.js');
+  const { skillLoader } = await import('../skill/index.js');
   const { mcpManager } = await import('../config/mcp-manager.js');
   const { McpMonitor, setActiveMcpMonitor } = await import('../config/mcp-monitor.js');
   const { defaultUploadsRoot } = await import('../upload/manager.js');
@@ -40,12 +38,12 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
 
   const { config: cfg } = configLoader.load();
 
-  // A4：cwd 兜底注入（本模块白名单持有 process.cwd()，recent-workspace 自身零依赖）
-  setCwdFallback(process.cwd());
+  // 需求 20261113-001 D9：原「cwd 兜底注入」整条退场（注入函数与缺省空间同步读取函数一并删除，
+  // resolveRecentRoot 无会话时回落 os.homedir()）。
 
   // 工作空间运行时注册表（Task-20261021-010-01）。
   // 需求 20261027-004：不再以 process.cwd() 为「启动空间」——缺省空间语义改为
-  // 「最近使用空间」：冷启动扫 sessions/*/ 推导最近会话所在空间（canonical），无会话兜底 cwd。
+  // 「最近使用空间」：冷启动扫 sessions/*/ 推导最近会话所在空间（canonical），无会话兜底 homedir。
   // 仍预装这 1 个 runtime（L1：HandlerContext 字段与既有单测零破坏），
   // 但身份从 cwd 换成 recentRoot；后续空间仍由 handler 按 ws 参数/会话归属懒装载。
   const registry = new WorkspaceRegistry({ userDir: opts?.userDir });
@@ -78,7 +76,7 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   // Task-20261021-010-01：池由 runtime 持有（每空间一池），容量读 LOOP_AGENT_POOL_CAPACITY。
 
   // 记忆晋升调度器（Task-20261026-002）：定时轮为主力，关停兜底补最后一轮。
-  // getConfig 读进程级配置（节奏/预算/onExit）；每空间的记忆配置另由各自 runtime 的 configLoader 读。
+  // getConfig 读进程级配置（节奏/预算/onExit/记忆开关；需求 20261112-008 起记忆配置也一律读全局）。
   // 需求 20261027-004 D4：全空间参与——定时轮/关停兜底磁盘枚举候选空间 + 预判 + 懒装载。
   const dreamScheduler = new DreamScheduler({
     registry,
@@ -104,13 +102,12 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
     getConfig: () => configLoader.load().config,
     version,
     log: (msg) => console.log(msg),
-    // D8：命令资源化运行时依赖（真实单例组装；workspace 层一律指向当前 runtime 根）
+    // D8：命令资源化运行时依赖（真实单例组装；需求 20261112-008：配置/skill 一律进程级单例）
     runtime: {
-      configLoader: rt.configLoader,
-      configWriter: rt.configWriter,
+      configLoader,
+      configWriter,
       mcpManager,
-      // 技能加载器也按 runtime 持有（D14：实例级 Map 隔离，避免两空间 scan 互相覆盖）
-      skillLoader: rt.skillLoader,
+      skillLoader,
       uploadsRoot: defaultUploadsRoot(),
       createMemoryKit: () => rt.getMemoryKit(),
     },

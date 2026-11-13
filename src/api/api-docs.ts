@@ -56,32 +56,43 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     example: 'curl /health',
   },
   'POST /sessions': {
-    summary: '创建空会话；可指定标题，也可指定工作空间（直接建在目标空间，不切换「最近使用」指针）。',
+    summary: '创建空会话；必须指定工作空间（直接建在目标空间，不切换「最近使用」指针）。',
     scope: 'write',
     params: [
       { name: 'title', in: 'body', type: 'string', desc: '会话标题，缺省由首条消息生成' },
-      { name: 'workspacePath', in: 'body', type: 'string', desc: '目标工作空间绝对路径；缺省用最近使用空间' },
+      { name: 'workspacePath', in: 'body', type: 'string', desc: '目标工作空间绝对路径，**必填**；缺失返回 400（需求 20261113-001 D6，不存在隐式缺省空间）' },
     ],
-    body: '{ "title?": "string", "workspacePath?": "string" }',
+    body: '{ "title?": "string", "workspacePath": "string" }',
     response: '201 { id, title, createdAt, workspace: { path, id, switched } }',
-    example: 'curl -X POST /sessions -H "Content-Type: application/json" -d \'{"title":"调试"}\'',
+    example: 'curl -X POST /sessions -H "Content-Type: application/json" -d \'{"title":"调试","workspacePath":"D:\\\\proj"}\'',
   },
   'GET /sessions': {
-    summary: '列出缺省空间（最近使用）的会话列表。',
+    summary: '列出**指定空间**的会话（`?ws=` 必填；跨空间全貌请用 GET /workspaces）。',
     scope: 'read',
+    params: [
+      { name: 'ws', in: 'query', type: 'string', desc: '目标工作空间绝对路径，**必填**；缺失返回 400（需求 20261113-001，不再回落进程启动空间）' },
+    ],
     response: '{ "sessions": [ { id, title, createdAt, messageCount, running, lastRun } ] }',
-    example: 'curl /sessions',
+    example: 'curl "/sessions?ws=D:\\\\proj"',
   },
   'GET /fs/dirs': {
     summary: '浏览服务端目录（新建会话选择工作空间用），返回子目录清单。',
     scope: 'read',
-    params: [{ name: 'path', in: 'query', type: 'string', desc: '要列出的目录绝对路径，缺省为最近使用空间' }],
+    params: [
+      {
+        name: 'path',
+        in: 'query',
+        type: 'string',
+        desc: '要列出的目录绝对路径；缺省取「最近使用空间」作推荐起点，无最近使用记录时回落到 os.homedir()（需求 20261113-001 D3：MRU 仅作推荐，不再是隐式工作空间）',
+      },
+    ],
+    response: '{ path, parent, dirs, drives }（四字段语义与改造前一致）',
     example: 'curl "/fs/dirs?path=D%3A%5Ctrae_workspace"',
   },
   'GET /workspaces': {
-    summary: '跨工作空间聚合会话，标注最近使用空间与各会话运行状态。',
+    summary: '跨工作空间聚合会话；空间之间完全并列（无「当前空间」标记），各会话附运行状态。',
     scope: 'read',
-    response: '{ "workspaces": [ { id, name, path, current, sessions: [ { id, title, running, lastRun } ] } ] }',
+    response: '{ "workspaces": [ { id, name, path, createdAt, lastAccessedAt, sessions: [ { id, title, running, lastRun } ] } ] }',
     example: 'curl /workspaces',
   },
   'POST /sessions/:id/messages': {
@@ -129,6 +140,19 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     response:
       '{ items: [{ taskId, task, status, startedAt, finishedAt?, elapsedMs?, iterations?, answer?, error?, trace? }] }',
     example: 'curl /sessions/<id>/subagents',
+  },
+  'GET /sessions/:id/jobs': {
+    summary: '后台任务统一快照：命令任务 + 后台子 Agent 任务（当前会话 + 无归属，按开始时间倒序）。',
+    scope: 'read',
+    params: [
+      { name: 'id', in: 'path', type: 'string', required: true, desc: '会话 id' },
+      { name: 'kind', in: 'query', type: 'string', desc: 'command｜subagent，缺省全部' },
+      { name: 'status', in: 'query', type: 'string', desc: 'running｜done｜failed｜stopped｜lost' },
+      { name: 'limit', in: 'query', type: 'number', desc: '默认 50，最大 100' },
+    ],
+    response:
+      '{ items: [{ id, kind, sessionId?, title, status, startedAt, finishedAt?, elapsedMs?, iterations?, error?, canStop, canReadLogs }], run }',
+    example: 'curl /sessions/<id>/jobs',
   },
   'POST /sessions/:id/compact': {
     summary: '空闲时强制 L1 压缩（运行中 409）；无可丢弃消息返回 ok=false reason=nothing_to_compact，不调 LLM。',
@@ -187,56 +211,57 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'read',
     params: [
       { name: 'path', in: 'query', type: 'string', desc: '相对工作空间根的目录路径，缺省为根' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径（须为已注册空间），缺省为最近使用空间' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（须为已注册空间）；20261113-001 起必填，缺参 400、未知空间 403' },
     ],
-    example: 'curl "/fs/tree?path=src"',
+    response: '{ root, name, hidden, path, truncated, children }',
+    example: 'curl "/fs/tree?path=src&ws=D%3A%5Ctrae_workspace%5Cloop-agent-command"',
   },
   'GET /fs/file': {
     summary: '读取工作空间文本文件（超过 512KB 截断，二进制拒绝）。',
     scope: 'read',
     params: [
       { name: 'path', in: 'query', type: 'string', required: true, desc: '相对工作空间根的文件路径' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
     response: '{ name, bytes, truncated, content }',
-    example: 'curl "/fs/file?path=README.md"',
+    example: 'curl "/fs/file?path=README.md&ws=D%3A%5Ctrae_workspace%5Cloop-agent-command"',
   },
   'GET /fs/raw': {
     summary: '以原始字节返回文件（图片 / PDF 等前端直显用；Bearer 走请求头，不能用 <a href>）。',
     scope: 'read',
     params: [
       { name: 'path', in: 'query', type: 'string', required: true, desc: '相对工作空间根的文件路径' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
-    example: 'curl -H "Authorization: Bearer <token>" "/fs/raw?path=docs/a.png" -o a.png',
+    example: 'curl -H "Authorization: Bearer <token>" "/fs/raw?path=docs/a.png&ws=<空间绝对路径>" -o a.png',
   },
   'GET /fs/doc2md': {
     summary: 'Office / PDF 文档转 Markdown 预览（docx、xlsx、pptx、pdf 等）。',
     scope: 'read',
     params: [
       { name: 'path', in: 'query', type: 'string', required: true, desc: '相对工作空间根的文档路径' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
-    example: 'curl "/fs/doc2md?path=docs/spec.docx"',
+    example: 'curl "/fs/doc2md?path=docs/spec.docx&ws=<空间绝对路径>"',
   },
   'GET /fs/search': {
     summary: '工作空间全文搜索：文件名、目录名、文件内容三路匹配（名称命中优先，上限 200 条）。',
     scope: 'read',
     params: [
       { name: 'q', in: 'query', type: 'string', required: true, desc: '关键词' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
     response: '{ hits: [ { path, kind: "name" | "dir" | "content", line, text } ] }',
-    example: 'curl "/fs/search?q=createRoutes"',
+    example: 'curl "/fs/search?q=createRoutes&ws=<空间绝对路径>"',
   },
   'GET /fs/fingerprint': {
     summary: '单目录指纹（条目类型 + 名称 + 大小 + mtime 的哈希），供前端识别目录是否变更。',
     scope: 'read',
     params: [
-      { name: 'path', in: 'query', type: 'string', desc: '相对工作空间根的目录路径' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'path', in: 'query', type: 'string', desc: '相对工作空间根的目录路径（可重复，批量返回多目录指纹）' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
-    example: 'curl "/fs/fingerprint?path=src"',
+    example: 'curl "/fs/fingerprint?path=src&path=&ws=<空间绝对路径>"',
   },
   'DELETE /fs/entry': {
     summary: '删除文件或目录（目录必须 recursive=1；根目录与 .git / .loop-agent 拒绝）。',
@@ -244,9 +269,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'path', in: 'query', type: 'string', required: true, desc: '相对工作空间根的路径' },
       { name: 'recursive', in: 'query', type: 'boolean', desc: '删除目录时必须为 1' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
-    example: 'curl -X DELETE "/fs/entry?path=temp/old.txt"',
+    example: 'curl -X DELETE "/fs/entry?path=temp/old.txt&ws=<空间绝对路径>"',
   },
   'POST /fs/rename': {
     summary: '重命名或移动文件 / 目录（目标已存在返回 409）。',
@@ -254,20 +279,20 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'from', in: 'body', type: 'string', required: true, desc: '源路径（相对工作空间根）' },
       { name: 'to', in: 'body', type: 'string', required: true, desc: '目标路径（相对工作空间根）' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
     body: '{ "from": "a.txt", "to": "b.txt" }',
-    example: 'curl -X POST "/fs/rename" -H "Content-Type: application/json" -d \'{"from":"a.txt","to":"b.txt"}\'',
+    example: 'curl -X POST "/fs/rename?ws=<空间绝对路径>" -H "Content-Type: application/json" -d \'{"from":"a.txt","to":"b.txt"}\'',
   },
   'POST /fs/mkdir': {
     summary: '新建目录（父目录必须已存在）。',
     scope: 'write',
     params: [
       { name: 'path', in: 'body', type: 'string', required: true, desc: '要创建的目录路径（相对工作空间根）' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
     body: '{ "path": "docs/new" }',
-    example: 'curl -X POST /fs/mkdir -H "Content-Type: application/json" -d \'{"path":"docs/new"}\'',
+    example: 'curl -X POST "/fs/mkdir?ws=<空间绝对路径>" -H "Content-Type: application/json" -d \'{"path":"docs/new"}\'',
   },
   'POST /fs/upload': {
     summary: '上传单个文件到工作空间目录（body 为原始字节，冲突策略默认 rename）。',
@@ -277,17 +302,18 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
       { name: 'X-File-Name', in: 'query', type: 'string', required: true, desc: 'encodeURIComponent 后的文件名（请求头）' },
       { name: 'X-Relative-Path', in: 'query', type: 'string', desc: '目录上传时的层级路径（请求头）' },
       { name: 'X-Conflict', in: 'query', type: 'string', desc: 'rename | overwrite | skip，默认 rename' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
-    example: 'curl -X POST "/fs/upload?path=docs" -H "X-File-Name: a.txt" --data-binary @a.txt',
+    example: 'curl -X POST "/fs/upload?path=docs&ws=<空间绝对路径>" -H "X-File-Name: a.txt" --data-binary @a.txt',
   },
   'GET /fs/download': {
     summary: '下载文件或目录 zip（文件名经 Content-Disposition 返回）。',
     scope: 'read',
     params: [
       { name: 'path', in: 'query', type: 'string', required: true, desc: '相对工作空间根的路径（目录则打包 zip）' },
-      { name: 'ws', in: 'query', type: 'string', desc: '工作空间绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', required: true, desc: '工作空间绝对路径（20261113-001 起必填）' },
     ],
-    example: 'curl -OJ "/fs/download?path=src"',
+    example: 'curl -OJ "/fs/download?path=src&ws=<空间绝对路径>"',
   },
   'POST /uploads': {
     summary: '把服务端已存在的本机文件挂到会话 uploads 目录（paths 数组，部分成功仍 201）。',
@@ -348,9 +374,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     example: 'curl /config',
   },
   'GET /config/path': {
-    summary: '配置文件路径与工作空间配置是否存在。',
+    summary: '配置文件路径（只剩全局一份）。',
     scope: 'read',
-    response: '{ globalPath, workspacePath, workspaceExists }',
+    response: '{ globalPath }',
     example: 'curl /config/path',
   },
   'GET /config/:key': {
@@ -361,25 +387,25 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     example: 'curl /config/api.port',
   },
   'PUT /config/:key': {
-    summary: '写入单个配置键（默认写工作空间层；api.* 返回 restartRequired）。',
+    summary: '写入单个配置键（只写全局一份；api.* 返回 restartRequired）。',
     scope: 'write',
     params: [
       { name: 'key', in: 'path', type: 'string', required: true, desc: '配置键（点号路径）' },
       { name: 'value', in: 'body', type: 'any', required: true, desc: '新值（类型须与该键 schema 一致）' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
-    body: '{ "value": <any>, "scope?": "workspace" | "global" }',
+    body: '{ "value": <any>, "scope?": "global" }',
     example: 'curl -X PUT /config/api.token -H "Content-Type: application/json" -d \'{"value":"s3cret"}\'',
   },
   'DELETE /config/:key': {
-    summary: '删除单个配置键（回落到默认值或上层配置）。',
+    summary: '删除单个配置键（回落到默认值或环境变量层）。',
     scope: 'write',
     params: [
       { name: 'key', in: 'path', type: 'string', required: true, desc: '配置键（点号路径）' },
-      { name: 'scope', in: 'query', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'query', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
     response: '{ "deleted": true }',
-    example: 'curl -X DELETE "/config/api.token?scope=workspace"',
+    example: 'curl -X DELETE "/config/api.token"',
   },
 
   /* ================= 工具 ================= */
@@ -407,9 +433,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'name', in: 'path', type: 'string', required: true, desc: '内置工具名' },
       { name: 'enabled', in: 'body', type: 'boolean', required: true, desc: 'true 启用 / false 禁用' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
-    body: '{ "enabled": false, "scope?": "workspace" }',
+    body: '{ "enabled": false }',
     example: 'curl -X PATCH /tools/fileRead -H "Content-Type: application/json" -d \'{"enabled":false}\'',
   },
 
@@ -430,9 +456,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'alias', in: 'body', type: 'string', required: true, desc: '目标模型别名' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
-    body: '{ "alias": "string", "scope?": "workspace" }',
+    body: '{ "alias": "string" }',
     example: 'curl -X PUT /model -H "Content-Type: application/json" -d \'{"alias":"deepseek-chat"}\'',
   },
   'POST /models': {
@@ -442,7 +468,7 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
       { name: 'alias', in: 'body', type: 'string', required: true, desc: '别名（唯一）' },
       { name: 'profile', in: 'body', type: 'object', required: true, desc: '模型配置（name / baseUrl / apiKey / temperature? / advanced?）' },
       { name: 'profile.advanced', in: 'body', type: 'object', desc: '高级参数：maxTokens / topP / topK / frequencyPenalty / timeoutMs / headers，留空不下发' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
     body: '{ "alias": "string", "profile": { "name": "string", "baseUrl": "string", "apiKey": "string", "temperature?": "number", "advanced?": { "maxTokens?": "number", "topP?": "number", "topK?": "number", "frequencyPenalty?": "number", "timeoutMs?": "number", "headers?": { "api-version": "string" } } } }',
     example: 'curl -X POST /models -H "Content-Type: application/json" -d \'{"alias":"ds","profile":{"name":"deepseek-chat","baseUrl":"<baseUrl>","apiKey":"sk-..."}}\'',
@@ -452,10 +478,10 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'alias', in: 'path', type: 'string', required: true, desc: '模型别名（不可修改）' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
       { name: 'profile', in: 'body', type: 'object', required: true, desc: '字段增量；apiKey 空串 = 保持，temperature null = 删除该键，advanced null / {} = 删除整组' },
     ],
-    body: '{ "scope?": "workspace", "profile": { "name?": "string", "baseUrl?": "string", "apiKey?": "string", "temperature?": "number | null", "advanced?": "object | null" } }',
+    body: '{ "profile": { "name?": "string", "baseUrl?": "string", "apiKey?": "string", "temperature?": "number | null", "advanced?": "object | null" } }',
     example: 'curl -X PATCH /models/ds -H "Content-Type: application/json" -d \'{"profile":{"temperature":0.7}}\'',
   },
   'POST /models/:alias/test': {
@@ -470,9 +496,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'alias', in: 'path', type: 'string', required: true, desc: '模型别名' },
-      { name: 'scope', in: 'query', type: 'string', desc: 'workspace | global' },
+      { name: 'scope', in: 'query', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
-    example: 'curl -X DELETE "/models/ds?scope=workspace"',
+    example: 'curl -X DELETE "/models/ds"',
   },
   'POST /models/bench': {
     summary: '发起模型测速 run（最多 4 个模型，服务端串行执行）→ 202。',
@@ -567,12 +593,12 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'name', in: 'path', type: 'string', required: true, desc: '服务器名' },
-      { name: 'scope', in: 'query', type: 'string', desc: 'workspace | global' },
+      { name: 'scope', in: 'query', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
-    example: 'curl -X DELETE "/mcp/servers/<name>?scope=workspace"',
+    example: 'curl -X DELETE "/mcp/servers/<name>"',
   },
   'GET /skills': {
-    summary: '已加载技能列表（名称、描述、作用域、路径）。',
+    summary: '已加载技能列表（名称、描述、作用域恒为 global、路径）。',
     scope: 'read',
     response: '{ skills: [ { name, description, scope, path } ] }',
     example: 'curl /skills',
@@ -589,10 +615,10 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'rootName', in: 'body', type: 'string', required: true, desc: '安装目录名（通常取 zip 文件名去 .zip）' },
       { name: 'zipBase64', in: 'body', type: 'string', required: true, desc: '技能 zip 包的 base64' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
       { name: 'overwrite', in: 'body', type: 'boolean', desc: '同名已存在时是否覆盖' },
     ],
-    body: '{ "rootName": "string", "zipBase64": "string", "scope?": "workspace", "overwrite?": false }',
+    body: '{ "rootName": "string", "zipBase64": "string", "overwrite?": false }',
     example: 'curl -X POST /skills/upload -H "Content-Type: application/json" -d \'{"rootName":"demo","zipBase64":"<b64>"}\'',
   },
   'GET /skills/:name': {
@@ -606,10 +632,10 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'sourcePath', in: 'body', type: 'string', required: true, desc: '源技能目录绝对路径' },
-      { name: 'scope', in: 'body', type: 'string', desc: 'workspace（默认）| global' },
+      { name: 'scope', in: 'body', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
       { name: 'overwrite', in: 'body', type: 'boolean', desc: '同名是否覆盖' },
     ],
-    body: '{ "sourcePath": "string", "scope?": "workspace", "overwrite?": false }',
+    body: '{ "sourcePath": "string", "overwrite?": false }',
     example: 'curl -X POST /skills -H "Content-Type: application/json" -d \'{"sourcePath":"D:/skill-demo"}\'',
   },
   'DELETE /skills/:name': {
@@ -617,10 +643,10 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'write',
     params: [
       { name: 'name', in: 'path', type: 'string', required: true, desc: '技能名' },
-      { name: 'scope', in: 'query', type: 'string', desc: 'workspace | global' },
+      { name: 'scope', in: 'query', type: 'string', desc: '可省略；仅接受 global，传 workspace 返回 400' },
     ],
     response: '{ deleted, scope }',
-    example: 'curl -X DELETE "/skills/demo?scope=workspace"',
+    example: 'curl -X DELETE "/skills/demo"',
   },
 
   /* ================= 记忆与 Dreaming ================= */
@@ -639,7 +665,7 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
   'GET /memory/curated': {
     summary: '整理层（L3）三层文件全文。',
     scope: 'read',
-    params: [{ name: 'ws', in: 'query', type: 'string', desc: '空间 id 或绝对路径，缺省为最近使用空间' }],
+    params: [{ name: 'ws', in: 'query', type: 'string', desc: '空间 id 或绝对路径，缺省为进程启动空间（需求 20261113-001，不再随最近使用漂移）' }],
     response: '{ entries }',
     example: 'curl /memory/curated',
   },
@@ -648,7 +674,7 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'read',
     params: [
       { name: 'limit', in: 'query', type: 'number', desc: '回溯天数（1–90）' },
-      { name: 'ws', in: 'query', type: 'string', desc: '空间 id 或绝对路径' },
+      { name: 'ws', in: 'query', type: 'string', desc: '空间 id 或绝对路径；缺省为进程启动空间' },
     ],
     response: '{ entries }',
     example: 'curl "/memory/episodic?limit=7"',
@@ -702,7 +728,7 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     scope: 'read',
     params: [
       { name: 'limit', in: 'query', type: 'number', desc: '返回条数上限' },
-      { name: 'scope', in: 'query', type: 'string', desc: 'ws（默认，缺省空间）| all（全部空间）' },
+      { name: 'scope', in: 'query', type: 'string', desc: 'ws（默认，进程启动空间单空间）| all（全部空间聚合）' },
       { name: 'ws', in: 'query', type: 'string', desc: 'scope=ws 时的目标空间' },
     ],
     response: '{ scope, runs: [ { startedAt, finishedAt, durationMs, reason, ok, promoted, skipped, errors } ] }',
@@ -805,7 +831,7 @@ export const API_DOC_GROUPS: readonly ApiDocGroup[] = [
   {
     key: 'config',
     title: '配置',
-    desc: '分层配置（global / workspace）的读取、写入与删除。',
+    desc: '全局配置（唯一事实源 ~/.loop-agent/config.json）的读取、写入与删除。',
     prefixes: ['/config'],
   },
   {

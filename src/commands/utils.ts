@@ -1,17 +1,33 @@
 // 命令处理器共用的工具函数
-import type { ConfigScope } from '../config/index.js';
+//
+// 需求 20261112-008（D10）：配置作用域收敛为全局，--workspace 已移除。
+// 保留 flag 的解析位置（命中即错误），让旧习惯用户得到「已移除」的明确反馈，
+// 而不是「未知参数」的误导。
 
-/** 解析命令行 flag：--workspace / --global（explicit 标记用户是否显式指定了 flag） */
-export function parseScope(args: string[]): { scope: ConfigScope; rest: string[]; explicit: boolean } {
-  let scope: ConfigScope = 'workspace';
+/** --workspace 命中的标准错误文案（各命令复用） */
+export const WORKSPACE_FLAG_REMOVED =
+  '工作空间级配置已移除（需求 20261112-008），配置一律为全局。请去掉 --workspace 后重试（--global 可省略）。';
+
+export interface ParsedScopeArgs {
+  /** 是否命中已移除的 --workspace（调用方应输出 WORKSPACE_FLAG_REMOVED 并中止） */
+  workspaceFlag: boolean;
+  /** 是否显式传了 --global（仅用于提示文案，行为一致） */
+  explicit: boolean;
+  /** 去掉 scope flag 后的剩余参数 */
+  rest: string[];
+}
+
+/** 解析命令行 flag：--global 忽略，--workspace 标记为错误（explicit 标记用户是否显式指定） */
+export function parseScope(args: string[]): ParsedScopeArgs {
+  let workspaceFlag = false;
   let explicit = false;
   const rest: string[] = [];
   for (const a of args) {
-    if (a === '--workspace') { scope = 'workspace'; explicit = true; }
-    else if (a === '--global') { scope = 'global'; explicit = true; }
+    if (a === '--workspace') { workspaceFlag = true; explicit = true; }
+    else if (a === '--global') { explicit = true; }
     else rest.push(a);
   }
-  return { scope, rest, explicit };
+  return { workspaceFlag, explicit, rest };
 }
 
 /** 从字符串解析配置值（支持 JSON / number / boolean） */

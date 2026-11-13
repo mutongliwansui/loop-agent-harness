@@ -13,9 +13,7 @@ export const ITEM_LABELS: Array<{ id: BootstrapIssueId; label: string; hint: str
   { id: 'model-apiKey', label: '主模型 apiKey', hint: '运行 /setup 重新配置' },
   { id: 'model-name', label: '主模型名称', hint: '运行 /setup 重新配置' },
   { id: 'global-config', label: '全局配置文件', hint: '首次写入配置时自动创建' },
-  { id: 'workspace-config', label: '工作空间配置文件', hint: '首次写入配置时自动创建' },
   { id: 'skills-global', label: '全局 skills 目录', hint: '下次启动时自动补建' },
-  { id: 'skills-workspace', label: '工作空间 skills 目录', hint: '下次启动时自动补建' },
 ];
 
 /** 单项体检结果（CLI 展示与 GET /doctor 共用结构；detail 已并入修复提示/路径） */

@@ -54,7 +54,7 @@ beforeAll(async () => {
   const { port } = await api.start();
   base = `http://127.0.0.1:${port}`;
 
-  const res = await req('POST', '/sessions');
+  const res = await req('POST', '/sessions', { workspacePath: TEST_WORKSPACE });
   sessionId = ((await res.json()) as { id: string }).id;
 });
 

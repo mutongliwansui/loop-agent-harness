@@ -2,7 +2,7 @@
 // ChatView：会话 CRUD + SSE 流式对话 + 停止生成 + 对话内上传（Task-20261017-001 D5/D7）
 // 端点映射：
 //   GET    /workspaces          → 左侧菜单会话列表（sessions.ts 共享 store；按工作空间分组聚合）
-//   POST   /sessions            → 新建会话（body 可带 workspacePath 直接在目标空间创建；发送前无会话时也自动创建）
+//   POST   /sessions            → 新建会话（body 必带 workspacePath，直接建在目标空间；须先在弹窗选空间）
 //   GET    /fs/dirs             → 服务端目录浏览（新建弹窗「浏览磁盘」；纯 Web 拿不到本地目录绝对路径）
 //   GET    /sessions/:id        → 恢复历史消息（{meta, messages, workspace}；按 id 定位归属空间，不再切换）
 //   DELETE /sessions/:id        → 删除（二次确认；in-flight 409；支持跨工作空间会话）
@@ -74,7 +74,7 @@ import ToolCard from '../components/ToolCard.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
 import SubAgentResultCard from '../components/SubAgentResultCard.vue';
-import SubAgentDock from '../components/SubAgentDock.vue';
+import BackgroundDock from '../components/BackgroundDock.vue';
 import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
 import { nextTextareaHeight } from '../autogrow.js';
 import { createFollowState, type FollowState } from '../scroll-follow.js';
@@ -620,25 +620,22 @@ function errText(e: unknown): string {
 /* ================= 会话创建（列表数据见 sessions.ts 共享 store） ================= */
 
 /**
- * 创建会话；带 workspacePath 时直接在目标空间创建（同空间视为直建）。
- * 从弹窗发起（传参）时整体刷新列表——分组顺序不变。
+ * 创建会话：workspacePath **必填**（需求 20261113-001 D6：服务端缺该字段一律 400）。
+ * 只有新建弹窗两个入口会调用（已知空间列表 / 目录浏览器），故一定有路径。
  */
-async function createSession(workspacePath?: string): Promise<string | null> {
-  const fromPop = workspacePath !== undefined;
-  if (fromPop) newBusy.value = true;
+async function createSession(workspacePath: string): Promise<string | null> {
+  newBusy.value = true;
   try {
     const r = await api<SessionMeta & { workspace?: { path: string; id: string } }>(
       '/sessions',
-      { method: 'POST', json: fromPop ? { workspacePath } : undefined },
+      { method: 'POST', json: { workspacePath } },
     );
     await loadSessions();
     activeId.value = r.id;
     initEmpty(r.id);
     forceScrollBottom(); // 新建会话：强制回底（D6）
-    if (fromPop) {
-      closeNewPop();
-      showToast('会话已创建', 'success');
-    }
+    closeNewPop();
+    showToast('会话已创建', 'success');
     return r.id;
   } catch (e) {
     if (e instanceof AuthError) return null;
@@ -674,7 +671,7 @@ function closeNewPop(): void {
 function openBrowse(): void {
   browseOpen.value = true;
   dirError.value = '';
-  if (!dirPath.value) void browseDirs(''); // 缺省 → 服务端缺省空间（最近使用）
+  if (!dirPath.value) void browseDirs(''); // 缺省 → 服务端推荐起点（MRU || homedir）
 }
 
 /** GET /fs/dirs：失败（404/403 等）以错误条展示并保持当前位置 */
@@ -770,8 +767,18 @@ async function selectSession(id: string): Promise<void> {
 
 /* ================= 消息发送（事件渲染见 chat-stream） ================= */
 
-async function ensureSession(): Promise<string | null> {
-  return activeId.value ?? (await createSession());
+/**
+ * 发消息 / 上传前的会话检查：**不再自动建会话**（需求 20261113-001 D6）。
+ *
+ * 语义依据：WebUI 形态下发消息必然发生在「已选定空间的会话」内——新建会话的前提
+ * 就是选空间，所以「无会话」不是需要兜底的正常路径，而是用户还没选空间的空状态。
+ * 此时引导去新建（选空间）比静默建一个会话到某个空间更符合预期。
+ */
+function ensureSession(): string | null {
+  if (activeId.value) return activeId.value;
+  showToast('请先新建会话并选择工作空间', 'error');
+  openNewPop();
+  return null;
 }
 
 async function send(): Promise<void> {
@@ -783,7 +790,7 @@ async function send(): Promise<void> {
   }
   // 20261021-002-05：服务端 AgentPool 已支持同空间多会话并发，
   // 跨会话发送拦截移除（服务端 entry.inFlight 仅约束同会话串行）
-  const sessionId = await ensureSession();
+  const sessionId = ensureSession();
   if (!sessionId) return;
 
   // contextNote 拼接进 message 文本（POST messages 无独立 contextNote 字段）
@@ -841,7 +848,7 @@ async function onPickFiles(ev: Event): Promise<void> {
   const files = [...(input.files ?? [])];
   input.value = '';
   if (files.length === 0) return;
-  const sessionId = await ensureSession();
+  const sessionId = ensureSession();
   if (!sessionId) return;
   upBusy.value = true;
   try {
@@ -926,7 +933,7 @@ async function onPaste(ev: ClipboardEvent): Promise<void> {
   }
   const { accepted, dropped } = capPasteFiles(pasted);
   if (dropped > 0) showToast(`单次最多 ${PASTE_MAX_FILES} 个附件，已忽略 ${dropped} 个`, 'error');
-  const sessionId = await ensureSession();
+  const sessionId = ensureSession();
   if (!sessionId) return;
   const gate = await loadVisionGate();
   upBusy.value = true;
@@ -1432,11 +1439,11 @@ onUnmounted(() => {
       </div>
 
       <div class="composer">
-        <!-- 后台子任务常驻指示器（需求 20261107-008 G1）：放在输入区上方，
+        <!-- 后台任务常驻指示器（需求 20261112-006：命令任务 + 子任务统一展示）：
              无论消息滚到哪里都能看到「运行中 N」。
              宽度与消息列对齐（800 - 20×2），否则会顶到面板边缘、比对话卡片更宽 -->
         <div class="composer-dock">
-          <SubAgentDock :session-id="activeId" />
+          <BackgroundDock :session-id="activeId" />
         </div>
         <div class="composer-inner">
           <div class="dock">

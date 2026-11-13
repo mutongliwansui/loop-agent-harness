@@ -99,10 +99,10 @@ export async function apiStatus(path: string, init: RequestInit & { json?: unkno
 }
 
 /** 原始文件下载（GET /fs/raw：自动注入 Bearer；供 pdf iframe / Office 文档前端解析）
- *  ws 为会话所属工作空间绝对路径（后端据此切换根；缺省回落启动空间） */
+ *  ws 为会话所属工作空间绝对路径；需求 20261113-001 D2 起后端**要求必传**（缺 ws 一律 400），
+ *  调用方须保证 wsPath 已就绪（无活跃会话时不应发起该请求）。 */
 export async function fetchRaw(path: string, ws?: string): Promise<Blob> {
-  const wsParam = ws ? `&ws=${encodeURIComponent(ws)}` : '';
-  const res = await fetch(`/fs/raw?path=${encodeURIComponent(path)}${wsParam}`, {
+  const res = await fetch(`/fs/raw?path=${encodeURIComponent(path)}&ws=${requireWs(ws, '读取文件')}`, {
     headers: authHeaders(),
   });
   if (!res.ok) await throwFor(res);
@@ -134,9 +134,14 @@ export async function uploadRaw(
 
 /* ================= 工作空间文件写操作与下载（优化建议 20261021-005） ================= */
 
-/** ws 查询参数（文件面板跟随活跃会话所属工作空间） */
-function wsParam(ws?: string): string {
-  return ws ? `&ws=${encodeURIComponent(ws)}` : '';
+/**
+ * 需求 20261113-001 D2：`/fs/*` 后端已改为「缺 ws 一律 400」。
+ * 写路径在 ws 缺失时直接前置失败，给出可定位的中文错误，
+ * 避免拼出 `ws=` 空值后被后端当作参数缺失、把「没有活跃会话」误报成「参数非法」。
+ */
+function requireWs(ws: string | undefined, op: string): string {
+  if (!ws) throw new ApiError('bad_request', `${op}需要工作空间路径（无活跃会话所属空间）`, 400);
+  return encodeURIComponent(ws);
 }
 
 /** 删除文件/目录（目录必须 recursive=true；根目录与 .git/.loop-agent 后端拒绝） */
@@ -145,7 +150,7 @@ export async function deleteFsEntry(
   recursive: boolean,
   ws?: string,
 ): Promise<{ path: string; type: 'dir' | 'file' }> {
-  const qs = `path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}${wsParam(ws)}`;
+  const qs = `path=${encodeURIComponent(path)}${recursive ? '&recursive=1' : ''}&ws=${requireWs(ws, '删除')}`;
   const res = await fetch(`/fs/entry?${qs}`, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) await throwFor(res);
   return (await res.json()) as { path: string; type: 'dir' | 'file' };
@@ -157,7 +162,7 @@ export async function renameFsEntry(
   to: string,
   ws?: string,
 ): Promise<{ from: string; to: string; type: 'dir' | 'file' }> {
-  const res = await fetch(`/fs/rename?ws=${encodeURIComponent(ws ?? '')}`, {
+  const res = await fetch(`/fs/rename?ws=${requireWs(ws, '重命名')}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ from, to }),
@@ -168,7 +173,7 @@ export async function renameFsEntry(
 
 /** 新建目录（父目录必须存在） */
 export async function mkdirFs(path: string, ws?: string): Promise<{ path: string }> {
-  const res = await fetch(`/fs/mkdir?ws=${encodeURIComponent(ws ?? '')}`, {
+  const res = await fetch(`/fs/mkdir?ws=${requireWs(ws, '新建目录')}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ path }),
@@ -187,7 +192,7 @@ export async function uploadToWorkspace(
   headers.set('x-file-name', encodeURIComponent(file.name));
   if (opts.relativePath) headers.set('x-relative-path', encodeURIComponent(opts.relativePath));
   if (opts.conflict) headers.set('x-conflict', opts.conflict);
-  const res = await fetch(`/fs/upload?path=${encodeURIComponent(dir)}${wsParam(opts.ws)}`, {
+  const res = await fetch(`/fs/upload?path=${encodeURIComponent(dir)}&ws=${requireWs(opts.ws, '上传')}`, {
     method: 'POST',
     headers,
     body: file,
@@ -210,8 +215,9 @@ function dispositionName(cd: string): string {
   return plain?.[1] ?? '';
 }
 
-/** 下载文件或目录 zip：返回 Blob 与建议文件名（Bearer 走请求头，故不能直接用 <a href>） */export async function downloadFsEntry(path: string, ws?: string): Promise<{ blob: Blob; name: string }> {
-  const res = await fetch(`/fs/download?path=${encodeURIComponent(path)}${wsParam(ws)}`, {
+/** 下载文件或目录 zip：返回 Blob 与建议文件名（Bearer 走请求头，故不能直接用 <a href>） */
+export async function downloadFsEntry(path: string, ws?: string): Promise<{ blob: Blob; name: string }> {
+  const res = await fetch(`/fs/download?path=${encodeURIComponent(path)}&ws=${requireWs(ws, '下载')}`, {
     headers: authHeaders(),
   });
   if (!res.ok) await throwFor(res);

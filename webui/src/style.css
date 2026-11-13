@@ -1349,8 +1349,6 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
   color: var(--text-2);
   font-size: 12px;
 }
-.mv-scope-wrap { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
-.mv-scope-wrap .seg button { padding: 4px 9px; font-size: 11.5px; }
 .mv-count { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* 卡片网格 */
@@ -1616,8 +1614,6 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
 .mv-drv-body { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 11px; }
 .mv-drv-foot { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bar-bg); }
 .mv-drv-foot .sp { flex: 1; }
-.mv-scope-line { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
-.mv-scope-line .seg button { padding: 4px 9px; font-size: 11.5px; }
 
 /* 抽屉内小节 */
 .mv-lab { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
@@ -1774,18 +1770,6 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
 .mv-adv-add { margin-top: 7px; height: 28px; padding: 0 10px; border: 1px dashed var(--line-strong); border-radius: 7px; background: none; color: var(--text-2); font-size: 11.5px; cursor: pointer; }
 .mv-adv-add:hover { border-color: var(--brand); color: var(--brand); }
 .mv-adv-note { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
-.scope-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 9px;
-  background: var(--bar-bg);
-  border: 1px solid var(--line-soft);
-  font-size: 12.5px;
-}
-.scope-line .t { color: var(--muted); }
-.scope-line .sp { flex: 1; }
 .mv-errbox {
   margin: 0;
   padding: 9px 11px;
@@ -1816,7 +1800,6 @@ details.l3f pre { margin: 4px 0 10px; padding: 10px 12px; background: var(--code
   .mv-stat { padding: 9px 10px; }
   .mv-stat .v { font-size: 17px; }
   .mv-search { flex: 1 0 100%; max-width: none; }
-  .mv-scope-wrap { margin-left: 0; }
   .mv-count { margin-left: auto; }
   .mv-drawer { width: 100%; max-width: 100%; }
   .mv-metrics { grid-template-columns: 1fr 1fr; }

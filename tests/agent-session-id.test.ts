@@ -33,9 +33,9 @@ const BASE = join(tmpdir(), 'loop-agent-tests', `agent-session-id-${Date.now()}`
 
 /** 写入 workspace 配置，返回 episodic 目录（绝对路径，避免写真实 HOME） */
 function writeWorkspaceConfig(wsDir: string, episodicDir: string): void {
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -80,7 +80,7 @@ function readTodayL2(episodicDir: string): string {
 
 async function makeAgent(wsDir: string, episodicDir: string): Promise<ReActAgent> {
   writeWorkspaceConfig(wsDir, episodicDir);
-  const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+  const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
   // run() 不自建记忆子系统，需与 CLI/runtime 一致显式初始化
   await agent.initMemory(wsDir);
   return agent;

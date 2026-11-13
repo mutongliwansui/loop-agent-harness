@@ -3,7 +3,7 @@
  *
  * 覆盖：
  * - GET  /memory/dream/preview：合法 cron → ok+next[5]+describe；非法 → ok:false+fieldIndex；缺参 → ok:false
- * - PUT  /memory/dream/schedule：合法 → 200 且落 workspace 配置 + reschedule 生效（nextRunAt 变化）
+ * - PUT  /memory/dream/schedule：合法 → 200 且落全局配置 + reschedule 生效（nextRunAt 变化）
  * - PUT  /memory/dream/schedule：非法 cron → 400，且**不改动**已有配置与既有排期（D9 边界）
  * - PUT  /memory/dream/schedule：enabled=false → scheduleEnabled=false；grace 越界 / 类型错 → 400
  * - GET  /memory/dream/history：空列表 / 预置文件可读 / limit 收窄 / 损坏容错
@@ -31,21 +31,22 @@ const TEST_WORKSPACE = join(TEST_DIR, 'workspace');
 const TEST_GLOBAL_DIR = join(TEST_DIR, 'global');
 const MEMORY_DIR = join(TEST_DIR, 'memory', 'ws-test');
 const RUNS_FILE = join(MEMORY_DIR, '.dreaming-runs.json');
-const WORKSPACE_CONFIG = join(TEST_WORKSPACE, '.loop-agent', '.agent-config.json');
+// 需求 20261112-008：配置作用域收敛为全局，PUT /memory/dream/schedule 落全局 config.json
+const GLOBAL_CONFIG = join(TEST_GLOBAL_DIR, 'config.json');
 
 let server: ApiServer;
 let base = '';
 let loader: ConfigLoader;
 
-/** 读 workspace 配置文件（未落盘时返回 null） */
-function readWorkspaceConfig(): Record<string, unknown> | null {
-  if (!existsSync(WORKSPACE_CONFIG)) return null;
-  return JSON.parse(readFileSync(WORKSPACE_CONFIG, 'utf-8')) as Record<string, unknown>;
+/** 读全局配置文件（未落盘时返回 null） */
+function readGlobalConfig(): Record<string, unknown> | null {
+  if (!existsSync(GLOBAL_CONFIG)) return null;
+  return JSON.parse(readFileSync(GLOBAL_CONFIG, 'utf-8')) as Record<string, unknown>;
 }
 
-/** 取 workspace 配置里 memory.dreaming.schedule 段 */
+/** 取全局配置里 memory.dreaming.schedule 段 */
 function readSchedule(): Record<string, unknown> | undefined {
-  const cfg = readWorkspaceConfig() as {
+  const cfg = readGlobalConfig() as {
     memory?: { dreaming?: { schedule?: Record<string, unknown> } };
   } | null;
   return cfg?.memory?.dreaming?.schedule;
@@ -68,10 +69,10 @@ beforeAll(async () => {
   const store = new SessionStore(TEST_WORKSPACE, false, join(TEST_DIR, 'sessions'));
   await store.init();
 
-  loader = new ConfigLoader(TEST_WORKSPACE, TEST_GLOBAL_DIR);
-  const writer = new ConfigWriter(TEST_WORKSPACE, TEST_GLOBAL_DIR, loader);
+  loader = new ConfigLoader(TEST_GLOBAL_DIR);
+  const writer = new ConfigWriter(TEST_GLOBAL_DIR, loader);
 
-  // 假 runtime：configLoader 指向真实的临时 workspace 配置，使 PUT 落盘后调度器能读到新值
+  // 假 runtime：configLoader 指向真实临时全局配置，使 PUT 落盘后调度器能读到新值
   const kit = {
     dream: {
       async getState() {
@@ -98,7 +99,7 @@ beforeAll(async () => {
 
   const dreamScheduler = new DreamScheduler({
     registry,
-    // 进程级配置与 workspace 配置同源，模拟「PUT 落盘 → 重读即生效」
+    // 进程级配置与全局配置同源，模拟「PUT 落盘 → 重读即生效」
     getConfig: () => loader.load().config,
     log: () => {},
   });
@@ -184,7 +185,7 @@ describe('GET /memory/dream/preview', () => {
 // ---------- PUT schedule ----------
 
 describe('PUT /memory/dream/schedule', () => {
-  it('合法 cron → 200，落 workspace 配置，返回 nextRunAt/nextRunTimes/describe', async () => {
+  it('合法 cron → 200，落全局配置，返回 nextRunAt/nextRunTimes/describe', async () => {
     const res = await req('PUT', '/memory/dream/schedule', { cron: '30 4 * * *', misfireGraceMin: 30 });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {

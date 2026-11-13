@@ -16,6 +16,7 @@ import { showToast } from './toast.js';
 import { postTab } from './tab-sync.js';
 import { getNotifySettings, notifyRunDone, playChime } from './notify.js';
 import { toolSummary } from './tool-meta.js';
+import { parseBackgroundResult } from './background-task-card.js';
 
 export interface TextSeg {
   type: 'text';
@@ -79,6 +80,17 @@ export interface SubAgentTaskVM {
   iterations?: number;
   answer?: string;
   error?: string;
+}
+/**
+ * 统一后台任务快照（需求 20261112-006）：命令任务与子任务共用同一展示形状。
+ * 在 SubAgentTaskVM 基础上补 kind 与停止能力，复用既有 Dock 纯函数。
+ */
+export interface JobTaskVM extends SubAgentTaskVM {
+  kind: 'command' | 'subagent';
+  canStop: boolean;
+  trace?: SubAgentTraceVM;
+  /** 停止请求进行中（仅命令任务用，前端本地态） */
+  stopping?: boolean;
 }
 export interface ToolSeg {
   type: 'tool';
@@ -670,7 +682,7 @@ export function drop(id: string): void {
   // 后台任务撤销随会话一起收尾（需求 20261107-008）：停轮询、清快照，
   // 否则已删除会话的「运行中 N」会一直挂在全局指示器上
   stopSubAgentPoll(id);
-  subTasks.delete(id);
+  jobTasks.delete(id);
 }
 
 /**
@@ -861,6 +873,11 @@ function applyEvent(id: string, ev: SseEvent): void {
       }
       // 工具结束后模型重新思考（并行工具仍在跑时，下一次 tool_progress 会覆盖回来）
       asst.live = { kind: 'thinking', since: now };
+      // 需求 20261112-006：命令任务进入后台后立即启动统一轮询，
+      // 否则只有子任务会触发轮询，命令任务要等下次会话加载才出现在 Dock。
+      if (String(d.tool ?? '') === 'commandRun' && typeof d.result === 'string') {
+        if (parseBackgroundResult(d.result)) ensureSubAgentPoll(id);
+      }
       notifyActivity(id);
       break;
     }
@@ -1070,50 +1087,98 @@ function applyEvent(id: string, ev: SseEvent): void {
  * 就永久失联 → 运行中看不见、完成了也不知道。
  *
  * 治理：改为**数据驱动**——快照来自轮询端点而不是事件流。
- *   G1 常驻指示器读 snapshots（subAgentTasksOf）
+ *   G1 常驻指示器读 snapshots（jobsOf）
  *   G2 启动条件放宽：SSE start 事件 / 历史残留 running 卡片 / 会话加载与重连后主动查一次
  *   G3 resync 排队补执行，不静默丢弃
  *   G4 运行中 → 终态时弹提示（本端正在看该会话）
  */
 
 /** 空快照（未加载过的会话，模板可直接 v-for） */
-const EMPTY_SUB_TASKS: SubAgentTaskVM[] = [];
+const EMPTY_JOBS: JobTaskVM[] = [];
 /** 按会话保存的运行期快照（轮询刷新；不随消息时间线重建而丢失） */
-const subTasks = reactive(new Map<string, SubAgentTaskVM[]>());
+const jobTasks = reactive(new Map<string, JobTaskVM[]>());
 /** 已弹过终态提示的 taskId：bootstrap 与轮询可能并发，避免同一任务重复提示 */
 const notifiedTaskIds = new Set<string>();
 
-/** 会话的后台子任务快照（未加载返回共享空数组） */
-export function subAgentTasksOf(id: string | null): SubAgentTaskVM[] {
-  if (!id) return EMPTY_SUB_TASKS;
-  return subTasks.get(id) ?? EMPTY_SUB_TASKS;
+/** 会话的后台任务快照（命令 + 子任务；未加载返回共享空数组） */
+export function jobsOf(id: string | null): JobTaskVM[] {
+  if (!id) return EMPTY_JOBS;
+  return jobTasks.get(id) ?? EMPTY_JOBS;
 }
 
-/** 全局「后台子任务运行中」计数：顶栏/输入区常驻指示器与侧栏 badge 共用 */
+/** 兼容旧调用方：只取子任务（结果卡片过程同步用） */
+export function subAgentTasksOf(id: string | null): SubAgentTaskVM[] {
+  return jobsOf(id).filter((t) => t.kind === 'subagent');
+}
+
+/** 全局「后台任务运行中」计数（命令 + 子任务） */
 export const subAgentRunningCount = computed<number>(() => {
   let n = 0;
-  for (const list of subTasks.values()) {
+  for (const list of jobTasks.values()) {
     for (const t of list) if (t.status === 'running') n++;
   }
   return n;
 });
 
+/** 后端 /sessions/:id/jobs 条目（统一读模型输出） */
+interface ApiJob {
+  id: string;
+  kind: 'command' | 'subagent';
+  sessionId?: string;
+  title: string;
+  status: 'running' | 'done' | 'failed' | 'stopped' | 'lost';
+  startedAt: number;
+  finishedAt?: number;
+  elapsedMs?: number;
+  iterations?: number;
+  error?: string;
+  trace?: SubAgentTraceVM;
+  canStop: boolean;
+}
+
+/** 统一状态 → 既有 Dock 状态词（复用 SubAgentTaskVM 的展示与纯函数） */
+function mapJobStatus(s: ApiJob['status']): JobTaskVM['status'] {
+  switch (s) {
+    case 'running': return 'running';
+    case 'done': return 'done';
+    case 'failed': return 'failed';
+    case 'stopped': return 'aborted';
+    case 'lost': return 'interrupted';
+  }
+}
+
+function toJobTaskVM(j: ApiJob): JobTaskVM {
+  return {
+    taskId: j.id,
+    task: j.title,
+    kind: j.kind,
+    canStop: j.canStop,
+    status: mapJobStatus(j.status),
+    startedAt: j.startedAt,
+    finishedAt: j.finishedAt,
+    elapsedMs: j.elapsedMs,
+    iterations: j.iterations,
+    error: j.error,
+    trace: j.trace,
+  };
+}
+
 /**
- * 拉一次 /subagents 并更新快照。
- * 返回是否仍有运行中的任务 + 服务端 run 状态（需求 20261107-011：后台子任务完成后
- * 主 Agent 可能被唤醒并启动新一轮，前端需要据此 attach 续传）。
+ * 拉一次 /jobs 并更新快照（需求 20261112-006：命令任务 + 子任务统一轮询）。
+ * 返回是否仍有运行中的任务 + 服务端 run 状态（后台任务完成后主 Agent 可能被唤醒并
+ * 启动新一轮，前端需要据此 attach 续传）。
  * 失败向上抛（调用方决定是否停表）；会话已删除/鉴权失败时轮询应停止。
  */
-async function refreshSubAgents(id: string): Promise<{
+async function refreshJobs(id: string): Promise<{
   running: boolean;
   runStatus: string | null;
 }> {
   const r = await api<{
-    items: SubAgentTaskVM[];
+    items: ApiJob[];
     run?: { status?: string } | null;
-  }>(`/sessions/${encodeURIComponent(id)}/subagents`);
-  const items = Array.isArray(r.items) ? r.items : [];
-  const prev = subTasks.get(id) ?? [];
+  }>(`/sessions/${encodeURIComponent(id)}/jobs`);
+  const items = (Array.isArray(r.items) ? r.items : []).map(toJobTaskVM);
+  const prev = jobTasks.get(id) ?? [];
   const prevRunning = new Set(
     prev.filter((t) => t.status === 'running').map((t) => t.taskId),
   );
@@ -1123,16 +1188,17 @@ async function refreshSubAgents(id: string): Promise<{
       if (!prevRunning.has(t.taskId) || t.status === 'running') continue;
       if (notifiedTaskIds.has(t.taskId)) continue;
       notifiedTaskIds.add(t.taskId);
+      const kind = t.kind === 'command' ? '后台命令任务' : '后台子任务';
       const what = t.status === 'done' ? '已完成' : t.status === 'failed' ? '失败' : '已结束';
       showToast(
-        `后台子任务 ${t.taskId} ${what}` +
+        `${kind} ${t.taskId} ${what}` +
           `${t.elapsedMs ? `（${Math.round(t.elapsedMs / 1000)}s` : ''}` +
-          `${t.elapsedMs ? ` · ${t.iterations ?? 0} 轮）` : ''}`,
+          `${t.elapsedMs && t.kind === 'subagent' ? ` · ${t.iterations ?? 0} 轮）` : t.elapsedMs ? '）' : ''}`,
         t.status === 'failed' ? 'error' : 'success',
       );
     }
   }
-  subTasks.set(id, items);
+  jobTasks.set(id, items);
   return {
     running: items.some((t) => t.status === 'running'),
     runStatus: r.run?.status ?? null,
@@ -1246,7 +1312,7 @@ async function tickSubAgents(id: string): Promise<void> {
   try {
     let snap: { running: boolean; runStatus: string | null };
     try {
-      snap = await refreshSubAgents(id);
+      snap = await refreshJobs(id);
     } catch {
       stopSubAgentPoll(id); // 会话已删除 / 鉴权失败：不再重试
       return;
@@ -1316,7 +1382,7 @@ async function bootstrapSubAgents(id: string): Promise<void> {
   const st = states.get(id);
   if (!st) return;
   try {
-    const { running } = await refreshSubAgents(id);
+    const { running } = await refreshJobs(id);
     if (running) {
       ensureSubAgentPoll(id);
       return;

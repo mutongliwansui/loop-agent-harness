@@ -40,8 +40,8 @@ const hasCjk = (s: string): boolean => /[\u4e00-\u9fa5]/.test(s);
 describe('api-docs：反射全集（D1）', () => {
   it('stats.total 等于 createRoutes() 实际条数', () => {
     expect(payload.stats.total).toBe(routes.length);
-    // 87 = 86 + 20261111-001 新增 PATCH /models/:alias（模型信息编辑）
-    expect(payload.stats.total).toBe(87);
+    // 88 = 87 + 20261112-006 新增 GET /sessions/:id/jobs（后台任务统一快照）
+    expect(payload.stats.total).toBe(88);
   });
 
   it('路由表无重复的 METHOD + path（重复会导致文档条目被覆盖）', () => {
@@ -233,7 +233,7 @@ describe('api-docs：/dev/api-docs 沿用既有鉴权（D4）', () => {
     mkdirSync(join(dir, 'global'), { recursive: true });
     const store = new SessionStore(join(dir, 'workspace'), false, join(dir, 'sessions'));
     await store.init();
-    const loader = new ConfigLoader(join(dir, 'workspace'), join(dir, 'global'));
+    const loader = new ConfigLoader(join(dir, 'global'));
     cfg = structuredClone(DEFAULT_CONFIG);
     cfg.api = { ...cfg.api, port: 0, token: 'secret-token' };
     server = createApiServer({
@@ -245,7 +245,7 @@ describe('api-docs：/dev/api-docs 沿用既有鉴权（D4）', () => {
       version: 'auth-0.0.0',
       runtime: {
         configLoader: loader,
-        configWriter: new ConfigWriter(join(dir, 'workspace'), join(dir, 'global'), loader),
+        configWriter: new ConfigWriter(join(dir, 'global'), loader),
         uploadsRoot: join(dir, 'uploads'),
       },
     });

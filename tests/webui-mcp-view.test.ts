@@ -23,13 +23,13 @@ import {
   normalizeState,
   parseKv,
   parseLines,
-  scopePath,
   serverTarget,
   sortServers,
   stateMeta,
   type McpServerRow,
   type McpTargetCfg,
 } from '../webui/src/mcp-ui.js';
+import * as mcpUiAsRecord from '../webui/src/mcp-ui.js';
 import type { McpToolMeta } from '../webui/src/mcp-tool-meta.js';
 
 const rows: McpServerRow[] = [
@@ -204,9 +204,8 @@ describe('展示与解析工具函数', () => {
     expect(parseKv('')).toEqual({});
   });
 
-  it('scopePath：工作空间 / 全局配置路径', () => {
-    expect(scopePath('workspace')).toBe('.loop-agent/.agent-config.json');
-    expect(scopePath('global')).toBe('~/.loop-agent/config.json');
+  it('008 后不再有 scopePath（配置只剩全局一份，无分层路径）', () => {
+    expect((mcpUiAsRecord as Record<string, unknown>).scopePath).toBeUndefined();
   });
 });
 

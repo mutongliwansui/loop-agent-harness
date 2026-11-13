@@ -2,7 +2,8 @@
 // 技能视图（原型-20261109-001 方案 B：卡片流 + 详情抽屉 + 安装模态 + 状态矩阵）
 // 端点不变：GET /skills · GET /skills/:name（正文）· POST /skills/upload（同名未 overwrite 409）
 //           DELETE /skills/:name（缺省 auto）· POST /skills/reload（装/删后自动重载）
-// 纯逻辑（搜索 / 筛选 / 排序 / 高亮 / zip 校验）见 ../skills-ui.ts
+// 需求 20261112-008：skill 只剩全局一份，来源筛选与安装范围选择已移除
+// 纯逻辑（搜索 / 排序 / 高亮 / zip 校验）见 ../skills-ui.ts
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { highlightIn, renderMarkdown } from '../markdown';
@@ -13,13 +14,10 @@ import {
   fmtAgo,
   fmtSize,
   highlightSegments,
-  scopeCounts,
-  scopeHint,
-  scopeLabel,
   skillInitials,
+  SKILLS_INSTALL_DIR,
   sortSkills,
   validateZipFile,
-  type ScopeTab,
   type SkillRow,
   type SortMode,
 } from '../skills-ui';
@@ -32,18 +30,10 @@ const syncAt = ref<number | null>(null);
 const nowTick = ref(Date.now());
 
 const query = ref('');
-const scopeTab = ref<ScopeTab>('all');
-const sortMode = ref<SortMode>('scope');
+const sortMode = ref<SortMode>('name');
 const searchInput = ref<HTMLInputElement | null>(null);
 
-const tabs: { key: ScopeTab; label: string }[] = [
-  { key: 'all', label: '全部' },
-  { key: 'workspace', label: '工作空间' },
-  { key: 'global', label: '全局' },
-];
-
-const counts = computed(() => scopeCounts(skills.value));
-const filtered = computed(() => sortSkills(filterSkills(skills.value, query.value, scopeTab.value), sortMode.value));
+const filtered = computed(() => sortSkills(filterSkills(skills.value, query.value), sortMode.value));
 const syncLabel = computed(() => (syncAt.value ? fmtAgo(syncAt.value, nowTick.value) : '—'));
 
 /* ===== 详情抽屉 ===== */
@@ -64,7 +54,6 @@ const installing = ref(false);
 const dzOver = ref(false);
 const zipInput = ref<HTMLInputElement | null>(null);
 const overwrite = ref(false);
-const installScope = ref<'workspace' | 'global'>('workspace');
 const installErr = ref('');
 const pickErr = ref('');
 
@@ -200,7 +189,7 @@ async function doDelete(): Promise<void> {
   busy.value = true;
   try {
     const res = await api<{ scope: string }>(`/skills/${encodeURIComponent(s.name)}`, { method: 'DELETE' });
-    showToast(`Skill 已卸载：${s.name}（${scopeLabel(res.scope)}）`, 'success');
+    showToast(`Skill 已卸载：${s.name}`, 'success');
     confirmSkill.value = null;
     if (detail.value?.name === s.name) closeDetail();
     await refresh();
@@ -219,7 +208,6 @@ function openInstall(): void {
   pickErr.value = '';
   installErr.value = '';
   overwrite.value = false;
-  installScope.value = 'workspace';
 }
 
 function closeInstall(): void {
@@ -290,9 +278,9 @@ async function install(): Promise<void> {
     const zipBase64 = await fileToBase64(p.file);
     const res = await api<{ name: string; scope: string }>('/skills/upload', {
       method: 'POST',
-      json: { scope: installScope.value, overwrite: overwrite.value, rootName: p.rootName, zipBase64 },
+      json: { overwrite: overwrite.value, rootName: p.rootName, zipBase64 },
     });
-    showToast(`Skill 已安装：${res.name}（${scopeLabel(res.scope)}）`, 'success');
+    showToast(`Skill 已安装：${res.name}`, 'success');
     showInstall.value = false;
     picked.value = null;
     overwrite.value = false;
@@ -409,12 +397,12 @@ onBeforeUnmount(() => {
         <div class="v">{{ skills.length }}<small>个</small></div>
       </div>
       <div class="sk-stat">
-        <div class="k"><i class="on"></i>工作空间</div>
-        <div class="v">{{ counts.workspace }}<small>个</small></div>
+        <div class="k"><i></i>安装位置</div>
+        <div class="v small">{{ SKILLS_INSTALL_DIR }}</div>
       </div>
       <div class="sk-stat">
-        <div class="k"><i></i>全局</div>
-        <div class="v">{{ counts.global }}<small>个</small></div>
+        <div class="k"><i></i>生效范围</div>
+        <div class="v small">所有项目</div>
       </div>
       <div class="sk-stat">
         <div class="k"><i></i>最近同步</div>
@@ -429,19 +417,7 @@ onBeforeUnmount(() => {
         <input ref="searchInput" v-model="query" type="text" placeholder="搜索名称、描述或路径" autocomplete="off" spellcheck="false">
         <kbd>/</kbd>
       </div>
-      <div class="sk-seg" role="tablist" aria-label="按来源筛选">
-        <button
-          v-for="t in tabs"
-          :key="t.key"
-          type="button"
-          role="tab"
-          :aria-selected="scopeTab === t.key"
-          :class="{ on: scopeTab === t.key }"
-          @click="scopeTab = t.key"
-        >{{ t.label }} <span class="n">{{ counts[t.key] }}</span></button>
-      </div>
       <select v-model="sortMode" class="sk-sort" aria-label="排序方式">
-        <option value="scope">来源优先</option>
         <option value="name">名称 A→Z</option>
       </select>
       <span class="sk-count">{{ filtered.length }} 个技能</span>
@@ -474,8 +450,8 @@ onBeforeUnmount(() => {
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.5 13.5"/></svg>
         </span>
         <b>没有匹配的技能</b>
-        <p>换个关键词，或清空来源筛选后重试。</p>
-        <button class="sk-btn" type="button" @click="query = ''; scopeTab = 'all'">清空筛选</button>
+        <p>换个关键词，或清空搜索后重试。</p>
+        <button class="sk-btn" type="button" @click="query = ''">清空筛选</button>
       </div>
     </div>
 
@@ -483,7 +459,7 @@ onBeforeUnmount(() => {
     <div v-else class="sk-grid">
       <article v-for="s in filtered" :key="s.name" class="sk-card">
         <div class="sk-card-top">
-          <span class="sk-tile" :class="s.scope === 'workspace' ? 'ws' : 'gl'">{{ skillInitials(s.name) }}</span>
+          <span class="sk-tile">{{ skillInitials(s.name) }}</span>
           <div class="sk-id">
             <div class="sk-name-row">
               <h3 class="sk-name">
@@ -491,7 +467,7 @@ onBeforeUnmount(() => {
                   <mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template>
                 </template>
               </h3>
-              <span class="sk-badge" :class="s.scope === 'workspace' ? 'ws' : 'gl'"><i></i>{{ scopeLabel(s.scope) }}</span>
+              <span class="sk-badge"><i></i>全局</span>
             </div>
             <div class="sk-path" :title="s.path">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 4.4c0-.7.6-1.3 1.3-1.3h3l1.3 1.5h4.8c.7 0 1.3.6 1.3 1.3v5.4c0 .7-.6 1.3-1.3 1.3H3.1c-.7 0-1.3-.6-1.3-1.3z"/></svg>
@@ -508,7 +484,7 @@ onBeforeUnmount(() => {
           </template>
         </p>
         <div class="sk-foot">
-          <span class="sk-meta">{{ scopeHint(s.scope) }}</span>
+          <span class="sk-meta">{{ SKILLS_INSTALL_DIR }}</span>
           <span class="sk-spring"></span>
           <button class="sk-view" type="button" @click="openDetail(s)">
             查看 SKILL.md
@@ -552,9 +528,9 @@ onBeforeUnmount(() => {
     <aside class="sk-drawer" :class="{ show: !!detail }" role="dialog" aria-modal="true" aria-label="技能详情">
       <template v-if="detail">
         <div class="sk-drv-head">
-          <span class="sk-tile" :class="detail.scope === 'workspace' ? 'ws' : 'gl'">{{ skillInitials(detail.name) }}</span>
+          <span class="sk-tile">{{ skillInitials(detail.name) }}</span>
           <div class="sk-drv-title">
-            <h2>{{ detail.name }}<span class="sk-badge" :class="detail.scope === 'workspace' ? 'ws' : 'gl'"><i></i>{{ scopeLabel(detail.scope) }}</span></h2>
+            <h2>{{ detail.name }}<span class="sk-badge"><i></i>全局</span></h2>
             <div class="sk-drv-path">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 4.4c0-.7.6-1.3 1.3-1.3h3l1.3 1.5h4.8c.7 0 1.3.6 1.3 1.3v5.4c0 .7-.6 1.3-1.3 1.3H3.1c-.7 0-1.3-.6-1.3-1.3z"/></svg>
               <span>{{ detail.path }}</span>
@@ -573,7 +549,6 @@ onBeforeUnmount(() => {
             <div class="sk-fm-cap">SKILL.md · frontmatter</div>
             <div class="sk-fm-row"><span class="k">name</span><span class="v">{{ detail.name }}</span></div>
             <div class="sk-fm-row"><span class="k">description</span><span class="v">{{ detail.description }}</span></div>
-            <div class="sk-fm-row"><span class="k">scope</span><span class="v">{{ detail.scope }}（{{ scopeLabel(detail.scope) }}）</span></div>
             <div class="sk-fm-row"><span class="k">path</span><span class="v">{{ detail.path }}</span></div>
           </div>
 
@@ -636,21 +611,8 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="pickErr" class="sk-err"><span class="ei">!</span><div>{{ pickErr }}</div></div>
 
-        <div class="sk-lab">安装范围 <span class="req">*</span></div>
-        <div class="sk-scope-grid">
-          <label class="sk-scope" :class="{ on: installScope === 'workspace' }">
-            <input v-model="installScope" type="radio" value="workspace">
-            <span class="sc-t">工作空间 <i>推荐</i></span>
-            <span class="sc-d">仅当前项目可用</span>
-            <span class="sc-p">.loop-agent/skills/</span>
-          </label>
-          <label class="sk-scope" :class="{ on: installScope === 'global' }">
-            <input v-model="installScope" type="radio" value="global">
-            <span class="sc-t">全局</span>
-            <span class="sc-d">所有项目可用</span>
-            <span class="sc-p">~/.loop-agent/skills/</span>
-          </label>
-        </div>
+        <div class="sk-lab">安装位置</div>
+        <div class="sk-install-dir"><code>{{ SKILLS_INSTALL_DIR }}</code><span>全局唯一，所有项目共用</span></div>
 
         <div class="sk-ovw-row">
           <label class="sk-chk"><input v-model="overwrite" type="checkbox"> 同名覆盖</label>
@@ -760,21 +722,6 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; flex: none;
 }
 
-.sk-seg { display: flex; gap: 2px; padding: 2px; background: var(--code-bg); border-radius: 9px; }
-.sk-seg button {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 28px; padding: 0 10px; border: none; border-radius: 7px;
-  background: transparent; color: var(--muted);
-  font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer;
-}
-.sk-seg button:hover { color: var(--text-2); background: transparent; border: none; }
-.sk-seg button.on { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .09); }
-.sk-seg .n {
-  font: 600 10px/14px var(--mono); color: var(--muted);
-  background: var(--panel); border-radius: 999px; padding: 0 5px; min-width: 16px; text-align: center;
-}
-.sk-seg button.on .n { color: var(--brand); background: var(--brand-weak); }
-
 .sk-sort {
   height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px;
   background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center;
@@ -799,9 +746,8 @@ onBeforeUnmount(() => {
   display: grid; place-items: center;
   font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: .04em; color: #fff;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 2px 7px -3px rgba(16, 24, 40, .35);
+  background: linear-gradient(135deg, #10b981, #0d9488);
 }
-.sk-tile.ws { background: linear-gradient(135deg, #10b981, #0d9488); }
-.sk-tile.gl { background: linear-gradient(135deg, #64748b, #475569); }
 .sk-id { flex: 1; min-width: 0; }
 .sk-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .sk-name { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
@@ -809,12 +755,9 @@ onBeforeUnmount(() => {
   display: inline-flex; align-items: center; gap: 5px;
   height: 19px; padding: 0 7px; border-radius: 999px;
   font-size: 10.5px; font-weight: 600; white-space: nowrap;
+  color: var(--muted); background: var(--code-bg);
 }
-.sk-badge i { width: 5px; height: 5px; border-radius: 50%; flex: none; }
-.sk-badge.ws { color: var(--brand); background: var(--brand-weak); }
-.sk-badge.ws i { background: var(--brand); }
-.sk-badge.gl { color: var(--muted); background: var(--code-bg); }
-.sk-badge.gl i { background: var(--muted); }
+.sk-badge i { width: 5px; height: 5px; border-radius: 50%; flex: none; background: var(--muted); }
 .sk-path { display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 3px; font: 400 11px/1.45 var(--mono); color: var(--muted); }
 .sk-path svg { width: 11px; height: 11px; flex: none; opacity: .75; }
 .sk-path span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1021,22 +964,13 @@ onBeforeUnmount(() => {
 .mf-main b { display: block; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
 .mf-main small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
 
-.sk-scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.sk-scope {
-  position: relative; display: block; padding: 11px 12px;
-  border: 1px solid var(--line); border-radius: 10px;
-  background: var(--panel); cursor: pointer; transition: border-color .12s, background .12s;
+.sk-install-dir {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel);
 }
-.sk-scope:hover { border-color: var(--line-strong); }
-.sk-scope.on { border-color: var(--brand); background: var(--brand-weak); box-shadow: 0 0 0 1px var(--brand) inset; }
-.sk-scope input { position: absolute; opacity: 0; pointer-events: none; }
-.sc-t { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
-.sc-t i {
-  font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--brand);
-  background: var(--panel); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 6px;
-}
-.sc-d { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
-.sc-p { display: block; margin-top: 6px; font: 400 10.5px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.sk-install-dir code { font: 400 11.5px/1.5 var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
+.sk-install-dir span { font-size: 11px; color: var(--muted); }
 .sk-ovw-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 13px; }
 .sk-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); cursor: pointer; }
 .sk-chk input { accent-color: var(--brand); cursor: pointer; }
@@ -1056,7 +990,7 @@ onBeforeUnmount(() => {
 .sk-prog.indet i { width: 38%; animation: sk-indet 1.1s ease-in-out infinite; }
 @keyframes sk-indet { 0% { transform: translateX(-40%); } 100% { transform: translateX(300%); } }
 .sk-prog-note { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
-@media (max-width: 520px) { .sk-scope-grid { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .sk-install-dir { flex-direction: column; align-items: flex-start; gap: 4px; } }
 
 /* ===== 卸载确认 ===== */
 .sk-cfm {

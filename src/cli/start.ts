@@ -41,6 +41,7 @@ import { initAgentMemory, type RuntimeContext } from '../runtime/init.js';
 import { AgentAbortedError, type ChatMessage } from '../types.js';
 import { sealPendingToolCalls } from '../agent/abort-utils.js';
 import { subAgentRegistry } from '../agent/subagent-registry.js';
+import { getJob, listJobs } from '../background/jobs.js';
 import { decideSigint, resolveExitArm, EXIT_WINDOW_MS } from './interrupt.js';
 
 /** 打印启动横幅与使用说明 */
@@ -122,7 +123,7 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
             const data = await sessionStore.loadSession(latest.id);
 
             // 构建 system prompt
-            const skills = cfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
+            const skills = cfg.skill.enabled ? skillLoader.scan() : [];
             const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills);
 
             // 使用 restoreSession 方法（支持分层存储）
@@ -440,6 +441,53 @@ export async function startCli({ config: cfg }: RuntimeContext): Promise<void> {
 
     if (lower === '/status') {
       printStatus();
+      safePrompt();
+      return;
+    }
+
+    // 需求 20261112-006：/jobs 统一查看命令任务与后台子任务（/subagent 保留）
+    if (lower === '/jobs') {
+      const jobs = listJobs({
+        sessionId: agent.currentSessionId ?? undefined,
+        includeUnowned: true,
+        limit: 20,
+      });
+      if (jobs.length === 0) {
+        console.log(`${C.gray}当前会话没有后台任务${C.reset}`);
+      } else {
+        console.log(`${C.bold}后台任务（${jobs.length}）${C.reset}`);
+        for (const j of jobs) {
+          const kind = j.kind === 'command' ? '命令' : '子任务';
+          const secs = `${Math.max(0, Math.round((j.elapsedMs ?? 0) / 1000))}s`;
+          console.log(`  ${j.id}  [${j.status}]  ${kind}  ${secs}  ${j.title.slice(0, 60)}`);
+        }
+        console.log(`${C.gray}用 /jobs show <taskId> 查看摘要；子任务详情仍可用 /subagent show${C.reset}`);
+      }
+      safePrompt();
+      return;
+    }
+
+    if (lower.startsWith('/jobs show ')) {
+      const taskId = input.replace(/^\/jobs show /i, '').trim();
+      const job = getJob(taskId);
+      if (!job) {
+        console.log(`${C.yellow}未找到后台任务 ${taskId}${C.reset}`);
+      } else {
+        const kind = job.kind === 'command' ? '命令' : '子任务';
+        console.log(
+          `${C.bold}${job.id}${C.reset} [${job.status}] ${kind} · ${job.title}\n` +
+            `${C.gray}耗时 ${Math.round((job.elapsedMs ?? 0) / 1000)}s` +
+            `${job.iterations !== undefined ? ` · 轮次 ${job.iterations}` : ''}` +
+            `${job.sessionId ? ` · 会话 ${job.sessionId}` : ' · 无归属'}` +
+            `${C.reset}`,
+        );
+        if (job.error) console.log(`${C.red}错误：${job.error}${C.reset}`);
+        if (job.kind === 'command') {
+          console.log(`${C.gray}日志可用 commandLogs 或在 WebUI 卡片中查看；停止用 commandStop${C.reset}`);
+        } else {
+          console.log(`${C.gray}完整结果由完成通知投递；过程详情用 /subagent show ${job.id}${C.reset}`);
+        }
+      }
       safePrompt();
       return;
     }

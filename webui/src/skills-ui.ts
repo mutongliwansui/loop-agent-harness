@@ -1,5 +1,6 @@
 // 技能页纯逻辑（原型-20261109-001 D1/D4/D8）
-// 仅放可单测的纯函数：搜索过滤、来源筛选计数、排序、关键字高亮分段、zip 前置校验。
+// 仅放可单测的纯函数：搜索过滤、排序、关键字高亮分段、zip 前置校验。
+// 需求 20261112-008：skill 只剩全局一份，来源筛选/来源文案相关函数已移除。
 // 视图层（SkillsView.vue）只负责渲染与 API 调用，不重复实现这些规则。
 
 export interface SkillRow {
@@ -9,21 +10,13 @@ export interface SkillRow {
   path: string;
 }
 
-export type ScopeTab = 'all' | 'workspace' | 'global';
-export type SortMode = 'scope' | 'name';
+export type SortMode = 'name';
 
 /** 上传 zip 包大小上限（与后端 UPLOAD_MAX_TOTAL_BYTES 一致） */
 export const UPLOAD_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
-/** 来源文案：workspace → 工作空间，其余按全局处理 */
-export function scopeLabel(scope: string): string {
-  return scope === 'workspace' ? '工作空间' : '全局';
-}
-
-/** 来源用途说明（卡片底栏；与安装模态的说明一致） */
-export function scopeHint(scope: string): string {
-  return scope === 'workspace' ? '当前项目可用' : '所有项目可用';
-}
+/** 唯一安装位置（全局；展示用） */
+export const SKILLS_INSTALL_DIR = '~/.loop-agent/skills/';
 
 /** 卡片渐变图标文字：取前两个词首字母，单词名取前两位；空名返回 ? */
 export function skillInitials(name: string): string {
@@ -46,29 +39,16 @@ export function matchSkill(s: SkillRow, query: string): boolean {
   return [s.name, s.description, s.path].some((v) => v.toLowerCase().includes(q));
 }
 
-/** 来源筛选 + 关键字过滤（顺序保持入参顺序，排序由 sortSkills 负责） */
-export function filterSkills(rows: SkillRow[], query: string, tab: ScopeTab): SkillRow[] {
-  return rows.filter((r) => (tab === 'all' || r.scope === tab) && matchSkill(r, query));
+/** 关键字过滤（顺序保持入参顺序，排序由 sortSkills 负责） */
+export function filterSkills(rows: SkillRow[], query: string): SkillRow[] {
+  return rows.filter((r) => matchSkill(r, query));
 }
 
-/** scope：工作空间优先再按名称；name：仅按名称 A→Z（localeCompare 稳定） */
+/** name：按名称 A→Z（localeCompare 稳定） */
 export function sortSkills(rows: SkillRow[], mode: SortMode): SkillRow[] {
   const copy = [...rows];
   if (mode === 'name') return copy.sort((a, b) => a.name.localeCompare(b.name));
-  return copy.sort((a, b) => {
-    const ra = a.scope === 'workspace' ? 0 : 1;
-    const rb = b.scope === 'workspace' ? 0 : 1;
-    return ra - rb || a.name.localeCompare(b.name);
-  });
-}
-
-/** 来源分段计数（全量口径，不随搜索变化；与原型统计条一致） */
-export function scopeCounts(rows: SkillRow[]): Record<ScopeTab, number> {
-  return {
-    all: rows.length,
-    workspace: rows.filter((r) => r.scope === 'workspace').length,
-    global: rows.filter((r) => r.scope !== 'workspace').length,
-  };
+  return copy;
 }
 
 export interface Segment {

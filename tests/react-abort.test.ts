@@ -54,9 +54,9 @@ function msg(role: ChatMessage['role'], content: string): ChatMessage {
 /** 写入 workspace 配置（memory.enabled=true，maxTokens 小以稳定触发压缩） */
 function writeWorkspaceConfig(wsDir: string, flushFailure: 'skip' | 'archive' = 'skip'): string {
   const episodicDir = join(wsDir, 'l2');
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -175,7 +175,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
     ]);
     registerTestTool('abort_probe_echo', async () => 'ok');
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -210,7 +210,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
       }),
     );
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -253,7 +253,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
       yield { type: 'done', response: { content: '不应到达', finish_reason: 'stop' } };
     });
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -299,7 +299,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
     ]);
     registerTestTool('abort_probe_echo', async () => 'ok');
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -330,7 +330,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
     const episodicDir = writeWorkspaceConfig(wsDir);
     scriptMainCalls([{ content: '这是最终回答' }]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -359,7 +359,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
     writeWorkspaceConfig(wsDir);
     scriptMainCalls([{ content: '正常完成' }]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -379,7 +379,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
       throw new AgentAbortedError({ messages: [], transcript: [], steps: [], iterations: 0 });
     });
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -412,7 +412,7 @@ describe('ReAct 循环取消（Task-20261021-002-02）', () => {
     writeWorkspaceConfig(wsDir);
     scriptMainCalls([{ content: '完成' }]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 

@@ -29,13 +29,14 @@ describe('buildSystemPrompt 的 Skill 区块', () => {
     expect(p).toContain('检索文件系统');
   });
 
-  it('有技能时列出技能名称、描述与作用域', () => {
+  it('有技能时列出技能名称、描述与作用域（恒为全局）', () => {
     const p = buildSystemPrompt([
       meta('alpha', '处理甲事务', 'global'),
-      meta('beta', '处理乙事务', 'workspace'),
+      meta('beta', '处理乙事务', 'global'),
     ]);
     expect(p).toContain('- **alpha**: 处理甲事务 (全局)');
-    expect(p).toContain('- **beta**: 处理乙事务 (工作空间)');
+    expect(p).toContain('- **beta**: 处理乙事务 (全局)');
+    expect(p).not.toContain('(工作空间)');
     expect(p).toContain('以上即为当前全部可用 Skill');
   });
 

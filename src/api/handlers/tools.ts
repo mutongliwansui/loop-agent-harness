@@ -13,7 +13,7 @@ import { readJsonBody, sendJson } from '../http-utils.js';
 import { BUILTIN_TOOL_MAP, BUILTIN_TOOL_NAMES } from '../../commands/tools-command.js';
 import { registerBuiltinTools } from '../../tools/index.js';
 import { registry } from '../../tools/registry.js';
-import { parseScope } from './config.js';
+import { assertGlobalScope } from './config.js';
 
 import { VISION_TOOL_NAMES } from '../../tools/vision/tools.js';
 import { shouldRegisterOcrTools } from '../../tools/index.js';
@@ -106,7 +106,7 @@ async function handlePatchTool(
   if (typeof body.enabled !== 'boolean') {
     throw new ApiHttpError('bad_request', '请求体必须包含 enabled 布尔字段');
   }
-  const scope = parseScope(body.scope);
+  assertGlobalScope(body.scope);
   const enable = body.enabled;
 
   const { config: cfg } = ctx.configLoader.load();
@@ -123,7 +123,7 @@ async function handlePatchTool(
     if (!disabled.includes(name)) disabled.push(name);
   }
 
-  await ctx.configWriter.updateScope(scope, { tools: { enabled, disabled } });
+  await ctx.configWriter.update({ tools: { enabled, disabled } });
 
   // registry 同步（与 CLI /tools enable|disable 一致，运行时立即生效）
   if (enable) {
@@ -132,8 +132,8 @@ async function handlePatchTool(
   } else if (registry.has(name)) {
     registry.unregister(name);
   }
-  ctx.log(`[api] 工具已${enable ? '启用' : '禁用'}（${scope}）: ${name}`);
-  sendJson(res, 200, { name, enabled: enable, scope });
+  ctx.log(`[api] 工具已${enable ? '启用' : '禁用'}（global）: ${name}`);
+  sendJson(res, 200, { name, enabled: enable, scope: 'global' });
 }
 
 /** POST /tools/reload：重载全部工具（清空 registry → 重注册内置 → 重连 MCP） */

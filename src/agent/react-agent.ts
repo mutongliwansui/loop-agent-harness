@@ -643,8 +643,8 @@ export class ReActAgent {
     // 本 run 内所有记忆读写、工具 ctx、后台通知一律使用该局部值，不再散读实例字段。
     const sessionId = options.sessionId ?? this._currentSessionId ?? null;
 
-    // 自定义 system prompt 覆盖（技能扫描与提示词环境信息均按空间根，不再依赖进程 cwd）
-    const skills = cfg.skill.enabled ? skillLoader.scan(wsRoot) : [];
+    // 需求 20261112-008：skill 只扫全局目录（与空间无关，结果全局一致）
+    const skills = cfg.skill.enabled ? skillLoader.scan() : [];
     const systemPrompt = cfg.agent.systemPrompt ?? buildSystemPrompt(skills, wsRoot, cfg.vision.enabled);
 
     // 组装事件监听器：默认 ConsoleLogger + 用户自定义

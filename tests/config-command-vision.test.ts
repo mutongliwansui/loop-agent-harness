@@ -1,15 +1,18 @@
 /**
  * /config set|delete vision.enabled 自动同步视觉工具注册单测
  * 覆盖：开启即注册、关闭即注销、重复开启不重复注册、删除回退即注销、其他键不触碰注册表、写入失败不同步
+ *
+ * 需求 20261112-008（D2）：配置一律全局，CommandContext.configWriter 的写接口收敛为
+ * update(partial) / deleteKey(path)（原 updateScope / deleteScopeKey 已移除）。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CommandContext } from '../src/commands/registry.js';
 import type { AgentConfig, ToolsConfig, VisionConfig } from '../src/config/schema.js';
 
-const { loadMock, updateScopeMock, deleteScopeKeyMock } = vi.hoisted(() => ({
+const { loadMock, updateMock, deleteKeyMock } = vi.hoisted(() => ({
   loadMock: vi.fn(),
-  updateScopeMock: vi.fn(),
-  deleteScopeKeyMock: vi.fn(),
+  updateMock: vi.fn(),
+  deleteKeyMock: vi.fn(),
 }));
 
 vi.mock('../src/config/index.js', () => ({
@@ -64,7 +67,7 @@ function makeCtx(): { ctx: CommandContext; lines: string[] } {
   const lines: string[] = [];
   const ctx = {
     configLoader: { load: loadMock },
-    configWriter: { updateScope: updateScopeMock, deleteScopeKey: deleteScopeKeyMock },
+    configWriter: { update: updateMock, deleteKey: deleteKeyMock },
     registry,
     out: {
       log: (s: string) => lines.push(s),
@@ -83,10 +86,10 @@ function logsOf(lines: string[]): string {
 beforeEach(() => {
   registry.clear();
   loadMock.mockReset();
-  updateScopeMock.mockReset();
-  updateScopeMock.mockResolvedValue(undefined);
-  deleteScopeKeyMock.mockReset();
-  deleteScopeKeyMock.mockResolvedValue(undefined);
+  updateMock.mockReset();
+  updateMock.mockResolvedValue(undefined);
+  deleteKeyMock.mockReset();
+  deleteKeyMock.mockResolvedValue(undefined);
 });
 
 describe('/config set vision.enabled 自动同步注册', () => {
@@ -99,7 +102,7 @@ describe('/config set vision.enabled 自动同步注册', () => {
     const { ctx, lines } = makeCtx();
     await configCommand.execute('/config set vision.enabled true', ctx);
 
-    expect(updateScopeMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).toHaveBeenCalledTimes(1);
     expect(VISION_TOOL_NAMES.every((n) => registry.has(n))).toBe(true);
     expect(logsOf(lines)).toContain('已自动注册视觉工具: analyzeImage');
   });
@@ -130,6 +133,15 @@ describe('/config set vision.enabled 自动同步注册', () => {
     expect(registry.list().length).toBe(countBefore);
     expect(logsOf(lines)).not.toContain('已自动注册视觉工具');
   });
+
+  it('set 写入全局（不再接受 --workspace，命令被拒且不写盘）', async () => {
+    mockConfig(true);
+    const { ctx, lines } = makeCtx();
+    await configCommand.execute('/config set vision.enabled true --workspace', ctx);
+
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(logsOf(lines)).toContain('--workspace');
+  });
 });
 
 describe('/config delete vision.enabled 自动同步注册', () => {
@@ -141,7 +153,7 @@ describe('/config delete vision.enabled 自动同步注册', () => {
     const { ctx, lines } = makeCtx();
     await configCommand.execute('/config delete vision.enabled', ctx);
 
-    expect(deleteScopeKeyMock).toHaveBeenCalledTimes(1);
+    expect(deleteKeyMock).toHaveBeenCalledTimes(1);
     expect(VISION_TOOL_NAMES.every((n) => !registry.has(n))).toBe(true);
     expect(logsOf(lines)).toContain('已自动注销视觉工具');
   });
@@ -159,11 +171,11 @@ describe('不相关操作不触碰注册表', () => {
     expect(registry.list().map((t) => t.name).sort()).toEqual(namesBefore);
   });
 
-  it('写入失败（updateScope 抛错）时不同步注册表', async () => {
+  it('写入失败（update 抛错）时不同步注册表', async () => {
     mockConfig(true);
     registerBuiltinTools(toolsCfg(), vision(false));
 
-    updateScopeMock.mockRejectedValueOnce(new Error('磁盘写入失败'));
+    updateMock.mockRejectedValueOnce(new Error('磁盘写入失败'));
     const { ctx } = makeCtx();
     await configCommand.execute('/config set vision.enabled true', ctx);
 

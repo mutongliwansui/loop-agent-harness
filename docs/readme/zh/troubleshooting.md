@@ -68,7 +68,7 @@
 错误：Skill "xxx" 未找到。可用的 Skill: ...
 ```
 
-**解决**：确认 Skill 已放入 `~/.loop-agent/skills/`（全局）或 `<cwd>/.loop-agent/skills/`（工作空间），且 `SKILL.md` 包含合法的 `name` 和 `description` frontmatter。通过 `/skill list` 查看扫描结果，`/skill reload` 重新扫描。
+**解决**：确认 Skill 已放入 `~/.loop-agent/skills/`（自需求 20261112-008 起为唯一 Skill 目录，工作空间目录不再扫描），且 `SKILL.md` 包含合法的 `name` 和 `description` frontmatter。通过 `/skill list` 查看扫描结果，`/skill reload` 重新扫描。
 
 ### 记忆系统未启用
 
@@ -76,7 +76,7 @@
 ⚠ 记忆系统未启用，请在配置中设置 memory.enabled=true
 ```
 
-**解决**：通过 `/config set memory.enabled true` 开启，或直接编辑 `.loop-agent/.agent-config.json`。`/memory status` 可查看当前启用状态与各层统计。
+**解决**：通过 `/config set memory.enabled true` 开启，或直接编辑 `~/.loop-agent/config.json`。`/memory status` 可查看当前启用状态与各层统计。
 
 ### 会话无法加载 / 解密失败
 

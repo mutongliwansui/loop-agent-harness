@@ -62,8 +62,8 @@ beforeAll(async () => {
   await store.init();
 
   const config: AgentConfig = { ...structuredClone(DEFAULT_CONFIG), api: { ...DEFAULT_CONFIG.api, port: 0 } };
-  const testLoader = new ConfigLoader(TEST_WORKSPACE, TEST_GLOBAL_DIR);
-  const testWriter = new ConfigWriter(TEST_WORKSPACE, TEST_GLOBAL_DIR, testLoader);
+  const testLoader = new ConfigLoader(TEST_GLOBAL_DIR);
+  const testWriter = new ConfigWriter(TEST_GLOBAL_DIR, testLoader);
 
   const api = createApiServer({
     runAgent: async () => { throw new Error('本套件不触达 runAgent'); },
@@ -90,8 +90,21 @@ afterAll(async () => {
   await server.close();
 });
 
+/**
+ * 需求 20261113-001 D7：`/fs/*` 端点已改为「缺 ws 一律 400」，不再隐式回落最近使用空间。
+ * 这里统一注入 ws=TEST_WORKSPACE，用例本身不逐条补参——
+ * 逐例手工补 55 处极易漏改，且漏改者会因「回归到 400」而**静默变形**（测试仍绿但语义已变）。
+ * 已显式带 ws 的调用（如 `?ws=B`）原样透传，不覆盖。
+ */
+const DEFAULT_WS = `ws=${encodeURIComponent(TEST_WORKSPACE)}`;
+function withWs(path: string): string {
+  if (!path.startsWith('/fs/') || /[?&]ws=/.test(path)) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}${DEFAULT_WS}`;
+}
+
 async function req(path: string): Promise<Res> {
-  return fetch(`${base}${path}`);
+  return fetch(`${base}${withWs(path)}`);
 }
 
 interface FsNode {
@@ -416,9 +429,13 @@ describe('GET /fs/*?ws=（显式指定工作空间根）', () => {
     expect(body.error.message).toContain('未知工作空间');
   });
 
-  it('缺省 ?ws=：回落启动空间，既有行为不变', async () => {
-    const body = (await (await req('/fs/tree')).json()) as { root: string };
-    expect(body.root).toBe(TEST_WORKSPACE);
+  it('缺 ?ws= → 400 bad_request（需求 20261113-001 D2：不再隐式回落）', async () => {
+    // 直接用 fetch 绕过 withWs，验证「真的没有 ws」时的行为
+    const res = await fetch(`${base}/fs/tree`);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('bad_request');
+    expect(body.error.message).toContain('ws');
   });
 });
 
@@ -498,9 +515,9 @@ describe('GET /fs/fingerprint（目录变更指纹）', () => {
 
 // ===== 6. 写操作与下载（优化建议 20261021-005） =====
 
-/** JSON / 无体请求辅助 */
+/** JSON / 无体请求辅助（/fs/* 统一注入 ws，见 withWs） */
 async function call(method: string, path: string, body?: unknown): Promise<Res> {
-  return fetch(`${base}${path}`, {
+  return fetch(`${base}${withWs(path)}`, {
     method,
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -624,7 +641,8 @@ describe('POST /fs/upload（原始字节上传）', () => {
     const headers: Record<string, string> = { 'x-file-name': encodeURIComponent(fileName) };
     if (extra.rel) headers['x-relative-path'] = encodeURIComponent(extra.rel);
     if (extra.conflict) headers['x-conflict'] = extra.conflict;
-    const ws = extra.ws ? `&ws=${encodeURIComponent(extra.ws)}` : '';
+    // 缺省注入当前测试空间；显式 extra.ws（如 ws=B 用例）优先
+    const ws = `&ws=${encodeURIComponent(extra.ws ?? TEST_WORKSPACE)}`;
     return fetch(`${base}/fs/upload?path=${encodeURIComponent(targetDir)}${ws}`, {
       method: 'POST',
       headers,
@@ -669,8 +687,9 @@ describe('POST /fs/upload（原始字节上传）', () => {
   });
 
   it('校验：缺 X-File-Name 400、目标目录不存在 404、相对路径非法 400/403', async () => {
-    const noName = await fetch(`${base}/fs/upload?path=`, { method: 'POST', body: 'x' });
+    const noName = await fetch(`${base}/fs/upload?path=&${DEFAULT_WS}`, { method: 'POST', body: 'x' });
     expect(noName.status).toBe(400);
+    expect(((await noName.json()) as { error: { message: string } }).error.message).toContain('X-File-Name');
     expect((await upload('no-such-dir', 'a.txt', 'x')).status).toBe(404);
     expect(
       (await upload('', 'a.txt', 'x', { rel: '../escape.txt', conflict: 'rename' })).status,

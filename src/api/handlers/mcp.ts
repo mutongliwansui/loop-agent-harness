@@ -13,7 +13,7 @@ import { getMcpMonitor } from '../../config/mcp-monitor.js';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
-import { parseScope, queryScope } from './config.js';
+import { assertGlobalScope, queryScope } from './config.js';
 
 /** 从合并配置取指定 server（不存在 → 404） */
 function requireServerCfg(ctx: HandlerContext, name: string): MCPServerConfig {
@@ -41,7 +41,8 @@ async function handleListServers(ctx: HandlerContext, _req: IncomingMessage, res
       name,
       transport: s.type,
       // D9：来源范围随列表返回，前端据此显示徽标并默认移除范围
-      scope: sources[`tools.mcpServers.${name}`] === 'global' ? 'global' : 'workspace',
+      // 需求 20261112-008：配置只剩全局一份，scope 恒为 global
+      scope: 'global',
       status: connected.has(name) ? 'connected' : 'disconnected',
       toolCount: toolCountFor(name),
       // connecting/failed 时 status 仍是 disconnected，这两个字段用于排障与前端提示
@@ -122,18 +123,18 @@ async function handleCreateServer(
   const body = await readJsonBody(req);
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const server = parseServerBody(body);
-  const scope = parseScope(body.scope);
+  assertGlobalScope(body.scope);
 
   const { config: cfg } = ctx.configLoader.load();
   if (cfg.tools.mcpServers[name] !== undefined) {
     throw new ApiHttpError('conflict', `MCP server「${name}」已存在。如需修改可先 DELETE /mcp/servers/${name} 再重新登记`);
   }
 
-  await ctx.configWriter.updateScope(scope, { tools: { mcpServers: { [name]: server } } });
+  await ctx.configWriter.update({ tools: { mcpServers: { [name]: server } } });
   try {
     const tools = await ctx.mcpManager.loadServer(name, server);
-    ctx.log(`[api] MCP server 已登记并连接（${scope}）: ${name}（${tools.length} 个工具）`);
-    sendJson(res, 201, { name, scope, transport: server.type, status: 'connected', toolCount: tools.length });
+    ctx.log(`[api] MCP server 已登记并连接（global）: ${name}（${tools.length} 个工具）`);
+    sendJson(res, 201, { name, scope: 'global', transport: server.type, status: 'connected', toolCount: tools.length });
   } catch (e) {
     // 配置已落盘但连接失败：502 + message 附 status（§五边界）
     const msg = e instanceof Error ? e.message : String(e);
@@ -148,19 +149,16 @@ async function handleDeleteServer(
   res: ServerResponse,
   name: string,
 ): Promise<void> {
-  const scope = parseScope(queryScope(req));
-  // 按所选范围判断是否存在：合并配置里有但该层没有时 deleted:false，
-  // 避免旧版「工作空间默认范围删全局 server」误报成功（也不应提前断连）
-  const layer = scope === 'global'
-    ? await ctx.configLoader.loadGlobal()
-    : await ctx.configLoader.loadWorkspace();
+  assertGlobalScope(queryScope(req));
+  // 配置只剩全局一份，直接判定全局是否存在（旧版「按范围判存在」的双层逻辑已无用）
+  const layer = await ctx.configLoader.loadGlobal();
   const existed = layer.tools?.mcpServers?.[name] !== undefined;
   if (existed) {
     await ctx.mcpManager.unloadServer(name);
-    await ctx.configWriter.deleteScopeKey(scope, ['tools', 'mcpServers', name]);
-    ctx.log(`[api] MCP server 已断连并移除（${scope}）: ${name}`);
+    await ctx.configWriter.deleteKey(['tools', 'mcpServers', name]);
+    ctx.log(`[api] MCP server 已断连并移除（global）: ${name}`);
   }
-  sendJson(res, 200, { name, scope, deleted: existed });
+  sendJson(res, 200, { name, scope: 'global', deleted: existed });
 }
 
 /** POST /mcp/reload：全部断连重连（热更新）；failed 提取 server 名 */

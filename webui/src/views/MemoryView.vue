@@ -10,7 +10,7 @@
 // 标签页状态（tab/ws）进 hash query（D1：`#/memory?tab=l2&ws=<id>`），刷新/分享可还原。
 // L2 条目头解析与三级筛选在前端进行（D3，见 memory-entries.ts）；
 // L3 空间切换只重取工作空间级文件，SOUL/USER 全局区不随动（D9）；
-// 检索本期仅缺省空间（D10）。
+// 检索本期仅启动空间（D10）。
 import { computed, onMounted, ref, watch } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { showToast } from '../toast';
@@ -63,7 +63,7 @@ const busy = ref(false);
 const histBusy = ref(false);
 const histScope = ref<'all' | 'ws'>('all');
 const runs = ref<HistoryRow[]>([]);
-const l2TotalAll = ref(0); // 仅用于标签页上的条目计数（缺省空间 7 天）
+const l2TotalAll = ref(0); // 仅用于标签页上的条目计数（启动空间 7 天）
 
 /** 当前激活标签页（hash ?tab= 还原；非法值回落 sched） */
 const tab = computed<TabKey>(() => {
@@ -152,7 +152,7 @@ async function onScheduleSaved(): Promise<void> {
 
 const epi = ref<{ entries: { day: string; content: string }[] } | null>(null);
 const epiLoading = ref(false);
-const l2Ws = ref(''); // ''= 缺省空间（最近使用；缺省请求不带 ws）
+const l2Ws = ref(''); // ''= 启动空间（缺省请求不带 ws）
 const l2Session = ref('');
 const l2Scope = ref<'' | 'session' | 'global'>('');
 const l2Tag = ref('');
@@ -175,12 +175,12 @@ function wsLabel(w: MemWorkspace): string {
   return `${w.name}（${flags || '未知'}）`;
 }
 
-/** 按 id 找空间（缺省空间缺省项的展示名） */
+/** 按 id 找空间（启动空间缺省项的展示名） */
 function wsById(id: string): MemWorkspace | undefined {
   return workspaces.value.find((w) => w.id === id);
 }
 
-const l2WsName = computed(() => (l2Ws.value ? (wsById(l2Ws.value)?.name ?? l2Ws.value.slice(0, 8)) : '缺省空间'));
+const l2WsName = computed(() => (l2Ws.value ? (wsById(l2Ws.value)?.name ?? l2Ws.value.slice(0, 8)) : '启动空间'));
 
 async function loadEpisodic(): Promise<void> {
   epiLoading.value = true;
@@ -238,7 +238,7 @@ const l3Ws = ref(''); // ''= 启动空间（缺省请求）
 const l3Loading = ref(false);
 
 const l3WsOptions = computed(() => workspaces.value.filter((w) => w.hasMemory || w.path));
-const l3WsName = computed(() => (l3Ws.value ? (wsById(l3Ws.value)?.name ?? l3Ws.value.slice(0, 8)) : '缺省空间'));
+const l3WsName = computed(() => (l3Ws.value ? (wsById(l3Ws.value)?.name ?? l3Ws.value.slice(0, 8)) : '启动空间'));
 
 /** 启动空间走缺省请求（现行为不变）；其余空间带 ?ws= 直读 */
 async function loadCurated(): Promise<void> {
@@ -261,7 +261,7 @@ function onL3WsChange(): void {
   void loadCurated();
 }
 
-// ---------- 检索页（D10：本期仅缺省空间） ----------
+// ---------- 检索页（D10：本期仅启动空间） ----------
 
 const searchQ = ref('');
 const searching = ref(false);
@@ -507,7 +507,7 @@ onMounted(refresh);
             <span class="fl">空间</span>
             <span class="sel-wrap">
               <select v-model="l2Ws" :disabled="epiLoading" @change="loadEpisodic(); onL2WsHash()">
-                <option value="">缺省空间（{{ l2WsName === '缺省空间' ? '最近使用' : l2WsName }}）</option>
+                <option value="">启动空间（缺省）</option>
                 <option v-for="w in workspaces" :key="w.id" :value="w.id">{{ wsLabel(w) }}</option>
               </select>
             </span>
@@ -585,7 +585,7 @@ onMounted(refresh);
           <span class="spacer"></span>
           <span class="sel-wrap">
             <select v-model="l3Ws" style="max-width:340px" title="切换工作空间（SOUL/USER 不受影响）" @change="onL3WsChange">
-              <option value="">缺省空间（{{ l3WsName }}）</option>
+              <option value="">启动空间（缺省）</option>
               <option v-for="w in l3WsOptions" :key="w.id" :value="w.id">{{ wsLabel(w) }}</option>
             </select>
           </span>
@@ -632,7 +632,7 @@ onMounted(refresh);
         <div class="card-h">
           语义检索 <span class="ch-hint">L2 向量 + 关键词混合检索</span>
           <span class="spacer"></span>
-          <StatusBadge kind="dim">缺省空间</StatusBadge>
+          <StatusBadge kind="dim">启动空间</StatusBadge>
           <StatusBadge kind="dim">GET /memory/search</StatusBadge>
         </div>
         <div class="card-b">

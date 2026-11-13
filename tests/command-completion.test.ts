@@ -201,16 +201,13 @@ describe('真实命令的 subcommands 声明与二级补全', () => {
     expect(completeCommandLine('/doctor l', r)).toEqual([[], '/doctor l']);
   });
 
-  it('P1 引导命令：/se 候选含 /setup，二级列出 --global/--workspace', () => {
+  // 需求 20261112-008：写入层收敛为全局，--global/--workspace 已从 /setup 移除，仅剩 help
+  it('P1 引导命令：/se 候选含 /setup，二级只剩 help', () => {
     const r = new CommandRegistry();
     for (const c of REAL_COMMANDS) r.register(c);
     expect(completeCommandLine('/se', r)[0]).toContain('/setup');
-    expect(completeCommandLine('/setup ', r)[0]).toEqual([
-      '/setup --global',
-      '/setup --workspace',
-      '/setup help',
-    ]);
-    expect(completeCommandLine('/setup --g', r)).toEqual([['/setup --global'], '/setup --g']);
+    expect(completeCommandLine('/setup ', r)[0]).toEqual(['/setup help']);
+    expect(completeCommandLine('/setup --g', r)).toEqual([[], '/setup --g']);
   });
 });
 

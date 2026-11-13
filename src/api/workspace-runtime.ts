@@ -19,11 +19,9 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { AgentPool } from '../agent/agent-pool.js';
-import { ConfigLoader } from '../config/loader.js';
-import { ConfigWriter } from '../config/writer.js';
+import { configLoader as defaultConfigLoader } from '../config/loader.js';
 import { canonicalWorkspacePath } from '../session/path-utils.js';
 import { SessionStore, workspaceId } from '../session/index.js';
-import { SkillLoader } from '../skill/loader.js';
 import { runWithWorkspace } from '../runtime/workspace-context.js';
 import { debug } from '../debug.js';
 import type { AgentOptions, AgentResult } from '../types.js';
@@ -46,13 +44,8 @@ export interface WorkspaceRuntime {
   /** workspaceId(root)：会话目录名，公式未变（D2） */
   readonly id: string;
   readonly store: SessionStore;
-  /** workspace 层指向 root 的独立加载器（构造期定根，运行期不改写） */
-  readonly configLoader: ConfigLoader;
-  readonly configWriter: ConfigWriter;
   /** 本空间的会话缓存与互斥状态（hasInFlight 即"本空间是否有 run"） */
   readonly sessions: SessionManager;
-  /** 本空间的技能加载器（实例级 Map 隔离，避免两空间 scan 互相覆盖，D14） */
-  readonly skillLoader: SkillLoader;
   /** 本空间的 agent 实例池（每空间一池） */
   readonly pool: AgentPool;
   /** 本空间共享记忆 kit（按 workspaceId 缓存，池内实例共享） */
@@ -273,17 +266,14 @@ export class WorkspaceRegistry {
 
   /** 建造一个 runtime：store 按 root 构造并 init（init 幂等），池钩子注入本空间共享 kit */
   private async build(root: string): Promise<WorkspaceRuntime> {
-    // 构造期定根（D7）：workspace 层永远指向本空间，运行期不改写
-    const configLoader = new ConfigLoader(root);
-    const { config: cfg } = configLoader.load();
+    // 需求 20261112-008（D8）：配置与 skill 收敛为进程级单例，runtime 不再持有
+    // ConfigLoader / ConfigWriter / SkillLoader —— 避免「指向某空间」的错觉，
+    // 且 MCP 连接数、skill 扫描次数从 O(空间数) 降为 O(1)。
+    const { config: cfg } = defaultConfigLoader.load();
     const store = new SessionStore(root, cfg.session.encryptionEnabled, this.userDir);
     await store.init();
 
-    const configWriter = new ConfigWriter(root, undefined, configLoader);
     const sessions = new SessionManager(store);
-    // 每 runtime 一个技能加载器（D14）：实例内 Map 不会被其他空间的 scan() 覆盖
-    const skillLoader = new SkillLoader();
-    if (cfg.skill.enabled && cfg.skill.autoLoad) skillLoader.scan(root);
     const id = workspaceId(root);
 
     // rt 自引用：initAgent 钩子需在实例创建后取其共享 kit（禁止每实例自建记忆）
@@ -305,10 +295,7 @@ export class WorkspaceRegistry {
       root,
       id,
       store,
-      configLoader,
-      configWriter,
       sessions,
-      skillLoader,
       pool,
       getMemoryKit: () => getMemoryKit(root),
       // run 全程处于本空间 ALS 上下文（漏传显式根的深层代码仍能取到正确的根）；

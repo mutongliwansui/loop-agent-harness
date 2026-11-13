@@ -1,13 +1,14 @@
 <script setup lang="ts">
 // 工具管理视图（原型-20261109-003 · 卡片流 + 抽屉 + 分段/排序/toggle + 视觉门控）
-// 端点：GET /tools · GET /tools/:name（schema）· PATCH /tools/:name {enabled, scope} · POST /tools/reload
+// 端点：GET /tools · GET /tools/:name（schema）· PATCH /tools/:name {enabled} · POST /tools/reload
 //      · GET /vision（门控 analyzeImage）；仅展示内置工具，MCP 工具归 MCP 服务器页
+// 需求 20261112-008：工具启停配置只剩全局一份，不再提供写入范围选择
 // 纯逻辑（家族/统计/筛选/排序/Schema 解析）见 ../tool-ui.ts
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { showToast } from '../toast';
 import { errText } from '../utils';
-import { highlightSegments, scopeLabel } from '../skills-ui';
+import { highlightSegments } from '../skills-ui';
 import {
   builtinTools,
   classifyFamily,
@@ -32,7 +33,6 @@ const visionReason = ref('');
 const loading = ref(true);
 const busy = ref(false);
 const loadErr = ref('');
-const scope = ref<'workspace' | 'global'>('workspace');
 const query = ref('');
 const tab = ref<ToolTab>('all');
 const sortMode = ref<ToolSort>('name');
@@ -129,7 +129,7 @@ async function toggle(t: ToolRow): Promise<void> {
   try {
     await api(`/tools/${encodeURIComponent(t.name)}`, {
       method: 'PATCH',
-      json: { enabled: next, scope: scope.value },
+      json: { enabled: next },
     });
     showToast(
       next
@@ -291,10 +291,6 @@ onBeforeUnmount(() => {
         <option value="family">按家族分组</option>
         <option value="disabled">禁用优先</option>
       </select>
-      <select v-model="scope" class="tl-scope" aria-label="写入范围">
-        <option value="workspace">写入：工作空间</option>
-        <option value="global">写入：全局</option>
-      </select>
       <span class="tl-count">{{ visibleList.length }} / {{ counts.total }} 个工具</span>
     </div>
 
@@ -387,8 +383,6 @@ onBeforeUnmount(() => {
 
         <div class="tl-foot">
           <span class="tl-meta">内置</span>
-          <span class="sep">·</span>
-          <span class="tl-meta">{{ scopeLabel(scope) }}</span>
           <span class="spring"></span>
           <button
             class="tl-toggle"
@@ -471,7 +465,7 @@ onBeforeUnmount(() => {
             <div class="tl-drv-sub">
               <span>内置工具</span>
               <span>·</span>
-              <span>scope: {{ scopeLabel(scope) }}</span>
+              <span>配置统一保存于全局</span>
             </div>
           </div>
           <button class="tl-close-btn" type="button" aria-label="关闭详情" @click="closeDrawer">
@@ -614,11 +608,6 @@ onBeforeUnmount(() => {
 .tl-seg button.on .n { color: var(--brand); background: var(--brand-weak); }
 
 .tl-sort {
-  height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px;
-  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center;
-  color: var(--text-2); font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer; appearance: none;
-}
-.tl-scope {
   height: 34px; padding: 0 26px 0 10px; border: 1px solid var(--line); border-radius: 9px;
   background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center;
   color: var(--text-2); font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer; appearance: none;
@@ -787,7 +776,6 @@ onBeforeUnmount(() => {
   .tl-head { flex-direction: column; align-items: flex-start; gap: 14px; }
   .tl-actions { margin-left: 0; width: 100%; }
   .tl-search { max-width: none; flex-basis: 100%; }
-  .tl-scope { margin-left: 0; width: 100%; }
   .tl-sort { width: 100%; }
   .tl-count { margin-left: 0; width: 100%; text-align: right; }
 }

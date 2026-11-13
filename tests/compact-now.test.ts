@@ -43,9 +43,11 @@ function writeWorkspaceConfig(
   opts: { flushFailure?: 'skip' | 'archive'; memoryEnabled?: boolean } = {},
 ): string {
   const episodicDir = join(wsDir, 'l2');
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  // 需求 20261112-008：配置只保留全局一份（ConfigLoader(globalDir) 读 <globalDir>/config.json）
+  const globalDir = join(wsDir, 'global');
+  mkdirSync(globalDir, { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(globalDir, 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -128,7 +130,7 @@ describe('ReActAgent.compactNow', () => {
   it('memory 未启用 → memory_disabled', async () => {
     const wsDir = join(BASE, 'disabled');
     writeWorkspaceConfig(wsDir, { memoryEnabled: false });
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     await agent.initMemory(wsDir);
     const r = await agent.compactNow(buildLongHistory());
     expect(r.ok).toBe(false);
@@ -140,7 +142,7 @@ describe('ReActAgent.compactNow', () => {
   it('无可丢弃消息 → nothing_to_compact 且不调用 LLM（D6）', async () => {
     const wsDir = join(BASE, 'nothing');
     writeWorkspaceConfig(wsDir);
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     await agent.initMemory(wsDir);
     const shortHistory: ChatMessage[] = [
       msg('user', '短问题'),
@@ -158,7 +160,7 @@ describe('ReActAgent.compactNow', () => {
   it('正常压缩：写 L2（compaction）+ 返回前后 token + 会话视图含摘要占位', async () => {
     const wsDir = join(BASE, 'success');
     const episodicDir = writeWorkspaceConfig(wsDir);
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     await agent.initMemory(wsDir);
     agent.setCurrentSessionId('sess_compact');
 
@@ -189,7 +191,7 @@ describe('ReActAgent.compactNow', () => {
   it('flush 失败 + skip → flush_failed，不落 L2，消息原样保留', async () => {
     const wsDir = join(BASE, 'flush-fail');
     const episodicDir = writeWorkspaceConfig(wsDir, { flushFailure: 'skip' });
-    const agent = new ReActAgent(new ConfigLoader(wsDir, join(wsDir, 'global')));
+    const agent = new ReActAgent(new ConfigLoader(join(wsDir, 'global')));
     await agent.initMemory(wsDir);
     agent.setCurrentSessionId('sess_flush_fail');
 

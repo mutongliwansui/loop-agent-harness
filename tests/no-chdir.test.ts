@@ -35,7 +35,7 @@ const CWD_ALLOWLIST = new Set([
   'tools/runner.ts',
   'tools/workspace-fs.ts',
   'agent/react-agent.ts',
-  'api/bootstrap.ts',       // 启动目录即初始空间
+  // 需求 20261113-001 D9：api/bootstrap.ts 的 process.cwd() 随 cwd 兜底退场（已无代码行）
   'config/mcp-manager.ts',  // MCP stdio cwd：配置值 ?? 启动目录（D19）
   // CLI 单空间红线（D11：src/cli/**、src/commands/** 零 diff，保留）
   'cli/start.ts',

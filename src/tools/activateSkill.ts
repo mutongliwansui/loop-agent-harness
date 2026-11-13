@@ -31,7 +31,8 @@ export const activateSkill: Tool = {
     }
 
     const { metadata } = content;
-    const scope = metadata.scope === 'workspace' ? '工作空间' : '全局';
+    // 需求 20261112-008：skill 只剩全局一份，作用域恒为全局
+    const scope = '全局';
 
     return [
       `【Skill: ${metadata.name}】`,

@@ -172,13 +172,13 @@ async function save(): Promise<void> {
       advanced.push(
         api('/config/memory.dreaming.daysBack', {
           method: 'PUT',
-          json: { value: daysBack.value, scope: 'workspace' },
+          json: { value: daysBack.value },
         }),
       );
     }
     if (onExit.value !== true) {
       advanced.push(
-        api('/config/memory.dreaming.onExit', { method: 'PUT', json: { value: onExit.value, scope: 'workspace' } }),
+        api('/config/memory.dreaming.onExit', { method: 'PUT', json: { value: onExit.value } }),
       );
     }
     if (advanced.length) await Promise.all(advanced);

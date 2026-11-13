@@ -149,8 +149,8 @@ WebUI「记忆」页按数据维度重组为四个标签页（`#/memory?tab=<key
 配套端点：
 
 - **`GET /memory/workspaces`**：聚合「有会话 ∪ 有记忆」的空间清单，返回 `{id, name, path, hasMemory, hasSession}[]`——会话侧来自 sessions 索引扫描，记忆侧来自 `{memoryDir}/*/` 目录扫描，仅有记忆的「孤儿空间」也会列出（供 L2/L3 空间下拉使用）。
-- **`GET /memory/episodic` / `GET /memory/curated` 支持 `?ws=<id 或绝对路径>`**：按空间直读记忆（走 WorkspaceRuntime 路由，canonical 校验，未知空间 404）；缺省回落**缺省空间（最近使用）**——需求 20261027-004 起不再绑定启动目录。
-- **`GET /memory/dream/history?scope=all|ws`**：`all` 时文件扫描聚合全部空间的 `.dreaming-runs.json`（不要求空间已装载），每条附 `workspaceId/workspaceName/workspacePath`；`ws`（缺省）= 缺省空间（最近使用）单文件读取。
+- **`GET /memory/episodic` / `GET /memory/curated` 支持 `?ws=<id 或绝对路径>`**：按空间直读记忆（走 WorkspaceRuntime 路由，canonical 校验，未知空间 404）；缺省回落**启动空间**（需求 20261113-001 起不再随最近使用漂移）。
+- **`GET /memory/dream/history?scope=all|ws`**：`all` 时文件扫描聚合全部空间的 `.dreaming-runs.json`（不要求空间已装载），每条附 `workspaceId/workspaceName/workspacePath`；`ws`（缺省）= 启动空间单文件读取（需求 20261113-001 起不再随最近使用漂移）。
 - **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**：清空跟随筛选范围；`all` 时遍历清空各空间记录（文件保留、内容清空，保持幂等）。
 
 ### 手动压缩与上下文用量（20261106-005）

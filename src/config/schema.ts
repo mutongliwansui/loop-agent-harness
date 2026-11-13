@@ -372,7 +372,8 @@ export interface WebuiConfig {
 }
 
 /** 配置来源标记 */
-export type ConfigSource = 'cli' | 'workspace' | 'global' | 'env' | 'default';
+// 需求 20261112-008：工作空间层已移除，来源不再含 'workspace'
+export type ConfigSource = 'cli' | 'global' | 'env' | 'default';
 /** 合并后的配置结果 */
 export interface ResolvedConfig {
   config: AgentConfig;
@@ -476,7 +477,6 @@ export const DEFAULT_CONFIG: AgentConfig = {
   skill: {
     enabled: true,
     globalDir: join(loopAgentHome(), 'skills'),
-    workspaceDir: '.loop-agent/skills',
     autoLoad: true,
   },
   memory: {

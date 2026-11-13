@@ -90,9 +90,9 @@ function writeWorkspaceConfig(
   episodicSearchTopK = 1,
 ): string {
   const episodicDir = join(wsDir, 'l2');
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -269,7 +269,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     mocks.chat.mockImplementation(async () => ({ content: null }));
     mockChatStreamWithFlush('- 关键事实：我会打篮球');
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
     // 会话身份（task-20261106-002）：session 级 L2 写入必须有 sessionId
@@ -301,7 +301,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     mocks.chat.mockImplementation(async () => ({ content: null }));
     mockChatStreamWithFlush(null);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -331,7 +331,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     mocks.chat.mockImplementation(async () => ({ content: null }));
     mockChatStreamWithFlush(null);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
     // 会话身份（task-20261106-002）：session 级 L2 写入必须有 sessionId
@@ -450,7 +450,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     mocks.chat.mockImplementation(async () => ({ content: null }));
     const { mainCalls } = mockStreamsWithOverhead(50, [{ content: '任务完成' }]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
     // 会话身份（task-20261106-002）：session 级 L2 写入必须有 sessionId
@@ -504,7 +504,7 @@ describe('Task-17 压缩信息丢失修复', () => {
     // 固定开销 350 → 消息预算 = max(0.2×400, 400-350) = 80
     mockStreamsWithOverhead(350, [{ content: '好的' }]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -542,7 +542,7 @@ describe('Task-17 压缩信息丢失修复', () => {
       { content: '最终回答' },
     ]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 

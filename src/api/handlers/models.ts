@@ -1,9 +1,12 @@
 // /model 命令资源化端点（Task-20261016-002 §3.4）
 //
-// 直调 buildUsePartial / readLayerRaw / validAlias / maskKey（D3 补导出复用）+
+// 直调 buildUsePartial / validAlias / maskKey（D3 补导出复用）+
 // defaultCheckConnectivity（连通性测试），CLI 命令层零改动。
 // 响应字段以实际 schema 为准：ModelProfile = {name, baseUrl, apiKey, temperature?, advanced?}（apiKey 遮蔽输出）。
 // D6 动词即确认：PUT /model 替代 CLI use；DELETE 删当前激活 → 409（比 CLI 确认更严格）。
+//
+// 需求 20261112-008（D4）：配置只剩全局一份，scope 参数仅用于给出可纠正的 400，
+// 跨层归属提示（「未在此层登记但存在于另一层」）随之删除。
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ModelAdvanced, ModelProfile, PartialAgentConfig } from '../../config/schema.js';
@@ -11,17 +14,12 @@ import { defaultCheckConnectivity } from '../../llm/connectivity.js';
 import {
   buildUsePartial,
   maskKey,
-  readLayerRaw,
   validAlias,
 } from '../../commands/model-command.js';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
-import { parseScope, queryScope } from './config.js';
-
-function scopeName(scope: string): string {
-  return scope === 'workspace' ? '工作空间' : '全局';
-}
+import { assertGlobalScope, queryScope } from './config.js';
 
 /** advanced 允许的键（未知键视为拼写错误，直接 400 而不是静默丢弃） */
 const ADVANCED_KEYS = ['maxTokens', 'topP', 'topK', 'frequencyPenalty', 'timeoutMs', 'headers'];
@@ -162,7 +160,7 @@ async function handlePutModel(
   if (!validAlias(alias)) {
     throw new ApiHttpError('bad_request', '请求体必须包含合法 alias（非空、无空白、不以 - 开头）');
   }
-  const scope = parseScope(body.scope);
+  assertGlobalScope(body.scope);
   const { config: cfg } = ctx.configLoader.load();
   const profile = cfg.models.profiles[alias];
   if (!profile) {
@@ -172,9 +170,9 @@ async function handlePutModel(
     throw new ApiHttpError('bad_request', `profile「${alias}」未配置 apiKey，无法激活（可用 PUT /config/models.profiles.${alias}.apiKey 补充）`);
   }
   const partial: PartialAgentConfig = buildUsePartial(alias, profile);
-  await ctx.configWriter.updateScope(scope, partial);
-  ctx.log(`[api] 已切换激活模型（${scope}）: ${alias}`);
-  sendJson(res, 200, { alias, scope, model: { name: profile.name, baseUrl: profile.baseUrl } });
+  await ctx.configWriter.update(partial);
+  ctx.log(`[api] 已切换激活模型（global）: ${alias}`);
+  sendJson(res, 200, { alias, scope: 'global', model: { name: profile.name, baseUrl: profile.baseUrl } });
 }
 
 /** POST /models：登记新 profile（同名 409；D6 无交互，直写指定 scope） */
@@ -189,16 +187,16 @@ async function handleCreateModel(
     throw new ApiHttpError('bad_request', '请求体必须包含合法 alias（非空、无空白、不以 - 开头）');
   }
   const profile = parseProfileBody(body.profile);
-  const scope = parseScope(body.scope);
+  assertGlobalScope(body.scope);
   const { config: cfg } = ctx.configLoader.load();
   if (cfg.models.profiles[alias] !== undefined) {
     throw new ApiHttpError('conflict', `别名「${alias}」已存在。如需修改可先 DELETE /models/${alias} 再重新登记`);
   }
-  await ctx.configWriter.updateScope(scope, { models: { profiles: { [alias]: profile } } });
-  ctx.log(`[api] 已登记模型（${scope}）: ${alias}`);
+  await ctx.configWriter.update({ models: { profiles: { [alias]: profile } } });
+  ctx.log(`[api] 已登记模型（global）: ${alias}`);
   sendJson(res, 201, {
     alias,
-    scope,
+    scope: 'global',
     profile: {
       name: profile.name,
       baseUrl: profile.baseUrl,
@@ -264,22 +262,11 @@ async function handleUpdateModel(
     throw new ApiHttpError('bad_request', '别名非法（非空、无空白、不以 - 开头）');
   }
   const body = await readJsonBody(req);
-  const scope = parseScope(body.scope);
+  assertGlobalScope(body.scope);
   const patch = parseProfilePatch(body.profile);
   const { config: cfg } = ctx.configLoader.load();
   const existing = cfg.models.profiles[alias];
   if (!existing) {
-    throw new ApiHttpError('not_found', `未找到模型「${alias}」`);
-  }
-
-  // 写入层归属校验：目标层没有但另一层有 → 提示 scope（同 DELETE 语义）
-  const targetRaw = await readLayerRaw(ctx.configLoader, scope);
-  if (targetRaw?.models?.profiles?.[alias] === undefined) {
-    const otherScope = scope === 'workspace' ? 'global' : 'workspace';
-    const otherRaw = await readLayerRaw(ctx.configLoader, otherScope);
-    if (otherRaw?.models?.profiles?.[alias] !== undefined) {
-      throw new ApiHttpError('not_found', `「${alias}」未在${scopeName(scope)}登记，但存在于${scopeName(otherScope)}（请求体 scope=${otherScope}）`);
-    }
     throw new ApiHttpError('not_found', `未找到模型「${alias}」`);
   }
 
@@ -302,23 +289,23 @@ async function handleUpdateModel(
     ...(nextAdvanced !== undefined ? { advanced: nextAdvanced } : {}),
   };
 
-  await ctx.configWriter.updateScope(scope, { models: { profiles: { [alias]: next } } });
+  await ctx.configWriter.update({ models: { profiles: { [alias]: next } } });
   if (removeTemp) {
-    await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias, 'temperature']);
+    await ctx.configWriter.deleteKey(['models', 'profiles', alias, 'temperature']);
   }
   if (removeAdvanced) {
-    await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias, 'advanced']);
+    await ctx.configWriter.deleteKey(['models', 'profiles', alias, 'advanced']);
   }
   const syncedActive = alias === cfg.models.active;
   if (syncedActive) {
-    await ctx.configWriter.updateScope(scope, buildUsePartial(alias, next));
-    if (removeTemp) await ctx.configWriter.deleteScopeKey(scope, ['model', 'temperature']);
-    if (removeAdvanced) await ctx.configWriter.deleteScopeKey(scope, ['model', 'advanced']);
+    await ctx.configWriter.update(buildUsePartial(alias, next));
+    if (removeTemp) await ctx.configWriter.deleteKey(['model', 'temperature']);
+    if (removeAdvanced) await ctx.configWriter.deleteKey(['model', 'advanced']);
   }
-  ctx.log(`[api] 已更新模型（${scope}）: ${alias}${syncedActive ? '（同步 model.* 快照）' : ''}`);
+  ctx.log(`[api] 已更新模型（global）: ${alias}${syncedActive ? '（同步 model.* 快照）' : ''}`);
   sendJson(res, 200, {
     alias,
-    scope,
+    scope: 'global',
     syncedActive,
     profile: {
       name: next.name,
@@ -337,23 +324,18 @@ async function handleDeleteModel(
   res: ServerResponse,
   alias: string,
 ): Promise<void> {
-  const scope = parseScope(queryScope(req));
+  assertGlobalScope(queryScope(req));
   const { config: cfg } = ctx.configLoader.load();
   if (alias === cfg.models.active) {
     throw new ApiHttpError('conflict', `「${alias}」是当前激活模型，不能移除。请先 PUT /model 切换到其他别名`);
   }
-  const targetRaw = await readLayerRaw(ctx.configLoader, scope);
+  const targetRaw = await ctx.configLoader.loadGlobal();
   if (targetRaw?.models?.profiles?.[alias] === undefined) {
-    const otherScope = scope === 'workspace' ? 'global' : 'workspace';
-    const otherRaw = await readLayerRaw(ctx.configLoader, otherScope);
-    if (otherRaw?.models?.profiles?.[alias] !== undefined) {
-      throw new ApiHttpError('not_found', `「${alias}」未在${scopeName(scope)}登记，但存在于${scopeName(otherScope)}（?scope=${otherScope}）`);
-    }
     throw new ApiHttpError('not_found', `未找到模型「${alias}」`);
   }
-  await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias]);
-  ctx.log(`[api] 已从${scopeName(scope)}移除模型: ${alias}`);
-  sendJson(res, 200, { deleted: true, alias, scope });
+  await ctx.configWriter.deleteKey(['models', 'profiles', alias]);
+  ctx.log(`[api] 已移除模型（global）: ${alias}`);
+  sendJson(res, 200, { deleted: true, alias, scope: 'global' });
 }
 
 /** POST /models/:alias/test：连通性测试（不改变激活状态；复用 defaultCheckConnectivity） */

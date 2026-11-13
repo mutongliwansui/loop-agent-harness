@@ -1,16 +1,14 @@
 /** Skill 相关类型定义 */
 
-/** Skill 作用域 */
-export type SkillScope = 'global' | 'workspace';
+/** Skill 作用域（需求 20261112-008：只剩全局一份，类型保留单值以稳定协议） */
+export type SkillScope = 'global';
 
 /** Skill 配置项 */
 export interface SkillConfig {
   /** 是否启用 Skill 功能 */
   enabled: boolean;
-  /** 全局 Skill 目录（默认 ~/.loop-agent/skills） */
+  /** 全局 Skill 目录（默认 ~/.loop-agent/skills；唯一目录） */
   globalDir: string;
-  /** 工作空间 Skill 目录（默认 <cwd>/.loop-agent/skills） */
-  workspaceDir: string;
   /** 启动时是否自动扫描 */
   autoLoad: boolean;
 }

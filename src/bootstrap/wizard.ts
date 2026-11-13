@@ -1,7 +1,7 @@
 // 初次启动配置向导：分步收集主模型三元组（baseUrl/apiKey/name）并校验连通性
 // 交互函数通过 deps 注入，单测可模拟输入序列；默认实现基于 readline 与 openai SDK
 import readline from 'node:readline';
-import { configWriter, type ConfigScope } from '../config/index.js';
+import { configWriter } from '../config/index.js';
 import { DEFAULT_CONFIG, type AgentConfig } from '../config/schema.js';
 import {
   defaultCheckConnectivity,
@@ -21,11 +21,11 @@ export type { ModelCandidate, ConnectivityResult, CheckConnectivityFn } from '..
 
 export type AskFn = (prompt: string) => Promise<string>;
 
-/** 写入候选三元组，返回实际写入的配置文件路径 */
-export type WriteConfigFn = (scope: ConfigScope, candidate: ModelCandidate) => Promise<string>;
+/** 写入候选三元组，返回实际写入的配置文件路径（需求 20261112-008：只有全局一份配置） */
+export type WriteConfigFn = (candidate: ModelCandidate) => Promise<string>;
 
-/** 登记 profile（Task-20261011-002 P1 向导联动；默认 configWriter.updateScope 写 default） */
-export type RegisterProfileFn = (scope: ConfigScope, alias: string, candidate: ModelCandidate) => Promise<void>;
+/** 登记 profile（Task-20261011-002 P1 向导联动；默认 configWriter.update 写 default） */
+export type RegisterProfileFn = (alias: string, candidate: ModelCandidate) => Promise<void>;
 
 export type ScaffoldFn = () => Promise<string[]>;
 
@@ -38,13 +38,13 @@ export interface WizardDeps {
   askSecret?: AskFn;
   /** 复用外部 readline（/setup 在 REPL 内重跑时注入，避免第二个接口抢占 stdin） */
   rl?: readline.Interface;
-  /** 用户偏好的写入层（/setup --global/--workspace）；设置时写入确认的默认项取该值 */
-  preferredScope?: ConfigScope;
+  /** 用户偏好（/setup --global）；设置时写入确认的默认项取该值。--workspace 已移除 */
+  preferredScope?: 'global';
   /** 连通性校验（默认 openai SDK 直接 ping 候选三元组） */
   checkConnectivity?: CheckConnectivityFn;
-  /** 配置写盘（默认 configWriter.updateScope） */
+  /** 配置写盘（默认 configWriter.update 写全局） */
   writeConfig?: WriteConfigFn;
-  /** profile 登记（默认 configWriter.updateScope 写 models.active + profiles；注入用于单测断言） */
+  /** profile 登记（默认 configWriter.update 写 models.active + profiles；注入用于单测断言） */
   registerProfile?: RegisterProfileFn;
   /** 目录补建（默认 ensureScaffold） */
   scaffold?: ScaffoldFn;
@@ -134,16 +134,16 @@ export function createMaskedAsk(rl: readline.Interface): AskFn {
     });
 }
 
-const defaultWriteConfig: WriteConfigFn = async (scope, candidate) => {
-  await configWriter.updateScope(scope, {
+const defaultWriteConfig: WriteConfigFn = async (candidate) => {
+  await configWriter.update({
     model: { baseUrl: candidate.baseUrl, apiKey: candidate.apiKey, name: candidate.name },
   });
-  return scope === 'global' ? configWriter.globalConfigPath : configWriter.workspaceConfigPath;
+  return configWriter.globalConfigPath;
 };
 
 /** 向导联动（Task-20261011-002 P1 5.6）：登记 profile（写激活指针 + 登记簿） */
-const defaultRegisterProfile: RegisterProfileFn = async (scope, alias, candidate) => {
-  await configWriter.updateScope(scope, {
+const defaultRegisterProfile: RegisterProfileFn = async (alias, candidate) => {
+  await configWriter.update({
     models: { active: alias, profiles: { [alias]: candidate } },
   });
 };
@@ -271,34 +271,22 @@ export async function runWizard(
       }
     }
 
-    // 6. 写入层确认（D4：默认全局，用户级资产跨 workspace 复用；/setup 带 flag 时以偏好为默认）
-    const defaultScope: ConfigScope = deps.preferredScope ?? 'global';
-    const otherScope: ConfigScope = defaultScope === 'global' ? 'workspace' : 'global';
-    const scopeInput = (
-      await ask(`配置写入位置 [${defaultScope}（回车）/ ${otherScope}]: `)
-    ).trim().toLowerCase();
-    const scope: ConfigScope =
-      scopeInput === otherScope || scopeInput === (otherScope === 'workspace' ? 'w' : 'g')
-        ? otherScope
-        : defaultScope;
-
+    // 6. 写入位置（需求 20261112-008：配置只有全局一份，不再询问写入层）
     // 7. 目录补建 + 写盘（默认写盘路径下：目标文件若为损坏 JSON，先自动备份为 .bak-<时间戳>）
     const created = await scaffold();
     for (const p of created) out(`${C.green}✓ 已创建: ${p}${C.reset}`);
     if (!deps.writeConfig) {
-      const targetPath =
-        scope === 'global' ? configWriter.globalConfigPath : configWriter.workspaceConfigPath;
-      const backupPath = await backupCorruptedFile(targetPath);
+      const backupPath = await backupCorruptedFile(configWriter.globalConfigPath);
       if (backupPath) {
         out(`${C.yellow}⚠ 原配置文件已损坏，已自动备份为: ${backupPath}${C.reset}`);
       }
     }
-    const writtenPath = await writeConfig(scope, candidate);
+    const writtenPath = await writeConfig(candidate);
 
     // 向导联动（Task-20261011-002 P1 5.6）：登记簿为空时将本次模型登记为 profile default（失败不阻断）
     if (Object.keys(cfg.models.profiles).length === 0) {
       try {
-        await registerProfile(scope, 'default', candidate);
+        await registerProfile('default', candidate);
         out(`  已登记：profile default（/model add 接入更多模型后 /model use 切换）`);
       } catch {
         out(
@@ -310,9 +298,7 @@ export async function runWizard(
     // 8. 摘要（apiKey 只显示尾 4 位）
     out('');
     out(`${C.cyan}${C.bold}初始化完成${C.reset}`);
-    out(
-      `  写入位置：${scope === 'global' ? '全局' : '工作空间'}（${writtenPath}）`,
-    );
+    out(`  写入位置：全局（${writtenPath}）`);
     out(`  服务地址：${candidate.baseUrl}`);
     out(`  模型名称：${candidate.name}`);
     out(`  apiKey：${maskKey(candidate.apiKey)}`);

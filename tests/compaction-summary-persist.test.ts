@@ -74,9 +74,9 @@ function msg(role: ChatMessage['role'], content: string): ChatMessage {
 }
 
 function writeWorkspaceConfig(wsDir: string, autoSave: boolean): void {
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave, autoRestore: false, encryptionEnabled: false },
@@ -139,7 +139,7 @@ describe('复现：压缩总结消息落盘', () => {
     const history = SessionStore.getRestoreMessages(data).filter((m) => m.role !== 'system');
 
     // agent 不注入 SessionStore（与 bootstrap.ts 一致）
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -172,7 +172,7 @@ describe('复现：压缩总结消息落盘', () => {
     await store.init();
     const meta = await store.createSession('种子会话', [msg('system', '你是智能助手'), ...buildLongHistory()]);
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 
@@ -200,7 +200,7 @@ describe('复现：压缩总结消息落盘', () => {
     const store = new SessionStore(wsDir, false, join(wsDir, 'user'));
     await store.init();
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
     agent.setSessionStore(store);
@@ -272,7 +272,7 @@ describe('复现：压缩总结消息落盘', () => {
       }
     });
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     await agent.initMemory(wsDir);
 

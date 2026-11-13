@@ -339,9 +339,9 @@ onMounted(load);
         <div class="card-b">
           <ul class="dev-ul">
             <li><b>动词即确认</b>：DELETE / PUT / PATCH 替代 CLI 的 y/N 交互（删当前激活模型直接 409，比确认更严格）。</li>
-            <li><b>scope 统一</b>：写配置类端点一律 <code>?scope=workspace|global</code>，默认 workspace，对应 CLI 的 <code>--global</code>。</li>
+            <li><b>配置作用域</b>：所有配置只有全局一份（<code>~/.loop-agent/config.json</code>），写配置类端点不需要 <code>scope</code> 参数；传 <code>?scope=workspace</code> 会返回 <b>400</b>。</li>
             <li><b>诊断语义</b>：<code>/vision/test</code>、<code>/models/:alias/test</code>、<code>/mcp/servers/:name/test</code>、<code>/doctor</code> 检测失败也返回 200（<code>ok:false</code> + 明细），不失败端点。</li>
-            <li><b>缺省空间</b>：缺省空间 = 最近使用的工作空间；跨空间端点可用 <code>ws</code> 参数显式指定，未知空间 404。</li>
+            <li><b>缺省空间</b>：启动空间（进程启动时的工作空间）为各空间内读写端点的缺省目标；跨空间端点须用 <code>ws</code> 参数显式指定，未知空间 404，空间内端点缺 <code>ws</code> 一律 400。</li>
             <li><b>重启生效</b>：<code>api.token</code> / <code>api.port</code> / <code>api.host</code> 修改需重启服务。</li>
           </ul>
         </div>

@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// MCP 服务器视图（原型-20261109-002 方案 B：卡片流 + 详情抽屉 + 登记模态 + 移除范围确认）
-// 端点：GET /mcp/servers（D9 起每项带 scope）· GET /config · GET /mcp/servers/:name
+// MCP 服务器视图（原型-20261109-002 方案 B：卡片流 + 详情抽屉 + 登记模态 + 移除确认）
+// 端点：GET /mcp/servers · GET /config · GET /mcp/servers/:name
 //      · POST /mcp/servers（409 / 502 半态）· POST /mcp/servers/:name/test
-//      · POST /mcp/reload · DELETE /mcp/servers/:name?scope= （deleted:false = 范围不匹配）
+//      · POST /mcp/reload · DELETE /mcp/servers/:name
+// 需求 20261112-008：MCP 配置只剩全局一份，登记与移除不再选择范围
 // 纯逻辑（状态归一 / 筛选排序 / 倒计时 / 表单解析 / 工具展示）见 ../mcp-ui.ts
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { api, ApiError, AuthError } from '../api/client';
 import { showToast } from '../toast';
 import { errText } from '../utils';
-import { highlightSegments, scopeLabel } from '../skills-ui';
+import { highlightSegments } from '../skills-ui';
 import { loadMcpToolMeta, metaSummary, metaTools } from '../mcp-tool-meta-loader.js';
 import { mcpMetaOf } from '../mcp-tool-meta.js';
 import {
@@ -17,14 +18,13 @@ import {
   fmtCountdown,
   mcpCounts,
   mcpInitials,
+  MCP_CONFIG_PATH,
   normalizeState,
   parseKv,
   parseLines,
-  scopePath,
   serverTarget,
   sortServers,
   stateMeta,
-  type McpScope,
   type McpServerRow,
   type McpSort,
   type McpTab,
@@ -133,12 +133,10 @@ const regArgs = ref('');
 const regEnv = ref('');
 const regUrl = ref('');
 const regHeaders = ref('');
-const regScope = ref<McpScope>('workspace');
 const regAlert = ref<RegAlert | null>(null);
 
 /* ===== 移除确认 ===== */
 const confirmServer = ref<McpServerRow | null>(null);
-const cfmScope = ref<McpScope>('workspace');
 const cfmErr = ref('');
 const cfmBusy = ref(false);
 
@@ -173,9 +171,9 @@ function pillOf(row: McpServerRow): ReturnType<typeof stateMeta> {
   return stateMeta(stateOf(row));
 }
 
-function scopeClass(scope: string | undefined): string {
-  return scope === 'global' ? 'gl' : 'ws';
-}
+/** MCP 配置只剩全局一份（需求 20261112-008）：卡片与抽屉统一展示全局来源，不再区分 workspace */
+const SCOPE_LABEL = '全局';
+const SCOPE_PATH = MCP_CONFIG_PATH;
 
 function testChip(name: string): string {
   const t = tests.value[name];
@@ -358,7 +356,6 @@ function openRegister(): void {
   regEnv.value = '';
   regUrl.value = '';
   regHeaders.value = '';
-  regScope.value = 'workspace';
 }
 
 function closeRegister(): void {
@@ -387,7 +384,7 @@ async function submitRegister(): Promise<void> {
     regAlert.value = { tone: 'err', title: '名称含空白', text: '名称不能包含空格，请使用 server-postgres 这类写法。' };
     return;
   }
-  const body: Record<string, unknown> = { name, transport: regTransport.value, scope: regScope.value };
+  const body: Record<string, unknown> = { name, transport: regTransport.value };
   if (regTransport.value === 'stdio') {
     const command = regCommand.value.trim();
     if (!command) {
@@ -415,7 +412,7 @@ async function submitRegister(): Promise<void> {
   regSubmitting.value = true;
   try {
     const res = await api<{ name: string; scope: string; status: string }>('/mcp/servers', { method: 'POST', json: body });
-    showToast(`MCP server 已登记并连接：${res.name}（${scopeLabel(res.scope)}）`, 'success');
+    showToast(`MCP server 已登记并连接：${res.name}`, 'success');
     showReg.value = false;
     regAlert.value = null;
     await refresh(false, true);
@@ -445,7 +442,6 @@ async function submitRegister(): Promise<void> {
 /* ===== 移除 ===== */
 function askRemove(s: McpServerRow): void {
   confirmServer.value = s;
-  cfmScope.value = s.scope === 'global' ? 'global' : 'workspace';
   cfmErr.value = '';
 }
 
@@ -456,15 +452,14 @@ async function doRemove(): Promise<void> {
   cfmErr.value = '';
   try {
     const res = await api<{ name: string; scope: string; deleted: boolean }>(
-      `/mcp/servers/${encodeURIComponent(s.name)}?scope=${cfmScope.value}`,
+      `/mcp/servers/${encodeURIComponent(s.name)}`,
       { method: 'DELETE' },
     );
     if (!res.deleted) {
-      const registered = s.scope === 'global' ? '全局' : s.scope === 'workspace' ? '工作空间' : '';
-      cfmErr.value = `deleted:false · 当前选择的「${scopeLabel(cfmScope.value)}」范围中没有该 server 的配置。${registered ? `它登记在「${registered}」，请切换范围后重试。` : '请确认登记范围后重试。'}`;
+      cfmErr.value = `deleted:false · 全局配置中未找到该 server，可能已被其它窗口移除，请刷新后重试。`;
       return;
     }
-    showToast(`已移除 MCP server：${s.name}（${scopeLabel(res.scope)}）`, 'success');
+    showToast(`已移除 MCP server：${s.name}`, 'success');
     confirmServer.value = null;
     if (drawerName.value === s.name) closeDetail();
     await refresh(false, true);
@@ -685,7 +680,7 @@ onBeforeUnmount(() => {
                   <mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template>
                 </template>
               </h3>
-              <span v-if="s.scope" class="mc-scope" :class="scopeClass(s.scope)"><i></i>{{ scopeLabel(s.scope || 'workspace') }}</span>
+              <span class="mc-scope gl"><i></i>{{ SCOPE_LABEL }}</span>
               <span class="mc-pill" :class="pillOf(s).tone"><i></i>{{ pillOf(s).label }}</span>
             </div>
             <div class="mc-target" :title="targetOf(s.name)">
@@ -794,7 +789,7 @@ onBeforeUnmount(() => {
           <div class="mc-drv-title">
             <h2>
               {{ drawerRow.name }}
-              <span v-if="drawerRow.scope" class="mc-scope" :class="scopeClass(drawerRow.scope)"><i></i>{{ scopeLabel(drawerRow.scope || 'workspace') }}</span>
+              <span class="mc-scope gl"><i></i>{{ SCOPE_LABEL }}</span>
               <span class="mc-pill" :class="drawerPill.tone"><i></i>{{ drawerPill.label }}</span>
             </h2>
             <div class="mc-drv-sub">
@@ -826,8 +821,8 @@ onBeforeUnmount(() => {
             <tbody>
               <tr><td class="k">状态</td><td class="v"><span class="mc-pill" :class="drawerPill.tone"><i></i>{{ drawerPill.label }}</span></td></tr>
               <tr><td class="k">工具数</td><td class="v">{{ drawerRow.toolCount }}</td></tr>
-              <tr><td class="k">来源范围</td><td class="v">{{ drawerRow.scope ? `${scopeLabel(drawerRow.scope)}（${drawerRow.scope}）` : '接口未返回' }}</td></tr>
-              <tr><td class="k">配置位置</td><td class="v"><code>{{ scopePath(drawerRow.scope === 'global' ? 'global' : 'workspace') }}</code></td></tr>
+              <tr><td class="k">来源范围</td><td class="v">全局（配置只剩全局一份）</td></tr>
+              <tr><td class="k">配置位置</td><td class="v"><code>{{ SCOPE_PATH }}</code></td></tr>
               <tr v-if="drawerRow.lastError"><td class="k">失败原因</td><td class="v">{{ drawerRow.lastError }}</td></tr>
               <tr v-if="drawerRow.nextRetryAt"><td class="k">下次重试</td><td class="v"><code>{{ fmtCountdown(drawerRow.nextRetryAt, nowTick) }}</code></td></tr>
             </tbody>
@@ -957,25 +952,12 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="mc-field">
-          <label>写入范围</label>
-          <div class="mc-scope-grid">
-            <label class="mc-scope-card" :class="{ on: regScope === 'workspace' }">
-              <input v-model="regScope" type="radio" value="workspace">
-              <span class="sc-t">工作空间 <i>默认</i></span>
-              <span class="sc-d">仅当前项目生效</span>
-              <span class="sc-p">{{ scopePath('workspace') }}</span>
-            </label>
-            <label class="mc-scope-card" :class="{ on: regScope === 'global' }">
-              <input v-model="regScope" type="radio" value="global">
-              <span class="sc-t">全局</span>
-              <span class="sc-d">所有项目共享</span>
-              <span class="sc-p">{{ scopePath('global') }}</span>
-            </label>
-          </div>
+          <label>配置位置</label>
+          <p class="mc-sec-note">MCP 服务器配置统一保存于 <code>{{ SCOPE_PATH }}</code>，对所有项目生效。</p>
         </div>
 
         <div class="mc-chk-row">
-          <span class="mc-chk-hint">登记后会立即尝试连接；若失败，配置仍保留在所选范围，卡片标记为「连接失败」。</span>
+          <span class="mc-chk-hint">登记后会立即尝试连接；若失败，配置仍保留在全局配置，卡片标记为「连接失败」。</span>
         </div>
 
         <div v-if="regAlert" class="mc-alert" :class="regAlert.tone">
@@ -1011,19 +993,7 @@ onBeforeUnmount(() => {
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.8h10.4M6 4.8V3.3h4v1.5M4.4 4.8l.6 8.4h6l.6-8.4"/></svg>
         </div>
         <h3 id="mc-cfm-title">移除「{{ confirmServer.name }}」？</h3>
-        <p>将从配置中删除并断开连接。请选择该 server 的<strong>登记范围</strong>；范围不匹配时删除不会生效。</p>
-        <div class="mc-scope-grid">
-          <label class="mc-scope-card" :class="{ on: cfmScope === 'workspace' }">
-            <input v-model="cfmScope" type="radio" value="workspace">
-            <span class="sc-t">工作空间</span>
-            <span class="sc-d">仅当前项目</span>
-          </label>
-          <label class="mc-scope-card" :class="{ on: cfmScope === 'global' }">
-            <input v-model="cfmScope" type="radio" value="global">
-            <span class="sc-t">全局</span>
-            <span class="sc-d">所有项目</span>
-          </label>
-        </div>
+        <p>将从全局配置中删除并断开连接。</p>
         <div v-if="cfmErr" class="mc-alert err mc-cfm-err">
           <span class="ai">✕</span>
           <div>{{ cfmErr }}</div>
@@ -1466,23 +1436,6 @@ onBeforeUnmount(() => {
 .mc-reg-seg button { height: 30px; padding: 0 12px; font-size: 12px; }
 .mc-sec-note { margin: -4px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.65; }
 
-.mc-scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.mc-scope-card {
-  position: relative; display: block; padding: 11px 12px;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-  cursor: pointer; transition: border-color .12s, background .12s;
-}
-.mc-scope-card:hover { border-color: var(--line-strong); }
-.mc-scope-card.on { border-color: var(--brand); background: var(--brand-weak); box-shadow: 0 0 0 1px var(--brand) inset; }
-.mc-scope-card input { position: absolute; opacity: 0; pointer-events: none; }
-.mc-scope-card .sc-t { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
-.mc-scope-card .sc-t i {
-  font-style: normal; font-size: 9.5px; font-weight: 600; color: var(--brand);
-  background: var(--panel); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 6px;
-}
-.mc-scope-card .sc-d { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
-.mc-scope-card .sc-p { display: block; margin-top: 6px; font: 400 10.5px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-
 .mc-chk-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 .mc-chk-hint { font-size: 11px; color: var(--muted); line-height: 1.6; }
 
@@ -1516,8 +1469,6 @@ onBeforeUnmount(() => {
 .mc-cfm-ico svg { width: 18px; height: 18px; }
 .mc-cfm h3 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .mc-cfm p { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.65; }
-.mc-cfm .mc-scope-grid { margin-top: 13px; }
-.mc-cfm .mc-scope-card { padding: 9px 11px; }
 .mc-cfm-err { margin-top: 11px; }
 .mc-cfm-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
@@ -1534,7 +1485,6 @@ onBeforeUnmount(() => {
   .mc-actions .mc-btn.primary { flex: 1; }
   .mc-search { max-width: none; flex-basis: 100%; }
   .mc-count { display: none; }
-  .mc-scope-grid { grid-template-columns: 1fr; }
   .mc-tool-filter { width: 100%; flex-basis: 100%; }
   .mc-tools-head { flex-wrap: wrap; }
 }

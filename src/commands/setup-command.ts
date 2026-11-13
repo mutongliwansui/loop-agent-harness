@@ -4,26 +4,27 @@ import { runWizard } from '../bootstrap/wizard.js';
 import { checkBootstrap, defaultBootstrapPaths } from '../bootstrap/doctor.js';
 import { registerBuiltinTools } from '../tools/index.js';
 import { COLORS } from '../ui/colors.js';
-import type { ConfigScope } from '../config/index.js';
+import { WORKSPACE_FLAG_REMOVED } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
 export const setupCommand: CommandHandler = {
   name: '/setup',
-  description: '重跑初始化向导：模型三元组与连通性（--global/--workspace）',
-  subcommands: ['--global', '--workspace', 'help'],
+  // 括号内容会被补全测试当作二级子命令解析，008 后 /setup 无功能子命令，故不用全角括号
+  description: '重跑初始化向导：模型三元组与连通性，配置一律写全局',
+  subcommands: ['help'],
   subcommandHelp: {
-    '--global': '向导结果写入全局配置（~/.loop-agent/）',
-    '--workspace': '向导结果写入工作空间配置（<cwd>/.loop-agent/）',
+    help: '显示本帮助（配置只保留全局一份，--global/--workspace 已移除）',
   },
   match: (input) => /^\/setup(?:\s|$)/i.test(input.trim()),
   async execute(input, ctx: CommandContext) {
     const { out } = ctx;
-    const lower = input.toLowerCase();
-    const preferredScope: ConfigScope | undefined = lower.includes('--workspace')
-      ? 'workspace'
-      : lower.includes('--global')
-        ? 'global'
-        : undefined;
+
+    // 需求 20261112-008：写入层已收敛为全局，--workspace 一律报错中止
+    if (/(?:^|\s)--workspace(?:\s|$)/i.test(input.trim())) {
+      out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+      out.blank();
+      return;
+    }
 
     // 以当前生效配置为向导默认值；检测报告用于欢迎区缺失清单
     const { config: cfg } = ctx.configLoader.load();
@@ -33,7 +34,6 @@ export const setupCommand: CommandHandler = {
     await runWizard(report, cfg, {
       rl: ctx.rl,
       out: (line = '') => out.log(line),
-      ...(preferredScope ? { preferredScope } : {}),
     });
 
     // 写盘后刷新：重新加载生效值并按需注册工具（registerBuiltinTools 幂等）

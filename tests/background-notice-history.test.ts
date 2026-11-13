@@ -53,9 +53,9 @@ const BASE = join(tmpdir(), 'loop-agent-tests', 'background-notice-history');
 const TOOL = 'notice_probe_echo';
 
 function writeWorkspaceConfig(wsDir: string): void {
-  mkdirSync(join(wsDir, '.loop-agent'), { recursive: true });
+  mkdirSync(join(wsDir, 'global'), { recursive: true });
   writeFileSync(
-    join(wsDir, '.loop-agent', '.agent-config.json'),
+    join(wsDir, 'global', 'config.json'),
     JSON.stringify({
       skill: { enabled: false },
       session: { autoSave: false, autoRestore: false },
@@ -156,7 +156,7 @@ describe('后台通知仅投递一次、不进历史前缀（20261105-001 D9）'
       };
     });
 
-    const loader = new ConfigLoader(wsDir, join(wsDir, 'global'));
+    const loader = new ConfigLoader(join(wsDir, 'global'));
     const agent = new ReActAgent(loader);
     agent.setCurrentSessionId('s-notice');
     const result = await agent.run('后台任务跑完了吗');

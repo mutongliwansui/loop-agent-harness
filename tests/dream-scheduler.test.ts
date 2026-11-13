@@ -217,8 +217,23 @@ describe('DreamScheduler.runFor（D7 单飞锁 / D8 让位 / 配置关闭）', (
   });
 
   it('dreaming.enabled=false → skippedBecause=disabled，不做任何 LLM 调用', async () => {
-    const { rt, recorder } = makeRuntime({ root: '/ws/a', id: 'ws-a', dreaming: { enabled: false } });
-    const sched = new DreamScheduler({ registry: makeRegistry([rt]), getConfig: () => makeAgentConfig(), log: log.log });
+    // 需求 20261112-008：Dreaming 全空间参与，配置取进程级（getConfig），不再读各空间 runtime 配置
+    const { rt, recorder } = makeRuntime({ root: '/ws/a', id: 'ws-a' });
+    const sched = new DreamScheduler({
+      registry: makeRegistry([rt]),
+      getConfig: () => makeAgentConfig({ enabled: false }),
+      log: log.log,
+    });
+    const r = await sched.runFor('/ws/a', 'schedule');
+    expect(r.skippedBecause).toBe('disabled');
+    expect(recorder).toHaveLength(0);
+  });
+
+  it('memory.enabled=false（进程级）→ skippedBecause=disabled', async () => {
+    const { rt, recorder } = makeRuntime({ root: '/ws/a', id: 'ws-a' });
+    const cfg = makeAgentConfig();
+    (cfg.memory as { enabled: boolean }).enabled = false;
+    const sched = new DreamScheduler({ registry: makeRegistry([rt]), getConfig: () => cfg, log: log.log });
     const r = await sched.runFor('/ws/a', 'schedule');
     expect(r.skippedBecause).toBe('disabled');
     expect(recorder).toHaveLength(0);

@@ -12,8 +12,10 @@ import { backgroundTasks, configureBackgroundLogPrune } from '../tools/backgroun
 import { configureCommandRunOutput } from '../tools/command-run-output.js';
 import { configureOutputGovernor } from '../tools/output-governor.js';
 import { configureBackgroundNotify } from '../agent/background-notice.js';
-import { configLoader } from '../config/index.js';
+import { configLoader, configWriter, migrateWorkspaceConfigToGlobal } from '../config/index.js';
 import { skillLoader } from '../skill/index.js';
+import { loopAgentHome } from '../user-home.js';
+import { join } from 'node:path';
 import { COLORS as C } from '../ui/colors.js';
 import type { AgentConfig } from '../config/schema.js';
 
@@ -36,6 +38,26 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
   const startupT0 = Date.now();
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
   console.log('[startup] 初始化运行时...');
+
+  // 0. 存量工作空间配置一次性并入全局（需求 20261112-008 / D6）
+  //    必须在首次 configLoader.load() 之前执行：{ws}/.loop-agent/.agent-config.json 已不参与合并，
+  //    若不先迁移，升级后 tools.enabled 等白名单会静默失效。幂等：迁移后源文件改名为 .bak-<ts>。
+  const tm = Date.now();
+  try {
+    const home = loopAgentHome();
+    const result = await migrateWorkspaceConfigToGlobal({
+      globalDir: home,
+      writer: configWriter,
+      candidateRoots: [workspaceRoot],
+      sessionsDir: join(home, 'sessions'),
+      log: (msg) => console.log(`  ├─ ${msg}`),
+    });
+    if (result.migrated.length > 0) {
+      console.log(`  ├─ 工作空间配置迁移 (+${Date.now() - tm}ms): ${result.migrated.length} 个空间已并入全局`);
+    }
+  } catch (e) {
+    console.error(`${C.yellow}  ├─ 工作空间配置迁移异常（已忽略，不阻断启动）: ${e instanceof Error ? e.message : String(e)}${C.reset}`);
+  }
 
   // 0. 初次启动引导
   const t0 = Date.now();
@@ -95,10 +117,10 @@ export async function initRuntime(opts: { noSetup?: boolean; workspaceRoot?: str
   const t3 = Date.now();
   if (config.skill.enabled && config.skill.autoLoad) {
     try {
-      const skills = skillLoader.scan(workspaceRoot);
+      const skills = skillLoader.scan();
       if (skills.length > 0) {
         console.log(`${C.green}  ├─ Skill 加载成功 (+${Date.now() - t3}ms):${C.reset} ${skills.length} 个`);
-        for (const s of skills) console.log(`  │  ✓ ${s.name} (${s.scope === 'workspace' ? '工作空间' : '全局'})`);
+        for (const s of skills) console.log(`  │  ✓ ${s.name} (全局)`);
       } else {
         console.log(`  ├─ Skill: 未发现可用 skill (+${Date.now() - t3}ms)`);
       }

@@ -222,14 +222,12 @@ describe('pickDirectoryViaDialog（平台探测链）', () => {
   });
 });
 
-describe('removeSkills（Task-20261015-002）', () => {
-  let wsRoot: string;
-  let globalRoot: string;
+describe('removeSkills（Task-20261015-002；需求 20261112-008 收敛为全局唯一）', () => {
+  let skillsRoot: string;
 
-  /** 造 SkillMetadata（在指定作用域根下建真实目录 + SKILL.md） */
-  function makeMeta(name: string, scope: SkillScope, dirName = name): SkillMetadata {
-    const base = scope === 'workspace' ? wsRoot : globalRoot;
-    const dir = join(base, dirName);
+  /** 造 SkillMetadata（在 skills 根下建真实目录 + SKILL.md） */
+  function makeMeta(name: string, dirName = name, scope: SkillScope = 'global'): SkillMetadata {
+    const dir = join(skillsRoot, dirName);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: d\n---\n# body\n`, 'utf-8');
     return { name, description: 'd', path: join(dir, 'SKILL.md'), dir, scope };
@@ -237,92 +235,55 @@ describe('removeSkills（Task-20261015-002）', () => {
 
   function opts(
     skills: SkillMetadata[],
-    scope: 'auto' | 'global' | 'workspace',
     confirm: (name: string, dir: string, scope: SkillScope) => Promise<boolean> = confirmYes,
   ) {
-    return { skills, scope, globalDir: globalRoot, workspaceDir: wsRoot, confirm };
+    return { skills, rootDir: skillsRoot, confirm };
   }
 
   beforeEach(() => {
-    wsRoot = join(root, 'ws', 'skills');
-    globalRoot = join(root, 'gl', 'skills');
+    skillsRoot = join(root, 'gl', 'skills');
   });
 
   it('空数组 → 直接返回空结果', async () => {
-    const r = await removeSkills([], opts([], 'auto'));
+    const r = await removeSkills([], opts([]));
     expect(r).toEqual({ removed: [], failed: [] });
   });
 
-  it('auto：仅工作空间存在 → 删除工作空间目录', async () => {
-    const meta = makeMeta('alpha', 'workspace');
-    const r = await removeSkills(['alpha'], opts([meta], 'auto'));
+  it('正常删除：移除目录并从 removed 回报', async () => {
+    const meta = makeMeta('alpha');
+    const r = await removeSkills(['alpha'], opts([meta]));
     expect(r.failed).toEqual([]);
     expect(r.removed).toHaveLength(1);
-    expect(r.removed[0]).toMatchObject({ name: 'alpha', scope: 'workspace' });
+    expect(r.removed[0]).toMatchObject({ name: 'alpha', scope: 'global' });
     expect(existsSync(meta.dir)).toBe(false);
   });
 
-  it('auto：同名两作用域 → 优先删工作空间，全局保留', async () => {
-    const ws = makeMeta('dup', 'workspace');
-    const gl = makeMeta('dup', 'global');
-    const r = await removeSkills(['dup'], opts([ws, gl], 'auto'));
-    expect(r.removed).toHaveLength(1);
-    expect(r.removed[0].scope).toBe('workspace');
-    expect(existsSync(ws.dir)).toBe(false);
-    expect(existsSync(gl.dir)).toBe(true);
-  });
-
-  it('auto：仅全局存在 → fallback 删全局', async () => {
-    const gl = makeMeta('only-global', 'global');
-    const r = await removeSkills(['only-global'], opts([gl], 'auto'));
-    expect(r.removed).toHaveLength(1);
-    expect(r.removed[0].scope).toBe('global');
-    expect(existsSync(gl.dir)).toBe(false);
-  });
-
-  it('--global：同名两作用域 → 只删全局', async () => {
-    const ws = makeMeta('dup', 'workspace');
-    const gl = makeMeta('dup', 'global');
-    const r = await removeSkills(['dup'], opts([ws, gl], 'global'));
-    expect(r.removed[0].scope).toBe('global');
-    expect(existsSync(gl.dir)).toBe(false);
-    expect(existsSync(ws.dir)).toBe(true);
-  });
-
-  it('--workspace：仅全局存在 → 未找到，不 fallback', async () => {
-    const gl = makeMeta('g', 'global');
-    const r = await removeSkills(['g'], opts([gl], 'workspace'));
-    expect(r.removed).toEqual([]);
-    expect(r.failed[0].reason).toBe('未找到已安装的 Skill');
-    expect(existsSync(gl.dir)).toBe(true);
-  });
-
   it('未找到 → failed「未找到已安装的 Skill」', async () => {
-    const r = await removeSkills(['ghost'], opts([], 'auto'));
+    const r = await removeSkills(['ghost'], opts([]));
     expect(r.removed).toEqual([]);
     expect(r.failed).toEqual([{ name: 'ghost', reason: '未找到已安装的 Skill' }]);
   });
 
-  it('护栏：dir 非 skills 根直接子目录 → 拒绝删除', async () => {
-    const meta = makeMeta('evil', 'workspace', 'nested/evil');
-    const r = await removeSkills(['evil'], opts([meta], 'workspace'));
+  it('护栏：dir 非 skills 根直接子目录 → 拒绝删除（D5）', async () => {
+    const meta = makeMeta('evil', 'nested/evil');
+    const r = await removeSkills(['evil'], opts([meta]));
     expect(r.removed).toEqual([]);
     expect(r.failed[0].reason).toBe('目标路径异常，拒绝删除');
     expect(existsSync(meta.dir)).toBe(true);
   });
 
   it('确认 N → 已跳过，目录保留', async () => {
-    const meta = makeMeta('skipme', 'workspace');
-    const r = await removeSkills(['skipme'], opts([meta], 'auto', confirmNo));
+    const meta = makeMeta('skipme');
+    const r = await removeSkills(['skipme'], opts([meta], confirmNo));
     expect(r.removed).toEqual([]);
     expect(r.failed[0].reason).toBe('已跳过');
     expect(existsSync(meta.dir)).toBe(true);
   });
 
   it('批量：单项失败不阻断其余', async () => {
-    const a = makeMeta('a', 'workspace');
-    const b = makeMeta('b', 'workspace');
-    const r = await removeSkills(['a', 'ghost', 'b'], opts([a, b], 'auto'));
+    const a = makeMeta('a');
+    const b = makeMeta('b');
+    const r = await removeSkills(['a', 'ghost', 'b'], opts([a, b]));
     expect(r.removed.map((e) => e.name)).toEqual(['a', 'b']);
     expect(r.failed).toEqual([{ name: 'ghost', reason: '未找到已安装的 Skill' }]);
     expect(existsSync(a.dir)).toBe(false);
@@ -330,11 +291,12 @@ describe('removeSkills（Task-20261015-002）', () => {
   });
 
   it('按 frontmatter name 定位，目录名不同也能删（D1）', async () => {
-    const meta = makeMeta('real-name', 'workspace', 'weird-dir-name');
+    const meta = makeMeta('real-name', 'weird-dir-name');
     const confirm = vi.fn().mockResolvedValue(true);
-    const r = await removeSkills(['real-name'], opts([meta], 'auto', confirm));
+    const r = await removeSkills(['real-name'], opts([meta], confirm));
     expect(r.removed).toHaveLength(1);
-    expect(confirm).toHaveBeenCalledWith('real-name', expect.any(String), 'workspace');
+    expect(confirm).toHaveBeenCalledWith('real-name', expect.any(String), 'global');
     expect(existsSync(meta.dir)).toBe(false);
   });
 });
+

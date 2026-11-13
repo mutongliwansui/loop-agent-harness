@@ -36,6 +36,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/help` | 查看全局帮助信息；任意命令后加 `help`（如 `/mcp help`）查看其子命令用法 |
 | `/reset` `/clear` | 清空多轮对话历史，开始新会话 |
 | `/status` | 查看当前会话状态（消息数 / 工具数 / MCP 工具数 / Skills） |
+| `/jobs` | 后台任务列表（命令 + 子任务，当前会话 + 无归属）；`/jobs show <id>` 查看摘要 |
 | `/tools` | 工具管理（list / enable / disable / reload） |
 | `/config` | 配置管理（get / set / delete / list / path） |
 | `/mcp` | MCP 管理（list / add / remove / reload / test / view） |
@@ -45,7 +46,7 @@ Agent> 帮我读取 package.json 的版本号
 | `/vision` | 视觉模型管理（status / test） |
 | `/model` | 多模型管理（list / use / add / remove / test / bench） |
 | `/upload` | 文件上传（复制到会话隔离上传目录并注入 Agent 上下文；list / clean） |
-| `/setup` | 重跑初始化配置向导（--global / --workspace 指定写入层级） |
+| `/setup` | 重跑初始化配置向导（配置一律写全局） |
 | `/doctor` | 启动体检：逐项检测模型配置 / 配置文件 / skills 目录（只读） |
 | `exit` / `quit` / `退出` | 退出程序（Ctrl+C 连按两次同样有效） |
 | `Ctrl+C` | **回答中**：只中断本次回答（停止流式输出与工具执行，已生成内容保留到会话，可继续追问）；**测速等可中断命令执行中**：只中断该命令（如 `/model bench` 保留已完成样本）；**空闲时**：3 秒内连按两次才退出（防误触） |
@@ -85,16 +86,17 @@ Agent> 帮我读取 package.json 的版本号
 
 #### `/config` — 配置管理
 
-支持对工作空间（默认）和全局两个层级的配置进行读写：
+配置只剩全局一份（需求 20261112-008 后工作空间级配置已移除）：
 
 ```
 /config list                    # 查看当前生效配置（含每一字段的来源标记）
 /config get <key>               # 查看某个配置项（如 model.name）
-/config set <key> <value>       # 设置配置项（默认写入工作空间）
-/config set <key> <value> --global  # 写入全局配置
+/config set <key> <value>       # 设置配置项（写全局；--global 可省略）
 /config delete <key>            # 删除某配置项
-/config path                    # 查看配置文件路径
+/config path                    # 查看全局配置文件路径
 ```
+
+`--workspace` 已移除，传入会明确报错中止；`--global` 保留但可省略。
 
 配置值支持自动识别类型：`true`/`false` 为布尔值，数字自动转为 Number，`{...}` 或 `[...]` 自动解析为 JSON。
 
@@ -146,19 +148,19 @@ Agent> 帮我读取 package.json 的版本号
 #### `/skill` — Skill 管理
 
 ```
-/skill list                     # 列出所有可用 Skill（全局 + 工作空间，含来源标记）
+/skill list                     # 列出所有可用 Skill（全局唯一目录）
 /skill reload                   # 重新扫描 Skill 目录
 /skill show <name>              # 显示指定 Skill 的 SKILL.md 完整内容
-/skill upload <目录...>         # 安装本地 Skill 目录（默认工作空间；--global 装到全局；同名冲突询问覆盖）
+/skill upload <目录...>         # 安装本地 Skill 目录（一律装到全局；同名冲突询问覆盖）
 /skill upload                   # 无参：弹出系统目录选择框（Windows/macOS/Linux 探测可用工具）
-/skill remove <name...>         # 删除已安装 Skill（默认工作空间优先；--global/--workspace 严格限定；逐个 y/N 确认）
+/skill remove <name...>         # 删除已安装 Skill（全局唯一目录；逐个 y/N 确认）
 ```
 
-Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skills/` 两个目录自动扫描，同名时工作空间优先。详见 [🎯 Skill 技能包](skills.md)。
+Skill 只从全局 `~/.loop-agent/skills/` 一个目录自动扫描（需求 20261112-008 后工作空间目录不再使用）。详见 [🎯 Skill 技能包](skills.md)。
 
 `/skill upload` 支持拖拽目录到终端（引号 / `file://` URI 自动归一）与多目录批量安装；安装前校验目标含合法 `SKILL.md`（name/description），单项失败不阻断其余，安装完成后自动重新扫描立即可用。
 
-`/skill remove` 按 frontmatter `name` 定位并删除整个 Skill 目录：同名两处时默认删工作空间（`--global` / `--workspace` 可严格限定单一作用域），删除前逐个确认（默认 N），内置路径护栏（目标必须是 skills 根的直接子目录，防路径穿越），删除后自动重新扫描，`/skill list` 立即不可见；支持批量删除，单项失败不阻断其余。
+`/skill remove` 按 frontmatter `name` 定位并删除整个 Skill 目录（skill 目录已收敛为全局唯一，`--global` / `--workspace` 两个 flag 均已移除，传 `--workspace` 会明确报错）：删除前逐个确认（默认 N），内置路径护栏（目标必须是 skills 根的直接子目录，防路径穿越），删除后自动重新扫描，`/skill list` 立即不可见；支持批量删除，单项失败不阻断其余。
 
 #### `/memory` — 记忆管理
 
@@ -200,9 +202,7 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 ```
 /model list                  # 列出登记簿与当前生效快照（含 apiKey 掩码与漂移检测提示）
 /model use <别名>            # 切换到已登记模型（同步激活指针与生效快照，立即生效）
-/model use <别名> --global   # 切换全局层；与工作空间层冲突时可交互确认并自动清理冲突键
-/model add <别名>            # 登记新模型（交互选择写入位置，回车默认工作空间）
-/model add <别名> --global   # 登记到全局层（flag 显式指定时跳过位置询问）
+/model add <别名>            # 登记新模型（写全局）
 /model remove <别名>         # 从登记簿移除（不影响当前生效快照）
 /model test <别名>           # 对已登记模型做连通性测试（不改变激活状态）
 ```
@@ -210,11 +210,11 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 设计要点：
 
 - **登记簿 + 激活指针**：`models.profiles` 只做登记，`models.active` 指向当前激活别名；`/model use` 会同时写入激活指针与 `model.*` 生效快照——运行时只读 `model.*` 一处，主模型、视觉回退三元组、记忆系统（Dreaming / 压缩）全部跟随新模型。
-- **跨层叠加**：登记簿按「全局 → 工作空间」逐层深合并（同名别名工作空间叶子覆盖全局），`temperature` 未登记的模型切换时不覆盖现有采样温度。
+- **单一全局层**：登记簿 `models.profiles` 只存在于全局配置，不再按「全局 → 工作空间」分层合并；`temperature` 未登记的模型切换时不覆盖现有采样温度。
 - **漂移检测**：`/model list` 与启动 Banner 会比对激活别名与生效快照（只比 name + baseUrl，apiKey 轮换不算漂移），不一致时提示执行 `/model use <别名>` 重新同步。
 - **向导联动**：首次启动向导写入模型时，若登记簿为空会自动登记为 `default` 别名，之后接入第二个模型即可随时 `/model use default` 回切。
 
-配置示例（工作空间 `.loop-agent/.agent-config.json`）：
+配置示例（全局 `~/.loop-agent/config.json`）：
 
 ```json
 {
@@ -297,12 +297,10 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
 
 #### `/setup` — 重跑初始化向导
 
-在 REPL 内重新运行首次启动的配置向导，流程一致：baseUrl → apiKey（遮蔽输入）→ 模型名 → 连通性校验 → 选择写入层级。完成后立即重新加载配置并刷新工具注册，后续对话即时生效，无需重启：
+在 REPL 内重新运行首次启动的配置向导，流程一致：baseUrl → apiKey（遮蔽输入）→ 模型名 → 连通性校验。配置一律写入全局 `~/.loop-agent/config.json`（写入层已收敛为全局，`--global` / `--workspace` 均已移除，传 `--workspace` 会明确报错）。完成后立即重新加载配置并刷新工具注册，后续对话即时生效，无需重启：
 
 ```
-/setup                     # 未指定层级时沿用向导默认建议
-/setup --global            # 写入全局配置 ~/.loop-agent/config.json
-/setup --workspace         # 写入工作空间配置 .loop-agent/.agent-config.json
+/setup                     # 重跑向导，配置写全局
 ```
 
 写入前若目标文件存在但内容损坏（非法 JSON），会自动备份为 `.bak-<时间戳>`。
@@ -325,4 +323,4 @@ Skill 从全局 `~/.loop-agent/skills/` 与工作空间 `<cwd>/.loop-agent/skill
   本命令只读，不修改任何文件
 ```
 
-共 6 个检测项：主模型 apiKey、主模型名称、全局配置文件、工作空间配置文件、全局 skills 目录、工作空间 skills 目录；✗ 项附带修复提示（如「运行 /setup 重新配置」）。
+共 4 个检测项：主模型 apiKey、主模型名称、全局配置文件、全局 skills 目录；✗ 项附带修复提示（如「运行 /setup 重新配置」）。

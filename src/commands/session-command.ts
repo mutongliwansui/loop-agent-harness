@@ -88,7 +88,7 @@ export const sessionCommand: CommandHandler = {
       try {
         const data = await sessionStore.loadSession(id);
         const { config: loadCfg } = configLoader.load();
-        const skills = loadCfg.skill.enabled ? skillLoader.scan(process.cwd()) : [];
+        const skills = loadCfg.skill.enabled ? skillLoader.scan() : [];
         const systemPrompt = loadCfg.agent.systemPrompt ?? buildSystemPrompt(skills);
         agent.restoreSession(data, systemPrompt);
         // 展示层：取全量历史中 is_show!==false 的消息（system 与压缩总结消息不展示）

@@ -186,9 +186,9 @@ async function startTestServer(cfgOverride?: AgentConfig): Promise<{ server: Api
   return { server, port };
 }
 
-/** POST /sessions 创建会话，返回 id */
+/** POST /sessions 创建会话（须显式指定 workspacePath），返回 id */
 async function createSessionViaApi(): Promise<string> {
-  const res = await req('POST', '/sessions');
+  const res = await req('POST', '/sessions', { workspacePath: TEST_WORKSPACE });
   expect(res.status).toBe(201);
   return ((await jsonOf(res)) as { id: string }).id;
 }
@@ -273,10 +273,15 @@ describe('健康探针与会话资源', () => {
     const created = await createSessionViaApi();
     expect(created).toMatch(/^sess_/);
 
-    const list = await req('GET', '/sessions');
+    const list = await req('GET', `/sessions?ws=${encodeURIComponent(TEST_WORKSPACE)}`);
     expect(list.status).toBe(200);
     const { sessions } = (await jsonOf(list)) as { sessions: { id: string }[] };
     expect(sessions.some((s) => s.id === created)).toBe(true);
+
+    // 缺 ws → 400（需求 20261113-001：不再回落进程启动空间）
+    const noWs = await req('GET', '/sessions');
+    expect(noWs.status).toBe(400);
+    expect(((await jsonOf(noWs)) as { error: { code: string } }).error.code).toBe('bad_request');
 
     const detail = await req('GET', `/sessions/${created}`);
     expect(detail.status).toBe(200);
@@ -612,7 +617,11 @@ describe('重启恢复（D5）', () => {
     const port0Cfg: AgentConfig = { ...config, api: { ...config.api, port: 0 } };
     const { server: s1, port } = await startTestServer(port0Cfg);
     const base1 = `http://127.0.0.1:${port}`;
-    const created = await fetch(`${base1}/sessions`, { method: 'POST' });
+    const created = await fetch(`${base1}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspacePath: TEST_WORKSPACE }),
+    });
     const id = ((await created.json()) as { id: string }).id;
 
     await fetch(`${base1}/sessions/${id}/messages`, {

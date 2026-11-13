@@ -4,13 +4,13 @@
 // model.* 是运行时唯一读取的生效快照；切换 = 写 models.active + 同步 model.* 快照，
 // 运行时每次动态读配置，写盘即生效（零重启）
 import { createMaskedAsk } from '../bootstrap/wizard.js';
-import type { ConfigLoader, ConfigScope, ConfigSource, PartialAgentConfig } from '../config/index.js';
+import type { ConfigLoader, ConfigSource, PartialAgentConfig } from '../config/index.js';
 import { DEFAULT_CONFIG, detectDrift, type AgentConfig, type ModelProfile } from '../config/schema.js';
 import { defaultCheckConnectivity, type CheckConnectivityFn } from '../llm/connectivity.js';
 import { COLORS, sourceColor } from '../ui/colors.js';
 import { Spinner } from '../ui/spinner.js';
 import { createBenchRunner, type BenchCommand } from './bench-command.js';
-import { parseScope } from './utils.js';
+import { parseScope, WORKSPACE_FLAG_REMOVED } from './utils.js';
 import type { CommandContext, CommandHandler } from './registry.js';
 
 // 漂移检测实现在 config/schema.ts（Banner 渲染共用），此处 re-export 保持既有 API
@@ -51,22 +51,13 @@ export function buildUsePartial(alias: string, profile: ModelProfile): PartialAg
   };
 }
 
-/** 读取某一层的原始配置（不存在/损坏返回 null）——用于跨层冲突与归属检测 */
-export async function readLayerRaw(loader: ConfigLoader, scope: ConfigScope): Promise<PartialAgentConfig | null> {
+/** 读取当前配置快照（不存在/损坏返回 null）——全局化后仅一份事实源 */
+export async function readLayerRaw(loader: ConfigLoader): Promise<PartialAgentConfig | null> {
   try {
-    return scope === 'workspace' ? await loader.loadWorkspace() : await loader.loadGlobal();
+    return await loader.loadGlobal();
   } catch {
     return null;
   }
-}
-
-/** 收集 workspace 层会覆盖全局切换的冲突键（model.* 与 models.active） */
-export function collectConflictKeys(raw: PartialAgentConfig | null): string[] {
-  if (!raw) return [];
-  const keys: string[] = [];
-  if (raw.model) keys.push(...Object.keys(raw.model).map((k) => `model.${k}`));
-  if (raw.models?.active !== undefined) keys.push('models.active');
-  return keys;
 }
 
 function srcTag(sources: Record<string, ConfigSource>, key: string): string {
@@ -133,13 +124,19 @@ function printList(ctx: CommandContext): void {
   out.blank();
 }
 
-async function runUse(ctx: CommandContext, args: string[], deps: ModelCommandDeps): Promise<void> {
+async function runUse(ctx: CommandContext, args: string[], _deps: ModelCommandDeps): Promise<void> {
   const { out } = ctx;
-  const { scope, rest } = parseScope(args);
+  const { workspaceFlag, rest } = parseScope(args);
+  if (workspaceFlag) {
+    out.blank();
+    out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+    out.blank();
+    return;
+  }
   const alias = rest[0] ?? '';
   if (!validAlias(alias)) {
     out.blank();
-    out.log(`${COLORS.red}用法: /model use <别名> [--workspace|--global]${COLORS.reset}`);
+    out.log(`${COLORS.red}用法: /model use <别名>${COLORS.reset}`);
     out.log(`${COLORS.gray}已登记: ${aliasList(ctx.configLoader.load().config)}${COLORS.reset}`);
     out.blank();
     return;
@@ -161,38 +158,11 @@ async function runUse(ctx: CommandContext, args: string[], deps: ModelCommandDep
     return;
   }
 
-  // D5：--global 切换时，workspace 层的 model.*/models.active 优先级更高，会盖住全局切换。
-  // P1：交互 y/N 确认后自动清理工作空间冲突键（二者本就是生效快照，由 /model 接管）
-  if (scope === 'global') {
-    const wsRaw = await readLayerRaw(ctx.configLoader, 'workspace');
-    const conflicts = collectConflictKeys(wsRaw);
-    if (conflicts.length > 0) {
-      out.blank();
-      out.log(`${COLORS.yellow}⚠ 工作空间层存在同键配置（${conflicts.join(', ')}），优先级高于全局，本次全局切换可能不生效${COLORS.reset}`);
-      const ask = deps.ask ?? rlAsk(ctx);
-      const cleanup = isYes(
-        await ask(`是否自动清理工作空间冲突键，使本次全局切换生效？[y/N]: `),
-      );
-      if (cleanup) {
-        try {
-          for (const key of conflicts) {
-            await ctx.configWriter.deleteScopeKey('workspace', key.split('.'));
-          }
-          out.log(`${COLORS.green}✓ 已清理工作空间冲突键（${conflicts.join(', ')}）${COLORS.reset}`);
-        } catch (err) {
-          out.log(`${COLORS.red}✗ 清理失败：${err instanceof Error ? err.message : String(err)}${COLORS.reset}`);
-        }
-      } else {
-        out.log(`${COLORS.gray}  可改用 /model use ${alias}（默认写工作空间）或 /config delete <键> --workspace 清理${COLORS.reset}`);
-      }
-    }
-  }
-
-  await ctx.configWriter.updateScope(scope, buildUsePartial(alias, profile));
+  await ctx.configWriter.update(buildUsePartial(alias, profile));
   out.blank();
   out.log(
     `${COLORS.bold}${COLORS.green}✓ 已切换激活模型: ${alias}${COLORS.reset}`
-    + `（${profile.name} @ ${profile.baseUrl}，写入${scope === 'workspace' ? '工作空间' : '全局'}）`,
+    + `（${profile.name} @ ${profile.baseUrl}，写入全局配置）`,
   );
   out.log(`${COLORS.gray}  下一次对话即生效，无需重启${COLORS.reset}`);
   out.blank();
@@ -200,11 +170,17 @@ async function runUse(ctx: CommandContext, args: string[], deps: ModelCommandDep
 
 async function runAdd(ctx: CommandContext, args: string[], deps: ModelCommandDeps): Promise<void> {
   const { out } = ctx;
-  const { scope: flagScope, rest, explicit } = parseScope(args);
+  const { workspaceFlag, rest } = parseScope(args);
+  if (workspaceFlag) {
+    out.blank();
+    out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+    out.blank();
+    return;
+  }
   const alias = rest[0] ?? '';
   if (!validAlias(alias)) {
     out.blank();
-    out.log(`${COLORS.red}用法: /model add <别名> [--workspace|--global]（别名不能含空格、不以 - 开头）${COLORS.reset}`);
+    out.log(`${COLORS.red}用法: /model add <别名>（别名不能含空格、不以 - 开头）${COLORS.reset}`);
     out.blank();
     return;
   }
@@ -219,15 +195,6 @@ async function runAdd(ctx: CommandContext, args: string[], deps: ModelCommandDep
 
   const ask = deps.ask ?? rlAsk(ctx);
   const askSecret = deps.askSecret ?? createMaskedAsk(ctx.rl);
-
-  // 写入位置：命令行 flag 显式指定时直接采用，否则交互选择（回车默认工作空间）
-  let scope = flagScope;
-  if (!explicit) {
-    const answer = (
-      await ask('写入位置 [1] 工作空间（仅当前项目）/ [2] 全局（所有项目共享），默认 1: ')
-    ).trim().toLowerCase();
-    if (answer === '2' || answer === 'global' || answer === 'g') scope = 'global';
-  }
 
   const defaultBaseUrl = cfg.model.baseUrl || DEFAULT_CONFIG.model.baseUrl;
   const baseUrl = (await ask(`服务地址 [${defaultBaseUrl}]: `)).trim() || defaultBaseUrl;
@@ -259,12 +226,12 @@ async function runAdd(ctx: CommandContext, args: string[], deps: ModelCommandDep
   }
 
   const profile: ModelProfile = { name, baseUrl, apiKey };
-  await ctx.configWriter.updateScope(scope, { models: { profiles: { [alias]: profile } } });
+  await ctx.configWriter.update({ models: { profiles: { [alias]: profile } } });
 
   out.blank();
   out.log(
     `${COLORS.bold}${COLORS.green}✓ 已登记模型「${alias}」${COLORS.reset}`
-    + `（${name} @ ${baseUrl}，key ${maskKey(apiKey)}，写入${scope === 'workspace' ? '工作空间' : '全局'}）`,
+    + `（${name} @ ${baseUrl}，key ${maskKey(apiKey)}，写入全局配置）`,
   );
   out.log(`${COLORS.gray}  激活: /model use ${alias}${COLORS.reset}`);
 
@@ -284,7 +251,7 @@ async function runAdd(ctx: CommandContext, args: string[], deps: ModelCommandDep
       } else if (after.models.profiles[aliasInput] !== undefined) {
         out.log(`${COLORS.yellow}⚠ 别名「${aliasInput}」已存在，已跳过补录${COLORS.reset}`);
       } else {
-        await ctx.configWriter.updateScope(scope, {
+        await ctx.configWriter.update({
           models: {
             profiles: {
               [aliasInput]: { name: after.model.name, baseUrl: after.model.baseUrl, apiKey: after.model.apiKey },
@@ -300,11 +267,17 @@ async function runAdd(ctx: CommandContext, args: string[], deps: ModelCommandDep
 
 async function runRemove(ctx: CommandContext, args: string[]): Promise<void> {
   const { out } = ctx;
-  const { scope, rest } = parseScope(args);
+  const { workspaceFlag, rest } = parseScope(args);
+  if (workspaceFlag) {
+    out.blank();
+    out.log(`${COLORS.red}${WORKSPACE_FLAG_REMOVED}${COLORS.reset}`);
+    out.blank();
+    return;
+  }
   const alias = rest[0] ?? '';
   if (!validAlias(alias)) {
     out.blank();
-    out.log(`${COLORS.red}用法: /model remove <别名> [--workspace|--global]${COLORS.reset}`);
+    out.log(`${COLORS.red}用法: /model remove <别名>${COLORS.reset}`);
     out.blank();
     return;
   }
@@ -317,27 +290,18 @@ async function runRemove(ctx: CommandContext, args: string[]): Promise<void> {
     return;
   }
 
-  const targetRaw = await readLayerRaw(ctx.configLoader, scope);
+  const targetRaw = await readLayerRaw(ctx.configLoader);
   const inTarget = targetRaw?.models?.profiles?.[alias] !== undefined;
   if (!inTarget) {
-    const otherScope: ConfigScope = scope === 'workspace' ? 'global' : 'workspace';
-    const otherRaw = await readLayerRaw(ctx.configLoader, otherScope);
-    if (otherRaw?.models?.profiles?.[alias] !== undefined) {
-      out.blank();
-      out.log(`${COLORS.red}✗ 「${alias}」未在${scope === 'workspace' ? '工作空间' : '全局'}登记，但存在于${otherScope === 'workspace' ? '工作空间' : '全局'}${COLORS.reset}`);
-      out.log(`${COLORS.gray}  请加 ${otherScope === 'workspace' ? '--workspace' : '--global'} 重试: /model remove ${alias} --${otherScope}${COLORS.reset}`);
-      out.blank();
-      return;
-    }
     out.blank();
     out.log(`${COLORS.red}✗ 未找到模型「${alias}」。已登记: ${aliasList(cfg)}${COLORS.reset}`);
     out.blank();
     return;
   }
 
-  await ctx.configWriter.deleteScopeKey(scope, ['models', 'profiles', alias]);
+  await ctx.configWriter.deleteKey(['models', 'profiles', alias]);
   out.blank();
-  out.log(`${COLORS.bold}${COLORS.green}✓ 已从${scope === 'workspace' ? '工作空间' : '全局'}移除模型「${alias}」${COLORS.reset}`);
+  out.log(`${COLORS.bold}${COLORS.green}✓ 已从全局配置移除模型「${alias}」${COLORS.reset}`);
   out.log(`${COLORS.gray}  当前生效快照（model.*）不受影响${COLORS.reset}`);
   out.blank();
 }

@@ -166,9 +166,14 @@ function metaOf(n: FsNode): string {
 const SKEL_W = [46, 72, 58, 86, 64, 52, 78, 40, 68, 60, 44, 74];
 
 
-/** 请求工作空间参数：显式传活跃会话所属空间，后端据此解析 /fs/* 根 */
+/**
+ * 请求工作空间参数：显式传活跃会话所属空间，后端据此解析 /fs/* 根。
+ * 需求 20261113-001 D2 起后端「缺 ws 一律 400」——无活跃会话时各调用点已提前返回，
+ * 这里若仍被调用说明有漏掉的守卫，直接抛错便于定位，而不是静默发一个不带 ws 的请求。
+ */
 function wsQuery(): string {
-  return props.wsPath ? `&ws=${encodeURIComponent(props.wsPath)}` : '';
+  if (!props.wsPath) throw new Error('缺少工作空间路径：/fs/* 请求须显式指定 ws');
+  return `&ws=${encodeURIComponent(props.wsPath)}`;
 }
 
 /** 拉取单个目录的直接子项（懒加载，无深度上限） */
@@ -634,6 +639,17 @@ async function mountPptx(seq: number): Promise<void> {
 }
 
 async function openFile(path: string, anchor = ''): Promise<void> {
+  // 需求 20261113-001 D2：/fs/* 须显式 ws；无活跃会话时提前给出可读提示，不发无效请求
+  if (!props.wsPath) {
+    selected.value = path;
+    activeTab.value = 'file';
+    viewMode.value = 'prev';
+    fileData.value = null;
+    releaseBinary();
+    fileError.value = '当前没有活跃会话所属的工作空间，无法预览该文件';
+    fileLoading.value = false;
+    return;
+  }
   const k = viewKindOf(path);
   selected.value = path;
   // 打开文件即切回文件页签（终端在后台保活，不打断正在跑的命令）

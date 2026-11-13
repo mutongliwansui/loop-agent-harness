@@ -7,6 +7,8 @@
  * - 6.2.5（task-03 重写）目标空间解析退化为"最近使用指针刷新"：
  *         零 process.chdir、零 store 原地重绑、零 setWorkspacePath、不触发记忆/池重建；
  *         目标空间由 registry 懒建独立 runtime，旧空间 runtime 保持不可变
+ * - 需求 20261113-001 D6/D8：`POST /sessions` 缺 `workspacePath`（含空串/纯空白）一律 400，
+ *         且失败请求不会在任何空间留下会话——「发消息必在已选空间的会话内」不依赖隐式缺省空间
  * - registry 提供的 runtime 与 server 注入的 deps 指向同一 root（无两份缓存分叉）
  *
  * 目录全部注入临时路径（userDir 覆盖 ~/.loop-agent）。
@@ -18,6 +20,8 @@ import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApiServer, type ApiServer } from '../src/api/server.js';
 import { WorkspaceRegistry } from '../src/api/workspace-runtime.js';
+import { ConfigLoader } from '../src/config/loader.js';
+import { ConfigWriter } from '../src/config/writer.js';
 import { DEFAULT_CONFIG, type AgentConfig } from '../src/config/schema.js';
 import { canonicalWorkspacePath } from '../src/session/path-utils.js';
 import { workspaceId } from '../src/session/index.js';
@@ -59,6 +63,9 @@ const fakeRunAgent = async (_sid: string, input: string, _options: AgentOptions)
 async function startServer(workspace: string): Promise<void> {
   const rt = await registry.get(workspace);
   const cfg: AgentConfig = { ...structuredClone(DEFAULT_CONFIG), api: { ...DEFAULT_CONFIG.api, port: 0 } };
+  // 需求 20261112-008（D8）：配置为进程级单例，不再由 runtime 持有；单测注入临时 userDir
+  const loader = new ConfigLoader(USER_DIR);
+  const writer = new ConfigWriter(USER_DIR, loader);
   server = createApiServer({
     runAgent: fakeRunAgent,
     sessionStore: rt.store,
@@ -66,8 +73,8 @@ async function startServer(workspace: string): Promise<void> {
     getConfig: () => cfg,
     version: 'test-0.0.0',
     runtime: {
-      configLoader: rt.configLoader,
-      configWriter: rt.configWriter,
+      configLoader: loader,
+      configWriter: writer,
       createMemoryKit: () => rt.getMemoryKit(),
     },
     registry,
@@ -103,7 +110,7 @@ afterAll(async () => {
 
 describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', () => {
   it('GET /sessions 返回 { sessions: [{ id,title,createdAt,updatedAt,messageCount,file }] }', async () => {
-    const created = await req('POST', '/sessions', { title: '形状校验' });
+    const created = await req('POST', '/sessions', { title: '形状校验', workspacePath: WS_A });
     expect(created.status).toBe(201);
     const createdBody = (await created.json()) as Record<string, unknown>;
     expect(Object.keys(createdBody).sort()).toEqual(
@@ -115,7 +122,7 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
       switched: false,
     });
 
-    const res = await req('GET', '/sessions');
+    const res = await req('GET', `/sessions?ws=${encodeURIComponent(WS_A)}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { sessions: Record<string, unknown>[] };
     expect(Object.keys(body)).toEqual(['sessions']);
@@ -124,6 +131,19 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
     expect(Object.keys(one).sort()).toEqual(
       ['id', 'title', 'createdAt', 'updatedAt', 'messageCount', 'file'].sort(),
     );
+  });
+
+  it('GET /sessions 缺 ws → 400；未知 ws → 404（不再回落进程启动空间）', async () => {
+    const noWs = await req('GET', '/sessions');
+    expect(noWs.status).toBe(400);
+    expect(((await noWs.json()) as { error: { code: string } }).error.code).toBe('bad_request');
+
+    const blank = await req('GET', '/sessions?ws=%20%20');
+    expect(blank.status).toBe(400);
+
+    // 目标目录不存在：与 POST /sessions 同构（ensureRoot 统一给 not_found）
+    const missing = await req('GET', `/sessions?ws=${encodeURIComponent(join(ROOT, 'ws-not-exist'))}`);
+    expect(missing.status).toBe(404);
   });
 
   it('GET /workspaces 保持 WorkspaceSummary 字段清单（含 sessions 内 running/lastRun）', async () => {
@@ -147,7 +167,7 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
     );
   });
 
-  it('GET /fs/dirs 返回 { path, parent, dirs, drives }，缺省指向当前空间', async () => {
+  it('GET /fs/dirs 返回 { path, parent, dirs, drives }，缺省指向最近使用空间（推荐起点）', async () => {
     const res = await req('GET', '/fs/dirs');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -164,7 +184,7 @@ describe('6.2.4 响应字段快照（registry 收编后与改造前一致）', (
   });
 
   it('GET /sessions/:id 保持 { meta, messages, run, lastRun, workspace }', async () => {
-    const created = await req('POST', '/sessions', { title: '详情形状' });
+    const created = await req('POST', '/sessions', { title: '详情形状', workspacePath: WS_A });
     const { id } = (await created.json()) as { id: string };
     const res = await req('GET', `/sessions/${id}`);
     expect(res.status).toBe(200);
@@ -200,15 +220,17 @@ describe('6.2.5 目标空间解析只刷新最近使用指针（零 chdir / 零�
     expect(rtB.store).not.toBe(rtA.store);
     expect(rtB.store.path).toBe(rootB);
     expect(rtB.store.id).toBe(workspaceId(rootB));
-    // 4) scaffold 初始化（两级 skills 目录存在）
-    expect(existsSync(join(rootB, '.loop-agent'))).toBe(true);
-    // 5) /config（workspace 层）读写落到当前空间（6.2.5）
+    // 4) 需求 20261112-008：空间解析不再产生工作空间产物（.loop-agent 不建）
+    expect(existsSync(join(rootB, '.loop-agent'))).toBe(false);
+    // 5) 需求 20261112-008：配置只有全局一层，/config/path 不再返回工作空间路径
     const cfgPath = (await (await req('GET', '/config/path')).json()) as {
-      workspacePath: string;
+      globalPath: string;
+      workspacePath: string | null;
       workspaceExists: boolean;
     };
-    expect(cfgPath.workspacePath).toBe(join(rootB, '.loop-agent', '.agent-config.json'));
-    expect(cfgPath.workspaceExists).toBe(true);
+    expect(cfgPath.globalPath).toBe(join(USER_DIR, 'config.json'));
+    expect(cfgPath.workspacePath).toBeNull();
+    expect(cfgPath.workspaceExists).toBe(false);
 
     // 复原最近使用指针（后续用例仍以 WS_A 为当前空间）：同样零 chdir（task-04：switched 恒 false）
     const back = await req('POST', '/sessions', { title: '切回', workspacePath: rootA });
@@ -228,6 +250,27 @@ describe('6.2.5 目标空间解析只刷新最近使用指针（零 chdir / 零�
     expect(body.workspace.path).toBe(rootA);
   });
 
+  it('缺 workspacePath：400 bad_request，不落任何隐式缺省空间', async () => {
+    const before = await (await req('GET', '/workspaces')).json() as { workspaces: { sessions: unknown[] }[] };
+    const countBefore = before.workspaces.reduce((n, w) => n + w.sessions.length, 0);
+
+    const res = await req('POST', '/sessions', { title: '没带路径' });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('bad_request');
+    expect(body.error.message).toContain('workspacePath');
+
+    // 关键：请求失败不得悄悄在任何空间留下会话
+    const after = await (await req('GET', '/workspaces')).json() as { workspaces: { sessions: unknown[] }[] };
+    expect(after.workspaces.reduce((n, w) => n + w.sessions.length, 0)).toBe(countBefore);
+  });
+
+  it('workspacePath 为空串：同样 400（trim 后为空按缺失处理）', async () => {
+    const res = await req('POST', '/sessions', { title: '空串', workspacePath: '   ' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('bad_request');
+  });
+
   it('目标目录不存在：not_found（错误码与文案沿用改造前）', async () => {
     const res = await req('POST', '/sessions', { workspacePath: join(ROOT, 'no-such-ws') });
     expect(res.status).toBe(404);
@@ -240,7 +283,7 @@ describe('6.2.5 目标空间解析只刷新最近使用指针（零 chdir / 零�
 describe('deps 与 registry 单一真源', () => {
   it('server 注入的 store 与 runtime.store 是同一实例（无两份缓存）', async () => {
     const rt = registry.peek(await canonicalWorkspacePath(WS_A))!;
-    const res = await req('POST', '/sessions', { title: '单一真源' });
+    const res = await req('POST', '/sessions', { title: '单一真源', workspacePath: WS_A });
     const { id } = (await res.json()) as { id: string };
     // 会话被写进该 runtime 的 store，说明 server 用的就是它的实例
     const list = await rt.store.listSessions();

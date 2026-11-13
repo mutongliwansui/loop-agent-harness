@@ -4,6 +4,9 @@
 // D5：CLI 同名冲突 askConfirm 由请求体 overwrite: true 显式承接（缺省 false → 409）；
 //     remove 的逐项确认由 DELETE 动词承接（无两段式）。
 // 装完/删完自动 reload（与 CLI D6 一致），列表立即可见。
+//
+// 需求 20261112-008（D5）：skill 目录收敛为全局唯一一份（~/.loop-agent/skills），
+// scope 参数仅用于给出可纠正的 400；响应中的 scope 字段保留恒 'global'。
 
 import { basename, dirname, join } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -11,23 +14,25 @@ import { tmpdir } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { installSkillDirs, removeSkills, scanSkillsDir } from '../../skill/index.js';
 import { readZipEntries } from '../../skill/zip.js';
-import type { SkillScope } from '../../skill/types.js';
 import type { HandlerContext, Route } from '../router.js';
 import { ApiHttpError } from '../errors.js';
 import { readJsonBody, sendJson } from '../http-utils.js';
-import { queryScope } from './config.js';
-
-const SKILL_SCOPES: ReadonlySet<string> = new Set(['auto', 'workspace', 'global']);
+import { assertGlobalScope, queryScope } from './config.js';
 
 /** 上传安装：zip 包大小上限（20MB）与请求体上限（base64 约 +33% + JSON 开销） */
 const UPLOAD_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 const UPLOAD_BODY_MAX_BYTES = 28 * 1024 * 1024;
 
-/** 解析 skill 组 scope：auto（workspace 优先 → 全局 fallback）| workspace | global；非法 → 400 */
-function parseSkillScope(raw: unknown): 'auto' | SkillScope {
-  if (raw === undefined || raw === null || raw === '') return 'auto';
-  if (typeof raw === 'string' && SKILL_SCOPES.has(raw)) return raw as 'auto' | SkillScope;
-  throw new ApiHttpError('bad_request', `scope 必须为 auto | workspace | global，收到: ${String(raw)}`);
+/**
+ * 解析 skill 组 scope（需求 20261112-008 / D4/D5）：
+ * 缺省 / auto / global → 全局；workspace → 400（附带替代写法）。
+ */
+function parseSkillScope(raw: unknown): 'global' {
+  if (raw === undefined || raw === null || raw === '' || raw === 'auto' || raw === 'global') {
+    return 'global';
+  }
+  assertGlobalScope(raw); // 命中 workspace 或非法值时抛 400
+  return 'global';
 }
 
 /** GET /skills：合并视图（全局先扫、工作空间覆盖，与 SkillLoader.scan 同款） */
@@ -63,12 +68,10 @@ async function handleCreateSkill(
   const body = await readJsonBody(req);
   const sourcePath = typeof body.sourcePath === 'string' ? body.sourcePath.trim() : '';
   if (!sourcePath) throw new ApiHttpError('bad_request', '请求体必须包含 sourcePath（Skill 目录路径）');
-  const scope: SkillScope = body.scope === 'global' ? 'global' : 'workspace';
+  parseSkillScope(body.scope);
   const overwrite = body.overwrite === true;
 
-  const targetRoot = scope === 'global'
-    ? ctx.skillLoader.globalDir
-    : ctx.skillLoader.getWorkspaceDir(ctx.defaultRoot());
+  const targetRoot = ctx.skillLoader.globalDir;
 
   // D5：同名冲突确认由 overwrite 参数承接（true 直接覆盖，false 拒绝）
   const result = await installSkillDirs([sourcePath], {
@@ -85,37 +88,33 @@ async function handleCreateSkill(
   }
 
   const installed = result.installed[0];
-  if (result.installed.length > 0) ctx.skillLoader.reload(ctx.defaultRoot());
-  ctx.log(`[api] Skill 已安装（${scope}）: ${installed.name} → ${installed.targetDir}`);
-  sendJson(res, 201, { name: installed.name, scope, path: installed.targetDir });
+  if (result.installed.length > 0) ctx.skillLoader.reload();
+  ctx.log(`[api] Skill 已安装: ${installed.name} → ${installed.targetDir}`);
+  sendJson(res, 201, { name: installed.name, scope: 'global', path: installed.targetDir });
 }
 
-/** DELETE /skills/:name?scope=：删除已安装 Skill（auto=工作空间优先 → 全局；成功自动 reload） */
+/** DELETE /skills/:name?scope=：删除已安装 Skill（全局唯一目录；成功自动 reload） */
 async function handleDeleteSkill(
   ctx: HandlerContext,
   req: IncomingMessage,
   res: ServerResponse,
   name: string,
 ): Promise<void> {
-  const scope = parseSkillScope(queryScope(req));
+  parseSkillScope(queryScope(req));
   const globalDir = ctx.skillLoader.globalDir;
-  const workspaceDir = ctx.skillLoader.getWorkspaceDir(ctx.defaultRoot());
-  // auto 需同时看到两层（list() 合并视图会遮蔽同名全局项），直接扫两个目录（与 CLI remove 同款）
-  const candidates = [...scanSkillsDir(workspaceDir, 'workspace'), ...scanSkillsDir(globalDir, 'global')];
+  const candidates = scanSkillsDir(globalDir, 'global');
 
   const result = await removeSkills([name], {
     skills: candidates,
-    scope,
-    globalDir,
-    workspaceDir,
+    rootDir: globalDir,
     confirm: async () => true, // D6：DELETE 动词即确认
   });
 
   const removed = result.removed[0];
   if (removed) {
-    ctx.skillLoader.reload(ctx.defaultRoot());
-    ctx.log(`[api] Skill 已删除（${removed.scope}）: ${name}`);
-    sendJson(res, 200, { deleted: true, name, scope: removed.scope, dir: removed.dir });
+    ctx.skillLoader.reload();
+    ctx.log(`[api] Skill 已删除: ${name}`);
+    sendJson(res, 200, { deleted: true, name, scope: 'global', dir: removed.dir });
     return;
   }
   const failed = result.failed[0];
@@ -127,7 +126,7 @@ async function handleDeleteSkill(
 
 /** POST /skills/reload：重新扫描 Skill 目录 */
 async function handleReloadSkills(ctx: HandlerContext, _req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const skills = ctx.skillLoader.reload(ctx.defaultRoot());
+  const skills = ctx.skillLoader.reload();
   ctx.log(`[api] Skill 已重新扫描: ${skills.length} 个`);
   sendJson(res, 200, { loaded: skills.length });
 }
@@ -158,7 +157,7 @@ async function handleUploadSkill(
 ): Promise<void> {
   const body = await readJsonBody(req, UPLOAD_BODY_MAX_BYTES);
   const rootName = safeRootName(body.rootName);
-  const scope: SkillScope = body.scope === 'global' ? 'global' : 'workspace';
+  parseSkillScope(body.scope);
   const overwrite = body.overwrite === true;
 
   const zipB64 = typeof body.zipBase64 === 'string' ? body.zipBase64 : '';
@@ -185,9 +184,7 @@ async function handleUploadSkill(
     files = files.map((e) => ({ ...e, segs: e.segs.slice(1) }));
   }
 
-  const targetRoot = scope === 'global'
-    ? ctx.skillLoader.globalDir
-    : ctx.skillLoader.getWorkspaceDir(ctx.defaultRoot());
+  const targetRoot = ctx.skillLoader.globalDir;
 
   // 写临时目录后复用安装链（校验/同名/覆盖/护栏全部白得），finally 清理
   const tmp = await mkdtemp(join(tmpdir(), 'skill-upload-'));
@@ -212,9 +209,9 @@ async function handleUploadSkill(
     }
 
     const installed = result.installed[0];
-    ctx.skillLoader.reload(ctx.defaultRoot());
-    ctx.log(`[api] Skill 已上传安装（${scope}）: ${installed.name} → ${installed.targetDir}`);
-    sendJson(res, 201, { name: installed.name, scope, path: installed.targetDir });
+    ctx.skillLoader.reload();
+    ctx.log(`[api] Skill 已上传安装: ${installed.name} → ${installed.targetDir}`);
+    sendJson(res, 201, { name: installed.name, scope: 'global', path: installed.targetDir });
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
