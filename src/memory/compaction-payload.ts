@@ -10,7 +10,8 @@ import { SUMMARY_MAX_CHARS } from './summary-message.js';
 
 /** 压缩请求的固定 system prompt（必须保留「压缩对话历史」字样，测试与日志据此识别 flush 请求） */
 export const FLUSH_SYSTEM_PROMPT = `你正在压缩对话历史。下面这条 user 消息是一个 JSON：
-- previousSummary：此前压缩生成的摘要（可能为空），必须与本次要点合并去重后输出
+- previousSummary：此前压缩生成的摘要（可能为空），必须与本次要点合并去重后输出；
+  其中以 [当前问题] 起头的段落是历史轮次的原始用户问题，请作为要点合并，不要原样照抄该标记
 - messages：本次将被丢弃的对话消息列表（已做精简处理）
 
 请提取并合并关键信息，保留：
@@ -20,6 +21,7 @@ export const FLUSH_SYSTEM_PROMPT = `你正在压缩对话历史。下面这条 u
 - 工具调用的关键结果
 
 忽略：闲聊、重复确认、临时中间结果。
+注意：当前轮的原始用户问题会由系统单独追加在摘要之后，无需在摘要中复述。
 输出格式：纯文本，每条一行，以 "- " 开头；不要输出 JSON、标题或解释。
 长度约束：总字数控制在 ${SUMMARY_MAX_CHARS} 字以内，超出时优先保留偏好/结论/未完成任务，舍弃次要细节。`;
 

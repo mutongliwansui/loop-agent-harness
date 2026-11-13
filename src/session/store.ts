@@ -227,6 +227,61 @@ function extractSummaryText(placeholder: ChatMessage): string {
     : text.trim();
 }
 
+/**
+ * 解析 `msgId` 内嵌的创建顺序 `(时间戳, 进程内序号)`（需求 20261113-008 D3）。
+ *
+ * `newMsgId()` 生成 `msg_<ts36>_<seq36><rand2>`，其中 seq 单调递增，因此返回的
+ * `(ts, seq)` 就是「消息真实创建顺序」的权威依据，与磁盘顺序无关。
+ *
+ * 无法判定的一律返回 null：legacy `msg_l<hash>`、`ensureMsgIds` 追加过 `_n` 去重后缀的、
+ * 以及任何不符合格式的值——它们不参与单调性判断，避免误报。
+ *
+ * 导出仅供单测直接验证解析口径（生产调用方只有同文件的 checkMsgIdOrder）。
+ */
+export function parseMsgIdOrder(msgId?: string): { ts: number; seq: number } | null {
+  if (!msgId || !msgId.startsWith('msg_')) return null;
+  const rest = msgId.slice(4);
+  const sep = rest.indexOf('_');
+  if (sep <= 0) return null;
+  // 出现第二个下划线（如去重后缀 `_1`）时无法切出纯净序号，跳过
+  if (rest.indexOf('_', sep + 1) >= 0) return null;
+  const tsPart = rest.slice(0, sep);
+  const tail = rest.slice(sep + 1);
+  // 末 2 位是随机段，前面才是递增序号
+  if (tail.length < 3) return null;
+  const seqPart = tail.slice(0, tail.length - 2);
+  if (!/^[0-9a-z]+$/.test(tsPart) || !/^[0-9a-z]+$/.test(seqPart)) return null;
+  const ts = parseInt(tsPart, 36);
+  const seq = parseInt(seqPart, 36);
+  if (!Number.isFinite(ts) || !Number.isFinite(seq)) return null;
+  return { ts, seq };
+}
+
+/**
+ * 落盘顺序校验（需求 20261113-008 D3）：磁盘顺序应随 `msgId` 的 `(ts, seq)` 单调不减。
+ *
+ * **只告警不重排**——存储的职责是忠实反映轨迹，自动重排会把真实缺陷来源也一并掩盖，
+ * 并可能与 `dedupeByMsgId` / `countReplayedArchive` 的假设冲突。
+ *
+ * @returns 违例描述（最多 5 条），空数组表示顺序正常
+ */
+export function checkMsgIdOrder(messages: ChatMessage[]): string[] {
+  const MAX_ISSUES = 5;
+  const issues: string[] = [];
+  let prev: { ts: number; seq: number; idx: number; msgId: string } | null = null;
+  for (let idx = 0; idx < messages.length; idx++) {
+    const msgId = messages[idx].msgId;
+    const cur = parseMsgIdOrder(msgId);
+    if (!cur) continue;
+    if (prev && (cur.ts < prev.ts || (cur.ts === prev.ts && cur.seq < prev.seq))) {
+      issues.push(`idx${idx}(${msgId}) 早于 idx${prev.idx}(${prev.msgId})`);
+      if (issues.length >= MAX_ISSUES) break;
+    }
+    prev = { ts: cur.ts, seq: cur.seq, idx, msgId: msgId ?? '' };
+  }
+  return issues;
+}
+
 // 检查两条消息是否重复（考虑所有关键字段）
 // user 消息按「剥离 L2 记忆前缀后」的文本比较：存量会话可能落盘了带前缀的 content，
 // 而运行时视图使用原始输入，严格比较会让锚点/去重全部失效。
@@ -801,6 +856,16 @@ export class SessionStore {
       data.messages = deduped.messages;
     }
     data.updatedAt = new Date().toISOString();
+
+    // 需求 20261113-008（D3）：落盘顺序护栏。msgId 内嵌的 (时间戳, seq) 是消息真实创建顺序，
+    // 磁盘顺序理应与之单调一致；出现倒序说明上游有机制在搬动消息位置（历史上是 L1 的任务锚点 pin），
+    // 这里只告警不重排，作为回归护栏使用。
+    const orderIssues = checkMsgIdOrder(data.messages);
+    if (orderIssues.length > 0) {
+      log(
+        `⚠ 落盘顺序异常（msgId 时间戳/序号非单调，仅告警不重排）：${orderIssues.join('；')}`,
+      );
+    }
 
     await this.writeSession(data);
     log(

@@ -5,7 +5,16 @@ import type { WorkingMemoryConfig, ILLMClient } from './types.js';
 import { DEFAULT_WORKING_CONFIG } from './types.js';
 import { debug } from '../debug.js';
 import { buildCompactionPayload } from './compaction-payload.js';
-import { isSummaryMessage, SUMMARY_TRUNCATE_MAX_CHARS } from './summary-message.js';
+import { stripMemorySection } from './memory-section.js';
+import {
+  composeSummaryBody,
+  dedupeAnchorText,
+  isSummaryMessage,
+  splitAnchorSection,
+  truncateAnchorText,
+  SUMMARY_PLACEHOLDER_RESERVE_TOKENS,
+  SUMMARY_TRUNCATE_MAX_CHARS,
+} from './summary-message.js';
 
 /** 摘要占位消息的固定前缀（内存压缩与磁盘恢复共用的临时上下文占位） */
 export const SUMMARY_PLACEHOLDER_PREFIX = '[历史摘要]';
@@ -24,15 +33,22 @@ export interface CompactionPlan {
   droppable: ChatMessage[];
   /** 本次压缩保留的消息（droppable + kept 恰好是参与压缩的全部消息） */
   kept: ChatMessage[];
-  /** 已有摘要文本（[历史摘要] 占位去掉前缀后的内容） */
+  /** 已有摘要文本（[历史摘要] 占位去掉前缀后的内容，**含**其原文段，供 LLM 参考历史问题） */
   previousSummary?: string;
   /** 将被丢弃的消息数；0 表示本次压缩是空操作，不应调用 LLM */
   droppedCount: number;
   /**
+   * 本次将随消息一同归档的「当前轮 user 原文」（需求 20261113-008 D6）。
+   *
+   * 仅在「当前轮最后一条 user 落在丢弃区」时填充：它不会再被搬动位置（pin 已移除），
+   * 而是由摘要占位携带原文，保证模型不因归档而丢失精确约束。
+   */
+  anchorUserText?: string;
+  /**
    * 是否走了「单次调用内按 token 预算截尾」：
    * 只剩 1 次模型调用仍超预算（单次调用内工具输出过大）时启用，
    * 此时 compact 必须用 kept 作为保留后缀，不能再用 keepRecentTurns 重新切分。
-   * 该模式下当前轮的原始 user 消息会作为任务锚点被固定保留（见 planCompaction）。
+   * 该模式下消息顺序同样保持原样（需求 20261113-008：不再 pin 任务锚点）。
    */
   withinTurnTrim?: boolean;
 }
@@ -49,6 +65,11 @@ export interface CompactedViewOptions {
    * 提供时忽略 keepRecentTurns 切分，直接以该数组作为保留部分。
    */
   keptMessages?: ChatMessage[];
+  /**
+   * 当前轮 user 原文（需求 20261113-008 D4/D6）：随摘要占位一同注入，不参与消息数组顺序。
+   * 仅在「原文已随消息归档」时由 planCompaction 给出。
+   */
+  anchorUserText?: string;
 }
 
 /** 一次模型调用组：前导 user（若有）+ assistant + 其后连续 tool 结果 */
@@ -197,14 +218,9 @@ export function buildCompactedView(
     const picked = pickRecentCallGroups(nonSystem, opts.keepRecentTurns);
     kept = nonSystem.slice(picked.keptStart);
     callCount = picked.keptGroups;
-    // 任务锚点：当前轮原始 user 若落在丢弃区，pin 回保留区头部（与 planCompaction 同口径）
-    const lastUserIdx = nonSystem.reduceRight(
-      (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
-      -1,
-    );
-    if (lastUserIdx >= 0 && lastUserIdx < picked.keptStart) {
-      kept = [nonSystem[lastUserIdx], ...kept];
-    }
+    // 需求 20261113-008（D2）：此处原有一份「任务锚点 pin」副本（把落在丢弃区的当前轮 user
+    // 搬到保留区头部），与 planCompaction 同口径破坏磁盘顺序，已直接删除。
+    // 当前轮 user 的可见性改由摘要占位的原文段承载（见下方 composeSummaryBody）。
     droppedCount = nonSystem.length - kept.length;
   }
 
@@ -221,11 +237,18 @@ export function buildCompactedView(
       ? text.slice(SUMMARY_PLACEHOLDER_PREFIX.length).trim()
       : text.trim();
   }
-  if ((droppedCount > 0 || existingPlaceholder) && summary) {
+  const injected = (droppedCount > 0 || existingPlaceholder) && Boolean(summary || opts.anchorUserText);
+  if (injected) {
+    // 需求 20261113-008（D1/D4/D5）：
+    // ① 硬截断只作用于 LLM 摘要主体——若把拼好的整体再 slice，摘要写满时原文段会被吃掉，
+    //    恰好在最需要它的场景失效；② composeSummaryBody 会先剥掉 summary 里可能残留的旧原文段
+    //    （沿用旧占位分支带来的），再拼本次原文段，保证 \n[当前问题] 段只出现一次；
+    // ③ dedupeAnchorText 处理 archive 回退：summaryText 由 droppable 全文拼成时原文已在内，不再重复追加。
+    const summaryBody = splitAnchorSection(summary ?? '').summary.slice(0, SUMMARY_TRUNCATE_MAX_CHARS);
+    const anchorText = dedupeAnchorText(summaryBody, opts.anchorUserText);
     result.push({
       role: 'user',
-      // 正常摘要已由压缩指令约束在 SUMMARY_MAX_CHARS 内；此处按上浮 20% 兜底硬截断
-      content: `${SUMMARY_PLACEHOLDER_PREFIX} ${summary.slice(0, SUMMARY_TRUNCATE_MAX_CHARS)}`,
+      content: `${SUMMARY_PLACEHOLDER_PREFIX} ${composeSummaryBody(summaryBody, anchorText)}`,
       is_show: false,
       kind: 'summary',
     });
@@ -237,7 +260,8 @@ export function buildCompactedView(
     `[L1 buildCompactedView] 输入=${messages.length}条 参与切分=${nonSystem.length}条 ` +
       `保留=${kept.length}条${opts.keptMessages ? '(显式后缀)' : `/${callCount}次调用`} 丢弃=${droppedCount}条 ` +
       `已有占位=${existingPlaceholder ? '有' : '无'} 新摘要=${opts.summaryText ? `${opts.summaryText.length}字` : '无'} ` +
-      `注入占位=${(droppedCount > 0 || existingPlaceholder) && summary ? '是' : '否'} 输出=${result.length}条`,
+      `原文段=${opts.anchorUserText ? `${opts.anchorUserText.length}字` : '无'} ` +
+      `注入占位=${injected ? '是' : '否'} 输出=${result.length}条`,
   );
   return result;
 }
@@ -266,8 +290,9 @@ export class WorkingMemory {
    * 先保留最近 keepRecentTurns 次调用；若仍超 messageTokensBudget 则继续减少保留次数（保底 1 次），
    * 只有「单次调用自身就超预算」（如超大工具输出）时才退回单次内按 token 截尾兜底。
    *
-   * 任务锚点：当前轮的原始 user 消息若落在丢弃区，无条件 pin 回保留区头部
-   * （只靠摘要会让剩余迭代丢失精确约束，锚点过大时允许轻微超预算）。
+   * 需求 20261113-008（D2/D6）：**不再**把落在丢弃区的当前轮 user pin 回保留区头部
+   * （那会破坏磁盘顺序，造成「应答在前、提问在后」）。改为把它的原文交给 `anchorUserText`，
+   * 由摘要占位携带，消息自身位置完全不动；droppable / kept 恢复为纯前缀 / 纯后缀。
    */
   planCompaction(
     messages: ChatMessage[],
@@ -293,8 +318,13 @@ export class WorkingMemory {
       }
     }
 
-    // 保留预算取消息预算的 60%，给压缩后重新注入的摘要占位留出余量
-    const keepBudget = Math.max(1, Math.floor((budget ?? 0) * 0.6));
+    // 保留预算取消息预算的 60%，给压缩后重新注入的摘要占位留出余量。
+    // 需求 20261113-008（D1）：摘要占位含「摘要主体 + 当前轮原文段」两段文本，本身要占 token，
+    // 按两者字数上界预留（默认 (800+800)/4 = 400 tokens），否则压缩完仍可能立刻再次触发压缩。
+    const keepBudget = Math.max(
+      1,
+      Math.floor((budget ?? 0) * 0.6) - SUMMARY_PLACEHOLDER_RESERVE_TOKENS,
+    );
     let withinTurnTrim = false;
 
     // 最后兜底：只剩 1 次调用仍超预算 → 单次调用内按 token 截尾
@@ -311,32 +341,33 @@ export class WorkingMemory {
       }
     }
 
-    let droppable = nonSystem.slice(0, keptStart);
-    let kept = nonSystem.slice(keptStart);
+    const droppable = nonSystem.slice(0, keptStart);
+    const kept = nonSystem.slice(keptStart);
 
-    // 任务锚点：当前轮的原始 user 即最后一条 user，它若落在丢弃区则 pin 回保留区头部
+    // 需求 20261113-008（D2/D6）：此处原有「任务锚点 pin」——把落在丢弃区的当前轮 user
+    // 抽出插到 kept 头部。该写法让「保留哪些」与「放在哪」耦合在一条语句里，落盘后表现为
+    // 「应答在前、提问在后」的顺序错位，已直接删除。droppable / kept 恢复为纯前缀 / 纯后缀。
+    //
+    // 原文的可见性改由摘要占位承载：当前轮最后一条 user 若确实落入丢弃区，把它的原文
+    // 交给 anchorUserText，稍后拼进摘要占位（位置不动）。
+    let anchorUserText: string | undefined;
     const lastUserIdx = nonSystem.reduceRight(
       (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
       -1,
     );
     if (lastUserIdx >= 0 && lastUserIdx < keptStart) {
-      const anchor = nonSystem[lastUserIdx];
-      const anchorTokens = Math.ceil((anchor.content ?? '').length / 4);
-      if (withinTurnTrim) {
-        // 扣掉锚点 token 重新截尾，尽量让「锚点 + 后缀」仍控制在原保留预算的量级
-        const retrim = trimTailByTokenBudget(
-          nonSystem,
-          Math.max(1, keepBudget - anchorTokens),
+      const anchorMsg = nonSystem[lastUserIdx];
+      // 与 flush 载荷同口径剥离 L2 记忆前缀；上传附件 note 保留（模型需绝对路径才能调视觉工具）
+      const raw = stripMemorySection(
+        typeof anchorMsg.content === 'string' ? anchorMsg.content : '',
+      ).trim();
+      if (raw) {
+        anchorUserText = truncateAnchorText(raw);
+        debug.log(
+          `[L1 planCompaction] 当前轮 user 落入丢弃区：原文并入摘要占位（${anchorUserText.length}字，` +
+            `已截断=${raw.length > anchorUserText.length ? '是' : '否'}），消息位置不变`,
         );
-        keptStart = retrim.start;
       }
-      // 锚点无条件保留：丢失精确的原始问题比多占 token 更严重，允许因此轻微超预算
-      droppable = nonSystem.slice(0, keptStart).filter((m) => m !== anchor);
-      kept = [anchor, ...nonSystem.slice(keptStart).filter((m) => m !== anchor)];
-      debug.log(
-        `[L1 planCompaction] 固定保留当前轮 user 锚点（${anchorTokens} tokens），` +
-          `摘要覆盖其余 ${droppable.length} 条`,
-      );
     }
 
     if (withinTurnTrim) {
@@ -355,6 +386,9 @@ export class WorkingMemory {
     let previousSummary: string | undefined;
     if (placeholder) {
       const text = typeof placeholder.content === 'string' ? placeholder.content : '';
+      // 需求 20261113-008（D5，用户定）：这里**不剥离**原文段——归档消息模型看不到，
+      // 旧原文段是它唯一还能看到的历史问题线索，整段交给 LLM 与本次要点合并。
+      // 剥离只发生在「写回占位」侧（buildCompactedView 的 composeSummaryBody），保证不叠加。
       previousSummary = text.startsWith(SUMMARY_PLACEHOLDER_PREFIX)
         ? text.slice(SUMMARY_PLACEHOLDER_PREFIX.length).trim()
         : text.trim();
@@ -365,6 +399,7 @@ export class WorkingMemory {
       kept,
       previousSummary,
       droppedCount: droppable.length,
+      anchorUserText,
       withinTurnTrim,
     };
   }
@@ -427,8 +462,11 @@ export class WorkingMemory {
    * 压缩：保留 system + 最近 N 次模型调用
    * 每次调用 = 前导 user（若有）+ assistant + 其后的 tool 结果
    *
-   * 传入 plan 时保留部分直接用 plan.kept（含任务锚点与预算收缩后的结果），
+   * 传入 plan 时保留部分直接用 plan.kept（预算收缩后的结果），
    * 与 planCompaction 算出的 droppable 严格互补，避免「摘要了却仍留在上下文」。
+   *
+   * 需求 20261113-008：plan.anchorUserText（当前轮 user 原文）随摘要占位注入，
+   * 消息本身位置不变——不再有「pin 到保留区头部」的搬动。
    */
   compact(
     messages: ChatMessage[],
@@ -439,6 +477,7 @@ export class WorkingMemory {
       keepRecentTurns: this.config.keepRecentTurns,
       summaryText,
       keptMessages: plan?.kept,
+      anchorUserText: plan?.anchorUserText,
     });
   }
 

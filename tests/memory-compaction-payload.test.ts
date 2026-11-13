@@ -35,12 +35,25 @@ describe('buildCompactionPayload', () => {
     expect(messages.length).toBe(2);
     expect(messages[0]).toEqual({ role: 'system', content: FLUSH_SYSTEM_PROMPT });
     expect(messages[0].content).toContain('压缩对话历史');
-    // 摘要长度由压缩指令约束（而非事后截断）：目标 500 字
-    expect(messages[0].content).toContain('500 字以内');
+    // 摘要长度由压缩指令约束（而非事后截断）；需求 20261113-008 D1 由 500 字放宽到 800 字，
+    // 因为当前轮原始问题要作为 [当前问题] 段并入摘要、计入同一预算
+    expect(messages[0].content).toContain('800 字以内');
+    expect(messages[0].content).not.toContain('500 字');
     expect(messages[1].role).toBe('user');
     expect(() => JSON.parse(messages[1].content as string)).not.toThrow();
     expect(stats.outputCount).toBe(2);
     expect(stats.jsonChars).toBe((messages[1].content as string).length);
+  });
+
+  it('压缩指令告知：[当前问题] 段由系统追加，摘要中不要复述', () => {
+    const { messages } = buildCompactionPayload([{ role: 'user', content: 'q' }]);
+    const prompt = messages[0].content;
+
+    // previousSummary 中可能携带历史轮次的原文段，需合并为要点而非照抄标记
+    expect(prompt).toContain('[当前问题]');
+    expect(prompt).toContain('不要原样照抄该标记');
+    // 当前轮原文由 buildCompactedView 追加，避免模型重复复述导致摘要膨胀
+    expect(prompt).toContain('会由系统单独追加在摘要之后');
   });
 
   it('user 优先取 show_content（含记忆前缀时不会把前缀带进载荷）', () => {

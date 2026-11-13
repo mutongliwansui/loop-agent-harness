@@ -195,12 +195,19 @@ describe('L1 WorkingMemory', () => {
     const history = singleTurnHistory();
     const nonSystemCount = history.length - 1;
 
-    // 1 条 user 触发 4 次模型调用：保留最近 3 次，当前轮 user 作为锚点 pin 回保留区
+    // 1 条 user 触发 4 次模型调用：保留最近 3 次
+    // 需求 20261113-008（D2）：不再把当前轮 user pin 回保留区头部——kept 为纯后缀，
+    // user 留在 droppable 里，其原文改由摘要占位携带（anchorUserText）。
     const plan = wm.planCompaction(history);
     expect(plan.droppedCount).toBeGreaterThan(0);
     expect(plan.withinTurnTrim).toBe(false);
-    expect(plan.kept[0].content).toBe('任务开始');
-    expect(plan.kept[1].role).toBe('assistant');
+    expect(plan.kept[0].role).toBe('assistant');
+    expect(plan.droppable[0].content).toBe('任务开始');
+    expect(plan.anchorUserText).toBe('任务开始');
+    // 顺序保真：droppable 是纯前缀、kept 是纯后缀（磁盘顺序得以保持）
+    const historyNonSystem = history.filter((m) => m.role !== 'system');
+    expect(plan.droppable).toEqual(historyNonSystem.slice(0, plan.droppable.length));
+    expect(plan.kept).toEqual(historyNonSystem.slice(plan.droppable.length));
     // 丢弃 + 保留 = 全部非 system 消息，二者不重不漏
     expect(plan.droppable.length + plan.kept.length).toBe(nonSystemCount);
 
@@ -210,10 +217,11 @@ describe('L1 WorkingMemory', () => {
     expect(tight.droppedCount).toBeGreaterThan(plan.droppedCount);
     expect(tight.droppable.length + tight.kept.length).toBe(nonSystemCount);
 
-    // compact 直接采用 plan.kept，与 droppable 严格互补
+    // compact 直接采用 plan.kept，与 droppable 严格互补；当前轮原文进入摘要占位
     const compacted = wm.compact(history, '- 摘要', plan);
     expect(compacted[0]).toEqual(msg('system', 'sys'));
     expect(isSummaryPlaceholder(compacted[1])).toBe(true);
+    expect(compacted[1].content).toContain('[当前问题] 任务开始');
     expect(compacted.slice(2)).toEqual(plan.kept);
   });
 
@@ -238,18 +246,25 @@ describe('L1 WorkingMemory', () => {
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 10 });
     expect(plan.withinTurnTrim).toBe(false);
-    // 锚点 pin 在保留区最前，且不再出现在丢弃区（不重复进入摘要）
-    expect(plan.kept[0].content).toBe('实现 A 功能，改 store.ts');
-    expect(plan.kept[1].role).toBe('assistant');
-    expect(plan.droppable.some((m) => m.role === 'user')).toBe(false);
+    // 需求 20261113-008（D2/D6）：user 不再被 pin 出 droppable，而是原位丢弃、
+    // 原文交给摘要占位——「不丢」由占位承载，「顺序」由纯前缀/纯后缀保证。
+    expect(plan.droppable[0].content).toBe('实现 A 功能，改 store.ts');
+    expect(plan.kept[0].role).toBe('assistant');
+    expect(plan.anchorUserText).toBe('实现 A 功能，改 store.ts');
     expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
+    // dropped 中出现的 user 只有这一条，不会被重复计入摘要两次
+    expect(plan.droppable.filter((m) => m.role === 'user').length).toBe(1);
 
     const compacted = wm.compact(history, '- 摘要', plan);
-    expect(compacted[2].content).toBe('实现 A 功能，改 store.ts');
-    expect(compacted[3].role).toBe('assistant');
+    // 占位在 system 之后（index 1），kept 从 index 2 起
+    expect(String(compacted[1].content)).toContain('[当前问题] 实现 A 功能，改 store.ts');
+    expect(compacted[2].role).toBe('assistant');
+    expect(compacted[2]).toEqual(plan.kept[0]);
+    // 占位里原文段只出现一次（D5 幂等）
+    expect(String(compacted[1].content).match(/\[当前问题\]/g)?.length).toBe(1);
   });
 
-  it('2.1j 锚点过大时仍强制保留 user（允许轻微超预算）', () => {
+  it('2.1j 锚点过大时不再强制保留：原文进摘要，保留区不超预算', () => {
     const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const toolCall: ChatMessage = {
       role: 'assistant',
@@ -267,11 +282,20 @@ describe('L1 WorkingMemory', () => {
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 30 });
     expect(plan.withinTurnTrim).toBe(false);
-    // 锚点强制保留：不再因为超过保留预算一半而退回摘要
-    expect(plan.kept[0].content).toBe('u'.repeat(400));
-    expect(plan.droppable.some((m) => m.role === 'user')).toBe(false);
-    expect(plan.droppable.length).toBeGreaterThan(0);
+    // 需求 20261113-008（D2）：不再「强制保留锚点」，user 原位丢弃、原文进摘要
+    expect(plan.droppable[0].content).toBe('u'.repeat(400));
+    expect(plan.anchorUserText).toBe('u'.repeat(400));
+    expect(plan.kept.length).toBeGreaterThan(0);
     expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
+    // 保留区不再被超大锚点顶穿预算
+    const keptTokens = plan.kept.reduce(
+      (acc, m) => acc + Math.ceil((m.content ?? '').length / 4),
+      0,
+    );
+    expect(keptTokens).toBeLessThanOrEqual(30);
+    // 摘要占位仍能把原文带给模型
+    const compacted = wm.compact(history, '- 摘要', plan);
+    expect(String(compacted[1].content)).toContain('u'.repeat(400));
   });
 
   it('2.1k 截尾起点落在工具组内：整组丢弃，kept 不因回退 assistant 而超预算', () => {
@@ -295,19 +319,20 @@ describe('L1 WorkingMemory', () => {
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 1228 });
     expect(plan.withinTurnTrim).toBe(false);
-    // 当前轮 user 锚点必须留下
-    expect(plan.kept[0].content).toBe('帮我看下项目结构');
+    // 需求 20261113-008（D2）：当前轮 user 与其后的第一组工具一起进丢弃区（位置不动）
+    expect(plan.droppable[0].content).toBe('帮我看下项目结构');
+    expect(plan.anchorUserText).toBe('帮我看下项目结构');
     // 大工具组被整组丢弃（而不是整组回退），保留区只留最后一组
-    expect(plan.droppable.length).toBe(3);
-    expect(plan.kept.length).toBe(4);
-    expect(plan.kept[1].role).toBe('assistant');
-    // kept 控制在「保留预算 + 锚点」量级，不再出现 1766 tokens 压不下去的情况
+    expect(plan.droppable.length).toBe(4);
+    expect(plan.kept.length).toBe(3);
+    expect(plan.kept[0].role).toBe('assistant');
+    // kept 控制在「保留预算」量级，不再出现 1766 tokens 压不下去的情况
     const keptTokens = plan.kept.reduce((acc, m) => acc + Math.ceil((m.content ?? '').length / 4), 0);
     expect(keptTokens).toBeLessThanOrEqual(Math.floor(1228 * 0.6));
     expect(plan.droppable.length + plan.kept.length).toBe(history.length - 1);
   });
 
-  it('2.1l head 只剩 user 时：不压缩，也绝不把 user 丢进摘要', () => {
+  it('2.1l head 只剩 user 且其自身超预算：user 进摘要，原文不丢', () => {
     const wm = new WorkingMemory({ maxTokens: 1000, compactionThreshold: 0.8, keepRecentTurns: 3 });
     const history: ChatMessage[] = [
       msg('system', 'sys'),
@@ -321,9 +346,15 @@ describe('L1 WorkingMemory', () => {
     ];
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 40 });
-    expect(plan.kept[0].content).toBe('q');
-    expect(plan.droppable).toEqual([]);
-    expect(plan.droppedCount).toBe(0);
+    // 需求 20261113-008（D2/D6）：单次调用自身超预算时退回单次内截尾，
+    // 截尾起点落在工具组内 → 整组保留，user 则进丢弃区；其原文由摘要占位承载。
+    expect(plan.withinTurnTrim).toBe(true);
+    expect(plan.droppable.map((m) => m.content)).toEqual(['q']);
+    expect(plan.droppedCount).toBe(1);
+    expect(plan.anchorUserText).toBe('q');
+    expect(plan.kept[0].role).toBe('assistant');
+    // 不切开 assistant(tool_calls) / tool 配对：kept 不以 tool 开头
+    expect(plan.kept[0].role).not.toBe('tool');
   });
 
   it('2.1m 起点落在最后一组工具内：整组保留（保住最新 observation）', () => {
@@ -342,10 +373,10 @@ describe('L1 WorkingMemory', () => {
 
     const plan = wm.planCompaction(history, { messageTokensBudget: 40 });
     // kept 不能以 tool 开头（不能切开 assistant(tool_calls) / tool 配对）
-    expect(plan.kept[0].content).toBe('q');
-    expect(plan.kept[1].role).toBe('assistant');
-    expect(plan.kept.length).toBe(4);
-    expect(plan.droppable).toEqual([]);
+    // 需求 20261113-008（D2）：user 不再被 pin 到 kept 头部，整组保留从 assistant 起
+    expect(plan.kept[0].role).toBe('assistant');
+    expect(plan.kept.length).toBe(3);
+    expect(plan.droppable.map((m) => m.content)).toEqual(['q']);
   });
 
   it('2.1g 单轮内未超预算：不截尾', () => {
@@ -390,12 +421,13 @@ describe('buildCompactedView 统一压缩视图', () => {
     expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} - 已修复 store 合并写`);
   });
 
-  it('占位内容按上限上浮 20% 截断（500 → 600 字符），避免长期占用 token', () => {
+  it('占位内容按上限上浮 20% 截断（800 → 960 字符），避免长期占用 token', () => {
+    // 需求 20261113-008（D1）：摘要目标上限 500 → 800，硬截断 = ceil(800 * 1.2) = 960
     const result = buildCompactedView(chain(), {
       keepRecentTurns: 1,
-      summaryText: 'x'.repeat(700),
+      summaryText: 'x'.repeat(1000),
     });
-    expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} ${'x'.repeat(600)}`);
+    expect(result[1].content).toBe(`${SUMMARY_PLACEHOLDER_PREFIX} ${'x'.repeat(960)}`);
   });
 
   it('无摘要不注入占位；全部轮次都在保留范围内也不注入', () => {
@@ -533,9 +565,11 @@ describe('keepRecentTurns = 最近 N 次模型调用', () => {
     ];
     const plan = wm.planCompaction(history, { messageTokensBudget: 40 });
     expect(plan.withinTurnTrim).toBe(true);
-    // 截尾起点回退到 assistant，保留区仍以 user 锚点开头
-    expect(plan.kept[0].content).toBe('q');
-    expect(plan.kept[1].role).toBe('assistant');
+    // 截尾起点回退到 assistant：整组保留、不切开配对；
+    // 需求 20261113-008（D2）：user 不再 pin 回保留区，改为原文进摘要占位
+    expect(plan.kept[0].role).toBe('assistant');
+    expect(plan.droppable.map((m) => m.content)).toEqual(['q']);
+    expect(plan.anchorUserText).toBe('q');
   });
 
   it('planCompaction 与 compact 严格互补（kept 即最终保留区）', () => {
