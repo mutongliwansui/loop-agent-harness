@@ -8,6 +8,7 @@ import { DreamScheduler } from './dream-scheduler.js';
 import { reconcileInterruptedOnBoot } from './run-journal.js';
 import { WorkspaceRegistry } from './workspace-runtime.js';
 import { markWorkspaceUsed, resolveRecentRoot } from './recent-workspace.js';
+import { reportGhostWorkspaces } from './ghost-workspaces.js';
 
 export interface StartApiServerOptions {
   /** 会话/记忆/自愈扫描根目录覆盖（默认 ~/.loop-agent；单测注入临时目录） */
@@ -52,6 +53,19 @@ export async function startApiServer(opts?: StartApiServerOptions): Promise<ApiS
   const recentRoot = await resolveRecentRoot(opts?.userDir);
   markWorkspaceUsed(recentRoot);
   console.log(`  ├─ 最近使用空间解析 (+${Date.now() - t1}ms): ${recentRoot}`);
+
+  // 存量幽灵空间告警（需求 20261113-002 D6）：P0/P1 已让幽灵空壳「不再落盘、不再被选中、
+  // 不进侧栏」，但磁盘上既有的残留不会自己消失。这里只做识别 + 告警 + 写诊断日志，
+  // **不删除任何东西**（用户已明确决定：不提供一键清理，存量由用户自行删除）。
+  // 用一个独立计时打点，失败也不影响启动——reportGhostWorkspaces 内部已吞掉所有异常。
+  const tGhost = Date.now();
+  const ghosts = await reportGhostWorkspaces(opts?.userDir, (msg) => console.log(msg)).catch(
+    () => [],
+  );
+  if (ghosts.length === 0) {
+    console.log(`  ├─ 存量幽灵空间检查：无 (+${Date.now() - tGhost}ms)`);
+  }
+
 
   const t2 = Date.now();
   const rt = await registry.get(recentRoot);
