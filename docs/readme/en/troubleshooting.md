@@ -26,6 +26,12 @@ Error: Too many requests (429). Please retry later or reduce the call frequency
 
 **Fix**: Reduce the call frequency. Integration tests (`tests/integration/`) run serially by default (`fileParallelism: false`) to avoid concurrent rate limiting; unit tests are all mocked and run in parallel.
 
+### Six integration cases report as skipped
+
+In a full regression, the cases `a-no-tool` / `b-single-tool` / `c-multi-tool` / `d-tool-failure` / `f-max-iterations` / `g-parallel-tools` are skipped (each case name carries a "skipped: …" reason). **This is expected**: they need a real model, and the gate is off by default.
+
+**Fix**: For real end-to-end checks, set `LOOP_AGENT_LIVE_MODEL=1` with usable credentials (`OPENAI_API_KEY`, or `model.apiKey` in `~/.loop-agent/config.json`), then run `npm run test:integration`. See the development doc for details.
+
 ### Tool Execution Timeout
 
 ```

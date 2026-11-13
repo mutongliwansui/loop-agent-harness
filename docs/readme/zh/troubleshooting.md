@@ -26,6 +26,12 @@
 
 **解决**：降低调用频率。集成测试（`tests/integration/`）默认串行执行（`fileParallelism: false`）避免并发限速；unit 层测试均为 mock，可并行执行。
 
+### 集成测试显示 6 个用例 skipped
+
+全量回归输出里 `a-no-tool` / `b-single-tool` / `c-multi-tool` / `d-tool-failure` / `f-max-iterations` / `g-parallel-tools` 六个用例被跳过（用例名后带「已跳过：…」原因），**属预期行为**：它们需要真实模型，默认关闭门禁。
+
+**解决**：需要真实联调时设置 `LOOP_AGENT_LIVE_MODEL=1` 并确保凭据可用（`OPENAI_API_KEY`，或 `~/.loop-agent/config.json` 的 `model.apiKey`），再跑 `npm run test:integration`。详见开发文档。
+
 ### 工具执行超时
 
 ```

@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { it, expect, beforeAll } from 'vitest';
 import { agent } from '../../src/agent/react-agent.js';
 import { registerBuiltinTools } from '../../src/tools/index.js';
+import { describeLiveModel } from './live-model-gate.js';
 
 beforeAll(() => registerBuiltinTools());
 
-describe('用例 F：达到最大迭代次数', () => {
+describeLiveModel('用例 F：达到最大迭代次数', () => {
   it('maxIterations=1 时抛出"达到最大迭代次数"错误', async () => {
     await expect(
       agent.run(

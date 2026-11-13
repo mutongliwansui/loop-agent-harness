@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { it, expect, beforeAll } from 'vitest';
 import { agent } from '../../src/agent/react-agent.js';
 import { registerBuiltinTools } from '../../src/tools/index.js';
+import { describeLiveModel } from './live-model-gate.js';
 
 beforeAll(() => registerBuiltinTools());
 
-describe('用例 G：多工具调用', () => {
+describeLiveModel('用例 G：多工具调用', () => {
   it('同时读取 package.json 和 tsconfig.json，steps >= 2', async () => {
     const result = await agent.run(
       '请同时读取 package.json 和 tsconfig.json 这两个文件，告诉我它们的内容',

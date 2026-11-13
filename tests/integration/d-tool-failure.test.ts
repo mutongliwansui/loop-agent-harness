@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { it, expect, beforeAll } from 'vitest';
 import { agent } from '../../src/agent/react-agent.js';
 import { registerBuiltinTools } from '../../src/tools/index.js';
+import { describeLiveModel } from './live-model-gate.js';
 
 beforeAll(() => registerBuiltinTools());
 
-describe('用例 D：工具失败容错', () => {
+describeLiveModel('用例 D：工具失败容错', () => {
   it('读取不存在文件时 Agent 不崩溃，Observation 含错误信息', async () => {
     const result = await agent.run(
       '请读取 /nonexistent__abc__123.json 文件的完整内容',
