@@ -2,12 +2,18 @@
 // 纯函数无 DOM 依赖，可在 Node vitest 下直测；组件模板只做布局。
 import { describe, expect, it } from 'vitest';
 import {
+  DOCK_DONE_OPEN_DEFAULT,
   DOCK_ERROR_MAX,
+  DOCK_ID_MAX,
+  DOCK_LIST_MAX_PX,
   DOCK_MAX_CHIPS,
   DOCK_SHORT_TITLE_MAX,
   dockChips,
   dockErrorLine,
+  dockGroups,
+  dockKindLabel,
   dockOverflow,
+  dockShortId,
   dockShortTitle,
   dockStatusLabel,
   dockTaskElapsed,
@@ -128,5 +134,48 @@ describe('dockStatusLabel：五种状态词', () => {
     expect(dockStatusLabel('failed')).toBe('失败');
     expect(dockStatusLabel('aborted')).toBe('已取消');
     expect(dockStatusLabel('interrupted')).toBe('已中断');
+  });
+});
+
+describe('20261113-007 列表展示优化：分组 / 类型徽标 / ID 缩略 / 常量口径', () => {
+  it('dockKindLabel：命令任务显示「命令」，后台子 Agent 显示「子任务」', () => {
+    expect(dockKindLabel('command')).toBe('命令');
+    expect(dockKindLabel('subagent')).toBe('子任务');
+  });
+
+  it('dockShortId：不超过阈值原样返回，超过则截前 9 字符加省略号', () => {
+    expect(DOCK_ID_MAX).toBe(11);
+    expect(dockShortId('cmd_1')).toBe('cmd_1');
+    expect(dockShortId('cmd_33aa90d7')).toBe('cmd_33aa9…'); // 12 字符 → 截前 9 加省略号
+    expect(dockShortId('sub_4d2b8e61')).toBe('sub_4d2b8…');
+    expect(dockShortId('')).toBe('');
+  });
+
+  it('dockGroups：运行中在上、已结束在下，各自保持原顺序', () => {
+    const list = [
+      task({ taskId: 'r1' }),
+      task({ taskId: 'd1', status: 'done' }),
+      task({ taskId: 'r2' }),
+      task({ taskId: 'f1', status: 'failed' }),
+      task({ taskId: 'a1', status: 'aborted' }),
+      task({ taskId: 'i1', status: 'interrupted' }),
+    ];
+    const g = dockGroups(list);
+    expect(g.running.map((t) => t.taskId)).toEqual(['r1', 'r2']);
+    expect(g.ended.map((t) => t.taskId)).toEqual(['d1', 'f1', 'a1', 'i1']);
+    expect(dockGroups([])).toEqual({ running: [], ended: [] });
+  });
+
+  it('dockGroups 保留 kind 等扩展字段（JobTaskVM 泛型不失真）', () => {
+    const g = dockGroups([
+      { taskId: 'c1', task: 'x', status: 'running' as const, kind: 'command' as const, canStop: true },
+    ]);
+    expect(g.running[0].kind).toBe('command');
+    expect(g.running[0].canStop).toBe(true);
+  });
+
+  it('常量口径：展开区封顶 320px、已结束组默认收起', () => {
+    expect(DOCK_LIST_MAX_PX).toBe(320);
+    expect(DOCK_DONE_OPEN_DEFAULT).toBe(false);
   });
 });

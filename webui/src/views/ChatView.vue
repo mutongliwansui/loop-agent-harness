@@ -76,6 +76,7 @@ import ToolCard from '../components/ToolCard.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import BackgroundNoticeCard from '../components/BackgroundNoticeCard.vue';
 import SubAgentResultCard from '../components/SubAgentResultCard.vue';
+import BackgroundDock from '../components/BackgroundDock.vue';
 import { parseBackgroundNotice, type BackgroundNoticeInfo } from '../background-notice.js';
 // 附件文件类型图标（需求 20261113-006 D3）：待发送区与气泡内共用同一套族判定
 import { extLabelOf, fileIconSvg, imgTagOf, isImageName } from '../file-icon.js';
@@ -1709,6 +1710,12 @@ onUnmounted(() => {
       </div>
 
       <div class="composer">
+        <!-- 后台任务常驻指示器（需求 20261112-006：命令任务 + 子任务统一展示）：
+             无论消息滚到哪里都能看到「运行中 N」。
+             宽度与消息列对齐（800 - 20×2），否则会顶到面板边缘、比对话卡片更宽 -->
+        <div class="composer-dock">
+          <BackgroundDock :session-id="activeId" />
+        </div>
         <div class="composer-inner">
           <div class="dock">
             <!-- 待发送附件区（需求 20261113-006 P0）：顶行统计 + 图片砖/文档卡混排流 + 折叠。

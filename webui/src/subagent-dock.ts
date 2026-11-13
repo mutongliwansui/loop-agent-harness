@@ -1,4 +1,4 @@
-// 后台子任务指示器的纯展示逻辑（2026-11-07 样式重设计）
+// 后台子任务指示器的纯展示逻辑（2026-11-07 样式重设计，2026-11-13 列表展示优化）
 //
 // 组件只负责布局与交互，取数/格式化/裁剪规则集中在这里，便于 Node vitest 直测。
 // 数据源沿用 SubAgentTaskVM（GET /sessions/:id/subagents 轮询快照），本模块不引入 Vue。
@@ -10,6 +10,15 @@ export const DOCK_MAX_CHIPS = 3;
 export const DOCK_SHORT_TITLE_MAX = 18;
 /** 展开行失败摘要的最大长度 */
 export const DOCK_ERROR_MAX = 60;
+/**
+ * 展开区高度上限（像素）：与组件 CSS 的 `min(42vh, 320px)` 同口径，
+ * 窄屏（≤720px）由 CSS 降为 240px。任务再多也只内部滚动，不把输入区顶出视口。
+ */
+export const DOCK_LIST_MAX_PX = 320;
+/** 已结束组默认收起（需求 20261113-007） */
+export const DOCK_DONE_OPEN_DEFAULT = false;
+/** 任务 ID 缩略阈值：超过即截断为「9 字符 + …」 */
+export const DOCK_ID_MAX = 11;
 
 /** 毫秒 → 「42s」/「2m14s」（与过程区 fmtSecs 的「10s 以下带小数」不同，这里只到秒） */
 export function formatDockElapsed(ms: number): string {
@@ -90,3 +99,35 @@ export function dockStatusLabel(status: SubAgentTaskVM['status']): string {
       return '已中断';
   }
 }
+
+/** 任务类型徽标文案（命令任务 / 后台子 Agent 任务） */
+export function dockKindLabel(kind: 'command' | 'subagent'): string {
+  return kind === 'command' ? '命令' : '子任务';
+}
+
+/**
+ * 任务 ID 缩略（展开行副行用）：超过 DOCK_ID_MAX 截前 9 字符加省略号。
+ * 完整 ID 仍保留在 title 提示与复制动作里，不丢可复制能力。
+ */
+export function dockShortId(id: string, max = DOCK_ID_MAX): string {
+  const chars = [...(id ?? '')];
+  if (chars.length <= max) return chars.join('');
+  return `${chars.slice(0, 9).join('')}…`;
+}
+
+/**
+ * 展开区分组（需求 20261113-007）：运行中在上（组头常驻、带序号），
+ * 已结束在下（组头可折叠，默认收起）。两组都保持传入顺序（调用方已按状态排序）。
+ */
+export interface DockGroups<T extends SubAgentTaskVM> {
+  running: T[];
+  ended: T[];
+}
+
+export function dockGroups<T extends SubAgentTaskVM>(tasks: T[]): DockGroups<T> {
+  const running: T[] = [];
+  const ended: T[] = [];
+  for (const t of tasks) (t.status === 'running' ? running : ended).push(t);
+  return { running, ended };
+}
+
