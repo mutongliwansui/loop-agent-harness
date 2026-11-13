@@ -13,6 +13,13 @@ sea-config.json
 /webui/node_modules/
 /webui/dist/
 
+# 桌面端壳（Electron 子包：依赖与构建产物均不入库；安装包在任务 04 产出）
+/desktop/node_modules/
+/desktop/dist/
+/desktop/build/
+/desktop/resources/
+/dist-desktop/
+
 # Agent 运行时配置（workspace 配置与 Skill 统一存放于 {项目}/.loop-agent/，整体不进入版本控制）
 .loop-agent/
 

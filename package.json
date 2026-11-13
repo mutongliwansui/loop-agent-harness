@@ -8,6 +8,7 @@
     "build": "tsup src/index.ts --format esm --dts",
     "build:sea": "node scripts/build-sea.mjs",
     "build:webui": "npm --prefix webui run build",
+    "build:desktop": "node scripts/build-desktop.mjs",
     "start": "tsx src/index.ts",
     "serve": "tsx src/index.ts --serve",
     "typecheck": "tsc --noEmit",
