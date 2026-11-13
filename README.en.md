@@ -189,6 +189,7 @@ Each section's details have been split into [docs/readme/en/](docs/readme/en/) (
 | [🛠️ Tech Stack](docs/readme/en/tech-stack.md) | Language / runtime / SDK / toolchain choices |
 | [🏗️ Development](docs/readme/en/development.md) | Development, build, typecheck and test commands |
 | [🚀 SEA Single-file Deployment](docs/readme/en/sea-deployment.md) | Building and running the single executable, and field notes |
+| [🖥 Desktop App](docs/readme/en/desktop.md) | Windows installer and portable build: install, no-UAC rationale, first-run SmartScreen, uninstall and data location, packaging |
 | [🔍 Troubleshooting](docs/readme/en/troubleshooting.md) | Common error messages and fixes |
 
 ---

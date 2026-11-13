@@ -189,6 +189,7 @@ npm run build:webui
 | [🛠️ 技术栈](docs/readme/zh/tech-stack.md) | 语言/运行时/SDK/工具链选型清单 |
 | [🏗️ 开发](docs/readme/zh/development.md) | 开发、构建、类型检查与测试命令 |
 | [🚀 SEA 单文件部署](docs/readme/zh/sea-deployment.md) | 单可执行文件构建、运行与现场注意点 |
+| [🖥 桌面端](docs/readme/zh/desktop.md) | Windows 安装包与便携版：安装、无 UAC 说明、首次运行 SmartScreen、卸载与数据位置、构建打包 |
 | [🔍 故障排查](docs/readme/zh/troubleshooting.md) | 常见错误信息与解决方法 |
 
 ---
