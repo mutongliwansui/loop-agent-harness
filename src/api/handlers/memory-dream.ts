@@ -14,7 +14,7 @@
 // - preview 的非法 cron 返回 200 {ok:false,error}（输入期预览不属于错误请求，前端单分支处理）
 // - 记忆未启用时仍允许保存（配置先存着），响应带 warning 提示「定时不会执行」
 
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { DreamRunLog } from '../../memory/dream-runs.js';
@@ -62,9 +62,13 @@ function sessionsBaseDir(ctx: HandlerContext): string {
 }
 
 /**
- * 解析 history 端点的目标空间根：
+ * history 端点的目标空间：wsId 恒有值（记忆目录名），root 可能为 null（孤儿空间）。
+ *
  * - 绝对路径 → registry.ensureRoot 校验（not_found/forbidden 与 fs 组同语义）；
- * - wsId → 经 sessions 索引反查 path（查不到 → not_found，无法定位增量状态目录）；
+ * - wsId → 经 sessions 索引反查 path；**查不到路径不报错**（需求 20261113-004 D5 修正）：
+ *   孤儿空间（有记忆无会话索引）在记忆管理页下拉里是可选项，若此处 404，
+ *   用户选中它看历史就会失败——而运行历史只存在 {记忆目录}/.dreaming-runs.json，
+ *   有记忆目录即可读，无需空间根；
  * - 缺省 ws → **进程启动空间**（`deps.sessionStore.path`）。
  *
  * 需求 20261113-001 D5：缺省值不再取「最近使用空间」（MRU）。history 需要「一个具体空间」，
@@ -72,18 +76,24 @@ function sessionsBaseDir(ctx: HandlerContext): string {
  * 启动空间是进程级常量，请求本身即可推知。
  * 想看跨空间全貌请显式用 `scope=all`（已有能力，见 handleHistory）。
  */
-async function resolveHistoryTargetRoot(ctx: HandlerContext, wsParam: string): Promise<string> {
-  if (!wsParam) return ctx.deps.sessionStore.path;
+async function resolveHistoryTarget(ctx: HandlerContext, wsParam: string): Promise<{ root: string | null; wsId: string }> {
+  const startupRoot = ctx.deps.sessionStore.path;
+  if (!wsParam) return { root: startupRoot, wsId: toWorkspaceId(startupRoot) };
   const registry = ctx.registry;
-  if (!registry) return ctx.deps.sessionStore.path;
+  if (!registry) return { root: startupRoot, wsId: toWorkspaceId(startupRoot) };
   if (/^[A-Za-z]:[\\/]/.test(wsParam) || wsParam.startsWith('/')) {
-    return registry.ensureRoot(wsParam);
+    const root = await registry.ensureRoot(wsParam);
+    return { root, wsId: toWorkspaceId(root) };
   }
   if (/^[0-9a-f]{8,64}$/i.test(wsParam)) {
-    const hit = (await listMemoryWorkspaces({ sessionsDir: sessionsBaseDir(ctx), memoryDir: memoryBaseDir(ctx) }))
-      .find((w) => w.id === wsParam.toLowerCase());
-    if (!hit?.path) throw new ApiHttpError('not_found', `无法定位该空间路径: ${wsParam.slice(0, 8)}`);
-    return hit.path;
+    const wsId = wsParam.toLowerCase();
+    if (!existsSync(join(memoryBaseDir(ctx), wsId))) {
+      throw new ApiHttpError('not_found', `该工作空间暂无记忆数据: ${wsId.slice(0, 8)}`);
+    }
+    const hit = (await listMemoryWorkspaces({ sessionsDir: sessionsBaseDir(ctx), memoryDir: memoryBaseDir(ctx) })).find(
+      (w) => w.id === wsId,
+    );
+    return { root: hit?.path || null, wsId };
   }
   throw new ApiHttpError('bad_request', 'ws 参数须为 16 位工作空间 id 或绝对路径');
 }
@@ -91,11 +101,11 @@ async function resolveHistoryTargetRoot(ctx: HandlerContext, wsParam: string): P
 /**
  * 单空间直读运行历史（调度器不可用时的文件兜底）。
  * 与 DreamScheduler.logFor 同构：读 {L2 记忆目录}/.dreaming-runs.json，环形上限照配置。
+ * 入参用 wsId 而非空间根：孤儿空间没有路径，但记忆目录名就是 wsId。
  */
-function readRunsForRoot(ctx: HandlerContext, root: string): DreamRunRecord[] {
+function readRunsForWs(ctx: HandlerContext, wsId: string): DreamRunRecord[] {
   const limit = historyLimitOf(ctx);
   if (limit <= 0) return [];
-  const wsId = toWorkspaceId(root);
   const memoryDir = join(memoryBaseDir(ctx), wsId);
   const log = new DreamRunLog({ file: join(memoryDir, RUNS_FILE), limit });
   return log.list(limit);
@@ -237,26 +247,41 @@ async function handleHistory(
 
   // ---- 单空间模式：可经 ?ws= 指定目标空间（缺省=启动空间，现行为不变）----
   const wsParam = (url.searchParams.get('ws') ?? '').trim();
-  const targetRoot = await resolveHistoryTargetRoot(ctx, wsParam);
+  const { root: targetRoot, wsId } = await resolveHistoryTarget(ctx, wsParam);
 
-  // 优先经调度器（与写入端共用同一套路径/上限解析）
-  const viaScheduler = await ctx.dreamScheduler?.historyFor(targetRoot, limit).catch((e: unknown) => {
-    ctx.log(`[api] 读取运行历史失败: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  });
+  // 需求 20261113-004 D6（P1 增强）：单空间记录也回填空间三维，
+  // 让表格「工作空间」列永远有名字可显示（不再依赖行内字段缺省兜底）。
+  const meta = (await listMemoryWorkspaces({ sessionsDir: sessionsBaseDir(ctx), memoryDir: memoryBaseDir(ctx) })).find(
+    (w) => w.id === wsId,
+  );
+  // 名称优先级：sessions 索引 meta.json → 空间根末段目录名 → wsId 前 8 位
+  const wsName =
+    meta?.name ||
+    targetRoot?.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ||
+    wsId.slice(0, 8);
+  const stamp = (recs: DreamRunRecord[]): (DreamRunRecord & { workspaceId: string; workspaceName: string; workspacePath: string })[] =>
+    recs.map((r) => ({ ...r, workspaceId: wsId, workspaceName: wsName, workspacePath: meta?.path || targetRoot || '' }));
+
+  // 优先经调度器（与写入端共用同一套路径/上限解析）；孤儿空间无路径，直接走文件读取
+  const viaScheduler = targetRoot
+    ? await ctx.dreamScheduler?.historyFor(targetRoot, limit).catch((e: unknown) => {
+        ctx.log(`[api] 读取运行历史失败: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      })
+    : null;
   if (viaScheduler) {
-    sendJson(res, 200, { runs: viaScheduler, scope });
+    sendJson(res, 200, { runs: stamp(viaScheduler), scope });
     return;
   }
 
   // 调度器未注入 / runtime 未装载：直接读文件（记忆未启用时也允许查看历史）
   let runs: DreamRunRecord[] = [];
   try {
-    runs = readRunsForRoot(ctx, targetRoot).slice(0, limit);
+    runs = readRunsForWs(ctx, wsId).slice(0, limit);
   } catch {
     runs = [];
   }
-  sendJson(res, 200, { runs, scope });
+  sendJson(res, 200, { runs: stamp(runs), scope });
 }
 
 /** DELETE /memory/dream/history?scope=&ws=：清空（返回删除条数）
@@ -288,12 +313,14 @@ async function handleClearHistory(
 
   // ---- 单空间清空：可经 ?ws= 指定目标空间 ----
   const wsParam = (url.searchParams.get('ws') ?? '').trim();
-  const targetRoot = await resolveHistoryTargetRoot(ctx, wsParam);
+  const { root: targetRoot, wsId } = await resolveHistoryTarget(ctx, wsParam);
 
-  const viaScheduler = await ctx.dreamScheduler?.clearHistory(targetRoot).catch((e: unknown) => {
-    ctx.log(`[api] 清空运行历史失败: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  });
+  const viaScheduler = targetRoot
+    ? await ctx.dreamScheduler?.clearHistory(targetRoot).catch((e: unknown) => {
+        ctx.log(`[api] 清空运行历史失败: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      })
+    : null;
   if (viaScheduler !== null && viaScheduler !== undefined) {
     ctx.log(`[api] 运行历史已清空：${viaScheduler} 条`);
     sendJson(res, 200, { deleted: viaScheduler, scope });
@@ -302,7 +329,6 @@ async function handleClearHistory(
 
   let deleted = 0;
   try {
-    const wsId = toWorkspaceId(targetRoot);
     deleted = clearRunHistory({ memoryDir: memoryBaseDir(ctx), wsIds: [wsId] });
   } catch {
     deleted = 0;

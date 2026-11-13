@@ -280,6 +280,96 @@ describe('GET /memory/episodic?ws=', () => {
   });
 });
 
+// ---------- HTTP：GET /memory/search?ws=（需求 20261113-004 D4） ----------
+
+describe('GET /memory/search?ws=', () => {
+  it('ws=id → 只在该空间检索，并回带 ws 三维', async () => {
+    // 两个空间各埋一条可区分的内容，确保「只搜到目标空间」可被证伪
+    seedMemory(WS_A_ID, {
+      [`${dayN(0)}.md`]: `## [${new Date().toISOString()}] [sessionId: s1] [scope: session] [tag: tool]\n检索目标词 alpha-only\n`,
+    });
+    seedMemory(WS_B_ID, {
+      [`${dayN(0)}.md`]: `## [${new Date().toISOString()}] [scope: global] [tag: note]\n检索目标词 beta-only\n`,
+    });
+
+    const res = await req('GET', `/memory/search?q=${encodeURIComponent('检索目标词')}&ws=${WS_A_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      results: { layer: string; text?: string; content?: string }[];
+      ws: { id: string };
+    };
+    expect(body.ws.id).toBe(WS_A_ID);
+    expect(body.results.length).toBeGreaterThanOrEqual(1);
+    // 结果标 layer=episodic（与缺省分支同构）
+    expect(body.results.every((r) => r.layer === 'episodic')).toBe(true);
+    const blob = JSON.stringify(body.results);
+    expect(blob).toContain('alpha-only');
+    expect(blob).not.toContain('beta-only');
+  });
+
+  it('ws=绝对路径 → 与 id 形态等效', async () => {
+    const res = await req(
+      'GET',
+      `/memory/search?q=${encodeURIComponent('检索目标词')}&ws=${encodeURIComponent(TEST_WORKSPACE)}`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: unknown[]; ws: { id: string } };
+    expect(body.ws.id).toBe(WS_A_ID);
+    expect(body.results.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('缺省（无 ws）→ 行为与改动前一致：只有 results、无 ws 字段', async () => {
+    const res = await req('GET', `/memory/search?q=${encodeURIComponent('检索目标词')}&limit=3`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: unknown[]; ws?: unknown };
+    expect(Array.isArray(body.results)).toBe(true);
+    expect(body.ws).toBeUndefined();
+  });
+
+  it('ws=未知 id（无记忆数据）→ 404；ws=非法形态 → 400', async () => {
+    expect((await req('GET', `/memory/search?q=x&ws=${'e'.repeat(16)}`)).status).toBe(404);
+    expect((await req('GET', '/memory/search?q=x&ws=../etc')).status).toBe(400);
+  });
+
+  it('缺 q 即使带 ws 也 400（q 校验优先）', async () => {
+    expect((await req('GET', `/memory/search?ws=${WS_A_ID}`)).status).toBe(400);
+  });
+});
+
+// ---------- HTTP：history ?scope=ws&ws=（需求 20261113-004 D5/D6） ----------
+
+describe('GET /memory/dream/history?scope=ws&ws=', () => {
+  it('显式 ws → 读该空间记录，并回填空间三维（不再有「启动空间」兜底）', async () => {
+    seedMemory(WS_B_ID, {}, [{ startedAt: '2026-10-26T09:00:00.000Z', promoted: 3 }]);
+    const res = await req('GET', `/memory/dream/history?scope=ws&ws=${WS_B_ID}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      scope: string;
+      runs: { workspaceId: string; workspaceName: string; workspacePath: string; startedAt: string }[];
+    };
+    expect(body.scope).toBe('ws');
+    expect(body.runs.length).toBeGreaterThanOrEqual(1);
+    expect(body.runs[0]).toMatchObject({ workspaceId: WS_B_ID, startedAt: '2026-10-26T09:00:00.000Z' });
+    // 三维必填：表格「工作空间」列不再依赖缺省兜底文案
+    expect(typeof body.runs[0].workspaceName).toBe('string');
+    expect(body.runs[0].workspaceName.length).toBeGreaterThan(0);
+  });
+
+  it('DELETE scope=ws&ws= → 只清该空间，不影响其它空间', async () => {
+    seedMemory(WS_A_ID, {}, [{ startedAt: '2026-10-26T10:00:00.000Z', promoted: 1 }]);
+    seedMemory(WS_B_ID, {}, [{ startedAt: '2026-10-26T11:00:00.000Z', promoted: 1 }]);
+
+    const del = await req('DELETE', `/memory/dream/history?scope=ws&ws=${WS_B_ID}`);
+    expect(del.status).toBe(200);
+    expect(((await del.json()) as { deleted: number }).deleted).toBeGreaterThanOrEqual(1);
+
+    const b = (await (await req('GET', `/memory/dream/history?scope=ws&ws=${WS_B_ID}`)).json()) as { runs: unknown[] };
+    expect(b.runs).toEqual([]);
+    const a = (await (await req('GET', `/memory/dream/history?scope=ws&ws=${WS_A_ID}`)).json()) as { runs: unknown[] };
+    expect(a.runs.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 // ---------- HTTP：history ?scope=all ----------
 
 describe('GET /memory/dream/history?scope=', () => {

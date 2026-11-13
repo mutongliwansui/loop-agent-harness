@@ -3,7 +3,8 @@
 //
 // 20261026-004 扩展（D5/D6/D8）：
 // - 支持 ?scope=all|ws 聚合范围切换（卡片头部分段按钮），清空跟随范围；
-// - 表格新增「工作空间」列（名称 + wsId 副行）；scope=ws 时行内无空间字段，显示「启动空间」。
+// - 表格新增「工作空间」列（名称 + wsId 副行）；scope=ws 时读的是父组件显式指定的
+//   那一个空间（需求 20261113-004 D5），行内无空间字段时兜底显示「—」。
 // 展示 GET /memory/dream/history 的环形记录（新 → 旧，最多 historyLimit 条，默认 20）。
 // 结果判定口径与后端一致：ok = (errors === 0)；有产出但有错误 → 部分失败，无产出且报错 → 失败。
 import { computed } from 'vue';
@@ -21,10 +22,22 @@ export interface HistoryRow extends DreamRunRecord {
 const props = defineProps<{
   runs: HistoryRow[];
   loading?: boolean;
-  /** 展示范围：all=全部空间聚合（默认）；ws=仅启动空间 */
+  /** 展示范围：all=全部空间聚合（默认）；ws=父组件显式指定的单空间 */
   scope?: 'all' | 'ws';
+  /** 可选空间清单（scope=ws 时渲染下拉，让用户在本页显式选定空间；D5） */
+  wsOptions?: { id: string; label: string }[];
+  /** 当前选中的空间 id（受控） */
+  ws?: string;
 }>();
-const emit = defineEmits<{ clear: []; refresh: []; scopeChange: [s: 'all' | 'ws'] }>();
+const emit = defineEmits<{
+  clear: [];
+  refresh: [];
+  scopeChange: [s: 'all' | 'ws'];
+  wsChange: [id: string];
+}>();
+
+/** scope=ws 且有清单时才显示空间下拉（全部空间模式不需要选空间） */
+const showWsPicker = computed(() => props.scope === 'ws' && (props.wsOptions?.length ?? 0) > 0);
 
 type BadgeKind = 'ok' | 'warn' | 'err' | 'brand' | 'dim';
 
@@ -60,8 +73,18 @@ const rows = computed(() => props.runs ?? []);
       <span class="spacer"></span>
       <span class="seg" role="group" aria-label="记录范围">
         <button :class="{ on: scope !== 'ws' }" :disabled="loading" @click="emit('scopeChange', 'all')">全部空间</button>
-        <button :class="{ on: scope === 'ws' }" :disabled="loading" @click="emit('scopeChange', 'ws')">启动空间</button>
+        <button :class="{ on: scope === 'ws' }" :disabled="loading" @click="emit('scopeChange', 'ws')">指定空间</button>
       </span>
+      <select
+        v-if="showWsPicker"
+        :value="ws"
+        :disabled="loading"
+        style="max-width: 220px"
+        title="指定要查看触发记录的工作空间"
+        @change="emit('wsChange', ($event.target as HTMLSelectElement).value)"
+      >
+        <option v-for="o in wsOptions" :key="o.id" :value="o.id">{{ o.label }}</option>
+      </select>
       <button class="sm" :disabled="loading || rows.length === 0" @click="emit('clear')">清空记录</button>
       <button class="sm" :disabled="loading" @click="emit('refresh')">⟳ 刷新</button>
     </div>
@@ -97,7 +120,7 @@ const rows = computed(() => props.runs ?? []);
                 <span class="ws-id mono">{{ r.workspaceId }}</span>
               </template>
               <template v-else>
-                <span class="muted">启动空间</span>
+                <span class="muted">—</span>
               </template>
             </td>
             <td>

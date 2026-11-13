@@ -141,17 +141,19 @@ WebUI「记忆」页按数据维度重组为四个标签页（`#/memory?tab=<key
 
 | 标签页 | 内容 | 数据源 |
 | --- | --- | --- |
-| **定时任务** | 自动晋升 cron 配置 + 触发记录（支持「全部空间 / 当前空间」范围切换）+ 分层状态概要 + Gate 晋升决策 | `GET /memory/status`、`GET /memory/dream/preview`、`GET /memory/dream/history?scope=all\|ws`、`DELETE /memory/dream/history` |
-| **L2 情景** | 空间 → 会话 → 范围/标签三级筛选 + 天数窗口，按天分组折叠展示；条目头（会话 id / scope / tag）由前端解析 | `GET /memory/episodic?limit=<1-90>[&ws=<id>]` + `GET /memory/workspaces` |
-| **L3 长期** | 全局共享（SOUL/USER，不随空间切换）与工作空间级（MEMORY）两栏；右上角可切换空间直读 | `GET /memory/curated[?ws=<id>]` |
-| **检索** | L2 语义检索（当前空间） | `GET /memory/search?q=` |
+| **定时任务** | 自动晋升 cron 配置 + 触发记录（支持「全部空间 / 指定空间」范围切换，指定空间须显式选空间）+ 分层状态概要 + Gate 晋升决策 | `GET /memory/status`、`GET /memory/dream/preview`、`GET /memory/dream/history?scope=all\|ws[&ws=<id>]`、`DELETE /memory/dream/history[?scope=&ws=]` |
+| **L2 情景** | 空间 → 会话 → 范围/标签三级筛选 + 天数窗口，按天分组折叠展示；条目头（会话 id / scope / tag）由前端解析 | `GET /memory/episodic?limit=<1-90>&ws=<id>` + `GET /memory/workspaces` |
+| **L3 长期** | 全局共享（SOUL/USER，不随空间切换）与工作空间级（MEMORY）两栏；右上角可切换空间直读 | `GET /memory/curated?ws=<id>` |
+| **检索** | L2 语义检索（**在所选空间内**检索，徽章显示所选空间名） | `GET /memory/search?q=&ws=<id>` |
+
+> **空间选择语义（需求 20261113-004）**：四个标签页共用同一个「当前空间」，进页面自动选中空间清单中第一个有记忆的空间，选择结果写入 hash `?ws=`（刷新/分享可还原）。界面不提供「缺省/启动空间」选项——未选中空间时（如全新安装、清单为空）显示空态引导且不发起任何请求。后端「缺省 = 进程启动空间」的语义保留不变，只是 UI 不再触发它。
 
 配套端点：
 
 - **`GET /memory/workspaces`**：聚合「有会话 ∪ 有记忆」的空间清单，返回 `{id, name, path, hasMemory, hasSession}[]`——会话侧来自 sessions 索引扫描，记忆侧来自 `{memoryDir}/*/` 目录扫描，仅有记忆的「孤儿空间」也会列出（供 L2/L3 空间下拉使用）。
-- **`GET /memory/episodic` / `GET /memory/curated` 支持 `?ws=<id 或绝对路径>`**：按空间直读记忆（走 WorkspaceRuntime 路由，canonical 校验，未知空间 404）；缺省回落**启动空间**（需求 20261113-001 起不再随最近使用漂移）。
-- **`GET /memory/dream/history?scope=all|ws`**：`all` 时文件扫描聚合全部空间的 `.dreaming-runs.json`（不要求空间已装载），每条附 `workspaceId/workspaceName/workspacePath`；`ws`（缺省）= 启动空间单文件读取（需求 20261113-001 起不再随最近使用漂移）。
-- **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**：清空跟随筛选范围；`all` 时遍历清空各空间记录（文件保留、内容清空，保持幂等）。
+- **`GET /memory/episodic` / `GET /memory/curated` / `GET /memory/search` 支持 `?ws=<id 或绝对路径>`**：按空间直读记忆（canonical 校验，未知空间 404），响应附 `ws: {id, path}`；缺省回落**启动空间**（需求 20261113-001 起不再随最近使用漂移，界面自 20261113-004 起恒显式传 `ws`）。
+- **`GET /memory/dream/history?scope=all|ws[&ws=<id>]`**：`all` 时文件扫描聚合全部空间的 `.dreaming-runs.json`（不要求空间已装载），每条附 `workspaceId/workspaceName/workspacePath`；`ws` + `ws=` 读指定空间并同样回填空间三维（孤儿空间按记忆目录可读，不再是 404）。
+- **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**：清空跟随筛选范围；`all` 时遍历清空各空间记录，`scope=ws&ws=` 只清指定空间（文件保留、内容清空，保持幂等）。
 
 ### 手动压缩与上下文用量（20261106-005）
 

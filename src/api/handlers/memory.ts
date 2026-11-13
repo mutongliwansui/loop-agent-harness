@@ -171,14 +171,38 @@ async function readEpisodicDirect(memoryDir: string, days: number): Promise<{ da
   return epi.readRecentDays(days);
 }
 
-/** GET /memory/search?q=&limit=：L2 检索（q 必填 400；结果标 layer=episodic） */
+/**
+ * GET /memory/search?q=&limit=&ws=：L2 检索（q 必填 400；结果标 layer=episodic）
+ *
+ * 需求 20261113-004 D4：显式 ?ws= 时按该空间直读（基座与 /memory/episodic 完全同构：
+ * resolveWsTarget 定位记忆目录 → EpisodicMemory 直读），响应附 ws 三维供前端显示。
+ * 缺省（无 ws）仍走 ctx 空间 kit——20261113-001 D5 保留的后端缺省语义不变，
+ * 只是前端自本需求起不再触发它。
+ */
 async function handleMemorySearch(ctx: HandlerContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const kit = await requireMemoryKit(ctx);
   const url = new URL(req.url ?? '/', 'http://localhost');
   const q = (url.searchParams.get('q') ?? '').trim();
   if (!q) throw new ApiHttpError('bad_request', '缺少必填查询参数 q');
   const topK = queryInt(url, 'limit', 5, 50);
-  // 管理检索：显式全量（不受会话隔离限制，含历史裸条目）
+
+  const target = await resolveWsTarget(ctx, url);
+  if (target) {
+    const { config: cfg } = ctx.configLoader.load();
+    if (!cfg.memory.enabled) {
+      throw new ApiHttpError('conflict', '记忆系统未启用（memory.enabled=false），可经 PUT /config/memory.enabled 开启');
+    }
+    const epi = new EpisodicMemory(target.memoryDir);
+    await epi.init();
+    // 管理检索：显式全量（不受会话隔离限制，含历史裸条目）
+    const results = await epi.search(q, topK, { scope: 'all' });
+    sendJson(res, 200, {
+      results: results.map((r) => ({ ...r, layer: 'episodic' })),
+      ws: { id: target.wsId, path: target.wsRoot },
+    });
+    return;
+  }
+
+  const kit = await requireMemoryKit(ctx);
   const results = await kit.episodic.search(q, topK, { scope: 'all' });
   sendJson(res, 200, { results: results.map((r) => ({ ...r, layer: 'episodic' })) });
 }

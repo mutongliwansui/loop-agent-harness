@@ -685,9 +685,10 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'q', in: 'query', type: 'string', required: true, desc: '检索关键词' },
       { name: 'limit', in: 'query', type: 'number', desc: '返回条数上限' },
+      { name: 'ws', in: 'query', type: 'string', desc: '空间 id 或绝对路径，只在该空间内检索并回报 {id, path}；缺省为进程启动空间（界面自 20261113-004 起恒传 ws）' },
     ],
-    response: '{ results: [ { content, score, layer } ] }',
-    example: 'curl "/memory/search?q=部署"',
+    response: '{ results: [ { content, score, layer } ], ws?: { id, path } }',
+    example: 'curl "/memory/search?q=部署&ws=<id>"',
   },
   'GET /memory/gate': {
     summary: '记忆提升门阈值与近期判定结果。',
@@ -729,9 +730,9 @@ export const API_DOC_ENTRIES: Record<string, ApiDocEntry> = {
     params: [
       { name: 'limit', in: 'query', type: 'number', desc: '返回条数上限' },
       { name: 'scope', in: 'query', type: 'string', desc: 'ws（默认，进程启动空间单空间）| all（全部空间聚合）' },
-      { name: 'ws', in: 'query', type: 'string', desc: 'scope=ws 时的目标空间' },
+      { name: 'ws', in: 'query', type: 'string', desc: 'scope=ws 时的目标空间 id 或绝对路径；记录恒回填 workspaceId/Name/Path（孤儿空间按记忆目录可读）' },
     ],
-    response: '{ scope, runs: [ { startedAt, finishedAt, durationMs, reason, ok, promoted, skipped, errors } ] }',
+    response: '{ scope, runs: [ { startedAt, finishedAt, durationMs, reason, ok, promoted, skipped, errors, workspaceId, workspaceName, workspacePath } ] }',
     example: 'curl "/memory/dream/history?scope=all&limit=20"',
   },
   'DELETE /memory/dream/history': {

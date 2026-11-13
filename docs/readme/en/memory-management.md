@@ -141,17 +141,19 @@ The WebUI "Memory" page is reorganized into four tabs by data dimension (`#/memo
 
 | Tab | Content | Data sources |
 | --- | --- | --- |
-| **Scheduled** | Auto-promotion cron config + run history (with an "All workspaces / Current workspace" scope toggle) + tier summary + Gate decisions | `GET /memory/status`, `GET /memory/dream/preview`, `GET /memory/dream/history?scope=all\|ws`, `DELETE /memory/dream/history` |
-| **L2 Episodic** | Workspace → session → scope/tag three-level filter + day window, grouped by day; entry headers (session id / scope / tag) are parsed on the frontend | `GET /memory/episodic?limit=<1-90>[&ws=<id>]` + `GET /memory/workspaces` |
-| **L3 Curated** | Global shared (SOUL/USER, unaffected by workspace switching) vs. workspace-level (MEMORY) two columns; switch workspace via the top-right dropdown | `GET /memory/curated[?ws=<id>]` |
-| **Search** | L2 semantic search (current workspace) | `GET /memory/search?q=` |
+| **Scheduled** | Auto-promotion cron config + run history (with an "All workspaces / Selected workspace" scope toggle; the selected mode requires picking a workspace explicitly) + tier summary + Gate decisions | `GET /memory/status`, `GET /memory/dream/preview`, `GET /memory/dream/history?scope=all\|ws[&ws=<id>]`, `DELETE /memory/dream/history[?scope=&ws=]` |
+| **L2 Episodic** | Workspace → session → scope/tag three-level filter + day window, grouped by day; entry headers (session id / scope / tag) are parsed on the frontend | `GET /memory/episodic?limit=<1-90>&ws=<id>` + `GET /memory/workspaces` |
+| **L3 Curated** | Global shared (SOUL/USER, unaffected by workspace switching) vs. workspace-level (MEMORY) two columns; switch workspace via the top-right dropdown | `GET /memory/curated?ws=<id>` |
+| **Search** | L2 semantic search **inside the selected workspace**; the badge shows the selected workspace name | `GET /memory/search?q=&ws=<id>` |
+
+> **Workspace selection semantics (req. 20261113-004)**: all four tabs share one "current workspace". On entering the page the first workspace that has memory is selected automatically, and the choice is written to the hash `?ws=` (refresh/share restores it). The UI offers no "default / startup workspace" option — with no selection (fresh install, empty list) the tabs show an empty state and issue no requests. The backend's "omitted = process startup workspace" semantics is unchanged; the UI simply no longer triggers it.
 
 Companion endpoints:
 
 - **`GET /memory/workspaces`**: aggregates workspaces that "have sessions ∪ have memory", returning `{id, name, path, hasMemory, hasSession}[]` — the session side comes from scanning session indexes, the memory side from scanning `{memoryDir}/*/` directories; memory-only "orphan workspaces" are listed too (used by the L2/L3 workspace dropdowns).
-- **`GET /memory/episodic` / `GET /memory/curated` accept `?ws=<id or absolute path>`**: read memory for a specific workspace (routed through WorkspaceRuntime with canonical checks; unknown workspace → 404); omitted falls back to the **startup workspace** (no longer drifting with the most-recently-used one as of req. 20261113-001).
-- **`GET /memory/dream/history?scope=all|ws`**: with `all`, aggregates `.dreaming-runs.json` of all workspaces via file scan (no loaded runtime required), each row annotated with `workspaceId/workspaceName/workspacePath`; `ws` (default) = a single-file read of the startup workspace (no longer drifting with the most-recently-used one as of req. 20261113-001).
-- **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**: clearing follows the selected scope; with `all`, records in every workspace are cleared (files kept, contents emptied, idempotent).
+- **`GET /memory/episodic` / `GET /memory/curated` / `GET /memory/search` accept `?ws=<id or absolute path>`**: read memory for a specific workspace (canonical checks; unknown workspace → 404) and echo `ws: {id, path}`; omitted falls back to the **startup workspace** (no longer drifting with the most-recently-used one as of req. 20261113-001; the UI always passes `ws` since req. 20261113-004).
+- **`GET /memory/dream/history?scope=all|ws[&ws=<id>]`**: with `all`, aggregates `.dreaming-runs.json` of all workspaces via file scan (no loaded runtime required), each row annotated with `workspaceId/workspaceName/workspacePath`; `ws` with `ws=` reads the given workspace and annotates the same tri fields (orphan workspaces are readable via their memory directory instead of 404).
+- **`DELETE /memory/dream/history?scope=all|ws[&ws=<id>]`**: clearing follows the selected scope; with `all`, records in every workspace are cleared, with `scope=ws&ws=` only that workspace (files kept, contents emptied, idempotent).
 
 ### Manual compaction and context usage (20261106-005)
 
