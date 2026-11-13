@@ -35,6 +35,47 @@ export function currentWorkspaceRoot(): string {
   return mruRoot;
 }
 
+/** 会话索引/元数据文件名——它们存在不代表「该空间有真实会话」 */
+const NON_SESSION_FILES = new Set(['meta.json', 'sessions.json']);
+
+/** 会话体文件后缀（明文 / 加密）；与 SessionStore.sessionFileExt 同口径 */
+const SESSION_FILE_EXTS = ['.json', '.enc'];
+
+/**
+ * 该空间存储目录是否含**真实会话**（需求 20261113-002 D4）。
+ *
+ * 判据落在「内容存在」而非「元数据存在」：仅含 meta.json 的幽灵目录（旧版启动预装产物）
+ * 不得参与 recency 竞争，否则它每次启动被 touchWorkspaceMeta 刷新 mtime → 恒被选为最近使用
+ * → 再落盘，形成永不自愈的自我强化闭环。
+ *
+ * 两条命中路径（任一为真即可）：
+ * 1. 目录内存在 `sess_*` 会话体文件（排除 meta.json / sessions.json）；
+ * 2. `sessions.json` 解析为非空数组（会话体被外部清理但索引仍在时仍认账）。
+ *
+ * 任何异常 → false（保守：宁可不选它为最近使用，也不选错）。
+ */
+async function hasRealSessions(dir: string): Promise<boolean> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      if (NON_SESSION_FILES.has(e.name)) continue;
+      if (SESSION_FILE_EXTS.some((ext) => e.name.endsWith(ext))) return true;
+    }
+    // 兜底：会话体文件缺失但索引非空（例如迁移中途）
+    try {
+      const raw = await readFile(join(dir, 'sessions.json'), 'utf-8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed) && parsed.length > 0) return true;
+    } catch {
+      // 索引缺失/损坏：不算有会话
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 冷启动推导「最近使用空间」。
  *
@@ -54,6 +95,9 @@ export async function resolveRecentRoot(userDir?: string): Promise<string> {
   }
   let best: { root: string; mtimeMs: number } | null = null;
   for (const dir of dirs) {
+    // 需求 20261113-002 D4：无真实会话的目录（幽灵空壳）不参与竞争——
+    // 放在 mtime / canonical 计算之前，省掉两次无谓 IO
+    if (!(await hasRealSessions(dir))) continue;
     const mtimeMs = await latestMtimeMs(dir);
     if (mtimeMs === null) continue;
     const root = await rootOfWsDir(dir);

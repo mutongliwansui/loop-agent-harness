@@ -208,7 +208,11 @@ async function readJournalSummary(
 
 /** GET /workspaces：跨工作空间聚合（名称 + 会话列表；注入 running 与 lastRun 概要供侧栏标记） */
 export async function handleListWorkspaces(ctx: HandlerContext, res: ServerResponse): Promise<void> {
-  const workspaces = await ctx.deps.sessionStore.listAllWorkspaces();
+  // 需求 20261113-002 D5：0 会话空间不进侧栏。`listAllWorkspaces()` 自身语义保持不变
+  // （它同时是 /fs/* 的「已注册工作空间」白名单来源，收紧会误伤「已建空间未建会话」的浏览）。
+  const workspaces = (await ctx.deps.sessionStore.listAllWorkspaces()).filter(
+    (w) => w.sessions.length > 0,
+  );
   const enriched = await Promise.all(
     workspaces.map(async (w) => ({
       ...w,

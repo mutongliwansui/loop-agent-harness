@@ -76,10 +76,70 @@ describe('recent-workspace（D2/D3：冷启动推导 + MRU 指针）', () => {
     mkdirSync(join(userDir, 'sessions', 'bbbbbbbbbbbbbbbb'), { recursive: true });
     writeFileSync(join(userDir, 'sessions', 'dddddddddddddddd', 'meta.json'), JSON.stringify({})); // path 空
     writeFileSync(join(userDir, 'sessions', 'bbbbbbbbbbbbbbbb', 'meta.json'), JSON.stringify({ workspacePath: wsB }));
+    // D4 起：无会话文件的目录不算「有真实会话」，B 需带会话体才会被采纳
+    writeFileSync(join(userDir, 'sessions', 'bbbbbbbbbbbbbbbb', 'sess_b.json'), '{}');
 
     const root = await resolveRecentRoot(userDir);
     const canonicalB = await canonicalWorkspacePath(wsB);
     expect(root.replace(/\\/g, '/').toLowerCase()).toBe(canonicalB.replace(/\\/g, '/').toLowerCase());
+  });
+
+  // 需求 20261113-002 D4：幽灵空壳（仅 meta.json / 空 sessions.json）不参与 recency 竞争
+  it('D4：仅含 meta.json 的幽灵目录不被选为最近使用（即使 mtime 最新）', async () => {
+    const ghost = freshDir('ws-ghost');
+    const real = freshDir('ws-real');
+    mkdirSync(ghost, { recursive: true });
+    mkdirSync(real, { recursive: true });
+    const ghostDir = join(userDir, 'sessions', '1111111111111111');
+    const realDir = join(userDir, 'sessions', '2222222222222222');
+    mkdirSync(ghostDir, { recursive: true });
+    mkdirSync(realDir, { recursive: true });
+    writeFileSync(join(ghostDir, 'meta.json'), JSON.stringify({ workspacePath: ghost }));
+    writeFileSync(join(realDir, 'meta.json'), JSON.stringify({ workspacePath: real }));
+    writeFileSync(join(realDir, 'sess_r.json'), '{}');
+    // 幽灵目录 mtime 比真实空间新 60s：D4 之前它会胜出，之后必须被跳过
+    utimesSync(join(realDir, 'sess_r.json'), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    utimesSync(join(realDir, 'meta.json'), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    utimesSync(realDir, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+
+    const root = await resolveRecentRoot(userDir);
+    const canonicalReal = await canonicalWorkspacePath(real);
+    expect(root.replace(/\\/g, '/').toLowerCase()).toBe(canonicalReal.replace(/\\/g, '/').toLowerCase());
+  });
+
+  it('D4：空 sessions.json 不算有会话；非空索引 + 无会话体仍认账', async () => {
+    const onlyEmptyIdx = freshDir('ws-empty-idx');
+    const idxOnly = freshDir('ws-idx-only');
+    mkdirSync(onlyEmptyIdx, { recursive: true });
+    mkdirSync(idxOnly, { recursive: true });
+    const emptyIdxDir = join(userDir, 'sessions', '3333333333333333');
+    const idxOnlyDir = join(userDir, 'sessions', '4444444444444444');
+    mkdirSync(emptyIdxDir, { recursive: true });
+    mkdirSync(idxOnlyDir, { recursive: true });
+    writeFileSync(join(emptyIdxDir, 'meta.json'), JSON.stringify({ workspacePath: onlyEmptyIdx }));
+    writeFileSync(join(emptyIdxDir, 'sessions.json'), '[]');
+    writeFileSync(join(idxOnlyDir, 'meta.json'), JSON.stringify({ workspacePath: idxOnly }));
+    writeFileSync(join(idxOnlyDir, 'sessions.json'), JSON.stringify([{ id: 'sess_kept' }]));
+    // 空索引目录更新，但它不算有会话 → 应选「索引非空」那个
+    utimesSync(join(idxOnlyDir, 'sessions.json'), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    utimesSync(join(idxOnlyDir, 'meta.json'), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    utimesSync(idxOnlyDir, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+
+    const root = await resolveRecentRoot(userDir);
+    const canonicalIdxOnly = await canonicalWorkspacePath(idxOnly);
+    expect(root.replace(/\\/g, '/').toLowerCase()).toBe(canonicalIdxOnly.replace(/\\/g, '/').toLowerCase());
+  });
+
+  it('D4：全是幽灵目录 → 回落 homedir（不再选中主目录伪空间）', async () => {
+    const home = await canonicalWorkspacePath(homedir());
+    const ghost = freshDir('ws-ghost-only');
+    mkdirSync(ghost, { recursive: true });
+    const ghostDir = join(userDir, 'sessions', '5555555555555555');
+    mkdirSync(ghostDir, { recursive: true });
+    writeFileSync(join(ghostDir, 'meta.json'), JSON.stringify({ workspacePath: ghost }));
+
+    const root = await resolveRecentRoot(userDir);
+    expect(root.replace(/\\/g, '/').toLowerCase()).toBe(home.replace(/\\/g, '/').toLowerCase());
   });
 
   it('sessions 目录不存在 / 全为孤儿 → 兜底 homedir 且不抛错', async () => {

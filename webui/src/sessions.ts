@@ -42,11 +42,18 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** 搜索过滤：命中空间名/路径保留整组，否则按会话标题过滤组内条目，空组丢弃 */
+/**
+ * 搜索过滤：命中空间名/路径保留整组，否则按会话标题过滤组内条目，空组丢弃。
+ *
+ * 需求 20261113-002 D7：**无关键词时也丢弃 0 会话分组**。后端 GET /workspaces 已过滤
+ * （D5），前端再兜一层可覆盖「前端缓存了旧响应 / 连的是旧版后端」的窗口期。
+ * 纯防御，不改变任何有会话分组的展示。
+ */
 export const filteredGroups = computed<WorkspaceGroup[]>(() => {
   const kw = sessKw.value.trim().toLowerCase();
-  if (!kw) return workspaces.value;
-  return workspaces.value
+  const nonEmpty = workspaces.value.filter((w) => w.sessions.length > 0);
+  if (!kw) return nonEmpty;
+  return nonEmpty
     .map((w) => {
       if (w.name.toLowerCase().includes(kw) || w.path.toLowerCase().includes(kw)) return w;
       const hit = w.sessions.filter((s) => (s.title || '').toLowerCase().includes(kw));

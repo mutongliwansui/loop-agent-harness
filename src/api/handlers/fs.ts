@@ -202,6 +202,12 @@ async function resolveFsRoot(ctx: HandlerContext, query: URLSearchParams): Promi
   for (const w of known) {
     if (isSameWorkspace(await canonicalWorkspacePath(w.path), target)) return target;
   }
+  // 需求 20261113-002 D8 兜底：D1 之后「新建空间但尚未建会话」时该空间还没有 meta.json，
+  // 上面按已注册空间的白名单会 403——但用户此时正需要「打开空间 → 浏览文件」。
+  // 已装载 runtime 的空间视为已注册（registry 内存态不受落盘与否影响）。
+  for (const rt of ctx.registry?.list() ?? []) {
+    if (isSameWorkspace(await canonicalWorkspacePath(rt.root), target)) return target;
+  }
   throw new ApiHttpError('forbidden', `未知工作空间: ${ws}`);
 }
 
