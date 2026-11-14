@@ -3,6 +3,10 @@
   "version": "0.2.0",
   "description": "ReAct Agent with OpenAI function calling",
   "type": "module",
+  "workspaces": [
+    "core",
+    "main"
+  ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm --dts",

@@ -121,6 +121,14 @@ loop-agent-command/
 │   ├── vision-registry.test.ts       # Vision tool registration (vision.enabled gating / Tab-completion list)
 │   ├── vision-tools.test.ts          # Vision tool pipeline (parsing / cache / fallback / truncation)
 │   └── vision-command.test.ts        # /vision command (status / test)
+├── core/                             # 📦 @loop-agent/core: plugin-kernel definitions (zero runtime deps, no reverse deps on the main project)
+│   ├── src/                          # types / service / events / fiber / context / isolate / diagnose / errors
+│   ├── tests/                        # 10 files, 118 cases (incl. boundary and external-consumer subprocess cases)
+│   └── README.md                     # 📖 Kernel usage and the "plugins must be external" rule
+├── main/                             # 📦 @loop-agent/main: host layer (which plugins, order, enable state, manifest)
+│   ├── src/                          # host / registry / store / home / types
+│   ├── tests/                        # 3 files, 52 cases (store manifest IO / registry composition / boundary)
+│   └── README.md                     # 📖 Host entry point and persisted-manifest semantics
 ├── docs/
 │   ├── plan.md                       # 📋 Overall dev plan and milestones
 │   ├── openclaw_memory_management.md # 🧠 Memory management design reference (OpenClaw style)

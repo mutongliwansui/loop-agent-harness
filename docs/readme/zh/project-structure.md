@@ -121,6 +121,14 @@ loop-agent-command/
 │   ├── vision-registry.test.ts       # 视觉工具注册（vision.enabled 联动 / Tab 补全名单）
 │   ├── vision-tools.test.ts          # 视觉工具管道（解析 / 缓存 / 回退 / 截断）
 │   └── vision-command.test.ts        # /vision 命令（status / test）
+├── core/                             # 📦 @loop-agent/core：插件机制内核定义（零运行时依赖、不反向依赖主工程）
+│   ├── src/                          # types / service / events / fiber / context / isolate / diagnose / errors
+│   ├── tests/                        # 10 文件 118 例（含 boundary 与外部消费方子进程用例）
+│   └── README.md                     # 📖 内核用法与「插件必须 external」铁律
+├── main/                             # 📦 @loop-agent/main：主工程宿主层（挂载哪些插件 / 顺序 / 启停 / 清单）
+│   ├── src/                          # host / registry / store / home / types
+│   ├── tests/                        # 3 文件 52 例（store 清单读写 / registry 组合层 / boundary）
+│   └── README.md                     # 📖 宿主入口与持久化清单语义
 ├── docs/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
 │   ├── openclaw_memory_management.md # 🧠 记忆管理设计参考（OpenClaw 风格）

@@ -1,5 +1,10 @@
 node_modules/
 /dist/
+# core 子包构建产物（node_modules/ 不带前缀已覆盖任意层级的 core/node_modules，
+# 但 /dist/ 只匹配根目录，故需单独补 /core/dist/）
+/core/dist/
+# main 子包构建产物（同上，/dist/ 只匹配根目录）
+/main/dist/
 /dist-sea/
 .sea-test/
 sea-config.json
