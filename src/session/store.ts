@@ -12,12 +12,11 @@ import {
   unlink,
   rm,
 } from 'node:fs/promises';
-import type { ChatMessage } from '../types.js';
-import { isDisplayOnlyContent, isSubAgentResultContent } from '../types.js';
+import { isSubAgentResultContent, type ChatMessage } from '../types.js';
 import type { SessionMeta, SessionData, WorkspaceMeta, WorkspaceSummary } from './types.js';
 import { stripMemorySection } from '../memory/memory-section.js';
 import { parseUploadNotes, stripUploadNotes } from '../upload/manager.js';
-import { isSummaryMessage } from '../memory/summary-message.js';
+import { isDisplayOnlyMessage, isSummaryMessage } from '../memory/summary-message.js';
 import { encrypt, decrypt } from './crypto.js';
 import { keychain } from './keychain.js';
 import { debug } from '../debug.js';
@@ -987,6 +986,8 @@ export class SessionStore {
     const data = await this.readSession(id);
     let changed = 0;
     for (const m of data.messages ?? []) {
+      // 摘要正文可能引用结果卡片原文，不能按内容特征改写/改种类
+      if (isSummaryMessage(m)) continue;
       if (m.role !== 'user' || !isSubAgentResultContent(m.content)) continue;
       const content = m.content ?? '';
       if (!/^status: running$/m.test(content)) continue;
@@ -1023,6 +1024,8 @@ export class SessionStore {
     const data = await this.readSession(id);
     let changed = 0;
     for (const m of data.messages ?? []) {
+      // 摘要正文可能引用结果卡片原文，不能按内容特征改种类（否则摘要会变成展示卡片）
+      if (isSummaryMessage(m)) continue;
       if (m.role !== 'user' || m.kind === 'subagent_result') continue;
       if (!isSubAgentResultContent(m.content)) continue;
       m.kind = 'subagent_result';
@@ -1061,7 +1064,8 @@ export class SessionStore {
       if (m.is_compact === true) continue;
       // 需求 20261105-001 D9 + 20261107-002 D8：后台任务通知 / 子 Agent 结果卡片
       // 仅用于界面展示，不进入 LLM 历史前缀（含旧版本已落盘的、被记忆前缀包裹的遗留通知）
-      if (m.role === 'user' && isDisplayOnlyContent(m.content)) continue;
+      // 需求 20261114-007：摘要消息即使正文以通知/卡片闭合标签结尾也必须保留
+      if (isDisplayOnlyMessage(m)) continue;
       result.push(m);
     }
     return result;
