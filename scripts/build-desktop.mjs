@@ -28,6 +28,18 @@ const WEBUI_DIST = join(ROOT, 'webui', 'dist');
 const OUT = join(ROOT, 'dist-desktop');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
+// electron-builder 默认从 GitHub 下载 electron / winCodeSign / nsis 二进制。
+// 在国内网络下这一步经常 600s 超时（RequestError: Timeout awaiting 'request'），
+// 且失败发生在「下载进度 100%」之后，很容易误判成本地打包问题。
+// 这里默认切到 npmmirror 镜像；需要走官方源时用环境变量显式覆盖。
+if (!process.env.ELECTRON_MIRROR) {
+  process.env.ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/';
+}
+if (!process.env.ELECTRON_BUILDER_BINARIES_MIRROR) {
+  process.env.ELECTRON_BUILDER_BINARIES_MIRROR =
+    'https://npmmirror.com/mirrors/electron-builder-binaries/';
+}
+
 /** 阶段计时，末尾汇总 */
 const timings = [];
 function stage(name) {
