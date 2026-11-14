@@ -53,9 +53,11 @@
       "artifactName": "LoopAgent-${version}-${arch}.${ext}"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "nsis/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "LoopAgent",

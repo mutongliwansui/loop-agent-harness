@@ -325,3 +325,168 @@ describe('需求 20261113-008 D2：planCompaction 不再 pin 当前轮 user', ()
     expect(placeholderBody(view[1])).toContain('当前轮提问');
   });
 });
+
+describe('缺陷修复：一轮内多次压缩时原文段可继承', () => {
+  /**
+   * 缺陷（修复前必现）：
+   *   首次压缩把当前轮 user 物理丢弃，而摘要占位（is_show=false）又被 planCompaction 的
+   *   nonSystem 过滤掉 → 第二次压缩时 lastUserIdx = -1、anchorUserText = undefined；
+   *   同时 buildCompactedView 的 composeSummaryBody(body, undefined) 会把旧原文段剥掉后
+   *   不再拼回 → `[当前问题]` 段永久消失，用户原文整段丢失。
+   *
+   * 修复：planCompaction 在「本轮无新原文段 + 当前轮 user 不在保留区」时，
+   * 从 previousSummary 的原文段继承，保证多轮压缩后语义仍在。
+   */
+  const wmMulti = () => new WorkingMemory({ maxTokens: 10000, compactionThreshold: 0.8, keepRecentTurns: 2 });
+
+  const long = 'X'.repeat(400);
+  /** 造一轮长任务：user 在最前，其后多次调用（足够触发丢弃） */
+  const longTurn = (question: string): ChatMessage[] => [
+    msg('system', 'sys'),
+    msg('user', question),
+    msg('assistant', `a1 ${long}`),
+    msg('tool', `t1 ${long}`),
+    msg('assistant', `a2 ${long}`),
+    msg('tool', `t2 ${long}`),
+    msg('assistant', `a3 ${long}`),
+    msg('tool', `t3 ${long}`),
+  ];
+
+  const budget = { messageTokensBudget: 600 };
+
+  it('二次压缩：本轮无 user 落在丢弃区时，继承上一份原文段而非丢失', () => {
+    const w = wmMulti();
+    const question = '请把 config 里的 timeout 改成 30 秒，不要动别的文件。';
+
+    // 第 1 次压缩：user 落入丢弃区，产生原文段
+    const plan1 = w.planCompaction(longTurn(question), budget);
+    expect(plan1.anchorUserText).toBe(question);
+    let view = w.compact(longTurn(question), '- 要点1', plan1);
+    expect(placeholderBody(view.find((m) => isSummaryPlaceholder(m))!)).toContain(question);
+
+    // 压缩后继续跑工具，凑出第 2 次压缩
+    view = [
+      ...view,
+      msg('assistant', `a4 ${long}`),
+      msg('tool', `t4 ${long}`),
+      msg('assistant', `a5 ${long}`),
+      msg('tool', `t5 ${long}`),
+    ];
+
+    const plan2 = w.planCompaction(view, budget);
+    // 本轮消息里已无 user（被首次压缩丢弃，占位又被 nonSystem 过滤）
+    expect([...plan2.droppable, ...plan2.kept].some((m) => m.role === 'user')).toBe(false);
+    // 关键：仍应继承到原文段
+    expect(plan2.anchorUserText).toBe(question);
+
+    const view2 = w.compact(view, '- 要点2', plan2);
+    const body2 = placeholderBody(view2.find((m) => isSummaryPlaceholder(m))!);
+    expect(body2).toContain(question);
+    // 幂等：标记仍只有一份
+    expect(body2.match(/\[当前问题\]/g)?.length).toBe(1);
+  });
+
+  it('连续三次压缩后原文段仍在，且不叠加', () => {
+    const w = wmMulti();
+    const question = '请分析台区 T1 的停复电情况，只给结论。';
+    let view: ChatMessage[] = longTurn(question);
+
+    for (let round = 1; round <= 3; round++) {
+      const plan = w.planCompaction(view, budget);
+      if (plan.droppedCount === 0) break;
+      view = w.compact(view, `- 累计要点${round}`, plan);
+      const body = placeholderBody(view.find((m) => isSummaryPlaceholder(m))!);
+      expect(body).toContain(question);
+      expect(body.match(/\[当前问题\]/g)?.length).toBe(1);
+
+      view = [
+        ...view,
+        msg('assistant', `b${round}a ${long}`),
+        msg('tool', `u${round}a ${long}`),
+        msg('assistant', `b${round}b ${long}`),
+        msg('tool', `u${round}b ${long}`),
+      ];
+    }
+  });
+
+  it('沿用旧占位（无新摘要）时同样不丢原文段', () => {
+    const w = wmMulti();
+    const question = '把日志级别调成 debug。';
+    const plan1 = w.planCompaction(longTurn(question), budget);
+    const view = w.compact(longTurn(question), '- 要点1', plan1);
+
+    // summaryText 传 undefined：走「沿用旧占位」分支
+    const plan2 = w.planCompaction(view, budget);
+    const view2 = buildCompactedView(view, {
+      keepRecentTurns: 2,
+      summaryText: undefined,
+      keptMessages: plan2.kept,
+      anchorUserText: plan2.anchorUserText,
+    });
+    const body = placeholderBody(view2.find((m) => isSummaryPlaceholder(m))!);
+    expect(body).toContain(question);
+  });
+
+  it('当前轮 user 在保留区（模型直接可见）时不继承，避免 [当前问题] 指向旧问题', () => {
+    const w = wmMulti();
+    const oldQuestion = '旧问题：改 timeout。';
+    const plan1 = w.planCompaction(longTurn(oldQuestion), budget);
+    let view = w.compact(longTurn(oldQuestion), '- 要点1', plan1);
+
+    // 用户发来新问题，且新 user 落在保留区
+    view = [
+      ...view,
+      msg('user', '新问题：改日志级别。'),
+      msg('assistant', `a9 ${long}`),
+      msg('tool', `t9 ${long}`),
+    ];
+    const plan2 = w.planCompaction(view, budget);
+    expect(plan2.kept.some((m) => m.content === '新问题：改日志级别。')).toBe(true);
+    // 当前轮 user 可见 → 不继承旧原文段
+    expect(plan2.anchorUserText).toBeUndefined();
+
+    const view2 = w.compact(view, '- 要点2', plan2);
+    const body = placeholderBody(view2.find((m) => isSummaryPlaceholder(m))!);
+    expect(body).not.toContain('[当前问题]');
+  });
+
+  it('无旧摘要（首轮即无 user）时不产生空原文段、不报错', () => {
+    const w = wmMulti();
+    const messages: ChatMessage[] = [
+      msg('system', 'sys'),
+      msg('assistant', `a1 ${long}`),
+      msg('tool', `t1 ${long}`),
+      msg('assistant', `a2 ${long}`),
+      msg('tool', `t2 ${long}`),
+      msg('assistant', `a3 ${long}`),
+      msg('tool', `t3 ${long}`),
+    ];
+    const plan = w.planCompaction(messages, budget);
+    expect(plan.anchorUserText).toBeUndefined();
+    expect(plan.previousSummary).toBeUndefined();
+  });
+
+  it('继承的原文段同样受字数上限约束（头尾保留）', () => {
+    const w = wmMulti();
+    const note = '\n附件：/abs/path/截图.png（请用 analyzeImage 查看）';
+    const longQuestion = `${'广'.repeat(1500)}${note}`;
+
+    const plan1 = w.planCompaction(longTurn(longQuestion), budget);
+    const view = w.compact(longTurn(longQuestion), '- 要点1', plan1);
+    const inheritedBody = placeholderBody(view.find((m) => isSummaryPlaceholder(m))!);
+    expect(inheritedBody).toContain('/abs/path/截图.png');
+
+    // 二次压缩继承时仍保持头尾保留语义
+    const extended: ChatMessage[] = [
+      ...view,
+      msg('assistant', `a7 ${long}`),
+      msg('tool', `t7 ${long}`),
+      msg('assistant', `a8 ${long}`),
+      msg('tool', `t8 ${long}`),
+    ];
+    const plan2 = w.planCompaction(extended, budget);
+    expect(plan2.anchorUserText).toBeDefined();
+    expect(plan2.anchorUserText).toContain('/abs/path/截图.png');
+    expect(plan2.anchorUserText!.length).toBeLessThanOrEqual(ANCHOR_USER_MAX_CHARS + 20);
+  });
+});

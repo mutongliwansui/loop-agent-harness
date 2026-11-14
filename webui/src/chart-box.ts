@@ -8,7 +8,7 @@
 //   setSource()  运行期补/换源码（传入 source 才有源码面板）
 //   toggleSource()「预览 ⇄ 源代码」切换（Task-20261023-002 D6）
 //
-// 外框重设计（Task-20261023-003，原型 docs/designs/原型-20261023-001+图表容器外框重设计.html）：
+// 外框重设计（Task-20261023-003，原型 docs/prototypes/2026-10-23/原型-20261023-001+图表容器外框重设计.html）：
 //   结构 .chart-block > .chart-bar(.chart-kind + .chart-tools) + .chart-view(> .chart-stage + .chart-hint)
 //   [+ .chart-source(.src-head + .src-code)]；样式见 mermaid.css。
 //   按钮由字符（＋/－/⛶/</>）改为内联 SVG + aria-label；缩放读数独立成 .zoom-val（点击复位 100%），

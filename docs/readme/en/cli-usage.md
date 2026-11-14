@@ -25,7 +25,7 @@ Skills: 2 (example-skill, py-pptx)
 Agent> Read the version from package.json
 ```
 
-> If `agent.debug` is enabled, the startup banner additionally shows the debug log directory (see [📝 Debug Logging](debug-logging.md)).
+> If `agent.debug` is enabled, the startup banner additionally shows the debug log directory (see [📝 Debug Logging](./debug-logging.md)).
 
 > During execution, loading indicators (e.g. "Thinking… (round N)", "Generating args: fileWrite… (12.3KB / 8s)", "Running: grep…") are shown in time-consuming phases such as model generation (especially tool-call arguments) and tool execution, so waits give real-time feedback. Before printing logs / streamed Thought / the final answer, the indicator line is cleared first, so the two never mix. The indicator is only enabled in an interactive TTY; it is automatically disabled and produces zero output in pipes, redirects and CI environments.
 
@@ -140,7 +140,7 @@ Sessions in current workspace (2):
   sess_20260805_210011           2026/08/05 21:00:11 [3 msgs] Search for config in the src directory
 ```
 
-Session data is stored with AES-256-GCM encryption under `~/.loop-agent/sessions/` (isolated by workspace). See [💾 Session Persistence](session-persistence.md).
+Session data is stored with AES-256-GCM encryption under `~/.loop-agent/sessions/` (isolated by workspace). See [💾 Session Persistence](./session-persistence.md).
 
 #### `/skill` — Skill Management
 
@@ -153,7 +153,7 @@ Session data is stored with AES-256-GCM encryption under `~/.loop-agent/sessions
 /skill remove <names...>        # Remove installed Skills (single global directory; per-item y/N confirmation)
 ```
 
-Skills are auto-scanned from the global `~/.loop-agent/skills/` directory only (workspace Skill directories are no longer used after req 20261112-008). See [🎯 Skills](skills.md).
+Skills are auto-scanned from the global `~/.loop-agent/skills/` directory only (workspace Skill directories are no longer used after req 20261112-008). See [🎯 Skills](./skills.md).
 
 `/skill upload` supports dragging directories into the terminal (quoted paths / `file://` URIs are normalized automatically) and batch installation of multiple directories. Each target is validated for a proper `SKILL.md` (name/description) before installation, a single failure does not block the rest, and Skills are rescanned automatically after installation.
 
@@ -174,7 +174,7 @@ Skills are auto-scanned from the global `~/.loop-agent/skills/` directory only (
 /memory init                            # Initialize the L3 core memory files
 ```
 
-See [🧠 Memory Management](memory-management.md).
+See [🧠 Memory Management](./memory-management.md).
 
 #### `/vision` — Vision Model Management
 
@@ -190,7 +190,7 @@ When the vision triplet (`vision.baseUrl` / `vision.apiKey` / `vision.model`) is
 /config set vision.model gpt-4o    # falls back to model.name when unset
 ```
 
-Once enabled, `analyzeImage` is registered (image understanding — since 20261111-004 the former description / targeted Q&A / structured extraction trio is merged into this single tool). The text-recognition tool `ocrImage` does not depend on a vision model: it is registered separately by `ocr.enabled` plus local engine probing. See [🔧 Built-in Tools](built-in-tools.md) and [Configuration](configuration.md).
+Once enabled, `analyzeImage` is registered (image understanding — since 20261111-004 the former description / targeted Q&A / structured extraction trio is merged into this single tool). The text-recognition tool `ocrImage` does not depend on a vision model: it is registered separately by `ocr.enabled` plus local engine probing. See [🔧 Built-in Tools](./built-in-tools.md) and [Configuration](./configuration.md).
 
 #### `/model` — Multi-Model & Hot Switching
 

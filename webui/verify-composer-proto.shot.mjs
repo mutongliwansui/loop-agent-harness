@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const PROTO = process.env.PROTO
-  || path.resolve('docs/designs/原型-20261025-001+对话输入区重设计.html');
+  || path.resolve('docs/prototypes/2026-10-25/原型-20261025-001+对话输入区重设计.html');
 const OUT = path.resolve(process.env.VERIFY_OUT || '.tmp-verify-composer-proto');
 const PORT = Number(process.env.CDP_PORT || 9338);
 const CHROME = process.env.CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';

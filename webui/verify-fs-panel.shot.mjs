@@ -339,7 +339,7 @@ add('底栏项数可见', /项/.test(summary.light.footText ?? ''), true);
 // 层级交叉核对：docs=0、docs/designs=1、docs/designs/原型…html=2（兄弟，不是 sub 的子）、sub/deep.md=3
 add('docs 层级 0', summary.light.lv.docs, '0');
 add('designs 层级 1', summary.light.lv['docs/designs'], '1');
-add('原型 html 层级 2（与 sub 同级）', summary.light.lv['docs/designs/原型-20261026-001+文件目录重设计v2.html'], '2');
+add('原型 html 层级 2（与 sub 同级）', summary.light.lv['docs/prototypes/2026-10-26/原型-20261026-001+文件目录重设计v2.html'], '2');
 add('deep.md 层级 3', summary.light.lv['docs/designs/sub/deep.md'], '3');
 add('面包屑文本', summary.light.crumbText, 'loop-agent-command › docs › designs › sub');
 // 交互 / 无障碍 / 尺寸

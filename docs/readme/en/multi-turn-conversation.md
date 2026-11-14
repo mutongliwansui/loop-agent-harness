@@ -25,4 +25,4 @@ const r2 = await agent.run('What is this project's version?');
 // The agent already knows package.json's content and can answer directly
 ```
 
-> **In-process** multi-turn is guaranteed by `_chatHistory`; for **cross-process** restore, use `SessionStore` persistence (see [💾 Session Persistence](session-persistence.md)).
+> **In-process** multi-turn is guaranteed by `_chatHistory`; for **cross-process** restore, use `SessionStore` persistence (see [💾 Session Persistence](./session-persistence.md)).

@@ -24,7 +24,7 @@ Skills: 2 个 (example-skill, py-pptx)
 Agent> 帮我读取 package.json 的版本号
 ```
 
-> 若配置中开启了 `agent.debug`，启动时会额外提示调试日志输出目录（见 [📝 调试日志](debug-logging.md)）。
+> 若配置中开启了 `agent.debug`，启动时会额外提示调试日志输出目录（见 [📝 调试日志](./debug-logging.md)）。
 
 > 运行期间，在模型生成（尤其工具调用参数）与工具执行等耗时阶段会显示 loading 指示器（如「思考中…（第 N 轮）」「生成参数：fileWrite…（12.3KB / 8s）」「执行中：grep…」），让等待过程有实时反馈；日志/流式 Thought/最终答案打印前会先清除指示器行，二者不会混行。该指示器仅在交互式 TTY 下启用，管道、重定向与 CI 环境下自动关闭、零输出。
 
@@ -143,7 +143,7 @@ Agent> 帮我读取 package.json 的版本号
   sess_20260805_210011        2026/08/05 21:00:11 [3条] 搜索 src 目录中的 config
 ```
 
-会话数据以 AES-256-GCM 加密存储在 `~/.loop-agent/sessions/` 目录（按工作空间隔离），详见 [💾 会话持久化](session-persistence.md)。
+会话数据以 AES-256-GCM 加密存储在 `~/.loop-agent/sessions/` 目录（按工作空间隔离），详见 [💾 会话持久化](./session-persistence.md)。
 
 #### `/skill` — Skill 管理
 
@@ -156,7 +156,7 @@ Agent> 帮我读取 package.json 的版本号
 /skill remove <name...>         # 删除已安装 Skill（全局唯一目录；逐个 y/N 确认）
 ```
 
-Skill 只从全局 `~/.loop-agent/skills/` 一个目录自动扫描（需求 20261112-008 后工作空间目录不再使用）。详见 [🎯 Skill 技能包](skills.md)。
+Skill 只从全局 `~/.loop-agent/skills/` 一个目录自动扫描（需求 20261112-008 后工作空间目录不再使用）。详见 [🎯 Skill 技能包](./skills.md)。
 
 `/skill upload` 支持拖拽目录到终端（引号 / `file://` URI 自动归一）与多目录批量安装；安装前校验目标含合法 `SKILL.md`（name/description），单项失败不阻断其余，安装完成后自动重新扫描立即可用。
 
@@ -177,7 +177,7 @@ Skill 只从全局 `~/.loop-agent/skills/` 一个目录自动扫描（需求 202
 /memory init                            # 初始化 L3 核心记忆文件
 ```
 
-详见 [🧠 记忆管理](memory-management.md)。
+详见 [🧠 记忆管理](./memory-management.md)。
 
 #### `/vision` — 视觉模型管理
 
@@ -193,7 +193,7 @@ Skill 只从全局 `~/.loop-agent/skills/` 一个目录自动扫描（需求 202
 /config set vision.model gpt-4o    # 不设置则回退主模型 model.name
 ```
 
-启用后注册 `analyzeImage`（图片理解，20261111-004 起把描述 / 定向问答 / 结构化提取三合一为单工具）；文字识别工具 `ocrImage` 不依赖视觉模型，按 `ocr.enabled` + 本机引擎探测单独注册（详见 [🔧 内置工具](built-in-tools.md)、[配置说明](configuration.md)）。
+启用后注册 `analyzeImage`（图片理解，20261111-004 起把描述 / 定向问答 / 结构化提取三合一为单工具）；文字识别工具 `ocrImage` 不依赖视觉模型，按 `ocr.enabled` + 本机引擎探测单独注册（详见 [🔧 内置工具](./built-in-tools.md)、[配置说明](./configuration.md)）。
 
 #### `/model` — 多模型接入与切换
 

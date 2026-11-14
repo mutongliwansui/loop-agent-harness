@@ -49,10 +49,10 @@ const TREE: Record<string, FsNode[]> = {
     f('tsconfig.json', 512),
   ],
   docs: [d('docs/designs'), d('docs/tasks'), d('docs/requirements'), f('docs/README.md', 3300)],
-  'docs/designs': [d('docs/designs/sub'), f('docs/designs/原型-20261026-001+文件目录重设计v2.html', 91200)],
+  'docs/designs': [d('docs/designs/sub'), f('docs/prototypes/2026-10-26/原型-20261026-001+文件目录重设计v2.html', 91200)],
   'docs/designs/sub': [f('docs/designs/sub/deep.md', 860)],
   'docs/tasks': [
-    f('docs/tasks/task-20261026-001-文件目录重设计落地.md', 15300),
+    f('docs/tasks/2026-10-26/task-20261026-001-文件目录重设计落地.md', 15300),
     f('docs/tasks/task-20261025-001-内联菜单宽度.md', 4200),
   ],
   'docs/requirements': [f('docs/requirements/需求.md', 88000)],
@@ -60,9 +60,9 @@ const TREE: Record<string, FsNode[]> = {
 };
 
 const SEARCH: SearchResult[] = [
-  { path: 'docs/tasks/task-20261026-001-文件目录重设计落地.md', name: 'task-20261026-001-文件目录重设计落地.md', line: 12, text: '树行改内联 SVG 图标 + 引导线 + 选中色条，行高 26px' },
-  { path: 'docs/tasks/task-20261026-001-文件目录重设计落地.md', name: 'task-20261026-001-文件目录重设计落地.md', line: 88, text: '引导线使用 --line-strong，四层以上也能看清归属' },
-  { path: 'docs/tasks/task-20261026-001-文件目录重设计落地.md', name: 'task-20261026-001-文件目录重设计落地.md', line: 141, text: '窄面板下搜索占位改为「搜索文件…」，避免截断' },
+  { path: 'docs/tasks/2026-10-26/task-20261026-001-文件目录重设计落地.md', name: 'task-20261026-001-文件目录重设计落地.md', line: 12, text: '树行改内联 SVG 图标 + 引导线 + 选中色条，行高 26px' },
+  { path: 'docs/tasks/2026-10-26/task-20261026-001-文件目录重设计落地.md', name: 'task-20261026-001-文件目录重设计落地.md', line: 88, text: '引导线使用 --line-strong，四层以上也能看清归属' },
+  { path: 'docs/tasks/2026-10-26/task-20261026-001-文件目录重设计落地.md', name: 'task-20261026-001-文件目录重设计落地.md', line: 141, text: '窄面板下搜索占位改为「搜索文件…」，避免截断' },
   { path: 'webui/src/views/FilesView.vue', name: 'FilesView.vue', line: 1990, text: '/* 层级引导线：每层一条 1px 竖线 */' },
   { path: 'README.md', name: 'README.md', line: 34, text: '右侧文件目录支持搜索、懒加载展开与拖拽上传' },
 ];

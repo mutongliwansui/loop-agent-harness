@@ -350,6 +350,19 @@ export class WorkingMemory {
     //
     // 原文的可见性改由摘要占位承载：当前轮最后一条 user 若确实落入丢弃区，把它的原文
     // 交给 anchorUserText，稍后拼进摘要占位（位置不动）。
+    // 先取出已有摘要：anchorUserText 继承与 flush 载荷（previousSummary）共用同一份解析结果
+    const placeholder = messages.find((m) => isSummaryPlaceholder(m));
+    let previousSummary: string | undefined;
+    if (placeholder) {
+      const text = typeof placeholder.content === 'string' ? placeholder.content : '';
+      // 需求 20261113-008（D5，用户定）：这里**不剥离**原文段——归档消息模型看不到，
+      // 旧原文段是它唯一还能看到的历史问题线索，整段交给 LLM 与本次要点合并。
+      // 剥离只发生在「写回占位」侧（buildCompactedView 的 composeSummaryBody），保证不叠加。
+      previousSummary = text.startsWith(SUMMARY_PLACEHOLDER_PREFIX)
+        ? text.slice(SUMMARY_PLACEHOLDER_PREFIX.length).trim()
+        : text.trim();
+    }
+
     let anchorUserText: string | undefined;
     const lastUserIdx = nonSystem.reduceRight(
       (acc, m, i) => (acc === -1 && m.role === 'user' ? i : acc),
@@ -370,6 +383,27 @@ export class WorkingMemory {
       }
     }
 
+    // 缺陷修复（2026-11-14）：一轮内多次压缩时**继承**上一份原文段。
+    //
+    // 缺陷成因：首次压缩把当前轮 user 物理丢弃，而摘要占位（is_show=false）又被上面的
+    // nonSystem 过滤掉，于是第二次压缩时 lastUserIdx = -1、anchorUserText = undefined；
+    // 而 buildCompactedView 里 composeSummaryBody(body, undefined) 会把旧原文段剥掉后
+    // 不再拼回，导致 `[当前问题]` 段永久消失（用户原文整段丢失，与摘要截断无关）。
+    //
+    // 继承条件：本次没有产出新原文段，且当前轮 user 不在保留区（模型看不到）。
+    // 此时上一份原文段就是上下文里最近的一个用户问题，继承它可保持 `[当前问题]` 语义准确。
+    // 若当前轮 user 已在保留区（模型直接可见），则**不继承**，避免 `[当前问题]` 指向旧问题。
+    const currentUserVisible = lastUserIdx >= keptStart;
+    if (!anchorUserText && !currentUserVisible) {
+      const inherited = splitAnchorSection(previousSummary ?? '').anchor;
+      if (inherited) {
+        anchorUserText = truncateAnchorText(inherited);
+        debug.log(
+          `[L1 planCompaction] 本轮无新 user 落在丢弃区，继承上一份原文段（${anchorUserText.length}字），避免二次压缩丢失`,
+        );
+      }
+    }
+
     if (withinTurnTrim) {
       debug.log(
         `[L1 planCompaction] 单次调用内 token 截尾：消息 ${estimateMessageTokens(nonSystem)} tokens > 预算 ${budget}，` +
@@ -380,18 +414,6 @@ export class WorkingMemory {
         `[L1 planCompaction] 按模型调用保留：消息 ${estimateMessageTokens(nonSystem)} tokens / 预算 ${budget}，` +
           `保留最近 ${keptGroups} 次调用（${kept.length} 条、约 ${estimateMessageTokens(kept)} tokens）、丢弃 ${droppable.length} 条`,
       );
-    }
-
-    const placeholder = messages.find((m) => isSummaryPlaceholder(m));
-    let previousSummary: string | undefined;
-    if (placeholder) {
-      const text = typeof placeholder.content === 'string' ? placeholder.content : '';
-      // 需求 20261113-008（D5，用户定）：这里**不剥离**原文段——归档消息模型看不到，
-      // 旧原文段是它唯一还能看到的历史问题线索，整段交给 LLM 与本次要点合并。
-      // 剥离只发生在「写回占位」侧（buildCompactedView 的 composeSummaryBody），保证不叠加。
-      previousSummary = text.startsWith(SUMMARY_PLACEHOLDER_PREFIX)
-        ? text.slice(SUMMARY_PLACEHOLDER_PREFIX.length).trim()
-        : text.trim();
     }
 
     return {

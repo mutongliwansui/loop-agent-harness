@@ -241,4 +241,4 @@ OPENAI_BASE_URL=http://localhost:8000/v1
 /config path
 ```
 
-> 模型接入与切换建议用 `/model` 命令（详见 [内置命令](cli-usage.md#内置命令)）：`/model use <别名>` 会同步激活指针与生效快照，避免直接 `/config set model.name` 造成快照与登记簿漂移。
+> 模型接入与切换建议用 `/model` 命令（详见 [内置命令](./cli-usage.md#内置命令)）：`/model use <别名>` 会同步激活指针与生效快照，避免直接 `/config set model.name` 造成快照与登记簿漂移。

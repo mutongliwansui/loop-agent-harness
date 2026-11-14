@@ -1,6 +1,6 @@
 // 自定义 REST API 服务（Task-20261016-001）
 //
-// 设计决策（详见 docs/tasks/task-20261016-001-自定义REST API服务.md）：
+// 设计决策（详见 docs/tasks/2026-10-16/task-20261016-001-自定义REST API服务.md）：
 // - D1  仅用 node:http 内置模块，零新依赖
 // - D2  资源式 REST：会话为一等资源（/sessions、/sessions/:id、/sessions/:id/messages、/health）
 // - D3  发消息默认 SSE 流式，`stream: false` 切非流式 JSON

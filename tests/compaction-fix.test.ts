@@ -1,7 +1,7 @@
 /**
  * Task-17：上下文压缩信息丢失修复 验证
  *
- * 覆盖（docs/tasks/task-17-compaction-flush-fix.md 第七节测试计划）：
+ * 覆盖（docs/tasks/early/task-17-compaction-flush-fix.md 第七节测试计划）：
  * 1. flush 消息格式：mock LLM 收到的消息中 system 仅 1 条且在首位
  * 2. 提取成功路径：flush 返回非空 → 写入 L2（tag=compaction）→ compact 执行 → onCompaction(failed:false)
  * 3. 提取失败 + skip：flush 返回空 → 不写入 L2、不 compact、消息原样保留

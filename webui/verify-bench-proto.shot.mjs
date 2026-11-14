@@ -19,7 +19,7 @@ import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve('.');
 const PROTO = path.resolve(
-  process.env.PROTO || path.join(ROOT, 'docs/designs/原型-20261027-003+模型性能指标测试.html'),
+  process.env.PROTO || path.join(ROOT, 'docs/prototypes/2026-10-27/原型-20261027-003+模型性能指标测试.html'),
 );
 const OUT = path.resolve(process.env.VERIFY_OUT || path.join(ROOT, 'docs/designs'));
 const PORT = Number(process.env.CDP_PORT || 9341);

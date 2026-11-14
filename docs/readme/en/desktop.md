@@ -12,19 +12,26 @@ Build artifacts land in `dist-desktop/` as two exes — **pick one** for your si
 
 | Artifact | Best for | Notes |
 |---|---|---|
-| `LoopAgent-Setup-<version>-x64.exe` | **Recommended.** Everyday office machines | One-click install, creates Desktop and Start Menu shortcuts, uninstallable from "Settings → Apps" |
-| `LoopAgent-Portable-<version>-x64.exe` | Company policy forbids installing software; or you want it on drive D: | Single-file, no install. Drop it in any folder (including paths with spaces or non-ASCII characters) and double-click. Delete the file to "uninstall" |
+| `LoopAgent-Setup-<version>-x64.exe` | **Recommended.** Everyday office machines | Guided wizard install, lets you choose the install directory, creates Desktop and Start Menu shortcuts, uninstallable from "Settings → Apps" |
+| `LoopAgent-Portable-<version>-x64.exe` | Company policy forbids installing software (nothing gets registered with the system) | Single-file, no install. Drop it in any folder (including paths with spaces or non-ASCII characters) and double-click. Delete the file to "uninstall" |
 
 > Both are fully equivalent and built from the same code. The only difference is whether the app registers itself with the system.
+>
+> **Want it on drive D:?** The installer now **lets you choose the directory** (via the "Choose Install Location" page). If your company forbids installing software at all, use the portable build instead.
 
 ### 2. Install (Installer Method)
 
 1. Double-click `LoopAgent-Setup-<version>-x64.exe`
 2. **The first run triggers SmartScreen** (see next section) — click "More info → Run anyway"
-3. Installation **completes automatically** with no "Next" prompts: roughly 10–30 seconds, then the window closes itself
+3. Walk through the wizard:
+   - **Choose Install Location** (change it to e.g. `D:\Programs\LoopAgent`, or just click "Next" to keep the default)
+   - **Installing**: the progress bar runs to completion
+   - **Finish**: optionally tick "Run LoopAgent" to launch it right away
 4. A **LoopAgent** icon appears on your Desktop — double-click to launch
 
-The install location is fixed inside your user profile, so it requires **no administrator rights and shows no UAC elevation prompt**:
+The whole process takes roughly 10–30 seconds and requires **no administrator rights and shows no UAC elevation prompt**.
+
+The default install location (if you don't change it in the wizard) is inside your user profile:
 
 ```text
 %LOCALAPPDATA%\Programs\LoopAgent\
@@ -34,9 +41,11 @@ The install location is fixed inside your user profile, so it requires **no admi
    ...
 ```
 
-> **Why `LOCALAPPDATA` and not `Program Files`**: writing to `Program Files` requires elevation, and field machines usually run **non-administrator accounts** — one UAC prompt and the install fails. Installing per-user is the only reliable way to make a one-click install work without admin rights.
+> **Why `LOCALAPPDATA` by default and not `Program Files`**: writing to `Program Files` requires elevation, and field machines usually run **non-administrator accounts** — one UAC prompt and the install fails. Defaulting to the user profile is what lets a non-admin account click through the wizard successfully.
 >
-> Need it on drive D: or elsewhere → use the **portable** build and run it from wherever you put it.
+> **You will never see an "install for all users" option**: the wizard deliberately skips that page — it writes to `Program Files` and triggers elevation, which is a pure failure path for non-admin accounts. So every account installs per-user, with no administrator rights needed.
+>
+> Need it on drive D:? Just change the path on the "Choose Install Location" page.
 
 ### 3. First Run: SmartScreen Prompt
 
@@ -137,7 +146,7 @@ npm run build:desktop
 | Blank window | WebUI wasn't embedded at build time (self-built packages only) | Re-run `npm run build:desktop` and confirm stage 3 passes |
 | Port already in use | Something else owns 3000 | No action needed — the app falls through to the next port |
 | Shortcut does nothing but a process is running | Single-instance lock left by a previous crash | End `LoopAgent.exe` in Task Manager and relaunch |
-| Want a different install drive | The installer is fixed to the user profile | Use the portable build on your target drive |
+| Want a different install drive | You kept the default path during install | Reinstall and change the path on "Choose Install Location"; or just use the portable build on your target drive |
 | Config survives uninstall | By design — data is separate from the program | Delete `%USERPROFILE%\.loop-agent` manually if needed |
 
 ---

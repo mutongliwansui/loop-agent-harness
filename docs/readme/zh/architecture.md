@@ -2,7 +2,7 @@
 
 > [⬅ 返回 README](../../../README.md)
 >
-> 📊 本页 ASCII 手绘图的 **Mermaid 结构化版本**（分层架构、ReAct 控制流、三层记忆、配置合并、工具装配、核心类关系）见 [架构图集（Mermaid）](../../mermaid-architecture.md)。
+> 📊 本页 ASCII 手绘图的 **Mermaid 结构化版本**（分层架构、ReAct 控制流、三层记忆、配置合并、工具装配、核心类关系）见 [架构图集（Mermaid）](../../designs/early/mermaid-architecture.md)。
 
 ```
 ┌──────────────────────────────────────────────────────────────┐

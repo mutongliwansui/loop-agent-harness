@@ -2,7 +2,7 @@
 
 > [⬅ Back to README](../../../README.md)
 >
-> 📊 A **structured Mermaid version** of the ASCII diagrams on this page (layered architecture, ReAct control flow, three-tier memory, config merging, tool wiring, core class relations) is available in [Architecture Diagrams (Mermaid)](../../mermaid-architecture.md).
+> 📊 A **structured Mermaid version** of the ASCII diagrams on this page (layered architecture, ReAct control flow, three-tier memory, config merging, tool wiring, core class relations) is available in [Architecture Diagrams (Mermaid)](../../designs/early/mermaid-architecture.md).
 
 
 ```

@@ -25,4 +25,4 @@ const r2 = await agent.run('这个项目的版本号是多少？');
 // 此时 Agent 已知道 package.json 内容，可直接回答
 ```
 
-> **进程内**多轮由 `_chatHistory` 保证；**跨进程**恢复请使用 `SessionStore` 持久化（见 [💾 会话持久化](session-persistence.md)）。
+> **进程内**多轮由 `_chatHistory` 保证；**跨进程**恢复请使用 `SessionStore` 持久化（见 [💾 会话持久化](./session-persistence.md)）。

@@ -1,6 +1,6 @@
 // Skill 安装器（Task-20261015-001，需求 20261015-001）
 // 纯逻辑模块：目录校验 → 复制到作用域 skills 目录 → 系统目录选择框（平台探测链）
-// 设计依据：docs/tasks/task-20261015-001-skill上传（skill-upload）.md
+// 设计依据：docs/tasks/2026-10-15/task-20261015-001-skill上传（skill-upload）.md
 // Task-20261015-002：追加 removeSkills（按 frontmatter name 定位删除，护栏防路径穿越）
 import { cp, mkdir, rm } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';

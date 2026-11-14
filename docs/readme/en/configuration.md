@@ -241,4 +241,4 @@ Use the CLI's built-in `/config` command to modify config directly (written to t
 /config path
 ```
 
-> Prefer the `/model` command for model registration and switching (see [Built-in Commands](cli-usage.md#built-in-commands)): `/model use <alias>` syncs the active pointer and the effective snapshot, avoiding drift between the snapshot and the registry that a direct `/config set model.name` would cause.
+> Prefer the `/model` command for model registration and switching (see [Built-in Commands](./cli-usage.md#built-in-commands)): `/model use <alias>` syncs the active pointer and the effective snapshot, avoiding drift between the snapshot and the registry that a direct `/config set model.name` would cause.
