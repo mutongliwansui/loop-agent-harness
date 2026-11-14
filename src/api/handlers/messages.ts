@@ -18,9 +18,9 @@ import {
   AgentAbortedError,
   SUBAGENT_RESULT_CLOSE,
   SUBAGENT_RESULT_OPEN,
-  isDisplayOnlyContent,
   isSubAgentResultContent,
 } from '../../types.js';
+import { isDisplayOnlyMessage } from '../../memory/summary-message.js';
 import { applySubAgentEvent, createSubAgentTrace } from '../../agent/subagent-trace.js';
 import { subAgentRegistry } from '../../agent/subagent-registry.js';
 import { peekBackgroundNotices } from '../../agent/background-notice.js';
@@ -303,7 +303,7 @@ export async function runMessageTurn(
       else data.messages.push(card);
       await store.rewriteMessages(id, data.messages);
       entry.history = data.messages.filter(
-        (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+        (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyMessage(m),
       );
       if (stream) ctx.runs.publish(id, 'subagent_result', { info: record });
       log(`[api] 后台子任务 ${record.taskId} 卡片已落盘（${record.status}）`);
@@ -454,14 +454,14 @@ export async function runMessageTurn(
           transcript: finalTranscript,
         });
         entry.history = stored.filter(
-          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyMessage(m),
         );
         // 排队的子任务卡片先落盘，再发终态事件——否则前端收到 done 后重建历史时看不到卡片
         await flushPendingSubAgentCards();
       } catch (e) {
         warnings.push(`会话持久化失败（回答不受影响）: ${e instanceof Error ? e.message : String(e)}`);
         entry.history = finalMessages.filter(
-          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyMessage(m),
         );
       }
 
@@ -538,7 +538,7 @@ export async function runMessageTurn(
         }
         // store 归一化后的消息作为 entry.history（与成功路径同一过滤口径）
         entry.history = stored.filter(
-          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyContent(m.content),
+          (m) => m.role !== 'system' && m.is_compact !== true && !isDisplayOnlyMessage(m),
         );
         // 同成功路径：卡片先落盘，再发 aborted 终态
         await flushPendingSubAgentCards();

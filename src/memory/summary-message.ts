@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../types.js';
+import { isDisplayOnlyContent, type ChatMessage } from '../types.js';
 
 /** 压缩摘要的目标长度上限：写入压缩指令，约束模型输出不超过该字数（需求 20261113-008 D1：500→800） */
 export const SUMMARY_MAX_CHARS = 800;
@@ -49,6 +49,20 @@ export function isSummaryMessage(m: ChatMessage): boolean {
   if (m.kind === 'summary') return true;
   if (m.kind !== undefined) return false;
   return m.role === 'user' && m.is_show === false;
+}
+
+/**
+ * 消息级「展示专用」判定：后台任务通知 / 子 Agent 结果卡片不进入 LLM 历史前缀。
+ *
+ * 关键：摘要消息永远不算展示专用消息。
+ * 摘要正文可能引用历史里的通知/卡片原文，恰好以 `</background_task_notification>` 或
+ * `</subagent_result>` 结尾；若只按 content 后缀判定（isDisplayOnlyContent），整条摘要会被
+ * 误判成展示卡片并从 LLM 视图中剔除——表现为「压缩后 system 后面直接是 assistant」，
+ * 历史摘要凭空消失。
+ */
+export function isDisplayOnlyMessage(m: ChatMessage): boolean {
+  if (isSummaryMessage(m)) return false;
+  return m.role === 'user' && isDisplayOnlyContent(m.content);
 }
 
 /**
