@@ -1,7 +1,7 @@
 {
   "name": "loop-agent-webui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "loop-agent WebUI（Vue3 + Vite，构建产物 dist 由主工程静态托管）",
   "scripts": {

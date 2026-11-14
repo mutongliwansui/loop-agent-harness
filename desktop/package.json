@@ -1,7 +1,7 @@
 {
   "name": "loop-agent-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LoopAgent 桌面端壳（Electron 主进程，独立子包，不进主工程运行时依赖）",
   "type": "module",
   "main": "dist/main.cjs",

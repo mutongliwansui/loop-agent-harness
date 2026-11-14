@@ -1,6 +1,6 @@
 {
   "name": "loop-agent-command",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ReAct Agent with OpenAI function calling",
   "type": "module",
   "scripts": {
