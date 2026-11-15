@@ -19,7 +19,7 @@ import { SessionStore, workspaceId } from '../session/store.js';
 import type { MemoryKit } from '../api/memory-kit.js';
 import type { SessionData } from '../session/types.js';
 import { dedupeCuratedFile } from '../memory/curated-dedupe.js';
-import { isSummaryMessage } from '../memory/summary-message.js';
+import { isDisplayOnlyMessage, isSummaryMessage } from '../memory/summary-message.js';
 import { estimateMessageTokens } from '../memory/working.js';
 import type { CuratedFileKey } from '../memory/types.js';
 import {
@@ -55,7 +55,7 @@ import type {
   SubAgentTrace,
   ToolCall,
 } from '../types.js';
-import { AgentAbortedError, isDisplayOnlyContent } from '../types.js';
+import { AgentAbortedError } from '../types.js';
 import { randomUUID } from 'node:crypto';
 import { subAgentRegistry } from './subagent-registry.js';
 import { applySubAgentEvent, createSubAgentTrace } from './subagent-trace.js';
@@ -1113,6 +1113,7 @@ export class ReActAgent {
                 } else if (wmConfig.flushFailure === 'archive' && this._episodicMemory) {
                   // Task-17：提取失败 + archive → 本次将被丢弃的原始对话降级写入 L2 保底，再压缩
                   const rawContent = plan.droppable
+                    .filter((m) => !isDisplayOnlyMessage(m))
                     .map((m) => `${m.role}: ${m.content ?? ''}`)
                     .join('\n');
                   await this._episodicMemory.appendToday(rawContent, {
@@ -1213,7 +1214,8 @@ export class ReActAgent {
         // D9：历史视图剔除通知消息——避免 (a) 通知进入后续迭代的提示前缀，
         // (b) 记忆注入把通知误当作「最后一条 user 消息」（旧实现会把记忆前缀挂到通知上）
         // 后台任务通知 / 子 Agent 结果卡片仅展示，不进 LLM 历史前缀（20261107-002 D8）
-        let llmMessages: ChatMessage[] = messages.filter((m) => !isDisplayOnlyContent(m.content));
+        // 需求 20261114-007：用消息级判定，摘要消息即使正文以通知/卡片闭合标签结尾也必须保留
+        let llmMessages: ChatMessage[] = messages.filter((m) => !isDisplayOnlyMessage(m));
         if (this._contextAssembler && this._memoryEnabled) {
           try {
             llmMessages = await this._contextAssembler.assemble(

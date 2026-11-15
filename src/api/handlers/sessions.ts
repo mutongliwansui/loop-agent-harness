@@ -28,10 +28,11 @@ import { currentWorkspaceRoot, markWorkspaceUsed } from '../recent-workspace.js'
 import { locateSession } from '../session-locator.js';
 import { canonicalWorkspacePath, isSameWorkspace, lexicalWorkspacePath } from '../../session/path-utils.js';
 import { SessionStore } from '../../session/index.js';
+import type { ChatMessage } from '../../types.js';
 import type { SessionManager } from '../session-manager.js';
 import { readJournal, dropJournal } from '../run-journal.js';
 import { estimateMessageTokens } from '../../memory/working.js';
-import { isDisplayOnlyContent, type ChatMessage } from '../../types.js';
+import { isDisplayOnlyMessage } from '../../memory/summary-message.js';
 import { ReActAgent, type CompactNowResult } from '../../agent/react-agent.js';
 import { subAgentRegistry } from '../../agent/subagent-registry.js';
 import { listJobs, type JobKind, type JobStatus } from '../../background/jobs.js';
@@ -583,9 +584,7 @@ export async function handleRetrySession(
     .filter(({ m }) => m.role !== 'system' && m.is_compact !== true);
   // entry.history 缓存 miss 时来自 getRestoreMessages（剔除展示专用消息）；命中时含它们。
   // 以长度对齐选择映射口径，避免通知/结果卡片造成下标偏移。
-  const stable = visible.filter(
-    ({ m }) => !(m.role === 'user' && isDisplayOnlyContent(m.content)),
-  );
+  const stable = visible.filter(({ m }) => !isDisplayOnlyMessage(m));
   const rows = stable.length === entry.history.length ? stable : visible;
   const row = rows[userIdx];
   if (!row || row.m.role !== 'user') {
