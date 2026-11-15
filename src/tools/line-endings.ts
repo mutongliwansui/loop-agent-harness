@@ -98,6 +98,87 @@ export function similarCandidates(
   return out;
 }
 
+export interface LineDiffRow {
+  /** oldText 侧行号（1-based） */
+  line: number;
+  /** oldText 侧该行（截断 120 字符） */
+  expected: string;
+  /** 文件侧该行（截断 120 字符） */
+  actual: string;
+  /** 是否纯空白差异（trim 后一致、首尾空白不同，如缩进 tab↔空格、行尾空格） */
+  whitespaceOnly: boolean;
+}
+
+export interface AnchoredLineDiff {
+  /** 锚点在文件中的行号（1-based，即 oldText 首行命中的文件行） */
+  anchor: number;
+  /** 不一致行列表（按 oldText 行号升序） */
+  diffs: LineDiffRow[];
+  /** 与文件逐字符一致的 oldText 行数 */
+  exactLines: number;
+  /** oldText 总行数 */
+  totalLines: number;
+}
+
+/**
+ * 锚定式逐行比对（fix/0.1.1 失配诊断增强）：
+ * 多行 oldText 失配的真实主因是「个别行凭记忆写错、其余行正确」——先按 oldText 首行
+ * 在文件中锚定候选位置（trim 全等优先，退化为公共前缀阈值，与 similarCandidates 同款），
+ * 再把 oldText 与锚点窗口逐行比对，精确指出哪几行不一致、哪几行一致。
+ * 与 firstDiffLine（从文件头锚定）的区别：命中锚点时信息指向 oldText 实际所在区域，
+ * 不再产生「期望与实际来自不同区域」的噪音。
+ * 空白差异单独分级：行 trim 后一致但逐字符不同（缩进 tab↔空格、行尾空格）标记
+ * whitespaceOnly，渲染时可提示「仅空白不一致」。
+ * 首行过短（<8 字符）或无锚点命中返回 null，由调用方回退 firstDiffLine。
+ * 多个锚点取不一致行最少的（并列取靠前）。
+ */
+export function anchoredLineDiff(contentNorm: string, oldNorm: string): AnchoredLineDiff | null {
+  const oldLines = oldNorm.split('\n');
+  const first = (oldLines[0] ?? '').trim();
+  if (first.length < 8) return null;
+  const contentLines = contentNorm.split('\n');
+  // 全等锚点（trim 全等，覆盖首行缩进差异场景）优先；无则用前缀阈值锚点（≥ max(8, 首行长一半)）
+  const exact: number[] = [];
+  const fuzzy: number[] = [];
+  const minPrefix = Math.max(8, Math.floor(first.length / 2));
+  for (let i = 0; i < contentLines.length; i++) {
+    const t = contentLines[i].trim();
+    if (t === first) exact.push(i);
+    else {
+      let common = 0;
+      const max = Math.min(t.length, first.length);
+      while (common < max && t[common] === first[common]) common++;
+      if (common >= minPrefix) fuzzy.push(i);
+    }
+  }
+  const clip = (s: string): string => s.replace(/\r$/, '').slice(0, 120);
+  const diffAt = (anchor: number): LineDiffRow[] => {
+    const rows: LineDiffRow[] = [];
+    for (let i = 0; i < oldLines.length; i++) {
+      const fileLine = contentLines[anchor + i];
+      if (fileLine === undefined) break; // 窗口超出文件尾，只比对可得部分
+      if (oldLines[i] === fileLine) continue; // 完全一致
+      rows.push({
+        line: i + 1,
+        expected: clip(oldLines[i]),
+        actual: clip(fileLine),
+        whitespaceOnly: oldLines[i].trim() === fileLine.trim(),
+      });
+    }
+    return rows;
+  };
+  const candidates = exact.length > 0 ? exact : fuzzy;
+  if (candidates.length === 0) return null;
+  let best: AnchoredLineDiff | null = null;
+  for (const anchor of candidates) {
+    const diffs = diffAt(anchor);
+    if (!best || diffs.length < best.diffs.length) {
+      best = { anchor: anchor + 1, diffs, exactLines: oldLines.length - diffs.length, totalLines: oldLines.length };
+    }
+  }
+  return best;
+}
+
 export interface NormalizedReplaceResult {
   /** 替换后的完整内容（replaceAll=false 且多处匹配时不落盘，仅用于参考） */
   updated: string;
@@ -189,4 +270,178 @@ export function getRecordedMtime(absPath: string): number | undefined {
 export function isMtimeChanged(absPath: string, currentMtimeMs: number): boolean {
   const recorded = mtimeRegistry.get(lockKey(absPath));
   return recorded !== undefined && Math.abs(currentMtimeMs - recorded) > 1;
+}
+
+/**
+ * 正则锚定提示（fix/0.1.1）：正则失配且 pattern 含 ^ 或 $ 锚点、flags 缺 m 时，
+ * 提示「^$ 锚定整条文本而非行首行尾」——这是锚点正则失配的最高频原因
+ * （取证：sess_522b6010_20261114_203126 案例 1，加 m 标志一轮即恢复）。
+ */
+export function multilineAnchorHint(pattern: string, flags: string): string | null {
+  if (flags.includes('m')) return null;
+  if (!/[\^$]/.test(pattern)) return null;
+  return '检测到正则含 ^ 或 $ 锚点但未启用 m 标志：此时 ^/$ 锚定的是整条文本的开头/结尾而非每行的行首/行尾，'
+    + '跨行匹配请加 m 标志（如 flags: "gm"），或改用不含行锚点的 pattern';
+}
+
+// ---- 空白容错匹配（fix/0.1.1 第二级匹配，仅精确匹配失败后调用）----
+
+export interface ToleratedHitRows {
+  /** 命中处序号（1-based） */
+  hit: number;
+  /** 该处被容错吸收的行（oldText 侧行号，1-based：trim 全等但逐字符不同） */
+  absorbed: number[];
+}
+
+export interface ToleratedReplaceResult {
+  /** 替换后的完整内容（multiple=true 且未 replaceAll 时不落盘） */
+  updated: string;
+  /** 容错命中总数 */
+  count: number;
+  /** 是否多处命中 */
+  multiple: boolean;
+  /** 文件主导行尾 */
+  eol: Eol;
+  /** 各命中处吸收的空白差异行摘要（multiple 时不填） */
+  toleratedRows: ToleratedHitRows[];
+}
+
+/**
+ * 空白容错匹配替换（Aider 式 SEARCH/REPLACE 的安全版）：
+ * 判据：oldText 与文件窗口**逐行 trim 全等**（仅吸收首尾空白差异——缩进错位、行尾空格；
+ * 任一行 trim 后内容不同即整窗不命中，绝不「猜」内容级差异）。
+ * 安全约束（Aider 曾静默损坏文件的教训）：
+ * 1) 替换写回时 newText 逐行做缩进传导——保持 newText 相对 oldText 的缩进关系，
+ *    套上文件窗口的实际前导空白；tab/空格结构冲突或差量为负时整体放弃（返回 null 回落诊断）；
+ * 2) 多处命中与精确匹配同语义：未 replaceAll 即报 multiple，不静默选第一处；
+ * 3) 重叠窗口跳过（与 indexOf 推进语义一致）；
+ * 4) 全空白 oldText 不容错（无锚定意义）。
+ * 命中原因通过 toleratedRows 显式返回，由调用方写入结果消息，不做静默纠正。
+ */
+export function tolerateReplace(
+  content: string,
+  oldText: string,
+  newText: string,
+  replaceAll: boolean,
+): ToleratedReplaceResult | null {
+  if (oldText.trim().length === 0) return null;
+  const eol = detectEol(content);
+  const contentNorm = normalizeEol(content);
+  const oldNorm = normalizeEol(oldText);
+  const cn = contentNorm.split('\n');
+  const on = oldNorm.split('\n');
+  if (on.length > cn.length) return null;
+  const newLines = normalizeEol(newText).split('\n');
+
+  const lead = (line: string): string => /^[ \t]*/.exec(line)?.[0] ?? '';
+  const stripLead = (line: string): string => line.slice(lead(line).length);
+
+  // 候选窗口起点：首行 trim 全等
+  const firstTrim = on[0].trim();
+  if (firstTrim.length === 0) return null;
+  const hits: Array<{ start: number; absorbed: number[] }> = [];
+  let prevEnd = -1;
+  for (let s = 0; s + on.length <= cn.length; s++) {
+    if (s < prevEnd) continue; // 重叠窗口跳过
+    if (cn[s].trim() !== firstTrim) continue;
+    let ok = true;
+    const absorbed: number[] = [];
+    for (let j = 0; j < on.length; j++) {
+      if (on[j].trim() !== cn[s + j].trim()) {
+        ok = false;
+        break;
+      }
+      if (on[j] !== cn[s + j]) absorbed.push(j + 1);
+    }
+    if (ok) {
+      hits.push({ start: s, absorbed });
+      prevEnd = s + on.length;
+    }
+  }
+  if (hits.length === 0) return null;
+  const multiple = hits.length > 1;
+  if (multiple && !replaceAll) {
+    return { updated: content, count: hits.length, multiple: true, eol, toleratedRows: [] };
+  }
+
+  /** newText 行 j 的缩进传导：保持相对 oldText 行的缩进差，套到文件窗口行上；不可映射返回 null */
+  const mapIndent = (start: number, j: number): string | null => {
+    const oi = j < on.length ? j : on.length - 1; // 多出的行映射到 oldText 末行
+    const wsOld = lead(on[oi]);
+    const wsFile = lead(cn[start + oi]);
+    const wsNew = lead(newLines[j]);
+    if (wsNew.startsWith(wsOld)) return wsFile + wsNew.slice(wsOld.length);
+    if (wsOld.endsWith(wsNew)) {
+      // newText 相对减缩进：把缩减量作用到文件侧缩进，文件侧不足时钳到空串
+      // （该差量本就是容错吸收的范围，仅空白无内容风险；如 oldText 多缩进、newText 按无缩进写）
+      const cut = wsOld.length - wsNew.length;
+      return wsFile.length >= cut ? wsFile.slice(0, wsFile.length - cut) : '';
+    }
+    return null; // 前导空白结构不同（如 tab vs 空格）：放弃容错
+  };
+
+  const buildReplacement = (start: number): string | null => {
+    const out: string[] = [];
+    for (let j = 0; j < newLines.length; j++) {
+      const ws = mapIndent(start, j);
+      if (ws === null) return null;
+      out.push(ws + stripLead(newLines[j]));
+    }
+    return out.join('\n');
+  };
+
+  // norm→raw 偏移映射：容错窗口按「整行区间」写回（首行行首、末行行尾空白与结构换行均属窗口），
+  // 窗口末尾的换行由写回侧补齐，避免吞掉结构换行或残留行尾空白
+  const extra = new Int32Array(contentNorm.length + 1);
+  let ni = 0;
+  let removed = 0;
+  for (let ri = 0; ri < content.length; ri++) {
+    if (content[ri] === '\r' && ri + 1 < content.length && content[ri + 1] === '\n') {
+      removed++;
+      continue;
+    }
+    extra[ni] = removed;
+    ni++;
+  }
+  extra[contentNorm.length] = removed;
+  const lineStartNorm = new Array<number>(cn.length + 1);
+  let acc = 0;
+  for (let i = 0; i < cn.length; i++) {
+    lineStartNorm[i] = acc;
+    acc += cn[i].length + 1;
+  }
+  lineStartNorm[cn.length] = acc;
+  const rawLineStart = (li: number): number => {
+    const n = Math.min(lineStartNorm[li], contentNorm.length);
+    return n + extra[n];
+  };
+
+  const applied = replaceAll ? hits : hits.slice(0, 1);
+  const replacements: string[] = [];
+  for (const h of applied) {
+    const rep = buildReplacement(h.start);
+    if (rep === null) return null; // 缩进不可映射：整体放弃，回落精确诊断
+    replacements.push(adaptEol(rep, eol));
+  }
+
+  let out = '';
+  let prev = 0;
+  const toleratedRows: ToleratedHitRows[] = [];
+  for (let k = 0; k < applied.length; k++) {
+    const { start, absorbed } = applied[k];
+    const rawStart = rawLineStart(start);
+    const rawEnd = rawLineStart(start + on.length);
+    const origWindow = content.slice(rawStart, rawEnd);
+    out += content.slice(prev, rawStart);
+    out += replacements[k];
+    // 窗口末尾的结构换行：原窗口以换行结尾而替换文本没有时补主导行尾（互斥判断，不重复补）
+    if (origWindow.endsWith('\n') && !replacements[k].endsWith('\n')) {
+      out += adaptEol('\n', eol);
+    }
+    prev = rawEnd;
+    if (absorbed.length > 0) toleratedRows.push({ hit: k + 1, absorbed });
+  }
+  out += content.slice(prev);
+
+  return { updated: out, count: applied.length, multiple: false, eol, toleratedRows };
 }
