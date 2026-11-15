@@ -20,8 +20,12 @@ import { createRootContext, createHost, CoreError } from '@loop-agent/core';
 |---|---|
 | `@loop-agent/core`（本包） | 插件**怎么被定义**、怎么被挂载、怎么被撤销 |
 | `@loop-agent/main` | **挂载哪些**插件、**什么顺序**、**启停状态**、**清单存哪**、**重启怎么还原** |
+| `@loop-agent/llm` | **一个大模型服务商该提供什么**、怎么被继承、能力边界怎么声明 |
+| （将来的默认实现包 / 中间件层） | 具体的 OpenAI 兼容实现、重试/限流/路由策略 |
 
-本包**不含**插件清单、不含磁盘 IO、不含持久化。需要这些能力时用 `@loop-agent/main`：
+一句话：**core 管机制，main 管装配，llm 管契约，实现管具体。**
+
+本包**不含**插件清单、不含磁盘 IO、不含持久化，也不含任何领域契约（大模型术语一律不进 core）。需要这些能力时用 `@loop-agent/main` 与 `@loop-agent/llm`：
 
 ```ts
 import { createMainHost } from '@loop-agent/main';

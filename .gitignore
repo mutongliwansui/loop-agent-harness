@@ -5,6 +5,10 @@ node_modules/
 /core/dist/
 # main 子包构建产物（同上，/dist/ 只匹配根目录）
 /main/dist/
+# llm 子包构建产物（同上）
+/llm/dist/
+# tools 子包构建产物（同上）
+/tools/dist/
 /dist-sea/
 .sea-test/
 sea-config.json

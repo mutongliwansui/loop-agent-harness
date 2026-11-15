@@ -12,12 +12,16 @@
 |---|---|
 | `@loop-agent/core` | 插件**怎么被定义**、怎么被挂载、怎么被撤销 |
 | `@loop-agent/main`（本包） | **挂载哪些**插件、**什么顺序**、**启停状态**、**清单存哪**、**重启怎么还原** |
+| `@loop-agent/llm` | **一个大模型服务商该提供什么**、怎么被继承、能力边界怎么声明 |
+| （将来的默认实现包 / 中间件层） | 具体的 OpenAI 兼容实现、重试/限流/路由策略 |
+
+一句话：**core 管机制，main 管装配，llm 管契约，实现管具体。**
 
 `core` 的 `PluginRegistry` 已在本轮删除（版本升 `0.2.0`）。原因：它是纯内存的薄封装，属于应用装配职责而非内核定义，且「持久化」是它的明确非目标，留在内核只能靠破坏纯净性实现。
 
 ## 二、引用方式
 
-根 `package.json` 已声明 `workspaces: ["core", "main"]`，仓库内直接引用即可：
+根 `package.json` 已声明 `workspaces: ["core", "main", "llm"]`，仓库内直接引用即可：
 
 ```ts
 import { createMainHost } from '@loop-agent/main';

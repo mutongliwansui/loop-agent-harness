@@ -5,7 +5,9 @@
   "type": "module",
   "workspaces": [
     "core",
-    "main"
+    "main",
+    "llm",
+    "tools"
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",

@@ -129,6 +129,14 @@ loop-agent-command/
 │   ├── src/                          # host / registry / store / home / types
 │   ├── tests/                        # 3 文件 52 例（store 清单读写 / registry 组合层 / boundary）
 │   └── README.md                     # 📖 宿主入口与持久化清单语义
+├── llm/                              # 📦 @loop-agent/llm：大模型插件契约（可继承的 LlmProvider 抽象基类，本期只做契约层）
+│   ├── src/                          # types / capabilities / keys / errors / events / provider / define / registry
+│   ├── tests/                        # 8 文件 121 例 + types.test-d.ts（boundary / capability / define / errors / events / install / provider / registry）
+│   └── README.md                     # 📖 分层判据、继承示例、能力协商、流式无 done 的补齐行为
+├── tools/                            # 📦 @loop-agent/tools：工具插件契约（可继承的 ToolBase / ToolProvider，本期只做契约层）
+│   ├── src/                          # types / annotations / schema / keys / errors / events / tool / provider / define / registry
+│   ├── tests/                        # 9 文件 209 例 + types.test-d.ts（boundary / annotations / schema / tool / provider / define / registry / types / external-consumer）
+│   └── README.md                     # 📖 分层判据、两级 extends 示例、annotations 不是权限、工具名 64 字符约束
 ├── docs/
 │   ├── plan.md                       # 📋 开发总计划与里程碑
 │   ├── openclaw_memory_management.md # 🧠 记忆管理设计参考（OpenClaw 风格）

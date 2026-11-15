@@ -129,6 +129,14 @@ loop-agent-command/
 │   ├── src/                          # host / registry / store / home / types
 │   ├── tests/                        # 3 files, 52 cases (store manifest IO / registry composition / boundary)
 │   └── README.md                     # 📖 Host entry point and persisted-manifest semantics
+├── llm/                              # 📦 @loop-agent/llm: LLM plugin contract (inheritable LlmProvider base class; contract layer only this round)
+│   ├── src/                          # types / capabilities / keys / errors / events / provider / define / registry
+│   ├── tests/                        # 8 files, 121 cases + types.test-d.ts (boundary / capability / define / errors / events / install / provider / registry)
+│   └── README.md                     # 📖 Layer criteria, inheritance examples, capability negotiation, stream-without-done behaviour
+├── tools/                            # 📦 @loop-agent/tools: tool plugin contract (inheritable ToolBase / ToolProvider; contract layer only this round)
+│   ├── src/                          # types / annotations / schema / keys / errors / events / tool / provider / define / registry
+│   ├── tests/                        # 9 files, 209 cases + types.test-d.ts (boundary / annotations / schema / tool / provider / define / registry / types / external-consumer)
+│   └── README.md                     # 📖 Layer criteria, two-level extends examples, annotations are not permissions, 64-char tool-name limit
 ├── docs/
 │   ├── plan.md                       # 📋 Overall dev plan and milestones
 │   ├── openclaw_memory_management.md # 🧠 Memory management design reference (OpenClaw style)
