@@ -10,8 +10,11 @@ import {
   normalizeEol,
   adaptEol,
   firstDiffLine,
+  anchoredLineDiff,
   similarCandidates,
+  multilineAnchorHint,
   replaceNormalized,
+  tolerateReplace,
   recordWriteMtime,
   isMtimeChanged,
 } from './line-endings.js';
@@ -46,9 +49,12 @@ async function writeAndRecord(path: string, content: string): Promise<void> {
 }
 
 /**
- * 字面量失配诊断信息（D5/D6）：
+ * 字面量失配诊断信息（D5/D6 + fix/0.1.1 锚定式逐行比对）：
  * - mtime 相比本进程上次写登记已变化 → 提示可能被并发/外部修改；
- * - 最长公共前缀定位首个差异行；oldText 首行足够长时给出近似候选片段。
+ * - 锚定式逐行比对（anchoredLineDiff）：oldText 首行能在文件中命中时，把 oldText 与
+ *   命中窗口逐行对照，精确指出哪几行不一致（含纯空白差异分级）——这是多行块失配
+ *   「个别行凭记忆写错」场景的最有效诊断；无锚点时回退首个差异行（从文件头锚定）；
+ * - oldText 首行足够长时给出近似候选片段。
  */
 async function buildNotFoundMessage(path: string, content: string, oldText: string): Promise<string> {
   const parts: string[] = [`未在 ${path} 中找到要替换的文本`];
@@ -64,11 +70,35 @@ async function buildNotFoundMessage(path: string, content: string, oldText: stri
   }
   const contentNorm = normalizeEol(content);
   const oldNorm = normalizeEol(oldText);
-  const diff = firstDiffLine(contentNorm, oldNorm);
-  if (diff) {
-    parts.push(
-      `首个差异在第 ${diff.line} 行\n  期望: ${diff.expected}\n  实际: ${diff.actual}`,
-    );
+  const anchored = anchoredLineDiff(contentNorm, oldNorm);
+  if (anchored) {
+    const wsCount = anchored.diffs.filter((d) => d.whitespaceOnly).length;
+    const head = `oldText 首行在第 ${anchored.anchor} 行附近命中，${anchored.totalLines} 行中 ${anchored.exactLines} 行一致、${anchored.diffs.length} 行不一致`;
+    if (anchored.diffs.length === 0) {
+      // 锚点命中但窗口内全部一致 → 差异在锚点判定依据之外（如首行 trim 后一致但缩进不同），
+      // 提示按空白差异重试
+      parts.push(
+        head
+        + '。窗口内各行 trim 后均一致：差异应为缩进/行尾空白（tab↔空格、行尾空格），请按文件实际缩进重写 oldText',
+      );
+    } else {
+      const rows = anchored.diffs
+        .map(
+          (d) => `  第 ${d.line} 行${d.whitespaceOnly ? '（仅空白不一致）' : ''}\n    期望: ${d.expected}\n    实际: ${d.actual}`,
+        )
+        .join('\n');
+      parts.push(`${head}:\n${rows}`);
+      if (wsCount > 0 && wsCount === anchored.diffs.length) {
+        parts.push('全部不一致行均为纯空白差异（trim 后一致）：按文件实际缩进重写 oldText 即可命中');
+      }
+    }
+  } else {
+    const diff = firstDiffLine(contentNorm, oldNorm);
+    if (diff) {
+      parts.push(
+        `首个差异在第 ${diff.line} 行\n  期望: ${diff.expected}\n  实际: ${diff.actual}`,
+      );
+    }
   }
   const candidates = similarCandidates(contentNorm, oldNorm);
   if (candidates.length > 0) {
@@ -160,8 +190,10 @@ async function executeLocked(path: string, args: Record<string, unknown>): Promi
     const count = [...content.matchAll(re)].length;
 
     if (count === 0) {
+      const hint = multilineAnchorHint(oldText, effectiveFlags);
       throw new Error(
-        `未在 ${path} 中找到匹配 /${oldText}/${effectiveFlags} 的内容`,
+        `未在 ${path} 中找到匹配 /${oldText}/${effectiveFlags} 的内容`
+          + (hint ? `\n${hint}` : ''),
       );
     }
     if (count > 1 && !replaceAll) {
@@ -178,11 +210,25 @@ async function executeLocked(path: string, args: Record<string, unknown>): Promi
     return `已编辑 ${path}（正则替换 ${replaced} 处，flags: ${effectiveFlags}）`;
   }
 
-  // 字面量模式（默认）：行尾归一化匹配 + 偏移映射写回（未触及区域字节级保留）
+  // 字面量模式（默认）：行尾归一化精确匹配 + 偏移映射写回（未触及区域字节级保留）；
+  // 精确失败后进入第二级空白容错匹配（仅吸收首尾空白差异，缩进传导写回，见 tolerateReplace）
   const res = replaceNormalized(content, oldText, newText, replaceAll);
 
   if (res === null) {
-    throw new Error(await buildNotFoundMessage(path, content, oldText));
+    const tol = tolerateReplace(content, oldText, newText, replaceAll);
+    if (tol === null) {
+      throw new Error(await buildNotFoundMessage(path, content, oldText));
+    }
+    if (tol.multiple) {
+      throw new Error(
+        `oldText 经空白容错匹配在 ${path} 中命中 ${tol.count} 处，为避免误改已中止。请补充更长的上下文使其唯一，或设置 replaceAll=true 替换全部`,
+      );
+    }
+    await writeAndRecord(path, tol.updated);
+    const absorbedNote = tol.toleratedRows
+      .map((r) => `第 ${r.absorbed.join('、')} 行空白差异已按文件实际缩进对齐`)
+      .join('；');
+    return `已编辑 ${path}（空白容错匹配：${oldText.length} → ${newText.length} 字符${absorbedNote ? `；${absorbedNote}` : ''}）`;
   }
   if (res.multiple && !replaceAll) {
     throw new Error(
